@@ -50,11 +50,15 @@ Cross-cutting: My Work task inbox, multi-level approvals, notifications and esca
 
 | | |
 |---|---|
-| **Phase** | Planning — pass 1 complete, under review |
+| **Phase** | Planning — review pass 1 complete, plan at **v3** |
 | **Code written** | None yet |
-| **Completed** | Workspace created; both reference documents read in full (29,862 + 944 lines); `IMPLEMENTATION_PLAN.md` drafted with an 18-entry requirements reconciliation register; `CLAUDE.md`, `CONTEXT.md`, `MEMORY.md`, `BRAIN.md`, `SECURITY.md`, `DECISIONS.md` created |
-| **In progress** | Codex CLI review of the plan; Supervisor adjudication to follow; then plan pass 2, then Slice 1 |
-| **Next** | Slice 1 — Foundation, Identity, Shell |
+| **Files that exist** | `CLAUDE.md` · `CONTEXT.md` · `MEMORY.md` · `BRAIN.md` · `SECURITY.md` · `DECISIONS.md` (ADR-001…024) · `REUSE.md` · `IMPLEMENTATION_PLAN.md` · `docs/REVIEW_PASS1_ADJUDICATION.md` · `.gitignore`. Local git repo, no remote |
+| **Still to create** | `REQUIREMENTS.md` · `ARCHITECTURE.md` · `DATA_MODEL.md` · `DATABASE_RELATIONSHIPS.md` · `WORKFLOWS.md` · `UI_UX.md` · `NAVIGATION.md` · `API_CONTRACTS.md` · `AI_ARCHITECTURE.md` · `TESTING_STRATEGY.md` · `DEPLOYMENT.md` · `ACCEPTANCE_CRITERIA.md` · `CHANGELOG.md` · `TODO.md`. Until these exist, cross-references to them in other files are forward declarations, not descriptions of reality |
+| **Completed** | Both reference documents read in full (29,862 + 944 lines) · plan drafted, reviewed and revised twice · Solar PV Designer Lite inspected and reuse decided (`REUSE.md`, ADR-022) |
+| **Review outcome** | Codex **FAIL** (43 findings, 5 BLOCKER) → Supervisor **FAIL upheld** (40 upheld, 3 overturned/narrowed, 1 escalated) → v2 → Supervisor code-review (13 findings, 9 new) → v3 |
+| **Next** | Slice 1 — Foundation, Identity, Administration §1, Shell, Observability |
+
+> **Discipline note.** An earlier version of this table stated that `MEMORY.md` and `DECISIONS.md` had been created when they had not. The Supervisor caught it. *Measure the repo; do not quote the handover.* The "Still to create" row exists so this file cannot make that mistake again.
 
 ### Modules outstanding
 

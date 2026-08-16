@@ -106,7 +106,9 @@ Mass-assignment from a generic "update" schema is forbidden.
 
 - **SQL injection:** SQLAlchemy parameterised queries only. No string-built SQL. The one dynamic-query surface — the Analytics Center — uses a whitelisted metric/dimension/filter builder, never user-supplied fragments.
 - **XSS:** React escapes by default; `dangerouslySetInnerHTML` is banned outside a single audited, sanitised markdown renderer. Messaging content is sanitised server-side on write and escaped on render.
-- **CSRF:** the API is token-authenticated and CORS-restricted to known origins. Any cookie-based flow carries a double-submit CSRF token. State-changing operations are never `GET`.
+- **CSRF: a double-submit token is mandatory on every state-changing request, unconditionally.**
+  An earlier draft said "the API is token-authenticated and CORS-restricted to known origins", with a CSRF token only for "any cookie-based flow". **Both halves of that were wrong.** CORS is not a CSRF defence — the browser still *sends* a cross-origin form `POST` with cookies attached; CORS only stops the attacker reading the *response*, which is irrelevant when the goal is the state change itself. And §5 mandates httpOnly `SameSite=Lax` cookies, so the cookie-based flow **is** the primary path, not a hypothetical one. As written, an implementer could reasonably conclude CSRF tokens were optional.
+  `SameSite=Lax` is defence in depth, not the control: it does not cover top-level cross-site `POST` in older browsers. State-changing operations are never `GET`.
 - All input validated twice — Zod on the client for UX, **Pydantic on the server for truth.** Client validation is never load-bearing.
 - Database constraints are the final backstop: check constraints on ranges and enums, unique constraints, NOT NULL, NUMERIC precision.
 

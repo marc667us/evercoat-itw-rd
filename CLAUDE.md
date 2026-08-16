@@ -85,7 +85,9 @@ Quality/security: Ruff, mypy, ESLint, Prettier, pre-commit, Trivy, Semgrep Commu
 - **NUMERIC, never float**, for percentages, masses, densities and measured values. Floating-point on a controlled formulation percentage is a defect.
 - **FK delete rules are `RESTRICT` / `NO ACTION`** for projects↔formulas, formula_versions↔batches, batches↔tests, materials used in formulas, and released products. **Never cascade-delete R&D history.** Retire with `inactive` / `obsolete` / `archived`, never `DELETE`.
 - **Composite `ON DELETE SET NULL` is banned** — it nulls every key column, including `NOT NULL` tenant keys. Name the column (PG15+).
-- **Unique constraints live in PostgreSQL, not only in the app**: `(organization_id, project_code)`, `(formula_id, version_number)`, `(organization_id, raw_material_code)`, `(organization_id, product_code)`, `lab_batch_number`, `sample_number`, `(document_id, revision_number)`.
+- **Unique constraints live in PostgreSQL, not only in the app**, and every code is **tenant-scoped**: `(organization_id, project_code)`, `(formula_id, version_number)`, `(organization_id, raw_material_code)`, `(organization_id, product_code)`, `(organization_id, lab_batch_number)`, `(organization_id, sample_number)`, `(document_id, revision_number)`. A globally unique batch or sample number would stop Org B creating `LB001` because Org A has one — and the constraint violation itself discloses another tenant's record.
+- **Every tenant-scoped table also declares `UNIQUE (id, organization_id)`.** This is mandatory, not an optimisation: PostgreSQL requires a unique index on referenced columns, so composite tenant-qualified foreign keys are impossible without it, and the first migration that omits it fails with *"there is no unique constraint matching given keys for referenced table"*.
+- **Child→parent foreign keys are composite**, carrying `(id, organization_id)`. RLS stops cross-tenant *reads*; it does not stop cross-tenant *references*, because referential integrity bypasses RLS even under FORCE.
 - **Index every FK used in joins**, plus `(organization_id, status)`, `(project_id, current_stage)`, `(formula_version_id, test_date)`, `(raw_material_id, supplier_id)`.
 - **RLS with `FORCE ROW LEVEL SECURITY`** on `organization_id` for every proprietary table. **The app connects as a non-superuser role.** Local superuser development hides RLS defects that only surface in production — migrations, backfills and orphan checks must be written to run under `SET ROLE evercoat_itw_rd_app`.
 - **Referential traceability rule:** no released product without a qualified formula; no qualified formula without validation and pilot evidence; no validated formula without lab batches and tests; no test result without traceability to the physical sample.
@@ -163,22 +165,50 @@ Five configurable templates:
 
 ## 10. Green / Yellow / Red test logic
 
-**Status is derived by rules. It is never a field a user picks.** Distinguish `calculated_result` (automatic evaluation) from `approved_result` (post-approval), and derive `display_color` from both.
+**Status is derived by rules. It is never a field a user picks.**
 
-| Technical result | Approvals complete | Deviation | Display |
-|---|---|---|---|
-| Pass | Yes | None | **GREEN** |
-| Pass | No | None | **YELLOW** |
-| Pass | Yes | Minor concern | **YELLOW** |
-| Pass, low margin (inside warning threshold) | Any | Any | **YELLOW** |
-| Fail | Any | Any | **RED** |
-| Incomplete replicates | No | — | **YELLOW** |
-| Excessive variability (CV over limit) | Any | Any | **YELLOW** |
-| Oversight in-spec but adverse trend | Any | Any | **YELLOW** |
-| Expired-calibration equipment | Any | Any | **YELLOW/RED** by policy |
+### The five stored axes — these are the canonical column names
+
+Use these names exactly. Nothing else. `DATA_MODEL.md` holds the full state dictionary and transition table.
+
+| Column | Values |
+|---|---|
+| `execution_status` | `not_started` · `in_progress` · `complete` · `abandoned` |
+| `validity_status` | `valid` · `minor_deviation` · `invalid` |
+| `calculated_result` | `pass` · `fail` · `inconclusive` · `improved` · `no_significant_change` · `worsened` |
+| `review_state` | `awaiting_review` · `under_review` · `returned_for_correction` · `retest_requested` · `escalated` · `reviewed` |
+| `approval_state` | `not_required` · `pending` · `conditionally_approved` · `approved` · `rejected` |
+
+`display_color`, `final_status` and `final_confirmed` are **derived and server-owned**. They are never client-settable and never stored as user input. Do not invent `approved_result`, `technical_status` or `calculated_status` — earlier drafts used all three and the mismatch would have left a safety-critical field off the server-controlled blocklist under its real name.
+
+### Derivation is strictly ordered — first match wins
+
+An unordered table produced two valid answers for the same record. Implement this as an ordered algorithm:
+
+```
+1.  validity_status == invalid                      → RED    (INVALID — not graded)
+2.  calculated_result == fail                       → RED    (REQUIREMENT FAILED)
+3.  approval_state == rejected                      → RED    (REJECTED)
+4.  execution_status != complete                    → YELLOW (INCOMPLETE)
+5.  replicates_valid < replicates_required          → YELLOW (INCOMPLETE REPLICATES)
+6.  cv > method.cv_limit                            → YELLOW (EXCESSIVE VARIABILITY)
+7.  review_state in {returned_for_correction,
+                     retest_requested, escalated}   → YELLOW (<state>)
+8.  validity_status == minor_deviation              → YELLOW (DEVIATION UNDER REVIEW)
+9.  margin < requirement.warning_threshold          → YELLOW (PASS WITH LOW MARGIN)
+10. trend_alert == true                             → YELLOW (TREND CONCERN)
+11. approval_state == conditionally_approved        → YELLOW (CONDITIONAL — <condition>)
+12. approval_state != approved                      → YELLOW (AWAITING <next approver>)
+13. purpose == screening and not confirmed          → GREEN  (SCREENING PASSED — preliminary)
+14. otherwise                                       → GREEN  (<authority> CONFIRMED)
+```
+
+Every configurable threshold is a named key with an Administration screen: `test_method.calibration_breach_policy` (`invalidate` | `deviate`), `method.cv_limit`, `requirement.warning_threshold`, `method.trend_rule`.
 
 - **Colour is never the sole indicator.** Always colour + icon + text: `✓ PASS`, `✕ FAIL`, `! CONDITIONAL`.
-- **Every YELLOW must state why and what the next required action is.** A yellow with no explanation is a defect.
+- **Display automatic evaluation and final disposition as two separate fields** — `Automatic evaluation: PASS` beside `Final disposition: YELLOW — Awaiting Lead approval`. A low-margin pass awaiting approval is both a pass and not final; one field cannot say that.
+- **GREEN is authority-qualified**: `GREEN — Screening Passed (preliminary authority)`, never a bare green tick.
+- **Every YELLOW states why and what the next required action is.** A yellow with no explanation is a defect.
 - A RED confirmation result automatically opens or links a Failure Investigation.
 - Store **raw measurements per replicate**, always. Never only the aggregate.
 - `test_purpose` ∈ {screening, oversight, confirmation, improvement} is orthogonal to `authority_level` ∈ {preliminary, development, controlled, validation, qualification, release}. A green screening test is never qualification evidence.
