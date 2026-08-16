@@ -35,6 +35,30 @@ Durable project facts. Not a debug log — temporary work belongs in `TODO.md` a
 - Ports for contested or heavy dependencies: `WorkflowPort`, `AgentOrchestrationPort`, `ObjectStoragePort`, `EmailPort`. Business logic never imports a vendor.
 - Docker Compose is the deployment path. Render is optional demo staging and **must never hold real R&D records** — its free Postgres expires after 30 days.
 
+## Slice 1 outcome — code-complete, gate-incomplete
+
+- **63 tests passing** (API 37, Web 26). Migrations applied via Alembic twice from empty, second run a no-op. API served over HTTP with correct health, auth and metrics responses. Web built and served.
+- **The golden E2E has never run.** Deferred by the operator 2026-08-16. `TODO.md` GATE-1 carries it. Do not let a later slice assume it passed.
+
+### Five defects that only running things exposed
+
+1. **`SET LOCAL app.current_user` is a syntax error** — `current_user` is reserved SQL, rejected even inside a qualified custom GUC name. Would have broken every authenticated request. Renamed to `app.current_user_id`.
+2. **The app could not import** — `EmailStr` needs `email-validator` at class-definition time; undeclared, so the container would not start. Syntax checks passed happily.
+3. **The app aborted during startup** — `structlog.stdlib.add_logger_name` reads `logger.name`, which `PrintLogger` lacks. Raised on the first log line, before binding a port, buried in a structlog traceback that looked nothing like a logging problem.
+4. **`audit.events` lacked its composite tenant key.**
+5. **Alembic's version table cannot live in `audit`** — the schema and the owner role are both created BY migration 001. Pre-creating it "fixed" the error and introduced a worse one: the schema became owned by the migration user, so `AUTHORIZATION evercoat_owner` silently became a no-op. Version table lives in `public`.
+
+### Measured, not assumed
+
+- **Pass-green vs fail-red is ΔE 4.2 under deuteranopia.** ~8% of men cannot distinguish them by hue. This is the measurement behind the colour + icon + text rule — it is not a stylistic preference.
+- Three series colours validate all-pairs in both modes; a fourth puts yellow beside orange and fails.
+- **Docker VM (3.78 GiB) cannot fit a ninth container** alongside AutoWorkshop's seven: exit 137, VM-level OOM. `aw-keycloak` sits at 178% CPU and its admin API exceeds 180s.
+
+### Host workarounds that worked, and one that did not
+
+- **Borrowing `aw-postgres` worked.** Isolated scratch database + the five cluster roles, dropped afterwards, residual count 0. Repeat this pattern rather than fighting for a ninth container.
+- **Borrowing `aw-keycloak` did not.** Too CPU-starved. Nothing was left behind because the realm import was designed as one atomic request. The risk it was meant to close — realm/database role-name drift — was closed by `test_realm_matches_database.py` instead.
+
 ## Review history
 
 - **Pass 1, 2026-08-16.** Plan v1 → Codex **FAIL**, 43 findings, 5 BLOCKER → Supervisor **FAIL upheld**, 40 upheld / 3 overturned-or-narrowed / 1 escalated → plan v2 → Supervisor code-review, 13 further findings, **9 new** → plan v3. Full record in `docs/REVIEW_PASS1_ADJUDICATION.md`.

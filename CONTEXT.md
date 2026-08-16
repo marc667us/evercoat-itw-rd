@@ -50,15 +50,37 @@ Cross-cutting: My Work task inbox, multi-level approvals, notifications and esca
 
 | | |
 |---|---|
-| **Phase** | Planning — review pass 1 complete, plan at **v3** |
-| **Code written** | None yet |
-| **Files that exist** | `CLAUDE.md` · `CONTEXT.md` · `MEMORY.md` · `BRAIN.md` · `SECURITY.md` · `DECISIONS.md` (ADR-001…024) · `REUSE.md` · `IMPLEMENTATION_PLAN.md` · `docs/REVIEW_PASS1_ADJUDICATION.md` · `.gitignore`. Local git repo, no remote |
-| **Still to create** | `REQUIREMENTS.md` · `ARCHITECTURE.md` · `DATA_MODEL.md` · `DATABASE_RELATIONSHIPS.md` · `WORKFLOWS.md` · `UI_UX.md` · `NAVIGATION.md` · `API_CONTRACTS.md` · `AI_ARCHITECTURE.md` · `TESTING_STRATEGY.md` · `DEPLOYMENT.md` · `ACCEPTANCE_CRITERIA.md` · `CHANGELOG.md` · `TODO.md`. Until these exist, cross-references to them in other files are forward declarations, not descriptions of reality |
-| **Completed** | Both reference documents read in full (29,862 + 944 lines) · plan drafted, reviewed and revised twice · Solar PV Designer Lite inspected and reuse decided (`REUSE.md`, ADR-022) |
-| **Review outcome** | Codex **FAIL** (43 findings, 5 BLOCKER) → Supervisor **FAIL upheld** (40 upheld, 3 overturned/narrowed, 1 escalated) → v2 → Supervisor code-review (13 findings, 9 new) → v3 |
-| **Next** | Slice 1 — Foundation, Identity, Administration §1, Shell, Observability |
+| **Phase** | **Slice 1 — code-complete, GATE-INCOMPLETE** |
+| **Tests** | API **37 passed / 0 failed / 0 skipped** · Web **26 passed** |
+| **Commits** | 12, local repo, no remote |
+| **Built** | Migrations 001–002 + Alembic · RLS on organization **and** project membership · composite tenant keys · SHA-256 audit chain · Keycloak JWT verification · permission + resource-scope dependencies · Administration §1 (7 routes) · Celery worker · health/metrics/logging · Next.js shell + sidebar · 8 shared components · CI (3 jobs) · realm · compose stack |
+| **Still to create** | `REQUIREMENTS.md` · `ARCHITECTURE.md` · **`DATA_MODEL.md`** · `DATABASE_RELATIONSHIPS.md` · `WORKFLOWS.md` · `UI_UX.md` · `NAVIGATION.md` · `API_CONTRACTS.md` · `AI_ARCHITECTURE.md` · `TESTING_STRATEGY.md` · `DEPLOYMENT.md` · `ACCEPTANCE_CRITERIA.md` · `docs/REUSABILITY.md`. Cross-references to these are forward declarations, not descriptions of reality |
+| **Next** | Slice 2 — Projects, Pipeline, Requirements, My Work. **See the gate warning below first.** |
 
-> **Discipline note.** An earlier version of this table stated that `MEMORY.md` and `DECISIONS.md` had been created when they had not. The Supervisor caught it. *Measure the repo; do not quote the handover.* The "Still to create" row exists so this file cannot make that mistake again.
+> ### 🔴 Slice 1 has NOT passed its acceptance gate
+>
+> Code-complete and gate-complete are different things. Everything is
+> written, committed and unit-verified, but the **golden end-to-end
+> scenario has never run** — the whole stack has never been up at once
+> with a browser driving it.
+>
+> Deferred by the operator on 2026-08-16, deliberately and with
+> agreement. **Not cancelled.** Full detail in `TODO.md` GATE-1.
+>
+> Blocked by host capacity: the Docker VM is 3.78 GiB carrying seven
+> AutoWorkshop containers; a ninth was killed with exit 137, and
+> `aw-keycloak` sits at 178% CPU. Unblocking it means stopping the `aw-*`
+> stack for a window, which is the operator's call.
+>
+> **Do not let Slice 2 proceed on the assumption this passed.** Two
+> features on a previous project shipped having never once worked, under
+> green gates. This is that same shape, caught early and written down.
+
+> **Discipline note.** An earlier version of this table stated that
+> `MEMORY.md` and `DECISIONS.md` had been created when they had not. The
+> Supervisor caught it. *Measure the repo; do not quote the handover.*
+> The "Still to create" row and the gate warning above both exist so this
+> file cannot make that class of mistake again.
 
 ### Modules outstanding
 
