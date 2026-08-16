@@ -102,6 +102,8 @@ disallow_any_generics = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Auth tests are async because _decode awaits the JWKS fetch.
+asyncio_mode = "auto"
 markers = [
     "rls: runs under SET ROLE evercoat_app to exercise FORCE ROW LEVEL SECURITY",
     "db: requires a live PostgreSQL",
