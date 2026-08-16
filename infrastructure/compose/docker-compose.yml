@@ -1,0 +1,208 @@
+# EvercoatITWRD APP — Slice 1 development stack
+# =============================================================================
+# Docker Compose is the deployment path (ADR-009). Kubernetes is explicitly
+# out of scope for the first implementation, per the source.
+#
+# Garage is in this stack from Slice 1, not later: Slice 3 ships TDS/SDS/CoA
+# documents and SECURITY.md §6 forbids storing files in database rows, so
+# there is no slice in which document features can exist without it
+# (Supervisor S13, ADR-004).
+#
+# Ollama is NOT here yet. It arrives at Slice 7 with MSD, and only after
+# Slice 1 has measured actual container memory headroom on this Windows host
+# (Risk 4). Model size follows the measurement, not an assumption.
+#
+# Ports: only web, api and keycloak are published. postgres, valkey and garage
+# stay on the internal network — in production they are never published to the
+# host (SECURITY.md §13).
+name: evercoat-itw-rd
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: evercoat-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-evercoat_itw_rd}
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # Deterministic collation so ORDER BY on formula codes is stable across
+      # hosts. A locale difference between dev and prod silently reorders
+      # controlled document numbering.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../apps/api/migrations:/migrations:ro
+    healthcheck:
+      # Named database and user, not defaults — pg_isready reports ready on
+      # the postgres db before the application db exists otherwise.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres} -d ${POSTGRES_DB:-evercoat_itw_rd}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [internal]
+    # Dev only. Remove in production compose — see SECURITY.md §13.
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: evercoat-valkey
+    command: >
+      valkey-server
+      --save 60 1
+      --appendonly no
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+
+  garage:
+    # S3-compatible object storage for TDS/SDS/CoA, lab photographs and
+    # report artefacts. Accessed only through ObjectStoragePort, so MinIO
+    # remains substitutable — though not drop-in: multipart, signing,
+    # versioning and retention differ (ADR-004).
+    image: dxflrs/garage:v1.0.1
+    container_name: evercoat-garage
+    volumes:
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+      - ./garage.toml:/etc/garage.toml:ro
+    networks: [internal]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: evercoat-keycloak
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB:-keycloak}
+      KC_DB_USERNAME: ${POSTGRES_SUPERUSER:-postgres}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+    volumes:
+      - ../../services/keycloak/realm:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      # Keycloak 26 exposes health on the management port 9000, not 8080.
+      # Probing 8080/health returns 404 and would report a dead container
+      # healthy — the failure mode that once had Keycloak reported healthy
+      # while it had been dead for 30 hours.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\nHost: localhost\\nConnection: close\\n\\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 45s
+    networks: [internal, edge]
+    ports:
+      - "${KEYCLOAK_PORT:-8080}:8080"
+
+  api:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
+    container_name: evercoat-api
+    environment:
+      # Runtime connects as the non-superuser app role, which is subject to
+      # FORCE RLS. Developing as superuser hides exactly the defects RLS
+      # exists to catch (ADR-017).
+      DATABASE_URL: postgresql+psycopg://${APP_DB_USER:-evercoat_app}:${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-evercoat_itw_rd}
+      VALKEY_URL: redis://valkey:6379/0
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://keycloak:8080/realms/evercoat}
+      KEYCLOAK_AUDIENCE: ${KEYCLOAK_AUDIENCE:-evercoat-api}
+      GARAGE_ENDPOINT: http://garage:3900
+      APP_ENV: ${APP_ENV:-development}
+      LOG_FORMAT: json
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey:   { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    volumes:
+      - ../../apps/api:/app
+    networks: [internal, edge]
+    ports:
+      - "${API_PORT:-8000}:8000"
+
+  worker:
+    # Celery on Valkey — the Slice 1 WorkflowPort implementation, reused from
+    # Solar (ADR-022 / REUSE.md R9). Valkey is Redis wire-compatible, so the
+    # proven pattern ports unchanged. Temporal replaces this for the named
+    # durable workflows at Slice 11 (ADR-008) — a migration, not a swap.
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
+    container_name: evercoat-worker
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+psycopg://${WORKER_DB_USER:-evercoat_worker}:${WORKER_DB_PASSWORD:?WORKER_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-evercoat_itw_rd}
+      VALKEY_URL: redis://valkey:6379/0
+      APP_ENV: ${APP_ENV:-development}
+      LOG_FORMAT: json
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey:   { condition: service_healthy }
+    volumes:
+      - ../../apps/api:/app
+    networks: [internal]
+
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    container_name: evercoat-web
+    environment:
+      # NEXT_PUBLIC_* is BUILD-time, not runtime. Changing this after the
+      # image is built has no effect — it must be a build arg for a real
+      # deployment, not an env var.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_KEYCLOAK_URL: ${NEXT_PUBLIC_KEYCLOAK_URL:-http://localhost:8080}
+      NODE_ENV: ${NODE_ENV:-development}
+    depends_on:
+      api: { condition: service_healthy }
+    networks: [internal, edge]
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: evercoat-caddy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web, api, keycloak]
+    networks: [edge]
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+
+networks:
+  internal:
+    driver: bridge
+  edge:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  valkey_data:
+  garage_meta:
+  garage_data:
+  caddy_data:
+  caddy_config:
