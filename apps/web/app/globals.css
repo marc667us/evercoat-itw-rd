@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Status must never be conveyed by colour alone (CLAUDE.md §10, and
+   axe-core enforces it in CI). Every status carries colour + icon + text;
+   these classes exist so the pairing is defined once. */
+@layer components {
+  .status-pass        { @apply text-status-pass; }
+  .status-fail        { @apply text-status-fail; }
+  .status-conditional { @apply text-status-conditional; }
+  .status-invalid     { @apply text-status-invalid; }
+}

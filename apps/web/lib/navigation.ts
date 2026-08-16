@@ -1,0 +1,167 @@
+/**
+ * Navigation — the single source of truth.
+ *
+ * The sidebar, the router, the breadcrumb resolver, the command palette
+ * and the RBAC visibility filter all derive from this one structure.
+ *
+ * That is deliberate. "Two literals in two files cannot be type-checked
+ * into agreement" is a recurring root cause on this platform, and nav-vs-
+ * router is its most common instance: someone renames a route, the
+ * sidebar keeps pointing at the old path, and nothing fails to compile.
+ * The link just quietly 404s for whoever clicks it.
+ *
+ * So: add a destination here or it does not exist. If you find yourself
+ * writing a path string in a component, stop.
+ *
+ * Structure is fixed by the source documents (MASTER PROMPT §13,
+ * Expanded Requirements §41, Navigation narrative §66) and reconciled in
+ * IMPLEMENTATION_PLAN.md §E — including the two drifts the review caught:
+ * WORK includes Messages, and INTELLIGENCE includes Product Models.
+ */
+
+export type NavGroupId =
+  | "work"
+  | "development"
+  | "resources"
+  | "industrialization"
+  | "intelligence"
+  | "governance";
+
+export interface NavItem {
+  /** Stable key. Never derived from the label — labels are copy, keys are contract. */
+  readonly id: string;
+  readonly label: string;
+  readonly href: string;
+  /**
+   * Permission required to see this item at all.
+   *
+   * Hiding is a usability feature, not a security control — every route
+   * is re-authorized server-side regardless (SECURITY.md §3). An item
+   * with no permission is visible to any authenticated member.
+   */
+  readonly permission?: string;
+  /**
+   * Whether this item shows an actionable count badge.
+   *
+   * Counts represent items needing action, never total rows. "Failures
+   * 3" must mean three failures awaiting me, not three in the database.
+   */
+  readonly badge?: "my-work" | "messages" | "notifications" | "approvals" | "failures";
+  /** Not yet built. Rendered disabled rather than linking into a 404. */
+  readonly slice?: number;
+}
+
+export interface NavGroup {
+  readonly id: NavGroupId;
+  readonly label: string;
+  readonly items: readonly NavItem[];
+}
+
+export const NAVIGATION: readonly NavGroup[] = [
+  {
+    id: "work",
+    label: "Work",
+    items: [
+      { id: "dashboard", label: "Dashboard", href: "/dashboard" },
+      { id: "my-work", label: "My Work", href: "/my-work", badge: "my-work", slice: 2 },
+      { id: "messages", label: "Messages", href: "/messages", badge: "messages", slice: 7 },
+      {
+        id: "notifications",
+        label: "Notifications",
+        href: "/notifications",
+        badge: "notifications",
+        slice: 7,
+      },
+    ],
+  },
+  {
+    id: "development",
+    label: "Development",
+    items: [
+      { id: "innovation", label: "Innovation", href: "/innovation", permission: "opportunity.view", slice: 2 },
+      { id: "pipeline", label: "R&D Pipeline", href: "/pipeline", permission: "project.view", slice: 2 },
+      { id: "projects", label: "Projects", href: "/projects", permission: "project.view", slice: 2 },
+      { id: "formulations", label: "Formulations", href: "/formulations", permission: "formula.view", slice: 3 },
+      { id: "laboratory", label: "Laboratory", href: "/laboratory", permission: "batch.view", slice: 4 },
+      { id: "testing", label: "Testing", href: "/testing", permission: "test.view", slice: 5 },
+      { id: "failures", label: "Failures", href: "/failures", permission: "failure.view", badge: "failures", slice: 6 },
+      { id: "doe", label: "DOE & Optimization", href: "/doe", permission: "project.view", slice: 12 },
+    ],
+  },
+  {
+    id: "resources",
+    label: "Resources",
+    items: [
+      { id: "materials", label: "Materials", href: "/materials", permission: "material.view", slice: 3 },
+      { id: "suppliers", label: "Suppliers", href: "/suppliers", permission: "material.view", slice: 3 },
+      { id: "knowledge", label: "Knowledge Library", href: "/knowledge", permission: "knowledge.view", slice: 8 },
+    ],
+  },
+  {
+    id: "industrialization",
+    label: "Industrialization",
+    items: [
+      { id: "validation", label: "Validation", href: "/validation", permission: "validation.manage", slice: 15 },
+      { id: "stability", label: "Stability", href: "/stability", permission: "stability.manage", slice: 15 },
+      { id: "pilot", label: "Pilot & Scale-Up", href: "/pilot", permission: "pilot.manage", slice: 16 },
+      { id: "quality", label: "Quality", href: "/quality", permission: "qc.manage", slice: 17 },
+      { id: "products", label: "Products", href: "/products", permission: "product.view", slice: 18 },
+    ],
+  },
+  {
+    id: "intelligence",
+    label: "Intelligence",
+    items: [
+      { id: "analytics", label: "Analytics", href: "/analytics", permission: "analytics.view", slice: 7 },
+      // Present because MASTER PROMPT §13 and Expanded §41 both list it;
+      // the Navigation narrative §66 omits it. Later and explicit wins.
+      { id: "product-models", label: "Product Models", href: "/product-models", permission: "analytics.view", slice: 14 },
+      { id: "infographics", label: "Infographics", href: "/infographics", permission: "analytics.view", slice: 20 },
+      { id: "reports", label: "Reports", href: "/reports", permission: "report.generate", slice: 20 },
+    ],
+  },
+  {
+    id: "governance",
+    label: "Governance",
+    items: [
+      { id: "approvals", label: "Approvals", href: "/approvals", badge: "approvals", slice: 6 },
+      // Administration is a thread across slices, not a single delivery
+      // (ADR-021). Section 1 — users, roles, permissions, organization
+      // settings — ships in Slice 1, so this is live from the start.
+      // A configuration value with no Administration screen is a value
+      // nobody can write, which is how five roles ended up unreachable
+      // on previous projects.
+      { id: "administration", label: "Administration", href: "/admin", permission: "admin.users" },
+    ],
+  },
+] as const;
+
+/** Every destination, flattened. Used by the router guard and the palette. */
+export const ALL_NAV_ITEMS: readonly NavItem[] = NAVIGATION.flatMap((g) => g.items);
+
+/** Compile-time guarantee that ids are unique — a duplicate breaks React keys silently. */
+type _AssertUniqueIds = typeof ALL_NAV_ITEMS;
+
+export function navItemByHref(href: string): NavItem | undefined {
+  return ALL_NAV_ITEMS.find((i) => href === i.href || href.startsWith(`${i.href}/`));
+}
+
+/**
+ * Filter to what this user may see.
+ *
+ * Empty groups are dropped so a Technician does not stare at a
+ * "Governance" heading with nothing under it.
+ */
+export function visibleNavigation(permissions: ReadonlySet<string>): NavGroup[] {
+  return NAVIGATION.map((group) => ({
+    ...group,
+    items: group.items.filter((i) => !i.permission || permissions.has(i.permission)),
+  })).filter((group) => group.items.length > 0);
+}
+
+/** Current slice. Items above it render disabled instead of linking into a 404. */
+export const CURRENT_SLICE = 1;
+
+export function isAvailable(item: NavItem): boolean {
+  return (item.slice ?? 1) <= CURRENT_SLICE;
+}
