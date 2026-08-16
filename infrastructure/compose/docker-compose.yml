@@ -20,7 +20,16 @@ name: evercoat-itw-rd
 services:
 
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector, not plain postgres. The extension is needed at
+    # Slice 8 for MSD knowledge search, and PostgreSQL is the single
+    # system of record -- so pgvector lives inside it rather than beside
+    # it in a separate vector database (the source is explicit: no paid
+    # or additional vector store).
+    #
+    # Choosing the plain image now would mean swapping the base image at
+    # Slice 8, which is a dump-and-restore of the R&D database rather
+    # than a config change. Cheaper to be right on day one.
+    image: pgvector/pgvector:pg16
     container_name: evercoat-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-evercoat_itw_rd}
