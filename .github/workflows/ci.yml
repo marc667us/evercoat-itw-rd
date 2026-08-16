@@ -63,15 +63,29 @@ jobs:
         run: mypy app
 
       - name: Apply migrations
+        working-directory: apps/api
         env:
-          PGPASSWORD: ci-postgres
+          # The OWNER role, not the runtime role. ADR-017 keeps DDL away
+          # from the role the application connects with, so these two
+          # URLs are deliberately different credentials.
+          MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
         run: |
           set -euo pipefail
-          for f in apps/api/migrations/*.sql; do
-            echo "applying $f"
-            psql -h localhost -U postgres -d evercoat_itw_rd \
-                 -v ON_ERROR_STOP=1 -f "$f"
-          done
+          # Alembic, not a loop over *.sql. The loop applied files in
+          # glob order with no record of what had run -- acceptable on a
+          # throwaway CI database, useless anywhere the schema persists.
+          alembic upgrade head
+          # Prove version tracking works rather than assume it. A second
+          # run must be a no-op; if it re-applies, the version table is
+          # not being written and every future deploy would replay the
+          # entire history.
+          out=$(alembic upgrade head 2>&1)
+          if echo "$out" | grep -q "Running upgrade"; then
+            echo "alembic re-applied migrations on a second run:"
+            echo "$out"
+            exit 1
+          fi
+          alembic current
 
       - name: Configure test roles
         env:
@@ -168,6 +182,11 @@ jobs:
         run: npm run lint
       - working-directory: apps/web
         run: npm run typecheck
+      - working-directory: apps/web
+        # 17 navigation contract tests. They assert the RBAC filter in
+        # BOTH directions -- serving the shell only ever proved that it
+        # removes items, which a filter returning nothing would also do.
+        run: npm test
       - working-directory: apps/web
         # NODE_ENV=production explicitly: building as development ships
         # the dev React runtime, which behaves differently from what was
