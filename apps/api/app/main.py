@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+from app.api.admin import router as admin_router
 from app.api.health import router as health_router
 from app.core.config import settings
 from app.core.logging import configure_logging
@@ -143,6 +144,10 @@ def create_app() -> FastAPI:
         return response
 
     application.include_router(health_router, prefix="/health", tags=["health"])
+    # Administration section 1 -- the write path for users, roles and
+    # permissions. Live from Slice 1 (ADR-021): a configuration value
+    # with no screen is a value nobody can write.
+    application.include_router(admin_router, prefix="/api/admin")
 
     if settings.metrics_enabled:
 

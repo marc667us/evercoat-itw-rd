@@ -64,10 +64,22 @@ def _redact(_logger: Any, _method: str, event: dict[str, Any]) -> dict[str, Any]
 
 
 def configure_logging() -> None:
+    # structlog's NATIVE processors, not the .stdlib ones.
+    #
+    # `structlog.stdlib.add_logger_name` reads `logger.name`, which only
+    # exists on a stdlib logger. Paired with PrintLoggerFactory below it
+    # raises AttributeError on the very first log line — which meant the
+    # application aborted during startup, before binding a port, with the
+    # failure buried in a structlog traceback rather than anything that
+    # looked like a logging problem.
+    #
+    # PrintLoggerFactory is kept deliberately: it needs no stdlib logging
+    # configuration, writes straight to stdout for the container runtime
+    # to collect, and is faster. So the processors match the factory
+    # instead of the factory matching the processors.
     processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
+        structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         _redact,
         structlog.processors.StackInfoRenderer(),
@@ -90,7 +102,11 @@ def configure_logging() -> None:
 
 
 def _emit(channel: Channel, event: str, **kwargs: Any) -> None:
-    structlog.get_logger(channel).info(event, channel=channel, **kwargs)
+    # channel is bound as a FIELD, not as a logger name. PrintLogger
+    # has no name, so a name would simply vanish -- and a typed channel
+    # that silently disappears is worse than none, because the queries
+    # written against it return empty rather than failing.
+    structlog.get_logger().info(event, channel=channel, **kwargs)
 
 
 def log_audit(action: str, **kwargs: Any) -> None:

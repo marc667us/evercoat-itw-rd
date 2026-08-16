@@ -12,7 +12,11 @@ dependencies = [
     # --- Web / API -------------------------------------------------------
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "pydantic>=2.9",
+    # [email] extra pulls in email-validator, which EmailStr requires at
+    # CLASS DEFINITION time -- without it the app fails to import, not
+    # merely to validate. Caught by actually importing the app rather
+    # than by a syntax check, which passed happily.
+    "pydantic[email]>=2.9",
     "pydantic-settings>=2.6",
 
     # --- Persistence -----------------------------------------------------
