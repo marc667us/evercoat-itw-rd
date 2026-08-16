@@ -167,7 +167,7 @@ CREATE OR REPLACE FUNCTION core.current_user_id() RETURNS UUID
 DECLARE
     v TEXT;
 BEGIN
-    v := current_setting('app.current_user', true);
+    v := current_setting('app.current_user_id', true);
     IF v IS NULL OR v = '' THEN
         RETURN NULL;
     END IF;
@@ -363,7 +363,15 @@ CREATE TABLE IF NOT EXISTS audit.events (
     ip_address       INET,
     occurred_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     prev_hash        TEXT        NOT NULL,
-    row_hash         TEXT        NOT NULL
+    row_hash         TEXT        NOT NULL,
+    -- Nothing will ever reference audit.events with a composite FK -- it
+    -- is an append-only log, not a parent. The constraint is here anyway
+    -- so the rule "every table carrying organization_id declares
+    -- UNIQUE (id, organization_id)" holds without exception. A rule with
+    -- an exception list is a rule people erode, and the invariant is
+    -- cheap to keep uniform. The tenancy test asserts it globally rather
+    -- than maintaining a skip list.
+    CONSTRAINT events_id_org_key UNIQUE (id, organization_id)
 );
 
 -- Canonical content: pipe-joined, COALESCE-to-empty-string. Column order

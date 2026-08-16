@@ -129,8 +129,18 @@ def two_orgs(owner_session) -> tuple[uuid.UUID, uuid.UUID]:
 
 
 @pytest.fixture
-def seeded_projects(owner_session) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
-    """One organization, a normal project, a restricted project, a non-member."""
+def seeded_projects(owner_session) -> Iterator[tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]]:
+    """One organization, a normal project, a restricted project, a non-member.
+
+    This fixture COMMITS, unlike the others, and cleans up explicitly.
+
+    It has to. The visibility tests read through ``app_session``, which is
+    a different connection — so uncommitted rows written by
+    ``owner_session`` are invisible to it, and the test fails claiming RLS
+    hid a project that was in fact never readable by anyone. That looks
+    exactly like a policy bug and is not one, which is the sort of false
+    signal that erodes trust in a suite.
+    """
     suffix = uuid.uuid4().hex[:8]
 
     org_id = owner_session.execute(
@@ -170,8 +180,26 @@ def seeded_projects(owner_session) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uui
         {"s": str(uuid.uuid4()), "e": f"nonmember-{suffix}@example.test"},
     ).scalar_one()
 
-    owner_session.flush()
-    return org_id, normal, restricted, non_member
+    owner_session.commit()
+
+    yield org_id, normal, restricted, non_member
+
+    # Explicit teardown, because the commit above means rollback will not
+    # do it. Order matters: children before parents, since every FK in the
+    # thread is RESTRICT by design.
+    owner_session.begin()
+    owner_session.execute(
+        text("DELETE FROM projects.project_members WHERE organization_id = :o"),
+        {"o": org_id},
+    )
+    owner_session.execute(
+        text("DELETE FROM projects.projects WHERE organization_id = :o"), {"o": org_id}
+    )
+    owner_session.execute(text("DELETE FROM core.users WHERE id = :u"), {"u": non_member})
+    owner_session.execute(
+        text("DELETE FROM core.organizations WHERE id = :o"), {"o": org_id}
+    )
+    owner_session.commit()
 
 
 @pytest.fixture

@@ -20,6 +20,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 
+from app.core.db import set_local
+
 pytestmark = [pytest.mark.db, pytest.mark.rls]
 
 
@@ -58,8 +60,8 @@ def test_every_tenant_table_has_composite_candidate_key(owner_session):
                     AND tc.table_name     = c.table_name
                     AND tc.constraint_type = 'UNIQUE'
                   GROUP BY tc.constraint_name
-                  HAVING array_agg(k.column_name ORDER BY k.column_name)
-                         = ARRAY['id', 'organization_id']
+                  HAVING array_agg(k.column_name::text ORDER BY k.column_name::text)
+                         = ARRAY['id', 'organization_id']::text[]
               )
             ORDER BY 1, 2
             """
@@ -190,10 +192,8 @@ def test_restricted_project_hidden_from_non_member(app_session, seeded_projects)
     """
     org_id, normal_project, restricted_project, non_member_id = seeded_projects
 
-    app_session.execute(text("SET LOCAL app.current_org = :o"), {"o": str(org_id)})
-    app_session.execute(
-        text("SET LOCAL app.current_user = :u"), {"u": str(non_member_id)}
-    )
+    set_local(app_session, "app.current_org", org_id)
+    set_local(app_session, "app.current_user_id", non_member_id)
 
     visible = {
         r[0]
@@ -210,10 +210,8 @@ def test_restricted_project_hidden_from_non_member(app_session, seeded_projects)
 def test_other_organization_is_invisible(app_session, two_orgs):
     org_a, org_b = two_orgs
 
-    app_session.execute(text("SET LOCAL app.current_org = :o"), {"o": str(org_a)})
-    app_session.execute(
-        text("SET LOCAL app.current_user = :u"), {"u": str(uuid.uuid4())}
-    )
+    set_local(app_session, "app.current_org", org_a)
+    set_local(app_session, "app.current_user_id", uuid.uuid4())
 
     leaked = app_session.execute(
         text("SELECT count(*) FROM projects.projects WHERE organization_id = :b"),
@@ -343,7 +341,7 @@ def test_context_does_not_survive_a_transaction(app_session):
     """
     org = uuid.uuid4()
 
-    app_session.execute(text("SET LOCAL app.current_org = :o"), {"o": str(org)})
+    set_local(app_session, "app.current_org", org)
     assert app_session.execute(text("SELECT core.current_org_id()")).scalar_one() == org
 
     app_session.commit()

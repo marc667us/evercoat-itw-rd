@@ -45,10 +45,12 @@ from app.core.config import settings
 __all__ = [
     "RequestContext",
     "MissingContextError",
-    "engine",
+    "get_engine",
     "SessionLocal",
     "session_scope",
+    "unscoped_session_scope",
     "apply_context",
+    "set_local",
 ]
 
 
@@ -83,33 +85,82 @@ class RequestContext:
             raise TypeError("user_id must be uuid.UUID")
 
 
-engine: Engine = create_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    pool_size=settings.db_pool_size,
-    max_overflow=settings.db_max_overflow,
-    # Defence 2. DISCARD ALL clears GUCs, prepared statements, temp tables
-    # and cursors, so nothing survives a checkin even if a code path
-    # escapes session_scope(). Slightly more expensive than the default
-    # rollback; the cost of the alternative is cross-tenant disclosure.
-    pool_reset_on_return="rollback",
-    echo=settings.db_echo,
-)
+_engine: Engine | None = None
+_session_factory: sessionmaker[Session] | None = None
 
 
-@event.listens_for(engine, "checkin")
-def _scrub_connection(dbapi_connection, connection_record) -> None:  # type: ignore[no-untyped-def]
-    """Belt and braces: explicitly discard session state on checkin."""
-    try:
-        with dbapi_connection.cursor() as cur:
-            cur.execute("DISCARD ALL")
-    except Exception:  # noqa: BLE001
-        # A connection we cannot scrub must not be reused. Invalidating it
-        # costs one reconnect; keeping it risks leaking context.
-        connection_record.invalidate()
+def get_engine() -> Engine:
+    """Create the engine on first use, not at import.
+
+    Building it at module scope made ``import app.core.db`` require a full
+    valid configuration, which meant a test that only wanted to assert
+    ``session_scope(None)`` raises could not import the module at all.
+    That is a smell worth fixing rather than working around: a module that
+    cannot be imported without a live database is one that cannot be unit
+    tested, and it would fail at collection time in CI for the same reason.
+    """
+    global _engine, _session_factory
+    if _engine is not None:
+        return _engine
+
+    _engine = create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        # Defence 2. DISCARD ALL clears GUCs, prepared statements, temp
+        # tables and cursors, so nothing survives a checkin even if a code
+        # path escapes session_scope(). Slightly more expensive than the
+        # default rollback; the cost of the alternative is cross-tenant
+        # disclosure.
+        pool_reset_on_return="rollback",
+        echo=settings.db_echo,
+    )
+
+    @event.listens_for(_engine, "checkin")
+    def _scrub_connection(dbapi_connection, connection_record) -> None:  # type: ignore[no-untyped-def]
+        """Belt and braces: explicitly discard session state on checkin."""
+        try:
+            with dbapi_connection.cursor() as cur:
+                cur.execute("DISCARD ALL")
+        except Exception:  # noqa: BLE001
+            # A connection we cannot scrub must not be reused. Invalidating
+            # it costs one reconnect; keeping it risks leaking context.
+            connection_record.invalidate()
+
+    _session_factory = sessionmaker(
+        bind=_engine, expire_on_commit=False, class_=Session
+    )
+    return _engine
 
 
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+def SessionLocal() -> Session:  # noqa: N802 - kept as a callable factory name
+    """Session factory. Initialises the engine on first call."""
+    if _session_factory is None:
+        get_engine()
+    assert _session_factory is not None  # noqa: S101 - narrowed by get_engine
+    return _session_factory()
+
+
+def set_local(session: Session, guc: str, value: uuid.UUID) -> None:
+    """Issue ``SET LOCAL <guc> = '<uuid>'``.
+
+    PostgreSQL does **not** accept bind parameters in SET — a placeholder
+    there is a syntax error, not a slower query. So the value is
+    interpolated, and the ``uuid.UUID`` type is what makes that safe: a
+    UUID has no representation that can carry SQL. Passing a ``str`` here
+    would be an injection surface, which is why the signature refuses one.
+
+    The GUC name is validated against an allow-list for the same reason.
+    """
+    if guc not in _ALLOWED_GUCS:
+        raise ValueError(f"refusing to set unknown GUC {guc!r}")
+    if not isinstance(value, uuid.UUID):
+        raise TypeError("GUC values must be uuid.UUID, never str")
+    session.execute(text(f"SET LOCAL {guc} = '{value}'"))
+
+
+_ALLOWED_GUCS = frozenset({"app.current_org", "app.current_user_id"})
 
 
 def apply_context(session: Session, ctx: RequestContext) -> None:
@@ -128,12 +179,8 @@ def apply_context(session: Session, ctx: RequestContext) -> None:
             "no-op outside one"
         )
 
-    session.execute(
-        text(f"SET LOCAL app.current_org = '{ctx.organization_id}'")
-    )
-    session.execute(
-        text(f"SET LOCAL app.current_user = '{ctx.user_id}'")
-    )
+    set_local(session, "app.current_org", ctx.organization_id)
+    set_local(session, "app.current_user_id", ctx.user_id)
 
 
 @contextmanager
