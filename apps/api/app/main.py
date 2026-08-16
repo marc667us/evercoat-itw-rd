@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """EvercoatITWRD APP — FastAPI entrypoint.
 
 Observability lands in Slice 1 rather than Slice 20 (Codex F43): the
@@ -138,9 +137,7 @@ def create_app() -> FastAPI:
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         if settings.is_production:
-            response.headers["Strict-Transport-Security"] = (
-                "max-age=31536000; includeSubDomains"
-            )
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
     application.include_router(health_router, prefix="/health", tags=["health"])

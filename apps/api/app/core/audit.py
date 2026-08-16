@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Audit writing and hash-chain verification.
 
 The audit trail is the authoritative record of who did what to controlled
@@ -49,8 +48,8 @@ __all__ = [
     "ChainBreak",
     "canonical_content",
     "compute_row_hash",
-    "write_audit",
     "verify_chain",
+    "write_audit",
 ]
 
 GENESIS = "GENESIS"
@@ -184,7 +183,9 @@ def write_audit(session: Session, event: AuditEvent) -> int:
     return int(result.scalar_one())
 
 
-def verify_chain(session: Session, *, start_id: int = 0, limit: int | None = None) -> ChainBreak | None:
+def verify_chain(
+    session: Session, *, start_id: int = 0, limit: int | None = None
+) -> ChainBreak | None:
     """Walk the chain in id order and return the first break, or None.
 
     Returns on the *first* break rather than collecting all of them: after
@@ -196,6 +197,12 @@ def verify_chain(session: Session, *, start_id: int = 0, limit: int | None = Non
     organization's administrator -- but a full-chain verification requires
     a role that can read every row, and that is a break-glass action.
     """
+    # One statement with a NULL-tolerant LIMIT rather than concatenating
+    # a clause. The concatenated version was in fact safe -- `limit` was
+    # always a bind parameter -- but it tripped S608, and a lint
+    # suppression on a query-building line is a bad habit to establish in
+    # the one module whose whole purpose is tamper evidence. PostgreSQL
+    # treats LIMIT NULL as "no limit", so this needs no branch at all.
     rows = session.execute(
         text(
             """
@@ -205,10 +212,10 @@ def verify_chain(session: Session, *, start_id: int = 0, limit: int | None = Non
             FROM audit.events
             WHERE id > :start_id
             ORDER BY id ASC
+            LIMIT :limit
             """
-            + (" LIMIT :limit" if limit is not None else "")
         ),
-        {"start_id": start_id, **({"limit": limit} if limit is not None else {})},
+        {"start_id": start_id, "limit": limit},
     ).mappings()
 
     expected_prev: str | None = None

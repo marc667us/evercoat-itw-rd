@@ -76,7 +76,20 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "SIM", "RUF"]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "SIM", "RUF", "S", "BLE"]
+ignore = [
+    # B008 flags function calls in argument defaults. In FastAPI,
+    # `x = Depends(...)` IS the dependency-injection idiom -- the call is
+    # evaluated once at definition and consumed by the framework, not
+    # re-evaluated per request. Rewriting it to satisfy the rule would
+    # break injection. Ignored globally rather than 26 inline noqa
+    # comments, which would bury the real findings.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on internals and use bare asserts by definition.
+"tests/**" = ["S101", "PT012"]
 
 [tool.mypy]
 python_version = "3.12"

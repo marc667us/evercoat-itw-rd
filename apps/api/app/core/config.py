@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Application settings.
 
 Every value is read from the environment. Nothing sensitive has a default
@@ -17,10 +16,10 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-__all__ = ["Settings", "settings", "get_settings"]
+__all__ = ["Settings", "get_settings", "settings"]
 
 
 class Settings(BaseSettings):

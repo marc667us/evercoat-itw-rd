@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Fixtures for database tests.
 
 Two session flavours, because the tests need both sides of the boundary:
@@ -196,9 +195,7 @@ def seeded_projects(owner_session) -> Iterator[tuple[uuid.UUID, uuid.UUID, uuid.
         text("DELETE FROM projects.projects WHERE organization_id = :o"), {"o": org_id}
     )
     owner_session.execute(text("DELETE FROM core.users WHERE id = :u"), {"u": non_member})
-    owner_session.execute(
-        text("DELETE FROM core.organizations WHERE id = :o"), {"o": org_id}
-    )
+    owner_session.execute(text("DELETE FROM core.organizations WHERE id = :o"), {"o": org_id})
     owner_session.commit()
 
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Administration — section 1: users, roles, permissions, organization.
 
 Administration is a thread through the build, not a single slice
@@ -28,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
 from app.core.logging import log_audit, log_security
-from app.core.security import Principal, get_db, get_principal, require_permission
+from app.core.security import Principal, get_db, require_permission
 
 router = APIRouter()
 
@@ -298,8 +297,12 @@ def grant_role(
             reason=payload.reason,
         ),
     )
-    log_security("role_granted", member_id=str(member_id), role=payload.role_code,
-                 granted_by=str(principal.user_id))
+    log_security(
+        "role_granted",
+        member_id=str(member_id),
+        role=payload.role_code,
+        granted_by=str(principal.user_id),
+    )
 
 
 @router.delete(
@@ -356,8 +359,9 @@ def revoke_role(
             reason=payload.reason,
         ),
     )
-    log_security("role_revoked", member_id=str(member_id), role=role_code,
-                 revoked_by=str(principal.user_id))
+    log_security(
+        "role_revoked", member_id=str(member_id), role=role_code, revoked_by=str(principal.user_id)
+    )
 
 
 @router.patch("/members/{member_id}/status", status_code=status.HTTP_204_NO_CONTENT, tags=["admin"])
@@ -460,9 +464,7 @@ def _grant_role(session: Session, member_id: uuid.UUID, role_code: str) -> None:
     )
 
 
-def _would_orphan_administration(
-    session: Session, member_id: uuid.UUID, role_code: str
-) -> bool:
+def _would_orphan_administration(session: Session, member_id: uuid.UUID, role_code: str) -> bool:
     """True if revoking this role leaves nobody able to grant roles."""
     remaining = session.execute(
         text(

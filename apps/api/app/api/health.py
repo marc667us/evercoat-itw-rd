@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Health endpoints.
 
 Three, because they answer three different questions and conflating them

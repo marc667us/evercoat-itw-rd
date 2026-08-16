@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Authentication and authorization.
 
 Implements the chain from CLAUDE.md §6, enforced in this order on every
@@ -44,12 +43,12 @@ from app.core.config import settings
 from app.core.db import RequestContext, session_scope
 
 __all__ = [
+    "PermissionDenied",
     "Principal",
-    "get_principal",
     "get_db",
+    "get_principal",
     "require_permission",
     "require_project_member",
-    "PermissionDenied",
 ]
 
 _bearer = HTTPBearer(auto_error=False)
@@ -89,9 +88,7 @@ class Principal:
 
     @property
     def context(self) -> RequestContext:
-        return RequestContext(
-            organization_id=self.organization_id, user_id=self.user_id
-        )
+        return RequestContext(organization_id=self.organization_id, user_id=self.user_id)
 
     def has(self, permission: str) -> bool:
         return permission in self.permissions
@@ -214,9 +211,7 @@ async def get_principal(
 
     sub = claims.get("sub")
     if not sub:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="token has no subject"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token has no subject")
 
     # Organization selection. A user may belong to several; the active one
     # comes from a header, but it is a *request* to use that organization,
@@ -243,9 +238,9 @@ async def get_principal(
     from app.core.db import unscoped_session_scope
 
     with unscoped_session_scope() as session:
-        row = session.execute(
-            _PRINCIPAL_SQL, {"sub": sub, "org_id": org_id}
-        ).mappings().one_or_none()
+        row = (
+            session.execute(_PRINCIPAL_SQL, {"sub": sub, "org_id": org_id}).mappings().one_or_none()
+        )
 
     if row is None:
         # Not a member of the requested organization -- or no such

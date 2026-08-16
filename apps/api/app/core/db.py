@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Database session and tenant/user context.
 
 This module is where Row Level Security either works or silently fails.
@@ -43,14 +42,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 
 __all__ = [
-    "RequestContext",
     "MissingContextError",
-    "get_engine",
+    "RequestContext",
     "SessionLocal",
-    "session_scope",
-    "unscoped_session_scope",
     "apply_context",
+    "get_engine",
+    "session_scope",
     "set_local",
+    "unscoped_session_scope",
 ]
 
 
@@ -128,9 +127,7 @@ def get_engine() -> Engine:
             # it costs one reconnect; keeping it risks leaking context.
             connection_record.invalidate()
 
-    _session_factory = sessionmaker(
-        bind=_engine, expire_on_commit=False, class_=Session
-    )
+    _session_factory = sessionmaker(bind=_engine, expire_on_commit=False, class_=Session)
     return _engine
 
 
@@ -175,8 +172,7 @@ def apply_context(session: Session, ctx: RequestContext) -> None:
         # warning -- the GUC would never be set and RLS would fall through
         # to the permissive branch. Refuse rather than half-work.
         raise MissingContextError(
-            "apply_context requires an open transaction; SET LOCAL is a "
-            "no-op outside one"
+            "apply_context requires an open transaction; SET LOCAL is a no-op outside one"
         )
 
     set_local(session, "app.current_org", ctx.organization_id)

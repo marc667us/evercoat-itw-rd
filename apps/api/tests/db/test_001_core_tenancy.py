@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Tenancy and audit invariants.
 
 These are the gate for the riskiest decision in the project. Both
@@ -95,9 +94,7 @@ def test_rls_enabled_on_every_tenant_table(owner_session):
         )
     ).all()
 
-    assert not unprotected, (
-        f"tenant tables without RLS: {[f'{s}.{t}' for s, t in unprotected]}"
-    )
+    assert not unprotected, f"tenant tables without RLS: {[f'{s}.{t}' for s, t in unprotected]}"
 
 
 def test_no_cascade_delete_on_rnd_history(owner_session):
@@ -195,10 +192,7 @@ def test_restricted_project_hidden_from_non_member(app_session, seeded_projects)
     set_local(app_session, "app.current_org", org_id)
     set_local(app_session, "app.current_user_id", non_member_id)
 
-    visible = {
-        r[0]
-        for r in app_session.execute(text("SELECT id FROM projects.projects")).all()
-    }
+    visible = {r[0] for r in app_session.execute(text("SELECT id FROM projects.projects")).all()}
 
     assert normal_project in visible, "a normal project should be visible org-wide"
     assert restricted_project not in visible, (
@@ -244,9 +238,7 @@ def test_audit_update_and_delete_are_refused(app_session, one_audit_row):
     app_session.rollback()
 
     with pytest.raises((ProgrammingError, DBAPIError)):
-        app_session.execute(
-            text("DELETE FROM audit.events WHERE id = :i"), {"i": event_id}
-        )
+        app_session.execute(text("DELETE FROM audit.events WHERE id = :i"), {"i": event_id})
         app_session.flush()
 
 
@@ -262,22 +254,17 @@ def test_chain_detects_tampering(owner_session, audit_chain):
     assert verify_chain(owner_session) is None, "a fresh chain must verify"
 
     target = audit_chain[1]
-    owner_session.execute(
-        text("ALTER TABLE audit.events DISABLE TRIGGER audit_events_no_update")
-    )
+    owner_session.execute(text("ALTER TABLE audit.events DISABLE TRIGGER audit_events_no_update"))
     owner_session.execute(
         text("UPDATE audit.events SET reason = 'silently altered' WHERE id = :i"),
         {"i": target},
     )
-    owner_session.execute(
-        text("ALTER TABLE audit.events ENABLE TRIGGER audit_events_no_update")
-    )
+    owner_session.execute(text("ALTER TABLE audit.events ENABLE TRIGGER audit_events_no_update"))
 
     break_found = verify_chain(owner_session)
     assert break_found is not None, "tampering went undetected"
     assert break_found.event_id == target, (
-        f"expected the break at the altered row {target}, "
-        f"got {break_found.event_id}"
+        f"expected the break at the altered row {target}, got {break_found.event_id}"
     )
 
 
@@ -290,17 +277,21 @@ def test_python_and_sql_agree_on_the_hash(owner_session, one_audit_row):
     """
     from app.core.audit import AuditEvent, canonical_content, compute_row_hash
 
-    row = owner_session.execute(
-        text(
-            """
+    row = (
+        owner_session.execute(
+            text(
+                """
             SELECT organization_id, user_id, role_code, action, entity_type,
                    entity_id, previous_state, new_state, reason,
                    occurred_at, prev_hash, row_hash
             FROM audit.events WHERE id = :i
             """
-        ),
-        {"i": one_audit_row},
-    ).mappings().one()
+            ),
+            {"i": one_audit_row},
+        )
+        .mappings()
+        .one()
+    )
 
     recomputed = compute_row_hash(
         row["prev_hash"],
@@ -356,9 +347,9 @@ def test_context_does_not_survive_a_transaction(app_session):
 def test_malformed_context_denies_rather_than_permits(app_session):
     """A corrupt GUC must never read as 'no restriction'."""
     app_session.execute(text("SET LOCAL app.current_org = 'not-a-uuid'"))
-    assert (
-        app_session.execute(text("SELECT core.current_org_id()")).scalar_one() is None
-    ), "a malformed organization id must resolve to NULL, never to a value"
+    assert app_session.execute(text("SELECT core.current_org_id()")).scalar_one() is None, (
+        "a malformed organization id must resolve to NULL, never to a value"
+    )
 
 
 def test_session_scope_refuses_missing_context():
@@ -370,6 +361,5 @@ def test_session_scope_refuses_missing_context():
     """
     from app.core.db import MissingContextError, session_scope
 
-    with pytest.raises(MissingContextError):
-        with session_scope(None):
-            pass
+    with pytest.raises(MissingContextError), session_scope(None):
+        pass

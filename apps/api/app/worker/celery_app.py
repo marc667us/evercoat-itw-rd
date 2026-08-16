@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Celery worker — the Slice 1 ``WorkflowPort`` implementation.
 
 Reused from Solar (ADR-022 / REUSE.md R9), running on Valkey rather than
@@ -105,12 +104,17 @@ def refresh_analytics(self, organization_id: str, scope: str = "hourly") -> dict
             # four-hour one.
             refreshed: list[str] = []
             _ = session
-        log_queue("analytics_refreshed", organization_id=organization_id,
-                  scope=scope, views=len(refreshed))
+        log_queue(
+            "analytics_refreshed",
+            organization_id=organization_id,
+            scope=scope,
+            views=len(refreshed),
+        )
         return {"organization_id": organization_id, "refreshed": refreshed}
-    except Exception as exc:  # noqa: BLE001
-        log_queue("analytics_refresh_failed", organization_id=organization_id,
-                  scope=scope, error=str(exc))
+    except Exception as exc:
+        log_queue(
+            "analytics_refresh_failed", organization_id=organization_id, scope=scope, error=str(exc)
+        )
         raise self.retry(exc=exc) from exc
 
 

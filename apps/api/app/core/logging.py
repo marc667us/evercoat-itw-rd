@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Structured JSON logging with typed channels.
 
 Reused in shape from Solar's ``logging_config/structured_logger.py``
@@ -26,26 +25,43 @@ from app.core.config import settings
 
 __all__ = [
     "configure_logging",
+    "log_ai",
     "log_audit",
-    "log_security",
     "log_formulation",
     "log_laboratory",
-    "log_testing",
-    "log_ai",
     "log_queue",
+    "log_security",
+    "log_testing",
 ]
 
 Channel = Literal[
-    "app", "audit", "security", "formulation",
-    "laboratory", "testing", "ai", "queue", "error",
+    "app",
+    "audit",
+    "security",
+    "formulation",
+    "laboratory",
+    "testing",
+    "ai",
+    "queue",
+    "error",
 ]
 
 # Keys that must never be emitted, whatever a caller passes.
 _REDACT = frozenset(
     {
-        "password", "secret", "token", "access_token", "refresh_token",
-        "authorization", "api_key", "client_secret", "private_key",
-        "components", "composition", "weight_percent", "formula_components",
+        "password",
+        "secret",
+        "token",
+        "access_token",
+        "refresh_token",
+        "authorization",
+        "api_key",
+        "client_secret",
+        "private_key",
+        "components",
+        "composition",
+        "weight_percent",
+        "formula_components",
     }
 )
 
