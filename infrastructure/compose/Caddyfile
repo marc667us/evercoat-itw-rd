@@ -1,0 +1,58 @@
+# EvercoatITWRD APP — reverse proxy
+#
+# Only web, api and keycloak are reachable. PostgreSQL, Valkey, Garage and
+# (later) Ollama stay on the internal network and are never proxied — an
+# object-storage endpoint exposed here would serve formulation documents
+# without passing the authorization check that makes them safe to serve.
+
+{
+	# Local development. For a real deployment, remove this block and let
+	# Caddy provision certificates automatically for the real hostnames.
+	auto_https off
+	admin off
+}
+
+:80 {
+	encode gzip
+
+	# API
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy api:8000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Health and metrics are proxied but not published beyond the edge
+	# network; metrics in particular must not be internet-reachable.
+	handle /health/* {
+		reverse_proxy api:8000
+	}
+
+	# Identity
+	handle /auth/* {
+		uri strip_prefix /auth
+		reverse_proxy keycloak:8080 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	# Everything else is the Next.js app
+	handle {
+		reverse_proxy web:3000
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

@@ -1,0 +1,41 @@
+# Garage — S3-compatible object storage for TDS, SDS, CoA, laboratory
+# photographs, microscope images, test reports and qualification dossiers.
+#
+# Present from Slice 1, not Slice 8: Slice 3 delivers material documents
+# and SECURITY.md §6 forbids storing files in database rows, so there is
+# no slice in which document features can exist without it.
+#
+# Accessed only through ObjectStoragePort. MinIO remains substitutable —
+# though not drop-in, since multipart, signing, versioning and retention
+# differ between S3 implementations (ADR-004).
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir     = "/var/lib/garage/data"
+db_engine    = "sqlite"
+
+# Single node for development. Production uses 3 for quorum; a single
+# replica means a lost disk is a lost formulation document, and those are
+# irreplaceable in a way that application state is not.
+replication_factor = 1
+
+rpc_bind_addr   = "[::]:3901"
+rpc_public_addr = "garage:3901"
+
+# Set via SOPS in any non-development environment. Never committed.
+rpc_secret = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[s3_api]
+s3_region    = "garage"
+api_bind_addr = "[::]:3900"
+root_domain  = ".s3.garage"
+
+# Deliberately no [s3_web] block. Garage's static-website feature serves
+# objects over plain HTTP with no authorization check whatsoever. Enabling
+# it would make every proprietary formulation document publicly readable
+# to anyone who could reach the container — the exact failure SECURITY.md
+# §6 exists to prevent. Documents are served only through short-lived
+# signed URLs, or an authorization-checking proxy for the sensitive ones.
+
+[admin]
+api_bind_addr = "[::]:3903"
+admin_token   = "0000000000000000000000000000000000000000000="
