@@ -1,0 +1,98 @@
+[project]
+name = "evercoat-itw-rd"
+version = "0.1.0"
+description = "EvercoatITWRD APP — Integrated R&D, Smart Formulation, Laboratory Testing, Product Modeling and Product Development Intelligence Platform"
+requires-python = ">=3.12"
+
+# Reusability (root CLAUDE.md §0.3): the app is pip-installable so sibling
+# apps can consume its exports via `pip install -e ../EvercoatITWRD APP`.
+# Public API is declared in __all__; docs/REUSABILITY.md lists consumers.
+
+dependencies = [
+    # --- Web / API -------------------------------------------------------
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+
+    # --- Persistence -----------------------------------------------------
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+    # psycopg 3, not psycopg2. Solar uses psycopg2-binary; psycopg3 has
+    # first-class support for the transaction-scoped SET LOCAL pattern the
+    # tenancy model depends on, and native async.
+    "psycopg[binary,pool]>=3.2",
+
+    # --- Identity --------------------------------------------------------
+    # python-jose over python-keycloak, reused from Solar (REUSE.md R4):
+    # MIT-licensed, avoids a heavy dependency tree, RS256 against the
+    # realm JWKS is all we need.
+    "python-jose[cryptography]>=3.3",
+    # Direct, not transitive. Solar learned this the hard way: a security
+    # feature resting on a transitive dependency is one refactor from
+    # vanishing.
+    "cryptography>=43.0",
+
+    # --- Cache / worker --------------------------------------------------
+    "redis>=5.2",          # Valkey is Redis wire-compatible
+    "celery>=5.4",
+
+    # --- Object storage --------------------------------------------------
+    "boto3>=1.35",         # S3-compatible client for Garage, behind a port
+
+    # --- Scientific (Slice 3 onward) -------------------------------------
+    "numpy>=2.1",
+    "scipy>=1.14",
+    "pandas>=2.2",
+
+    # --- Observability (Slice 1 — Codex F43) -----------------------------
+    "prometheus-client>=0.21",
+    "structlog>=24.4",
+
+    # --- HTTP ------------------------------------------------------------
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    # Property-based tests for the deterministic calculation engine.
+    # Mandated by the source: "for any valid 100% formula and positive
+    # batch quantity, sum(component masses) == batch mass within tolerance".
+    "hypothesis>=6.115",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-python-jose",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "PT", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# Scientific data errors are the expensive kind here. The source
+# specifically asks for Measurement, FormulaComponent, FormulaVersion,
+# BatchQuantity, TestResult and PipelineTransition to be statically typed.
+warn_unreachable = true
+disallow_any_generics = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "rls: runs under SET ROLE evercoat_app to exercise FORCE ROW LEVEL SECURITY",
+    "db: requires a live PostgreSQL",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
