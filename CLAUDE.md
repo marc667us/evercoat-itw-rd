@@ -70,8 +70,17 @@ Data: **PostgreSQL 16** (+ RLS) and **pgvector**. Identity: **Keycloak**. Cache:
 
 Scientific: NumPy, SciPy, Pandas, Polars, statsmodels, pyDOE3, Optuna, scikit-learn, SHAP.
 
-Workflow: DB state machine + worker now, **Temporal OSS** adapter later, both behind `WorkflowPort`.
-AI: **LangGraph OSS** + **Ollama**, behind `AgentOrchestrationPort` and an AI Gateway. See `DECISIONS.md` ADR-002 — this one is under operator review.
+Workflow: Celery on Valkey now, **Temporal OSS** for named durable workflows later, both behind `WorkflowPort`.
+
+AI: **LangGraph OSS** + **Ollama**, behind `AgentOrchestrationPort` and an AI Gateway (ADR-002, settled).
+
+> **Governance note.** Root `C:\Users\USER\CLAUDE.md` §0.1 makes Google ADK the only permitted agent framework platform-wide. **This project has an explicit, operator-granted exception** to use LangGraph, which the source documents mandate five times. It is recorded in ADR-002 rather than followed silently. Do not "correct" it back to ADK.
+>
+> **§0.2 and §0.3 still apply in full** — they are framework-independent:
+> - **Orchestration first.** Root Orchestrator at `app/agents/orchestrators/root_orchestrator.py`; department Conductors at `app/agents/conductors/<dept>_conductor.py`. **Specialists never call other agents. API routes never call specialists directly.** MSD is reached through the orchestrator.
+> - **Reusability.** `pyproject.toml` + pip-installable; public API in `__all__`; no hardcoded paths in business logic; no cross-department imports between specialists; `docs/REUSABILITY.md` lists exports and consumers.
+>
+> **Keep the framework leak bounded to `app/agents/graphs/`.** Domain tools in `app/agents/tools/` are plain Python with Pydantic signatures, callable and testable with no framework imported. Threads, turns, evidence links and checkpoints are our tables in the `ai` schema — LangGraph state is derived from ours and disposable. Streamed events are normalized to our own shape before reaching the client. If you find yourself importing LangGraph outside `graphs/`, stop.
 
 Testing: Pytest, Hypothesis, Vitest, Playwright, axe-core, Locust, Bruno.
 Quality/security: Ruff, mypy, ESLint, Prettier, pre-commit, Trivy, Semgrep Community, Gitleaks, SOPS + age.

@@ -56,8 +56,14 @@ Durable project facts. Not a debug log — temporary work belongs in `TODO.md` a
 - PowerShell pipes add a UTF-16 BOM to secrets — write secret files with explicit UTF-8.
 - Docker memory is the binding constraint once Ollama arrives; Slice 1 measures headroom before Slice 7 adds model weights.
 
-## Open
+## Settled by the operator, 2026-08-16
 
-- **LangGraph vs Google ADK** — source mandates LangGraph 5×; house rule says ADK is the only permitted framework. Codex recommends ADK and judges the port abstraction insufficient on its own, naming ten leak paths. **Operator decision, required before Slice 8.** Does not block Slices 1–7.
-- **Schedule** — source mandates 45 h MVP / 210 h full build; independent estimate is 700–1,050 h for a hardened MVP-1. Both stand in the plan; the operator chooses demonstrator, full depth, or explicit scope cut.
+- **AI framework: LangGraph OSS** (ADR-002). Chosen after being shown both the governance conflict and Codex's contrary recommendation. This is an **explicit, operator-granted exception to root `CLAUDE.md` §0.1**, which makes Google ADK the only permitted agent framework platform-wide. Recorded loudly, not followed silently — the root file treats a silent contradiction as a defect.
+  Codex's leak analysis stands and is acted on: domain tools are framework-neutral plain Python with Pydantic signatures; the conversation/event model and checkpoints are ours, not LangGraph's; streamed events are normalized to our own shape; contract tests run against the tool layer with no orchestrator. The leak is bounded to `app/agents/graphs/`.
+  **§0.2 (orchestration-first) and §0.3 (reusability) are retained in full** — they are framework-independent. Only §0.1 is waived. Root Orchestrator + department Conductors still apply; specialists never call agents; routes never call specialists.
+- **Schedule: full depth, gate by gate** (ADR-024). Every slice to the Definition of Done, in dependency order. Nothing cut; the source's defer order is not used. A slice ships when its gate passes, not when a day ends. The 45 h / 14-day figures stay recorded as source requirements, never as commitments.
+
+## Still open
+
 - **Git remote** — local repo only; no remote until the operator names one.
+- **Repository hosting policy** — GitHub Actions assumed, CI logic kept in `scripts/*.sh` so the runner stays swappable.

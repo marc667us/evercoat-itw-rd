@@ -183,7 +183,7 @@ Previously and wrongly listed as contradictions:
 | Email | `NotificationService` → In-App + SMTP (+ optional Resend) | 7 |
 | **Local LLM** | **Ollama behind an AI Gateway** | **7** (moved from 8 — F42) |
 | Vector / RAG | pgvector, Sentence Transformers, Docling, PyMuPDF | 8 |
-| AI orchestration | LangGraph OSS behind `AgentOrchestrationPort` — **under operator review** | 8 |
+| AI orchestration | **LangGraph OSS** behind `AgentOrchestrationPort` — settled, ADR-002; explicit exception to root §0.1 | 8 |
 | DOE | pyDOE3, statsmodels | 12 |
 | Optimization | SciPy Optimize, Optuna | 13 |
 | ML | scikit-learn, SHAP, MLflow | 14 |
@@ -545,13 +545,17 @@ The `AgentOrchestrationPort` does not make LangGraph↔ADK free. Codex named ten
 
 ---
 
-## L. Open questions for the operator
+## L. Operator decisions — both settled 2026-08-16
 
-1. **AI framework — LangGraph or Google ADK?** The source mandates LangGraph five times; the house rule declares ADK the only permitted framework. Codex recommends ADK, reasoning that a platform-wide rule outranks a project preference, and advises obtaining an explicit exception before choosing LangGraph. **Does not block Slices 1–7.** Must be decided before Slice 8.
+**1. AI framework — LangGraph OSS.** Chosen by the operator after being shown the governance conflict and Codex's contrary recommendation. This is an **explicit, operator-granted exception to root `CLAUDE.md` §0.1**, which declares Google ADK the only permitted agent framework platform-wide. Recorded loudly in ADR-002 rather than followed silently, because the root file itself treats a silent contradiction as a defect.
 
-2. **Schedule** — 45-hour demonstrator, full-depth build on a realistic budget, or explicit scope cut using the source's defer order? (§K Risk 2.)
+Codex's finding that the port abstraction leaks stands and is acted on: domain tools are framework-neutral plain Python with Pydantic signatures, the conversation/event model and checkpoints are ours rather than LangGraph's, streamed events are normalized to our own shape, and contract tests run against the tool layer with no orchestrator. The leak is therefore bounded to `app/agents/graphs/`.
 
-3. **App name** — `EvercoatITWRD APP` per the source's explicit mandate, not "ITW Evercoat RD App" as phrased in the request. Reversing changes branding strings only. Non-blocking.
+§0.2 (orchestration-first — Root Orchestrator, department Conductors, specialists never call agents, routes never call specialists) and §0.3 (reusability) are **retained in full** — they are framework-independent. Only §0.1 is waived.
+
+**2. Schedule — full depth, gate by gate.** Every slice built to the Definition of Done, in dependency order. Nothing cut; the source's defer order is not used. A slice ships when its gate passes, not when a day ends. The 45-hour and 14-day figures remain recorded as source requirements, not as commitments — reporting against them would be dishonest in both directions. See ADR-024.
+
+**3. App name** — `EvercoatITWRD APP` per the source's explicit mandate, not "ITW Evercoat RD App" as phrased in the request. Reversing changes branding strings only. Non-blocking; flagged, not escalated.
 
 ---
 

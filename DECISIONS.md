@@ -8,10 +8,34 @@ Architecture Decision Records. One per material decision. Status: **Accepted** �
 `EvercoatITWRD APP` (display + folder), slug `evercoat-itw-rd`, DB id `evercoat_itw_rd`.
 The source amendment (L29,736–29,817) mandates it and forbids renaming. The operator's phrasing "ITW Evercoat RD App" was flagged, not adopted; reversal touches branding strings only. Workspace holds `ITERDRD App/` (read-only reference copies) beside `EvercoatITWRD APP/`, per the mandated layout.
 
-### ADR-002 — AI orchestration framework: LangGraph vs Google ADK · **Open — operator decision required before Slice 8**
-The source mandates LangGraph OSS five times, including master §36. The platform-wide house rule declares Google ADK the only permitted agent framework and asserts precedence on governance.
-Working default is LangGraph, behind `AgentOrchestrationPort`. **Codex judges the port insufficient on its own**, naming ten leak paths: graph/state representation, checkpoint and resume semantics, tool schemas and invocation, streaming event formats, conversation persistence, human-in-the-loop interrupts, retry/error semantics, tracing metadata, agent handoff conventions, and framework state serialisation. It recommends ADK.
-Mitigations adopted regardless of the answer: framework-neutral domain tools, application-owned conversation/event model, normalized streamed events, externalized checkpoints, contract tests runnable against either adapter. **Switching is a bounded migration, not a free swap** — which is why this must be decided before Slice 8, not discovered at Slice 12.
+### ADR-002 — AI orchestration framework: **LangGraph OSS** · Accepted (operator decision, 2026-08-16)
+**Decision: LangGraph OSS, as the source documents mandate.**
+
+> **⚠ EXPLICIT, OPERATOR-GRANTED EXCEPTION TO PLATFORM GOVERNANCE.**
+> `C:\Users\USER\CLAUDE.md` §0.1 (Agentic ADK Extension) declares Google ADK the **only** permitted agent framework across every app in this home folder, and states that root wins on platform-wide governance. **This project departs from that rule by explicit operator instruction.** It is recorded here loudly and deliberately, because the root file also says a project that *silently* contradicts a platform-wide rule is a defect. This is not silent.
+
+**Basis.** The source documents mandate LangGraph OSS five times, including MASTER PROMPT §36, the zero-cost stack pass, and the explicit division of responsibility: *"Temporal owns durable R&D workflow state. LangGraph owns bounded AI reasoning."* The operator's standing instruction for this build is to follow the prompt in the files strictly, and — after being shown both the governance conflict and Codex's contrary recommendation — reaffirmed LangGraph directly.
+
+**What was weighed and set aside.** Codex recommended ADK, reasoning that a platform-wide "only permitted framework" rule outranks a project technology preference and advising that an explicit exception be obtained first. That exception is exactly what this ADR records. Codex also judged the `AgentOrchestrationPort` **insufficient on its own**, naming ten leak paths: graph/state representation, checkpoint and resume semantics, tool schemas and invocation, streaming event formats, conversation persistence, human-in-the-loop interrupts, retry/error semantics, tracing metadata, agent handoff conventions, and framework state serialisation.
+
+**That analysis stands and is acted on, not discarded.** Because the port is not a free swap, the leak paths are constrained deliberately:
+
+- **Framework-neutral domain tools.** Every MSD capability is a plain Python function with a Pydantic signature in `app/agents/tools/`, callable and testable with no agent framework imported. LangGraph binds to them; it does not define them.
+- **Application-owned conversation and event model.** Threads, turns, evidence links and tool invocations are our tables in the `ai` schema, not LangGraph checkpoint state. LangGraph state is derived from ours and is disposable.
+- **Externalized checkpoints.** Persisted through our own store, so an interrupted MSD session survives a framework change.
+- **Normalized streamed events.** The web client consumes our event shape, never LangGraph's, so the UI is unaffected by a framework swap.
+- **Contract tests** run against the tool layer directly, independent of any orchestrator.
+
+The consequence: if this exception is ever revisited, the migration is bounded to `app/agents/graphs/` rather than spreading through the domain, the API and the frontend.
+
+**What is retained from the Agentic ADK Extension.** §0.1 is the only clause waived. The architectural discipline in §0.2 and §0.3 is genuinely framework-independent and is kept in full:
+
+- **§0.2 — orchestration first.** A Root Orchestrator at `app/agents/orchestrators/root_orchestrator.py`, department Conductors at `app/agents/conductors/<dept>_conductor.py`, implemented as LangGraph graphs. **Specialists never call other agents. API routes never call specialists directly.** MSD is reached through the orchestrator.
+- **§0.3 — reusability.** `pyproject.toml` + pip-installable; public API in `__all__`; no hardcoded paths in business logic; no cross-department imports between specialists; `docs/REUSABILITY.md` lists exports and consumers.
+
+**Zero-cost rule is unaffected either way** — LangGraph OSS is Apache-2.0 and runs against local Ollama. No paid AI API becomes essential.
+
+Flagged to the Supervisor gate as a governance exception, with the operator's instruction as its basis.
 
 ### ADR-003 — Apache ECharts for all application charts · Accepted
 Blueprint §2 said "Recharts or Plotly"; stack §6 and master §15 say ECharts. Later + explicit wins. One `<ChartWrapper>`. Matplotlib/Plotly only for server-side static plots embedded in PDFs.
@@ -89,6 +113,15 @@ Rejected: Flask/Jinja (owner docs mandate Next.js + FastAPI) · Tkinter desktop 
 ### ADR-023 — `markdown-pdf` for PDF generation · Accepted
 WeasyPrint is named in the source but is **not installed** on this machine, and neither are pandoc, wkhtmltopdf or reportlab. `markdown-pdf` is the operator's proven toolchain. Jinja2, python-docx and OpenPyXL are unchanged.
 
-### ADR-024 — Both schedules stated; the unit is not redefined · Accepted
-Plan v1 silently re-based "Day N" to "Slice N". Codex correctly called that a fidelity change rather than a resolution (F39), since master §45 and the final amendment explicitly request 3-day and 14-day plans.
-The mandated schedule (45 h MVP / 210 h full build) and an independent estimate (700–1,050 h for a hardened MVP-1) now stand side by side, with the source's own defer order available if scope must be cut: Infographics → Advanced Analytics → Product Modeling → Optimization → DOE → Stability → Lifecycle. **The MVP-1 core is never deferred.** The operator chooses.
+### ADR-024 — Build at full depth, gate by gate · Accepted (operator decision, 2026-08-16)
+**Decision: every slice is built to the Definition of Done, in the source's dependency order. Nothing is cut. No calendar date is promised.**
+
+Plan v1 silently re-based "Day N" to "Slice N". Codex correctly called that a fidelity change rather than a resolution (F39), since master §45 and the final amendment explicitly request 3-day and 14-day plans. Both numbers were therefore put side by side — the mandated 45 h MVP / 210 h full build, and an independent estimate of 700–1,050 h for a hardened MVP-1 — and the operator chose **full depth, gate by gate**.
+
+Consequences, stated plainly so they are not rediscovered later:
+
+- **A slice ships when its gate passes, not when a day ends.** The gate is the Definition of Done in `CLAUDE.md` §15 plus the four governance gates plus the feature exercised in a browser on the deployed instance.
+- **The source's defer order is not used.** Infographics, Advanced Analytics, Product Modeling, Optimization, DOE, Stability and Lifecycle all remain in scope.
+- **The 45-hour and 14-day figures are retained in the plan as recorded source requirements**, not as commitments. Reporting progress against them would be dishonest in both directions.
+- **Depth is bought through reuse, not haste.** The shared component library and the Solar infrastructure reuse (ADR-022) are what make full depth reachable; if a later slice needs new approval, discussion, attachment, task, audit, notification or dashboard infrastructure, that is a defect in Slices 1–3, not new scope.
+- **No slice is declared complete on a green build.** Type-checks, unit tests and a successful deploy have coexisted with features that never worked.
