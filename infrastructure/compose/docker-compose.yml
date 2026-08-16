@@ -44,7 +44,7 @@ services:
     networks: [internal]
     # Dev only. Remove in production compose — see SECURITY.md §13.
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-55432}:5432"
 
   valkey:
     image: valkey/valkey:8-alpine
@@ -106,7 +106,7 @@ services:
       start_period: 45s
     networks: [internal, edge]
     ports:
-      - "${KEYCLOAK_PORT:-8080}:8080"
+      - "${KEYCLOAK_PORT:-18080}:8080"
 
   api:
     build:
@@ -138,7 +138,7 @@ services:
       - ../../apps/api:/app
     networks: [internal, edge]
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "${API_PORT:-18000}:8000"
 
   worker:
     # Celery on Valkey — the Slice 1 WorkflowPort implementation, reused from
@@ -171,14 +171,14 @@ services:
       # NEXT_PUBLIC_* is BUILD-time, not runtime. Changing this after the
       # image is built has no effect — it must be a build arg for a real
       # deployment, not an env var.
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-      NEXT_PUBLIC_KEYCLOAK_URL: ${NEXT_PUBLIC_KEYCLOAK_URL:-http://localhost:8080}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:18000}
+      NEXT_PUBLIC_KEYCLOAK_URL: ${NEXT_PUBLIC_KEYCLOAK_URL:-http://localhost:18080}
       NODE_ENV: ${NODE_ENV:-development}
     depends_on:
       api: { condition: service_healthy }
     networks: [internal, edge]
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "${WEB_PORT:-13000}:3000"
 
   caddy:
     image: caddy:2-alpine
@@ -190,8 +190,8 @@ services:
     depends_on: [web, api, keycloak]
     networks: [edge]
     ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
+      - "${HTTP_PORT:-18081}:80"
+      - "${HTTPS_PORT:-18443}:443"
 
 networks:
   internal:
