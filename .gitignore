@@ -15,3 +15,7 @@ venv/
 .next/
 out/
 next-env.d.ts
+
+# Backups contain the entire R&D IP. Never committed.
+backups/
+*.dump
