@@ -2,7 +2,7 @@
 
 **Session closed 2026-08-17. Read this file first, then `TODO.md`.**
 
-Repository is **local only, no git remote**.
+Repository is **local only, no git remote**. Tip: `4546bdc`, working tree clean.
 
 ---
 
