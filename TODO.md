@@ -111,8 +111,17 @@ transition table, and Slice 5 cannot be built correctly without it.
 
 ## Slice 2 — Projects, Pipeline, Requirements, My Work
 
-Do not start before GATE-1, or start knowing GATE-1 is outstanding and
-record that choice.
+> **Started 2026-08-16 with GATE-1 outstanding.** The operator chose to
+> proceed. Recorded here rather than left implicit, because this file
+> asked for exactly that.
+>
+> What it means in practice: everything Slice 2 builds sits on a Slice 1
+> foundation that is unit-verified but never exercised end to end. If
+> GATE-1 later fails, the fault will be in Slice 1 and the fix may reach
+> up into Slice 2. Slice 2 work is therefore written to be independently
+> testable — migrations verified against a real database, services tested
+> through the API — so a Slice 1 defect surfaces as a specific failing
+> test rather than a vague "nothing works".
 
 - [ ] Opportunities → projects, project members, milestones, risks
 - [ ] 8 seeded pipeline stages as **configuration rows**, not an enum
