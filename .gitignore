@@ -19,3 +19,7 @@ next-env.d.ts
 # Backups contain the entire R&D IP. Never committed.
 backups/
 *.dump
+
+# Session transcripts are large (~8 MB each) and are archives, not source.
+# Kept on disk under docs/sessions/ for handover; not committed.
+docs/sessions/*.jsonl
