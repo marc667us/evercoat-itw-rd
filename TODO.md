@@ -1,5 +1,9 @@
 # TODO — EvercoatITWRD APP
 
+> **▶ Read `RESUME_HERE.md` first.** It carries the session pointer, the
+> environment commands, and the standing AutoWorkshop constraint.
+
+
 Ordered by what blocks what. Anything marked **GATE** must pass before
 the slice it belongs to can be called complete.
 
@@ -78,17 +82,27 @@ has happened yet, so this has never run.
       permission set deliberately, so most navigation does not render.
       The filter is proven in both directions by 17 tests, but no human
       has yet *seen* the full sidebar. Blocked with GATE-1.
-- [ ] **`scripts/seed.sh`** — ten synthetic demo users, one per role,
-      clearly labelled as demo data. Referenced by the realm file's
-      comment; does not exist yet.
-- [ ] **`scripts/live-suite.sh`** — referenced in `CLAUDE.md` §13.
-- [ ] **`scripts/backup.sh` + restore smoke test** — Slice 1 was supposed
-      to include a restore drill (Codex F43). Backup is designed in
-      `SECURITY.md` §14 and not yet implemented. *An untested backup is
-      not a backup.*
-- [ ] **Container memory measurement** — recorded qualitatively (exit 137,
-      178% CPU) but not as numbers. Needed before Slice 7 chooses an
-      Ollama model size.
+- [x] **`scripts/seed.sh`** + `scripts/seed.py` — exist and are
+      idempotent; all 10 roles have holders.
+- [x] **`scripts/live-suite.sh`** — written 2026-08-16. Reports
+      passed/failed/skipped as three numbers, never an exit code.
+      Reconciles a non-zero exit against parsed counts, so a collection
+      error or "no tests ran" is force-counted as FAILED rather than
+      reading as a clean pass. **Syntax-checked and its dead-site path
+      exercised; NEVER RUN AGAINST A REAL DEPLOYMENT** (nothing is
+      deployed) — that is GATE-2.
+- [x] **`scripts/backup.sh` + restore drill** — implemented and
+      VERIFIED: 276 rows dumped and restored identically. *An untested
+      backup is not a backup* — this one was tested.
+- [x] **Container memory measurement** — done 2026-08-16, as numbers:
+      **~1094 MiB of 3.782 GiB in use, ~2.71 GiB free.** Breakdown in
+      `RESUME_HERE.md`.
+
+      🔴 **CORRECTION:** the "178% CPU" recorded above for `aw-keycloak`
+      is STALE. Measured at **0.16%**. That spike was transient, so
+      GATE-1's stated blocker is weaker than this file claims — the real
+      constraint is the ~2.71 GiB ceiling, which is what matters when
+      Slice 7 picks an Ollama model size.
 
 ---
 
@@ -156,17 +170,26 @@ transition table, and Slice 5 cannot be built correctly without it.
 > through the API — so a Slice 1 defect surfaces as a specific failing
 > test rather than a vague "nothing works".
 
-- [ ] Opportunities → projects, project members, milestones, risks
-- [ ] 8 seeded pipeline stages as **configuration rows**, not an enum
-- [ ] **Stage history preserved** — never merely update `current_stage`
-- [ ] Structured requirements: target / min / max / unit / criticality /
+- [x] Opportunities → projects (funnel, gate decision, conversion that
+      keeps the thread link and enrols the lead)
+- [x] 8 seeded pipeline stages as **configuration rows**, not an enum
+- [x] **Stage history preserved** — new `project_stages` row per visit +
+      append-only `stage_transitions`
+- [x] Structured requirements: target / min / max / unit / criticality /
       verification method
-- [ ] Requirements Verification Matrix
-- [ ] Tasks + My Work inbox
-- [ ] Project dashboard + context bar
-- [ ] **Administration §2** — stage-gate configuration (ADR-021: a config
-      value referenced anywhere must have an Administration screen in the
-      same slice or earlier)
+- [x] Requirements Verification Matrix
+- [x] Tasks + My Work inbox (list, counts, claim, complete, reassign,
+      per-project view)
+- [x] Project dashboard + context bar — shaped to CLAUDE.md §11's five
+      questions, one key each
+- [x] **Administration §2** — stage-gate configuration: list, create,
+      edit, retire/restore, reorder (ADR-021 satisfied)
+- [ ] **Milestones and risks have TABLES and dashboard COUNTS but no
+      write endpoints.** A count with no way to create the thing it
+      counts is a read-only dashboard panel that can only ever show zero.
+      *Ask of every entity: which production path WRITES it?*
+- [ ] Project members: assign/remove endpoints (`project.assign_member`
+      exists as a permission; no route uses it yet)
 
 ---
 
