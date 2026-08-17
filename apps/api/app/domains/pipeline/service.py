@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Pipeline — stage-gate transitions.
 
 The load-bearing rule: **a transition writes history, it does not mutate
@@ -33,9 +32,9 @@ from app.core.audit import AuditEvent, write_audit
 from app.core.logging import log_audit
 
 __all__ = [
+    "StageNotFoundError",
     "StageTransitionError",
-    "StageNotFound",
-    "TransitionNotPermitted",
+    "TransitionNotPermittedError",
     "advance_stage",
     "project_pipeline",
     "stage_history",
@@ -54,11 +53,11 @@ class StageTransitionError(RuntimeError):
     """Base for refusals that are business rules, not bugs."""
 
 
-class StageNotFound(StageTransitionError):
+class StageNotFoundError(StageTransitionError):
     pass
 
 
-class TransitionNotPermitted(StageTransitionError):
+class TransitionNotPermittedError(StageTransitionError):
     pass
 
 
@@ -93,7 +92,7 @@ def advance_stage(
             reason — never a convenience for making a test pass.
     """
     if not reason or not reason.strip():
-        raise TransitionNotPermitted("a transition reason is required")
+        raise TransitionNotPermittedError("a transition reason is required")
 
     target = (
         session.execute(
@@ -113,7 +112,7 @@ def advance_stage(
     )
 
     if target is None:
-        raise StageNotFound(f"no active stage definition '{to_stage_code}'")
+        raise StageNotFoundError(f"no active stage definition '{to_stage_code}'")
 
     # The stage the project is currently sitting in, if any.
     current = (
@@ -134,12 +133,16 @@ def advance_stage(
         .one_or_none()
     )
 
-    if current is not None and not force:
-        if current["status"] not in _LEAVABLE and current["status"] != "active":
-            raise TransitionNotPermitted(
-                f"stage {current['stage_code']} is {current['status']}; "
-                "it must be passed, completed, failed or marked for rework first"
-            )
+    if (
+        current is not None
+        and not force
+        and current["status"] not in _LEAVABLE
+        and current["status"] != "active"
+    ):
+        raise TransitionNotPermittedError(
+            f"stage {current['stage_code']} is {current['status']}; "
+            "it must be passed, completed, failed or marked for rework first"
+        )
 
     # Has this project been in the target stage before? If so this is
     # rework, and the relationship is recorded rather than inferred --
@@ -166,7 +169,7 @@ def advance_stage(
 
     is_rework = previous is not None
     if previous is not None and previous["status"] not in _ENTERABLE and not force:
-        raise TransitionNotPermitted(
+        raise TransitionNotPermittedError(
             f"stage {to_stage_code} is already {previous['status']}; "
             "re-entering requires it to be marked rework_required"
         )

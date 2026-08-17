@@ -16,10 +16,11 @@ import uuid
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 
 from app.domains.pipeline.service import (
-    StageNotFound,
-    TransitionNotPermitted,
+    StageNotFoundError,
+    TransitionNotPermittedError,
     advance_stage,
     project_pipeline,
     stage_history,
@@ -223,19 +224,19 @@ def test_history_records_going_backwards(owner_session, pipeline_project):
 
 
 def test_transition_requires_a_reason(owner_session, pipeline_project):
-    with pytest.raises(TransitionNotPermitted, match="reason is required"):
+    with pytest.raises(TransitionNotPermittedError, match="reason is required"):
         _advance(owner_session, pipeline_project, "FORMULATION", "")
 
 
 def test_unknown_stage_is_refused(owner_session, pipeline_project):
-    with pytest.raises(StageNotFound):
+    with pytest.raises(StageNotFoundError):
         _advance(owner_session, pipeline_project, "NOT_A_STAGE")
 
 
 def test_reentering_an_active_stage_is_refused(owner_session, pipeline_project):
     """Without this, a double-click creates two active visits."""
     _advance(owner_session, pipeline_project, "FORMULATION")
-    with pytest.raises(TransitionNotPermitted, match="already active"):
+    with pytest.raises(TransitionNotPermittedError, match="already active"):
         _advance(owner_session, pipeline_project, "FORMULATION")
 
 
@@ -252,7 +253,7 @@ def test_transitions_are_append_only(owner_session, pipeline_project):
     """A rewritable log answers none of the questions it exists for."""
     _advance(owner_session, pipeline_project, "FORMULATION")
 
-    with pytest.raises(Exception):  # noqa: B017 - trigger raises insufficient_privilege
+    with pytest.raises(ProgrammingError, match="append-only"):
         owner_session.execute(
             text(
                 "UPDATE workflow.stage_transitions SET reason = 'rewritten' WHERE project_id = :p"
