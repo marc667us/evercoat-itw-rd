@@ -28,6 +28,4 @@ def downgrade() -> None:
     revisions -- the evidence trail that makes pipeline analytics and
     requirement verification possible at all. Roll forward.
     """
-    raise NotImplementedError(
-        "downgrade would destroy stage history and requirement revisions"
-    )
+    raise NotImplementedError("downgrade would destroy stage history and requirement revisions")

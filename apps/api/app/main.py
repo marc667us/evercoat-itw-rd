@@ -21,6 +21,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 
 from app.api.admin import router as admin_router
 from app.api.health import router as health_router
+from app.api.projects import router as projects_router
 from app.core.config import settings
 from app.core.logging import configure_logging
 
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     # permissions. Live from Slice 1 (ADR-021): a configuration value
     # with no screen is a value nobody can write.
     application.include_router(admin_router, prefix="/api/admin")
+    application.include_router(projects_router, prefix="/api/projects")
 
     if settings.metrics_enabled:
 

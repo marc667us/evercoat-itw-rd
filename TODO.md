@@ -92,6 +92,39 @@ has happened yet, so this has never run.
 
 ---
 
+## 🔴 Known limitation — the audit chain forks under concurrency
+
+Found while building Slice 2, recorded rather than papered over.
+
+`audit.events` is a single GLOBAL hash chain. The insert trigger takes an
+advisory lock and reads the current tail, but two transactions that each
+read the tail before either commits will both write
+`prev_hash = 'GENESIS'`, and the verifier reports a break that is an
+artefact of concurrency rather than tampering.
+
+The test suite reproduces it immediately, because it runs many short
+transactions and rolls most of them back.
+
+**Why it matters:** a tamper-evidence mechanism that raises false alarms
+under normal load is one whose alarms stop being read. The first response
+to a real break becomes "the hash thing is flaky again".
+
+**The fix:** chain PER ORGANIZATION rather than globally —
+`prev_hash` resolves against the last row for that `organization_id`, so
+concurrent work in different tenants cannot fork each other, and a single
+tenant's writes are already serialised by the advisory lock. Verification
+then walks one organization's chain, which is also the only scope a
+tenant administrator should be able to verify.
+
+- [ ] Migration: partition the chain by `organization_id`
+- [ ] `verify_chain` takes an organization and walks only that chain
+- [ ] Document the discontinuity introduced by the migration itself
+
+Until then `verify_chain(start_id=...)` verifies a contiguous run, which
+is what the Slice 1 test now asserts.
+
+---
+
 ## Documentation debt
 
 `CONTEXT.md` lists these as forward declarations. They are referenced by

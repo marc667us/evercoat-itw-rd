@@ -34,4 +34,28 @@ def apply_sql(filename: str) -> None:
     # migration, so nested control statements are stripped rather than
     # fighting over transaction boundaries.
     lines = [line for line in sql.splitlines() if line.strip().upper() not in {"BEGIN;", "COMMIT;"}]
-    op.execute("\n".join(lines))
+    statement = "\n".join(lines)
+
+    # Executed on the raw DBAPI cursor with NO parameters, which is the
+    # only way to bypass BOTH parameter styles. Hand-written DDL is not a
+    # parameterised query and must not be parsed as one; there are no
+    # user inputs in these files to bind.
+    #
+    # Two real failures got us here:
+    #
+    #   op.execute(...)      wraps the string in sqlalchemy.text(), which
+    #                        scans for ':name'. Migration 007 died on
+    #                        "A value is required for bind parameter
+    #                        'false'" because a COMMENT contained
+    #                        {"rework":false}.
+    #
+    #   exec_driver_sql(...) hands it to psycopg with '%' placeholder
+    #                        semantics. Migration 001 then died on
+    #                        "incomplete placeholder: '%'" because its
+    #                        DO block uses format('%I.%I', ...).
+    #
+    # psycopg only interpolates when parameters are supplied, so passing
+    # none leaves the SQL untouched.
+    connection = op.get_bind().connection
+    with connection.cursor() as cursor:
+        cursor.execute(statement)
