@@ -1,0 +1,223 @@
+# Render setup for EvercoatITWRD APP.
+#
+# WHY A WORKFLOW AND NOT A LOCAL SCRIPT. The Render API key lives as a GitHub
+# Actions secret, exactly as it does for AutoWorkshop. That keeps an
+# account-wide credential out of chat logs, out of the developer's shell
+# history and out of this repository, and it means every change to the Render
+# account is recorded in a run log with a timestamp and an actor.
+#
+# 🔴 THIS WORKFLOW TOUCHES A SERVICE BELONGING TO ANOTHER PRODUCT.
+#
+# `itwevercoatrd.aiappinvent.com` was added to `autoworkshop-web` by mistake,
+# so Render routes that hostname to AutoWorkshop and issued its certificate
+# against that service. Detaching it is the correction. AutoWorkshop is under a
+# standing "do not break it" rule, so the detach step is written to be
+# incapable of touching anything else:
+#
+#   · it addresses the service by ID, never by name search;
+#   · it deletes ONE custom domain, matched by exact hostname;
+#   · it refuses to run if `autoworkshop.aiappinvent.com` is not still present
+#     both before and after — that domain is AutoWorkshop's own front door and
+#     losing it is the failure mode worth guarding against;
+#   · it never calls suspend, resume, delete, deploy or update on the service.
+#
+# MODE=plan is READ-ONLY and is the default. It prints exactly what apply would
+# do and changes nothing. MODE=apply is gated on `confirm: APPLY` — and a step
+# gated on a confirm string that nobody ever supplies is a step that has never
+# run, so the plan output states plainly whether it executed.
+
+name: Render setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "plan (read-only) or apply"
+        type: choice
+        options: [plan, apply]
+        default: plan
+      confirm:
+        description: "Type APPLY to allow writes. Ignored when mode=plan."
+        type: string
+        default: ""
+
+# One at a time. Two concurrent runs mutating the same Render account would
+# interleave in ways the logs could not explain afterwards.
+concurrency:
+  group: render-setup
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      MODE: ${{ inputs.mode }}
+      CONFIRM: ${{ inputs.confirm }}
+      # Addressed by ID so no name lookup can drift onto a neighbour.
+      AUTOWORKSHOP_WEB_ID: srv-d9ju49id0e5s7389fjlg
+      EVERCOAT_DOMAIN: itwevercoatrd.aiappinvent.com
+      AUTOWORKSHOP_DOMAIN: autoworkshop.aiappinvent.com
+      EVERCOAT_SERVICE_NAME: evercoat-itw-rd-web
+      REPO_URL: https://github.com/marc667us/evercoat-itw-rd
+
+    steps:
+      - name: Guard — key present
+        run: |
+          set -euo pipefail
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "::error::RENDER_API_KEY secret is not set on this repository."
+            echo "Set it with:  gh secret set RENDER_API_KEY -R marc667us/evercoat-itw-rd"
+            exit 1
+          fi
+          echo "mode=$MODE"
+          if [ "$MODE" = "apply" ] && [ "$CONFIRM" != "APPLY" ]; then
+            echo "::error::mode=apply requires confirm=APPLY. Nothing was changed."
+            exit 1
+          fi
+
+      - name: Run
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys, urllib.request, urllib.error, time
+
+          KEY  = os.environ["RENDER_API_KEY"]
+          MODE = os.environ["MODE"]
+          AW_ID   = os.environ["AUTOWORKSHOP_WEB_ID"]
+          EV_DOM  = os.environ["EVERCOAT_DOMAIN"]
+          AW_DOM  = os.environ["AUTOWORKSHOP_DOMAIN"]
+          EV_NAME = os.environ["EVERCOAT_SERVICE_NAME"]
+          REPO    = os.environ["REPO_URL"]
+          APPLY   = MODE == "apply"
+
+          def api(method, path, body=None):
+              req = urllib.request.Request(
+                  f"https://api.render.com/v1{path}", method=method,
+                  headers={"Authorization": f"Bearer {KEY}",
+                           "Content-Type": "application/json",
+                           "Accept": "application/json"},
+                  data=json.dumps(body).encode() if body is not None else None)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      raw = r.read().decode()
+                      return r.status, (json.loads(raw) if raw.strip() else None)
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read().decode()
+
+          def rule(t):
+              print(f"\n{'='*74}\n{t}\n{'='*74}")
+
+          # ---------------------------------------------------------------
+          rule("1. AUTOWORKSHOP-WEB — current custom domains")
+          st, doms = api("GET", f"/services/{AW_ID}/custom-domains?limit=50")
+          if st != 200:
+              print(f"::error::could not read domains ({st}): {doms}"); sys.exit(1)
+
+          rows = [d.get("customDomain", d) for d in doms] if isinstance(doms, list) else []
+          names = {r.get("name"): r.get("id") for r in rows}
+          for n, i in names.items():
+              print(f"   {n}   [{i}]")
+
+          if AW_DOM not in names:
+              # Refuse rather than proceed. If AutoWorkshop's own domain is not
+              # here, this is not the service we think it is, and deleting
+              # anything would be guesswork on a live product.
+              print(f"::error::{AW_DOM} is NOT attached to {AW_ID}. Refusing to touch it.")
+              sys.exit(1)
+          print(f"\n   AutoWorkshop's own domain present: {AW_DOM}  (safe to proceed)")
+
+          # ---------------------------------------------------------------
+          rule("2. DETACH the Evercoat domain from AutoWorkshop")
+          if EV_DOM not in names:
+              print(f"   {EV_DOM} is not attached — nothing to detach.")
+          elif not APPLY:
+              print(f"   WOULD DELETE custom domain {EV_DOM} [{names[EV_DOM]}] from {AW_ID}")
+              print("   (plan mode — nothing changed)")
+          else:
+              st, resp = api("DELETE", f"/services/{AW_ID}/custom-domains/{names[EV_DOM]}")
+              print(f"   DELETE -> {st} {resp if resp else ''}")
+              if st not in (200, 204):
+                  print("::error::detach failed"); sys.exit(1)
+              st, after = api("GET", f"/services/{AW_ID}/custom-domains?limit=50")
+              after_names = {(d.get("customDomain", d)).get("name") for d in after}
+              print(f"   after: {sorted(n for n in after_names if n)}")
+              if AW_DOM not in after_names:
+                  print(f"::error::{AW_DOM} disappeared — AutoWorkshop's own domain was lost")
+                  sys.exit(1)
+              if EV_DOM in after_names:
+                  print("::error::the Evercoat domain is still attached"); sys.exit(1)
+              print(f"   OK — {EV_DOM} detached, {AW_DOM} intact")
+
+          # ---------------------------------------------------------------
+          rule("3. EVERCOAT SERVICE — does it exist?")
+          st, svcs = api("GET", "/services?limit=100")
+          existing = None
+          for row in (svcs or []):
+              s = row.get("service", row)
+              if s.get("name") == EV_NAME:
+                  existing = s
+          print(f"   {EV_NAME}: {'EXISTS ' + existing['id'] if existing else 'does not exist'}")
+
+          if not existing:
+              st, owners = api("GET", "/owners?limit=10")
+              owner_id = (owners[0].get("owner", owners[0])).get("id") if owners else None
+              print(f"   ownerId: {owner_id}")
+
+              payload = {
+                  "type": "web_service",
+                  "name": EV_NAME,
+                  "ownerId": owner_id,
+                  "repo": REPO,
+                  "branch": "master",
+                  "autoDeploy": "yes",
+                  "rootDir": "",
+                  "serviceDetails": {
+                      "env": "docker",
+                      "plan": "free",
+                      "region": "oregon",
+                      "healthCheckPath": "/dashboard",
+                      "envSpecificDetails": {
+                          "dockerfilePath": "./apps/web/Dockerfile",
+                          "dockerContext": "./apps/web",
+                      },
+                  },
+              }
+              if not APPLY:
+                  print("   WOULD CREATE:")
+                  print(json.dumps(payload, indent=2))
+              else:
+                  st, resp = api("POST", "/services", payload)
+                  print(f"   POST /services -> {st}")
+                  if st not in (200, 201):
+                      print(f"::error::create failed: {resp}")
+                      print("::notice::If this is a repo-access error, Render's GitHub App "
+                            "must be granted access to the PRIVATE repo marc667us/evercoat-itw-rd.")
+                      sys.exit(1)
+                  svc = resp.get("service", resp)
+                  existing = svc
+                  print(f"   created: {svc.get('id')}  {svc.get('serviceDetails',{}).get('url')}")
+
+          # ---------------------------------------------------------------
+          rule("4. ATTACH the domain to the Evercoat service")
+          if not existing:
+              print("   (no service yet — plan mode, or creation skipped)")
+          else:
+              ev_id = existing["id"]
+              st, cur = api("GET", f"/services/{ev_id}/custom-domains?limit=50")
+              cur_names = {(d.get("customDomain", d)).get("name") for d in (cur or [])}
+              if EV_DOM in cur_names:
+                  print(f"   {EV_DOM} already attached to {ev_id}")
+              elif not APPLY:
+                  print(f"   WOULD ATTACH {EV_DOM} to {ev_id}")
+              else:
+                  st, resp = api("POST", f"/services/{ev_id}/custom-domains", {"name": EV_DOM})
+                  print(f"   POST custom-domain -> {st} {resp if st>=400 else ''}")
+                  if st not in (200, 201):
+                      print("::error::attach failed"); sys.exit(1)
+                  print(f"   OK — {EV_DOM} attached to {ev_id}")
+
+          rule("SUMMARY")
+          print(f"   mode      : {MODE}")
+          print(f"   changes   : {'APPLIED' if APPLY else 'NONE (plan only)'}")
+          PY
