@@ -2,7 +2,7 @@
 
 **Session closed 2026-08-17. Read this file first, then `TODO.md`.**
 
-Repository is **local only, no git remote**. Tip: `4546bdc`, working tree clean.
+Repository: **https://github.com/marc667us/evercoat-itw-rd (PRIVATE)**, remote `origin`, branch `master`.
 
 ---
 
@@ -41,6 +41,8 @@ found to be wrong.
 | API routes | **51 registered** (was 42), app boots clean |
 | Migrations | **013**, each applied and verified against a real database |
 | Web pages | **3** — `/`, `/dashboard`, `/admin`. No Slice 2 surface is clickable. |
+| E2E | **29 passed / 0 failed / 0 skipped** — Playwright: browser shell, axe-core, API over real HTTP |
+| Deploy | `render.yaml` blueprint for the WEB service only. Image builds and serves (verified locally). Not yet created on Render. |
 | Slice 1 | code-complete; full stack has still never run at once |
 | Slice 2 | complete except the frontend |
 
@@ -111,12 +113,11 @@ how this project's status artifacts went wrong.
 
 ## ▶ NEXT SESSION — in this order
 
-1. **A `playwright.config.ts` and the first E2E that can actually pass.**
-   Not the golden scenario — an interim one over what exists:
-   opportunity → project → stage gate → requirement → task → milestone →
-   risk. This would be the first time the stack has run end to end with a
-   browser, which is the real outstanding risk. It needs the full stack
-   up, and there is ~2.71 GiB of VM headroom.
+1. **Wire the E2E suite into CI.** It exists and passes but
+   `.github/workflows/ci.yml` never runs it, so every PR can be green
+   without Playwright or axe-core having executed — the same shape as
+   axe-core being 'required in CI' for months while never running.
+   Six other Codex findings on suite strength are listed in `TODO.md`.
 2. **The Slice 2 frontend.** Five API surfaces have no clickable page and
    `CURRENT_SLICE = 1` in `apps/web/lib/navigation.ts` disables the rest
    of the sidebar. *A route with no caller is not shipped.*
