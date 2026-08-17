@@ -1,0 +1,67 @@
+# EvercoatITWRD APP — Render blueprint
+#
+# SCOPE, STATED PLAINLY. This deploys the WEB application only, and that
+# is a deliberate choice rather than an unfinished one:
+#
+#   * `apps/web` currently makes NO API calls. There is no `fetch`, no
+#     next-auth wiring and no sign-in flow anywhere in it. Deploying the
+#     API alongside would therefore change nothing a visitor could see,
+#     while adding a database that ADR-009 forbids holding real records.
+#
+#   * ADR-009: Render is OPTIONAL DEMO STAGING ONLY. It must never hold
+#     real R&D records — its free PostgreSQL expires after 30 days, and
+#     formulation data is the asset this whole product exists to protect.
+#     Docker Compose remains the deployment path for anything real.
+#
+#   * Everything here is on Render's free tier. A free web service spins
+#     down after inactivity and takes roughly a minute to wake, which is
+#     acceptable for a demo URL and is not acceptable for anything else.
+#
+# WHEN THE API IS ADDED LATER it needs, at minimum: a Postgres instance,
+# `DATABASE_URL` on the non-superuser app role, a reachable Keycloak for
+# `KEYCLOAK_ISSUER`, and `alembic upgrade head` run as a role that owns
+# `alembic_version`. None of that is wired here, and half-wiring it would
+# produce a service that boots and then 503s on every request.
+
+services:
+  - type: web
+    name: evercoat-itw-rd-web
+    runtime: docker
+
+    # The build context is `apps/web`, matching the Dockerfile, which
+    # COPYs its own package.json and lockfile. Pointing the context at the
+    # repository root instead would send the entire tree — including the
+    # Python API and the migrations — to the builder and then fail on the
+    # first COPY.
+    dockerfilePath: ./apps/web/Dockerfile
+    dockerContext: ./apps/web
+
+    plan: free
+    region: oregon
+    branch: master
+
+    # /dashboard, not /. The root route is a `redirect()` stub that
+    # answers 307, and a health check pointed at a redirect is how a
+    # perfectly healthy service gets marked unhealthy and never goes live
+    # — a failure already seen twice on this platform. /dashboard returns
+    # a real 200.
+    healthCheckPath: /dashboard
+
+    # Only rebuild when something the web image actually contains changes.
+    # Without this every API-only or migration-only commit triggers a full
+    # web rebuild.
+    buildFilter:
+      paths:
+        - apps/web/**
+        - render.yaml
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      # NOTE: NEXT_PUBLIC_* is inlined at BUILD time, not read at runtime.
+      # Setting one here does nothing to the bundle — it has to be a
+      # Docker build ARG. Left unset deliberately: the app makes no API
+      # calls yet, so there is no URL for it to point at, and a plausible
+      # wrong value is worse than an absent one.
