@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.security import Principal, get_db, require_permission
+from app.core.tenancy import CrossTenantReferenceError
 from app.domains.opportunities.service import (
     OpportunityDecision,
     OpportunityInput,
@@ -178,6 +179,11 @@ def post_conversion(
             target_release_date=payload.target_release_date,
             confidentiality=payload.confidentiality,
         )
+    except CrossTenantReferenceError as exc:
+        # 400, not 403/404: the caller named a lead who is not a member of
+        # this organization. Any status that distinguishes "not real" from
+        # "not yours" leaks the existence of another tenant's user.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except OpportunityNotFoundError as exc:
         raise _missing(exc) from exc
     except OpportunityStateError as exc:

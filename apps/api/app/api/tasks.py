@@ -33,6 +33,7 @@ from app.core.security import (
     require_permission,
     require_project_member,
 )
+from app.core.tenancy import CrossTenantReferenceError
 from app.domains.tasks.service import (
     TaskInput,
     TaskNotFoundError,
@@ -76,8 +77,19 @@ class TaskReassign(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
-def _refuse(exc: TaskStateError) -> HTTPException:
+def _refuse(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+
+
+def _bad_reference(exc: CrossTenantReferenceError) -> HTTPException:
+    """400, not 403 or 404.
+
+    The caller named a user who is not a member of this organization. 403
+    would imply the id is real and merely off-limits; 404 would imply it
+    is not real. Both leak. 400 says only that the payload was wrong,
+    which is all the caller is entitled to know.
+    """
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.get("", tags=["my-work"])
@@ -141,6 +153,8 @@ def post_task(
             actor_id=principal.user_id,
             organization_id=principal.organization_id,
         )
+    except CrossTenantReferenceError as exc:
+        raise _bad_reference(exc) from exc
     except TaskStateError as exc:
         raise _refuse(exc) from exc
     return {"id": str(task_id)}
@@ -209,6 +223,8 @@ def post_reassign(
             organization_id=principal.organization_id,
             reason=payload.reason,
         )
+    except CrossTenantReferenceError as exc:
+        raise _bad_reference(exc) from exc
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except TaskStateError as exc:

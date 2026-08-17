@@ -15,6 +15,7 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import text
 
+from app.core.tenancy import CrossTenantReferenceError
 from app.domains.tasks.service import (
     TaskInput,
     TaskNotFoundError,
@@ -404,7 +405,11 @@ def test_reassignment_refuses_a_user_from_another_organization(owner_session, ta
     )
     owner_session.flush()
 
-    with pytest.raises(TaskStateError, match="not an active member"):
+    # CrossTenantReferenceError, not TaskStateError: a cross-tenant
+    # reference is a tenancy violation rather than a task-lifecycle one,
+    # and the shared check in app.core.tenancy raises its own type so
+    # every caller translates it the same way.
+    with pytest.raises(CrossTenantReferenceError, match="not an active member"):
         reassign_task(
             owner_session,
             task_id=task_id,

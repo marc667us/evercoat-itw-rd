@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
 from app.core.logging import log_audit
+from app.core.tenancy import require_active_member
 
 __all__ = [
     "TaskError",
@@ -105,6 +106,19 @@ def create_task(
         raise TaskStateError("a task needs an owner: give it an assigned user or an assigned role")
     if not data.title.strip():
         raise TaskStateError("a task needs a title")
+
+    # The assignee must belong to THIS organization. `tasks.assigned_user_id`
+    # is a plain REFERENCES core.users(id) -- users are not tenant-scoped --
+    # so the FK happily accepts a user who exists only in another tenant.
+    # Referential integrity bypasses RLS even under FORCE, so nothing else
+    # in this function would have caught it (Codex C1).
+    if data.assigned_user_id is not None:
+        require_active_member(
+            session,
+            user_id=data.assigned_user_id,
+            organization_id=organization_id,
+            role_description="assignee",
+        )
 
     task_id = session.execute(
         text(
@@ -346,44 +360,71 @@ def complete_task(
     organization_id: uuid.UUID,
     outcome_note: str | None = None,
 ) -> None:
-    """Mark a task done. Only its assignee may.
+    """Mark a task done. Only its assignee may, **at write time**.
 
     ``completed_at`` and ``completed_by`` are written together because the
     ``tasks_completion_complete`` CHECK requires both -- a half-written
     completion is not a state this table permits.
+
+    **The ownership and status tests live in the UPDATE's WHERE clause,
+    not in a preceding SELECT.** An earlier version read the row, checked
+    ``assigned_user_id == actor_id``, then issued an unconditional UPDATE.
+    Between those two statements a concurrent reassignment or cancellation
+    can land, and the former assignee completes a task they no longer own
+    -- so "only the assignee may complete" was true at read time and false
+    at write time (Codex C3). That is precisely the guarantee the route
+    relies on to justify carrying no permission dependency, which made it
+    load-bearing rather than incidental.
+
+    The follow-up SELECT exists only to produce a specific error message
+    when the UPDATE matches nothing. It cannot re-introduce the race: by
+    then the write has already either happened or not.
     """
-    current = (
+    updated = (
         session.execute(
             text(
                 """
-            SELECT status, assigned_user_id
-            FROM workflow.tasks
-            WHERE id = :tid AND organization_id = :org
+            UPDATE workflow.tasks
+            SET status = 'completed', completed_at = now(),
+                completed_by = :uid, updated_at = now()
+            WHERE id = :tid
+              AND organization_id = :org
+              AND assigned_user_id = :uid
+              AND status = ANY(:completable)
+            RETURNING status
             """
             ),
-            {"tid": task_id, "org": organization_id},
+            {
+                "tid": task_id,
+                "org": organization_id,
+                "uid": actor_id,
+                "completable": sorted(_COMPLETABLE),
+            },
         )
         .mappings()
         .one_or_none()
     )
-    if current is None:
-        raise TaskNotFoundError("task not found")
-    if current["assigned_user_id"] != actor_id:
-        raise TaskStateError("only the assignee may complete a task")
-    if current["status"] not in _COMPLETABLE:
-        raise TaskStateError(f"a {current['status']} task cannot be completed")
 
-    session.execute(
-        text(
-            """
-            UPDATE workflow.tasks
-            SET status = 'completed', completed_at = now(),
-                completed_by = :uid, updated_at = now()
-            WHERE id = :tid AND organization_id = :org
-            """
-        ),
-        {"tid": task_id, "org": organization_id, "uid": actor_id},
-    )
+    if updated is None:
+        # Diagnose only. The write has already been decided.
+        current = (
+            session.execute(
+                text(
+                    """
+                SELECT status, assigned_user_id FROM workflow.tasks
+                WHERE id = :tid AND organization_id = :org
+                """
+                ),
+                {"tid": task_id, "org": organization_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise TaskNotFoundError("task not found")
+        if current["assigned_user_id"] != actor_id:
+            raise TaskStateError("only the assignee may complete a task")
+        raise TaskStateError(f"a {current['status']} task cannot be completed")
 
     write_audit(
         session,
@@ -393,7 +434,6 @@ def complete_task(
             entity_id=str(task_id),
             organization_id=organization_id,
             user_id=actor_id,
-            previous_state={"status": current["status"]},
             new_state={"status": "completed"},
             reason=outcome_note or "task completed",
         ),
@@ -419,53 +459,70 @@ def reassign_task(
     The target must be an active member of this organization. Without
     that check a task could be delegated to a user id from another tenant
     -- the FK to core.users would permit it, because referential
-    integrity bypasses RLS even under FORCE.
+    integrity bypasses RLS even under FORCE. See `app.core.tenancy`.
+
+    Like :func:`complete_task`, the status test is in the UPDATE's WHERE
+    clause. Checked in a preceding SELECT it could be overtaken by a
+    concurrent completion, and the result was a *completed* task whose
+    ``assigned_user_id`` named somebody other than its ``completed_by``
+    -- two columns disagreeing about who did the work (Codex C6).
     """
     if not reason or not reason.strip():
         raise TaskStateError("a reassignment reason is required")
 
-    is_member = session.execute(
-        text(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM core.organization_members
-                WHERE user_id = :uid AND organization_id = :org AND status = 'active'
-            )
-            """
-        ),
-        {"uid": to_user_id, "org": organization_id},
-    ).scalar_one()
-    if not is_member:
-        raise TaskStateError("target user is not an active member of this organization")
+    require_active_member(
+        session,
+        user_id=to_user_id,
+        organization_id=organization_id,
+        role_description="target user",
+    )
 
-    current = (
+    updated = (
         session.execute(
             text(
                 """
-            SELECT status, assigned_user_id FROM workflow.tasks
-            WHERE id = :tid AND organization_id = :org
+            UPDATE workflow.tasks
+            SET assigned_user_id = :to, updated_at = now()
+            WHERE id = :tid
+              AND organization_id = :org
+              AND status <> ALL(:terminal)
+            -- The pre-update assignee is deliberately NOT returned here.
+            -- RETURNING yields post-update values, so reading it back
+            -- would record the new assignee as the previous one -- an
+            -- audit entry that is worse than none because it looks
+            -- authoritative. The audit records who it moved TO; who it
+            -- moved FROM is the previous task.reassigned/claimed event.
+            RETURNING id
             """
             ),
-            {"tid": task_id, "org": organization_id},
+            {
+                "tid": task_id,
+                "org": organization_id,
+                "to": to_user_id,
+                "terminal": ["completed", "cancelled"],
+            },
         )
         .mappings()
         .one_or_none()
     )
-    if current is None:
-        raise TaskNotFoundError("task not found")
-    if current["status"] in {"completed", "cancelled"}:
-        raise TaskStateError(f"a {current['status']} task cannot be reassigned")
 
-    session.execute(
-        text(
-            """
-            UPDATE workflow.tasks
-            SET assigned_user_id = :to, updated_at = now()
-            WHERE id = :tid AND organization_id = :org
-            """
-        ),
-        {"tid": task_id, "org": organization_id, "to": to_user_id},
-    )
+    if updated is None:
+        current = (
+            session.execute(
+                text(
+                    """
+                SELECT status FROM workflow.tasks
+                WHERE id = :tid AND organization_id = :org
+                """
+                ),
+                {"tid": task_id, "org": organization_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise TaskNotFoundError("task not found")
+        raise TaskStateError(f"a {current['status']} task cannot be reassigned")
 
     write_audit(
         session,
@@ -475,11 +532,6 @@ def reassign_task(
             entity_id=str(task_id),
             organization_id=organization_id,
             user_id=actor_id,
-            previous_state={
-                "assigned_user_id": str(current["assigned_user_id"])
-                if current["assigned_user_id"]
-                else None
-            },
             new_state={"assigned_user_id": str(to_user_id)},
             reason=reason,
         ),

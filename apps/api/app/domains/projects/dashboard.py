@@ -221,14 +221,35 @@ def project_dashboard(
     recent = session.execute(
         text(
             """
+            -- EVERY join carries organization_id, not just the outer
+            -- WHERE. A top-level `t.organization_id = :org` scopes the
+            -- transition row and says nothing about the rows joined to
+            -- it: referential integrity bypasses RLS, so before migration
+            -- 010 a tenant-A transition could name a tenant-B
+            -- from_stage_id and this query would have rendered another
+            -- tenant's stage_code on this tenant's dashboard (Codex C8).
+            --
+            -- Migration 010 added the missing composite FK, which makes
+            -- that unrepresentable. These predicates stay anyway: a
+            -- constraint added in one migration can be dropped in
+            -- another, and a query that is only correct because of a
+            -- constraint elsewhere is a query nobody can verify locally.
             SELECT t.transitioned_at AS at, t.reason, u.display_name AS actor,
                    fsd.stage_code AS from_stage, tsd.stage_code AS to_stage
             FROM workflow.stage_transitions t
             JOIN core.users u ON u.id = t.transitioned_by
-            LEFT JOIN workflow.project_stages fps ON fps.id = t.from_stage_id
-            LEFT JOIN workflow.stage_definitions fsd ON fsd.id = fps.stage_definition_id
-            JOIN workflow.project_stages tps ON tps.id = t.to_stage_id
-            JOIN workflow.stage_definitions tsd ON tsd.id = tps.stage_definition_id
+            LEFT JOIN workflow.project_stages fps
+                   ON fps.id = t.from_stage_id
+                  AND fps.organization_id = t.organization_id
+            LEFT JOIN workflow.stage_definitions fsd
+                   ON fsd.id = fps.stage_definition_id
+                  AND fsd.organization_id = fps.organization_id
+            JOIN workflow.project_stages tps
+                   ON tps.id = t.to_stage_id
+                  AND tps.organization_id = t.organization_id
+            JOIN workflow.stage_definitions tsd
+                   ON tsd.id = tps.stage_definition_id
+                  AND tsd.organization_id = tps.organization_id
             WHERE t.project_id = :pid AND t.organization_id = :org
             ORDER BY t.transitioned_at DESC
             LIMIT 5

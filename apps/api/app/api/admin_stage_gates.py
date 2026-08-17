@@ -361,7 +361,39 @@ def set_stage_activation(
     forced override, which is not a state an administrator should be able
     to create by accident.
     """
-    if not payload.is_active:
+    # The "no active projects in this stage" test is INSIDE the UPDATE.
+    #
+    # Counted first and updated afterwards, a project can enter the stage
+    # between the two statements and end up parked in a retired stage with
+    # no configured way out -- the exact state this guard exists to
+    # prevent (Codex C7). NOT EXISTS in the WHERE clause makes the check
+    # and the write one atomic decision.
+    updated = session.execute(
+        text(
+            """
+            UPDATE workflow.stage_definitions sd
+            SET is_active = :active
+            WHERE sd.id = :sid
+              AND sd.organization_id = :org
+              AND (
+                    :active
+                 OR NOT EXISTS (
+                        SELECT 1 FROM workflow.project_stages ps
+                        WHERE ps.stage_definition_id = sd.id
+                          AND ps.organization_id = sd.organization_id
+                          AND ps.status = 'active'
+                    )
+              )
+            RETURNING stage_code
+            """
+        ),
+        {"sid": stage_id, "org": principal.organization_id, "active": payload.is_active},
+    ).scalar_one_or_none()
+
+    if updated is None:
+        # Diagnose only. Distinguishing "no such stage" from "still
+        # occupied" needs a second look, and by now the write has already
+        # been decided either way.
         occupied = session.execute(
             text(
                 """
@@ -382,19 +414,6 @@ def set_stage_activation(
                     "move them on before retiring it"
                 ),
             )
-
-    updated = session.execute(
-        text(
-            """
-            UPDATE workflow.stage_definitions
-            SET is_active = :active
-            WHERE id = :sid AND organization_id = :org
-            RETURNING stage_code
-            """
-        ),
-        {"sid": stage_id, "org": principal.organization_id, "active": payload.is_active},
-    ).scalar_one_or_none()
-    if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="stage not found")
 
     write_audit(
@@ -419,18 +438,38 @@ def reorder_stage_definitions(
     principal: Principal = Depends(require_permission("admin.stage_gates")),
     session: Session = Depends(get_db),
 ) -> None:
-    """Renumber the whole pipeline in one statement.
+    """Renumber the whole pipeline in one deferred transaction.
 
     `stage_definitions_org_seq_key` is UNIQUE (organization_id,
-    sequence), so applying a reorder row by row collides the moment two
-    stages swap places -- setting A to 2 while B still holds 2 fails, and
-    the obvious workarounds (a temporary negative sequence pass, dropping
-    the constraint) either double the write count or remove the guarantee
-    while the data is inconsistent.
+    sequence), so any reorder passes through intermediate states where two
+    stages briefly hold the same sequence.
 
-    A single UPDATE ... FROM against the whole ordered set is checked once
-    at statement end, so intermediate collisions never exist. This is why
-    the endpoint takes the complete list rather than a move instruction.
+    An earlier version of this comment claimed a single
+    `UPDATE ... FROM unnest(...)` avoided that "because a non-deferrable
+    unique constraint is checked once at statement end". That was false,
+    and the tests in `test_slice2_stage_gates.py` establish the actual
+    three-way behaviour:
+
+      * **non-deferrable** -- checked per ROW as each row is updated. The
+        single statement fails in exactly the same place a row-by-row
+        loop does. This is what broke.
+      * **DEFERRABLE INITIALLY IMMEDIATE** -- enforced by a constraint
+        trigger that fires at end of STATEMENT. Intermediate duplicates
+        inside one statement are fine; the final state must be unique.
+        This is what migration 009 configured, and it is all the reorder
+        needs.
+      * **DEFERRABLE + SET CONSTRAINTS DEFERRED** -- checked at COMMIT.
+        Deliberately NOT used: a violation would then surface after this
+        function has returned, past its error handling, as a 500 instead
+        of a 409.
+
+    Ordinary single-row writes are unaffected -- for a one-row statement,
+    "end of statement" is immediate, and a duplicate sequence is still
+    refused at the statement that causes it.
+
+    The endpoint takes the complete ordered list rather than a move
+    instruction because a partial list can only be applied by guessing
+    what the caller intended for the rest.
     """
     expected = session.execute(
         text(
@@ -456,6 +495,10 @@ def reorder_stage_definitions(
             detail="the reorder lists the same stage more than once",
         )
 
+    # No SET CONSTRAINTS here, deliberately -- see the docstring. The
+    # constraint being DEFERRABLE is already enough to move the check to
+    # statement end. Deferring further, to COMMIT, would push a violation
+    # past this function's error handling and turn a 409 into a 500.
     updated = session.execute(
         text(
             """

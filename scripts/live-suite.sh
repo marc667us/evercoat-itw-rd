@@ -43,6 +43,11 @@ BASE_URL="${1:-}"
 if [[ -z "${BASE_URL}" ]]; then
     echo "usage: $0 <deployed-base-url>" >&2
     echo "  e.g. $0 https://evercoat.example.com" >&2
+    # The three-number report prints even here. "Three numbers, always"
+    # has to mean ALWAYS, or a caller scraping this output for counts
+    # gets nothing back and has to infer the outcome from an exit code --
+    # which is the failure mode the contract exists to remove.
+    echo "REPORT: passed=0 failed=0 skipped=0 (no URL given; suite did not run)"
     exit 2
 fi
 BASE_URL="${BASE_URL%/}"
@@ -140,13 +145,33 @@ run_pytest() {
     line="$(grep -E '^[0-9]+ (passed|failed)|passed|failed|skipped|no tests ran' \
             "${logfile}" | tail -1)" || line=""
 
-    local p f s
+    local p f s e
     p="$(sed -nE 's/.*[^0-9]([0-9]+) passed.*/\1/p'  <<< "${line}")"; p="${p:-0}"
     f="$(sed -nE 's/.*[^0-9]([0-9]+) failed.*/\1/p'  <<< "${line}")"; f="${f:-0}"
     s="$(sed -nE 's/.*[^0-9]([0-9]+) skipped.*/\1/p' <<< "${line}")"; s="${s:-0}"
+    # Collection errors are reported as "errors", not "failed", and are
+    # every bit as much a not-working suite.
+    e="$(sed -nE 's/.*[^0-9]([0-9]+) errors?.*/\1/p'  <<< "${line}")"; e="${e:-0}"
+    f=$((f + e))
 
-    if [[ ${rc} -eq 5 ]]; then
-        echo "  NO TESTS COLLECTED -- counted as a gap, not a pass"
+    # RECONCILE THE EXIT CODE AGAINST THE PARSED COUNTS.
+    #
+    # Parsing alone is not enough. pytest exits non-zero for conditions
+    # that produce no "N failed" at all -- collection error (2), internal
+    # error (3), interrupted (2/3), no tests collected (5), or the
+    # interpreter failing to start. Every one of those parsed as
+    # 0 passed / 0 failed / 0 skipped and read as a clean pass.
+    #
+    # That is the exact shape of the five shipped-green-but-broken-on-live
+    # incidents this script exists to prevent, so a non-zero rc with
+    # nothing parsed is force-counted as a failure rather than trusted
+    # (Codex C9).
+    if [[ ${rc} -ne 0 && $((p + f + s)) -eq 0 ]]; then
+        case ${rc} in
+            5) echo "  NO TESTS COLLECTED (rc=5) -- counted as 1 FAILED, not a pass" ;;
+            *) echo "  pytest exited ${rc} with no parseable summary -- counted as 1 FAILED" ;;
+        esac
+        f=1
     fi
 
     PASSED=$((PASSED + p))
@@ -170,14 +195,61 @@ run_pytest "api-live" tests -m "live or not live"
 echo
 echo "--- e2e (playwright) ---"
 if [[ -d "${REPO_ROOT}/tests/e2e" ]] && command -v npx >/dev/null 2>&1; then
+    # --reporter=json, not line. Counting check and cross GLYPHS off
+    # console output was fragile in every direction: ANSI escapes,
+    # reporter formatting changes, a crash before any test ran, or a
+    # config error all yield zero matches and therefore zero failures,
+    # while the non-zero exit code was never folded in at all -- a
+    # guaranteed false green (Codex C10).
     ( cd "${REPO_ROOT}" && PLAYWRIGHT_BASE_URL="${BASE_URL}" \
-      npx playwright test --reporter=line ) > "${ARTIFACTS}/e2e.log" 2>&1
+      npx playwright test --reporter=json ) > "${ARTIFACTS}/e2e.json" 2>"${ARTIFACTS}/e2e.log"
     E2E_RC=$?
-    E2E_P="$(grep -cE '^\s*✓' "${ARTIFACTS}/e2e.log")" || E2E_P=0
-    E2E_F="$(grep -cE '^\s*✘|^\s*×' "${ARTIFACTS}/e2e.log")" || E2E_F=0
+
+    E2E_P=0; E2E_F=0; E2E_S=0
+    if command -v python >/dev/null 2>&1; then
+        # Read the machine-readable summary. Prints three integers, or
+        # nothing at all if the JSON is absent or unparseable -- in which
+        # case the rc reconciliation below takes over.
+        read -r E2E_P E2E_F E2E_S < <(python - "${ARTIFACTS}/e2e.json" <<'PY' || true
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        report = json.load(fh)
+except Exception:
+    sys.exit(1)
+passed = failed = skipped = 0
+def walk(suite):
+    global passed, failed, skipped
+    for spec in suite.get("specs", []):
+        for test in spec.get("tests", []):
+            status = test.get("status") or test.get("expectedStatus")
+            if status == "skipped":
+                skipped += 1
+            elif test.get("ok"):
+                passed += 1
+            else:
+                failed += 1
+    for child in suite.get("suites", []):
+        walk(child)
+for s in report.get("suites", []):
+    walk(s)
+print(passed, failed, skipped)
+PY
+        )
+    fi
+    E2E_P="${E2E_P:-0}"; E2E_F="${E2E_F:-0}"; E2E_S="${E2E_S:-0}"
+
+    # Same reconciliation as the pytest runner: a non-zero exit with
+    # nothing parsed must never read as success.
+    if [[ ${E2E_RC} -ne 0 && $((E2E_P + E2E_F + E2E_S)) -eq 0 ]]; then
+        echo "  playwright exited ${E2E_RC} with no parseable report -- counted as 1 FAILED"
+        E2E_F=1
+    fi
+
     PASSED=$((PASSED + E2E_P))
     FAILED=$((FAILED + E2E_F))
-    echo "  e2e: passed=${E2E_P} failed=${E2E_F} (rc=${E2E_RC})"
+    SKIPPED=$((SKIPPED + E2E_S))
+    echo "  e2e: passed=${E2E_P} failed=${E2E_F} skipped=${E2E_S} (rc=${E2E_RC})"
 else
     echo "  NOT RUN -- tests/e2e absent or npx unavailable."
     echo "  This is a COVERAGE GAP, counted as skipped, not as a pass."

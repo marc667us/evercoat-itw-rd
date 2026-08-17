@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
 from app.core.logging import log_audit
+from app.core.tenancy import require_active_member
 
 __all__ = [
     "OpportunityDecision",
@@ -202,36 +203,25 @@ def decide_opportunity(
     if not decision.rationale or not decision.rationale.strip():
         raise OpportunityStateError("a decision rationale is required")
 
-    current = (
+    new_status = _STATUS_AFTER[decision.decision]
+
+    # The decidable-status test is in the WHERE clause, not in a preceding
+    # SELECT.
+    #
+    # Read-then-write here is not a theoretical race: two Directors
+    # clicking Approve and Reject on the same gate both observed a
+    # decidable status, both wrote, both reported success, and only the
+    # LAST decision and rationale survived -- while both audit events
+    # claimed to be the decision (Codex C5). That is exactly the history
+    # loss the "a second decision is refused" rule exists to prevent, so
+    # the rule has to hold at write time to mean anything.
+    #
+    # decision, decided_by and decided_at are set in ONE statement because
+    # opportunities_decision_complete requires all three or none.
+    updated = (
         session.execute(
             text(
                 """
-            SELECT status, opportunity_code, decision
-            FROM innovation.opportunities
-            WHERE id = :oid AND organization_id = :org
-            """
-            ),
-            {"oid": opportunity_id, "org": organization_id},
-        )
-        .mappings()
-        .one_or_none()
-    )
-    if current is None:
-        raise OpportunityNotFoundError("opportunity not found")
-    if current["status"] not in _DECIDABLE:
-        raise OpportunityStateError(
-            f"an opportunity in '{current['status']}' cannot be decided; "
-            f"it must be in {sorted(_DECIDABLE)}"
-        )
-
-    new_status = _STATUS_AFTER[decision.decision]
-
-    # decision, decided_by and decided_at are written in ONE statement.
-    # The opportunities_decision_complete CHECK requires all three or none
-    # -- a partial decision is not a state this table permits.
-    session.execute(
-        text(
-            """
             UPDATE innovation.opportunities
             SET status = :status,
                 decision = :decision,
@@ -239,18 +229,47 @@ def decide_opportunity(
                 decided_at = now(),
                 decision_rationale = :rationale,
                 updated_at = now()
-            WHERE id = :oid AND organization_id = :org
+            WHERE id = :oid
+              AND organization_id = :org
+              AND status = ANY(:decidable)
+            RETURNING opportunity_code
             """
-        ),
-        {
-            "oid": opportunity_id,
-            "org": organization_id,
-            "status": new_status,
-            "decision": decision.decision,
-            "actor": actor_id,
-            "rationale": decision.rationale.strip(),
-        },
+            ),
+            {
+                "oid": opportunity_id,
+                "org": organization_id,
+                "status": new_status,
+                "decision": decision.decision,
+                "actor": actor_id,
+                "rationale": decision.rationale.strip(),
+                "decidable": sorted(_DECIDABLE),
+            },
+        )
+        .mappings()
+        .one_or_none()
     )
+
+    if updated is None:
+        # Diagnose only -- the write has already been decided either way.
+        current = (
+            session.execute(
+                text(
+                    """
+                SELECT status FROM innovation.opportunities
+                WHERE id = :oid AND organization_id = :org
+                """
+                ),
+                {"oid": opportunity_id, "org": organization_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise OpportunityNotFoundError("opportunity not found")
+        raise OpportunityStateError(
+            f"an opportunity in '{current['status']}' cannot be decided; "
+            f"it must be in {sorted(_DECIDABLE)}"
+        )
 
     write_audit(
         session,
@@ -260,14 +279,13 @@ def decide_opportunity(
             entity_id=str(opportunity_id),
             organization_id=organization_id,
             user_id=actor_id,
-            previous_state={"status": current["status"]},
             new_state={"status": new_status, "decision": decision.decision},
             reason=decision.rationale.strip(),
         ),
     )
     log_audit(
         "opportunity_decided",
-        opportunity_code=current["opportunity_code"],
+        opportunity_code=updated["opportunity_code"],
         decision=decision.decision,
     )
     return new_status
@@ -300,7 +318,22 @@ def convert_to_project(
     restricted project whose own lead is not a member is invisible to its
     lead on the very next request -- RLS behaving correctly, looking
     exactly like a failed save.
+
+    **That enrolment is why `lead_user_id` must be validated first.**
+    `projects.lead_user_id` and `project_members.user_id` are both plain
+    `REFERENCES core.users(id)`; referential integrity bypasses RLS even
+    under FORCE, so a user id belonging only to another tenant is
+    accepted by the FK. Unchecked, this function did not merely store a
+    foreign id -- it went on to enrol that user as a member of the new
+    project, handing them access (Codex C2).
     """
+    require_active_member(
+        session,
+        user_id=lead_user_id,
+        organization_id=organization_id,
+        role_description="project lead",
+    )
+
     current = (
         session.execute(
             text(
