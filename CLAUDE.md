@@ -279,9 +279,11 @@ cd apps/web && npm run dev                      # http://localhost:3000
 ```bash
 cd apps/api && pytest                    # backend + scientific (Hypothesis)
 cd apps/web && npm run test              # Vitest
+npm install                              # ONCE, at the repo root, for the E2E deps
 npx playwright test                      # E2E (from repo root)
-npx playwright test tests/e2e/golden     # the golden MVP scenario
-npx playwright test tests/e2e/rbac       # authorization, incl. MSD boundary
+npx playwright test --project=shell      # browser: shell, navigation gating, axe-core
+npx playwright test --project=api        # the API over real HTTP under uvicorn
+npx playwright show-report               # traces and screenshots of failures
 ./scripts/live-suite.sh <deployed-url>   # full suite against a DEPLOYED site
 ```
 
@@ -309,7 +311,7 @@ semgrep --config auto
 | `workers/` | Scheduler / notification / analytics-refresh worker |
 | `packages/` | Shared TS types, generated API client, ui-kit |
 | `infrastructure/` | Compose, Caddy, Keycloak realm, SOPS |
-| `tests/e2e/` | Playwright, split by role and by flow |
+| `tests/e2e/` | Playwright. `shell/` browser + axe-core, `api/` real-HTTP. The golden and RBAC suites arrive with Slice 7 — see the note below. |
 | `docs/adr/` | Architecture decision records |
 
 ---
@@ -325,3 +327,19 @@ database schema · relationships · migrations · indexes · constraints · Pyda
 **And the live-test rule (hard, platform-wide):** a deploy is not finished when CI turns green. It is finished when the **full suite has run against the deployed site** and the counts are reported as **three numbers — passed / failed / skipped** — never an exit code. Wait for the deploy to actually be live first; free-tier cold starts can take ~2 minutes, and a short timeout is not proof of an outage.
 
 **A green build is not a working feature.** Build it, run it, and look at it in a browser.
+
+> **What the E2E suite can and cannot prove today (2026-08-17).** The
+> golden MVP scenario (§44) and the RBAC/MSD-boundary suite are **not**
+> written, and a file named after either would be worse than none.
+> Eleven of the golden scenario's fifteen steps have no table, route,
+> service or page, and `apps/web` currently makes **no API calls at all**
+> — no `fetch`, no `next-auth` wiring, no sign-in — so a browser cannot
+> drive the digital thread. Both belong to Slice 7, where
+> `IMPLEMENTATION_PLAN.md:436` already places them.
+>
+> What runs today: the shell in a real Chromium (routing, navigation
+> gating, keyboard reachability), **axe-core against WCAG 2.1 AA** — which
+> §11 has always required and which had never once executed until it was
+> wired up and immediately found real contrast failures — and the API
+> under uvicorn over real HTTP, where every registered GET is probed
+> anonymously and must refuse.

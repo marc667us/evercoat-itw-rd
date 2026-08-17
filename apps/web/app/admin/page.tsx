@@ -62,7 +62,7 @@ export default function AdministrationPage() {
           </p>
 
           <div className="mt-4 rounded border border-dashed border-slate-300 bg-white p-5">
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-slate-600">
               Not yet connected. The API is live at{" "}
               <code className="rounded bg-slate-100 px-1 text-xs">
                 /api/admin/members

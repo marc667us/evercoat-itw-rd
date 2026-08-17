@@ -97,11 +97,69 @@ misfiled as a blocked run.
 or stopping the `aw-*` containers to make room for it. Neither helps.
 
 **What must happen instead:** GATE-1 moves to Slice 7 and is re-scoped.
-An interim golden E2E covering only the arrows that DO exist
-(opportunity → project → stage gate → requirement → task → milestone →
-risk) is worth writing much sooner, because it would be the first time
-the stack has run end to end with a browser at all. That needs a
-`playwright.config.ts`, which does not exist.
+
+### ✅ 2026-08-17 — Playwright now exists, and the interim scope was corrected again
+
+`playwright.config.ts` and `tests/e2e/` are in place and **28 E2E tests
+pass**. The browsers were already cached; no download was needed.
+
+**The interim scope proposed above turned out to be wrong too, for a
+second reason nobody had recorded.** The plan was an E2E over the arrows
+that DO exist — opportunity → project → stage gate → requirement → task.
+That is also impossible in a browser: **`apps/web` makes no API calls at
+all.** There is no `fetch`, no `next-auth` wiring and no sign-in flow
+anywhere in the application. `next-auth` is a declared dependency that
+nothing imports. So the browser has no means of driving *any* domain
+operation, built or not.
+
+What was built instead, and what each part actually proves:
+
+- **`tests/e2e/shell/`** — the application rendered in real Chromium for
+  the first time. Root redirect, landmarks, product identity, the
+  navigation gating (an unbuilt destination must be inert, never a dead
+  link), sidebar collapse keeping labels in the accessibility tree, and
+  `/my-work` correctly 404ing rather than serving an empty shell.
+- **`tests/e2e/shell/accessibility.spec.ts`** — **axe-core against WCAG
+  2.1 AA**, which `CLAUDE.md` §11 has required since Slice 1 and which
+  had never executed. It failed on its first run, with real defects (see
+  below).
+- **`tests/e2e/api/`** — the API under **uvicorn over real HTTP**, not
+  Starlette's `TestClient`. Every registered GET is probed anonymously
+  and must refuse; the OpenAPI surface is checked to still carry the
+  Slice 2 write paths.
+
+Both servers are started by Playwright itself and the Next app is
+**rebuilt every run**, so a pass cannot come from a stale `.next` or from
+something a developer left running.
+
+**Verified the suite can actually fail**, rather than assuming: bumping
+`CURRENT_SLICE` to 2 makes the gating test fail (My Work becomes a link
+to a route that 404s), and it passes again when restored.
+
+### 🔴 The first axe-core run found real WCAG AA failures
+
+Present since Slice 1, on every page, and invisible to 26 passing web
+unit tests:
+
+- **Sidebar group headings** (`WORK`, `GOVERNANCE`) were `text-slate-400`
+  on white — about **2.9:1** against a required **4.5:1** for normal
+  text at 11px.
+- **`EntityHeader` and `StatusBadge` `<dt>` labels** — same class, same
+  failure. These appear on every entity screen from Slice 2 onward, so
+  the defect was about to be inherited by every future page.
+- **The `<code>` chip on `/admin`** — `slate-500` on a `slate-100`
+  background is ≈4.35:1, just under the line.
+
+All fixed. Disabled controls in `top-bar.tsx` deliberately keep
+`text-slate-400`: WCAG 1.4.3 exempts inactive components, and axe agreed
+— it did not flag them.
+
+**Still not covered, and named so it is not mistaken for done:** the rule
+this domain cares most about — that status is never conveyed by colour
+alone — cannot be scanned yet, because `StatusBadge` is not rendered on
+any page. Pass-green against fail-red is ΔE 4.2 under deuteranopia. When
+the Slice 2 screens land, the colour+icon+text assertion belongs in
+`accessibility.spec.ts`.
 
 **Still true and still outstanding:** the full stack has never been up at
 once. That remains the largest unproven assumption in the build.
@@ -213,6 +271,52 @@ The planned cutover (`core.rls_permissive()` → FALSE, FORCE on) removes
 that exemption and reintroduces the same class of defect for system and
 unscoped writes. `test_the_force_rls_cutover_must_revisit_the_chain_trigger`
 fails the moment the cutover lands and explains what to do.
+
+---
+
+## 🔴 E2E suite — Codex findings still OPEN (2026-08-17)
+
+Codex reviewed the new Playwright suite specifically for "tests that
+cannot fail". It found twelve; **five are fixed, seven remain**. Listed
+here rather than left in a review log, because a suite that is weaker
+than it looks is the thing it was built to prevent.
+
+Fixed: `reuseExistingServer` (it silently disabled the rebuild locally),
+the leak test now compares bodies rather than only status codes, the
+organization-header test no longer claims to cover the authenticated
+case, write operations are now checked for declared authentication, and
+the `not-started` marker contrast (`text-slate-300`, ≈1.5:1) — which
+**axe-core cannot catch**, because the marks are `aria-hidden` and axe
+skips hidden nodes for contrast.
+
+Still open:
+
+- [ ] **HIGH — the E2E suite does not run in CI.** `.github/workflows/ci.yml`
+      never installs the root package, never installs browsers, never
+      invokes it. Every PR can be green without Playwright or axe-core
+      having executed. This is the same shape as axe-core being "required
+      in CI" for months while never running.
+- [ ] **MEDIUM — the Administration submenu links to pages that do not
+      exist.** `EntityHeader` renders every `not-started` submenu entry as
+      a live link, and `app/admin/page.tsx` declares entries for absent
+      pages. The sidebar carefully renders unbuilt destinations inert; the
+      submenu does not, so the guarantee is only half-applied.
+- [ ] **MEDIUM — a structurally invalid token triggers an outbound JWKS
+      fetch.** `security.py` fetches keys before parsing the token at all,
+      so arbitrary garbage causes a 5-second outbound request and a 503 —
+      an avoidable availability vector. It should parse first and 401
+      immediately.
+- [ ] **MEDIUM — the navigation property test cannot tell "built" from
+      "linked".** It accepts every anchor as built. An item that lost its
+      `slice` and now points at a 404 would pass.
+- [ ] **MEDIUM — the write-paths test checks path keys, not methods.**
+      Removing POST from milestones/risks/members would leave the GET and
+      keep it green.
+- [ ] **MEDIUM — readiness accepts 503 unconditionally**, so a wrong
+      database URL leaves the run green. Where CI supplies a database it
+      should require 200.
+- [ ] **LOW — the keyboard test presses Tab once on one page**, and CI
+      `retries: 1` would let an intermittent failure pass as green.
 
 ---
 

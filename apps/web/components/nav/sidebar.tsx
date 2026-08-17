@@ -65,9 +65,15 @@ export function Sidebar({ permissions, counts = {} }: SidebarProps) {
             {/* The heading is decorative when collapsed, but the group is
                 still a real landmark for screen readers, so it stays in
                 the accessibility tree either way. */}
+            {/* slate-500, not slate-400. At 11px this is normal text, so
+                WCAG 2.1 AA wants 4.5:1 and slate-400 on white gives about
+                2.9:1. Found by the first axe-core run in this project;
+                the group headings had failed since Slice 1. Hierarchy is
+                still carried by size, weight, caps and tracking rather
+                than by making the text too faint to read. */}
             <h2
               className={[
-                "px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400",
+                "px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500",
                 collapsed ? "sr-only" : "",
               ].join(" ")}
             >

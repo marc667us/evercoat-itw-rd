@@ -170,13 +170,13 @@ export function TestResultStatus({
   return (
     <dl className="flex flex-col gap-2">
       <div className="flex items-baseline gap-2">
-        <dt className="text-[11px] uppercase tracking-wide text-slate-400">
+        <dt className="text-[11px] uppercase tracking-wide text-slate-500">
           Automatic evaluation
         </dt>
         <dd className="text-xs font-medium text-slate-700">{calculatedResult}</dd>
       </div>
       <div className="flex items-baseline gap-2">
-        <dt className="text-[11px] uppercase tracking-wide text-slate-400">
+        <dt className="text-[11px] uppercase tracking-wide text-slate-500">
           Final disposition
         </dt>
         <dd>

@@ -48,7 +48,14 @@ const STATE_MARK: Record<
 > = {
   complete: { glyph: "✓", label: "complete", className: "text-status-pass" },
   active: { glyph: "●", label: "active", className: "text-slate-900" },
-  "not-started": { glyph: "○", label: "not started", className: "text-slate-300" },
+  // slate-500, not slate-300. These glyphs carry workflow state, so they
+  // are content, not decoration — and slate-300 on white is about 1.5:1,
+  // which is not readable. axe-core does NOT catch this: the marks are
+  // `aria-hidden` (their meaning is already given in text for screen
+  // readers), and axe skips hidden nodes for contrast. So an automated
+  // scan can pass while a sighted user cannot see the state at all.
+  // Found by review, not by the scanner.
+  "not-started": { glyph: "○", label: "not started", className: "text-slate-500" },
   blocked: { glyph: "!", label: "blocked", className: "text-status-conditional" },
   failed: { glyph: "✕", label: "failed", className: "text-status-fail" },
 };
@@ -111,7 +118,7 @@ export function EntityHeader({
         <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1.5">
           {fields.map((f) => (
             <div key={f.label} className="flex items-baseline gap-1.5">
-              <dt className="text-[11px] uppercase tracking-wide text-slate-400">
+              <dt className="text-[11px] uppercase tracking-wide text-slate-500">
                 {f.label}
               </dt>
               <dd className="text-xs font-medium text-slate-700">{f.value}</dd>

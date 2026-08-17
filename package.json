@@ -1,0 +1,19 @@
+{
+  "name": "evercoat-itw-rd",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EvercoatITWRD APP — repository root. Holds the end-to-end suite only; the applications live in apps/.",
+  "scripts": {
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:report": "playwright show-report",
+    "web:build": "npm --prefix apps/web run build"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.1",
+    "@playwright/test": "^1.49.0"
+  },
+  "engines": {
+    "node": ">=20.11"
+  }
+}
