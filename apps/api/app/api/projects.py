@@ -14,6 +14,7 @@ be called from the Celery worker.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from decimal import Decimal
 
@@ -23,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.security import Principal, get_db, require_permission, require_project_member
+from app.core.tenancy import CrossTenantReferenceError
 from app.domains.pipeline.service import (
     StageNotFoundError,
     StageTransitionError,
@@ -31,6 +33,28 @@ from app.domains.pipeline.service import (
     stage_history,
 )
 from app.domains.projects.dashboard import project_dashboard
+from app.domains.projects.members import (
+    MemberNotFoundError,
+    ProjectLeadNotRemovableError,
+    add_member,
+    list_members,
+    remove_member,
+)
+from app.domains.projects.planning import (
+    MilestoneError,
+    MilestoneInput,
+    MilestoneNotFoundError,
+    RiskDuplicateError,
+    RiskInput,
+    RiskInvalidError,
+    RiskNotFoundError,
+    create_milestone,
+    create_risk,
+    list_milestones,
+    list_risks,
+    set_milestone_status,
+    update_risk,
+)
 from app.domains.requirements.service import (
     RequirementError,
     RequirementImmutableError,
@@ -436,3 +460,303 @@ def post_requirement_revision(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
     return {"requirement_id": new_id}
+
+
+# ---------------------------------------------------------------------------
+# Milestones and risks
+# ---------------------------------------------------------------------------
+# Both tables, their indexes, their RLS policies and their dashboard
+# counters shipped in Slice 2. Neither had a writer, so both counters were
+# structurally incapable of showing anything but zero. These are the
+# missing halves.
+
+
+class MilestoneCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    planned_date: dt.date
+    description: str | None = None
+
+
+class MilestoneStatus(BaseModel):
+    status: str = Field(pattern="^(planned|in_progress|met|missed|cancelled)$")
+    # Optional: the service records today when a milestone is closed
+    # without one. Supplying it is for back-dating a milestone that was
+    # actually met last week.
+    actual_date: dt.date | None = None
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class RiskCreate(BaseModel):
+    risk_code: str = Field(min_length=2, max_length=50)
+    title: str = Field(min_length=1, max_length=200)
+    probability: str = Field(pattern="^(low|medium|high)$")
+    impact: str = Field(pattern="^(low|medium|high)$")
+    category: str = Field(
+        default="technical",
+        pattern="^(technical|material|process|schedule|commercial|regulatory|supply)$",
+    )
+    description: str | None = None
+    mitigation: str | None = None
+    owner_user_id: uuid.UUID | None = None
+
+
+class RiskUpdate(BaseModel):
+    """Every field optional; None means "leave unchanged".
+
+    A PATCH that silently blanked the mitigation because the client did
+    not resend it is how a risk stops being tracked without anyone
+    deciding that.
+    """
+
+    status: str | None = Field(default=None, pattern="^(open|mitigating|closed|accepted|realised)$")
+    mitigation: str | None = None
+    probability: str | None = Field(default=None, pattern="^(low|medium|high)$")
+    impact: str | None = Field(default=None, pattern="^(low|medium|high)$")
+    owner_user_id: uuid.UUID | None = None
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@router.get("/{project_id}/milestones", tags=["projects"])
+def get_milestones(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> dict:
+    return {
+        "project_id": project_id,
+        "milestones": list_milestones(
+            session, project_id=project_id, organization_id=principal.organization_id
+        ),
+    }
+
+
+@router.post("/{project_id}/milestones", status_code=status.HTTP_201_CREATED, tags=["projects"])
+def post_milestone(
+    project_id: uuid.UUID,
+    payload: MilestoneCreate,
+    principal: Principal = Depends(require_permission("milestone.manage")),
+    _member: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> dict:
+    milestone_id = create_milestone(
+        session,
+        project_id=project_id,
+        organization_id=principal.organization_id,
+        actor_id=principal.user_id,
+        spec=MilestoneInput(
+            name=payload.name,
+            planned_date=payload.planned_date,
+            description=payload.description,
+        ),
+    )
+    return {"milestone_id": milestone_id}
+
+
+@router.patch("/{project_id}/milestones/{milestone_id}/status", tags=["projects"])
+def patch_milestone_status(
+    project_id: uuid.UUID,
+    milestone_id: uuid.UUID,
+    payload: MilestoneStatus,
+    principal: Principal = Depends(require_permission("milestone.manage")),
+    _member: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> dict:
+    try:
+        return set_milestone_status(
+            session,
+            milestone_id=milestone_id,
+            # The project from the PATH, which is what
+            # require_project_member() authorised. Without it the service
+            # would accept a milestone belonging to a different project in
+            # the same organization.
+            project_id=project_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            status=payload.status,
+            actual_date=payload.actual_date,
+            reason=payload.reason,
+        )
+    except MilestoneNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except MilestoneError as exc:
+        # Well-formed request, incoherent combination -- an in-flight
+        # status carrying a completion date.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+@router.get("/{project_id}/risks", tags=["projects"])
+def get_risks(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> dict:
+    return {
+        "project_id": project_id,
+        "risks": list_risks(
+            session, project_id=project_id, organization_id=principal.organization_id
+        ),
+    }
+
+
+@router.post("/{project_id}/risks", status_code=status.HTTP_201_CREATED, tags=["projects"])
+def post_risk(
+    project_id: uuid.UUID,
+    payload: RiskCreate,
+    principal: Principal = Depends(require_permission("risk.create")),
+    _member: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> dict:
+    try:
+        risk_id = create_risk(
+            session,
+            project_id=project_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            spec=RiskInput(
+                risk_code=payload.risk_code,
+                title=payload.title,
+                probability=payload.probability,
+                impact=payload.impact,
+                category=payload.category,
+                description=payload.description,
+                mitigation=payload.mitigation,
+                owner_user_id=payload.owner_user_id,
+            ),
+        )
+    except RiskDuplicateError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except CrossTenantReferenceError as exc:
+        # Explicitly caught. This is NOT a subclass of RiskError, and the
+        # last time that was overlooked the exception escaped the handler
+        # and surfaced as a 500 -- a fix introducing its own defect.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    return {"risk_id": risk_id}
+
+
+@router.patch("/{project_id}/risks/{risk_id}", tags=["projects"])
+def patch_risk(
+    project_id: uuid.UUID,
+    risk_id: uuid.UUID,
+    payload: RiskUpdate,
+    principal: Principal = Depends(require_permission("risk.manage")),
+    _member: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> dict:
+    try:
+        return update_risk(
+            session,
+            risk_id=risk_id,
+            project_id=project_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            reason=payload.reason,
+            status=payload.status,
+            mitigation=payload.mitigation,
+            probability=payload.probability,
+            impact=payload.impact,
+            owner_user_id=payload.owner_user_id,
+        )
+    except RiskNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except RiskInvalidError as exc:
+        # A database CHECK that reaches the client as a 500 is a defect
+        # even when the refusal itself is correct.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except CrossTenantReferenceError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Project members
+# ---------------------------------------------------------------------------
+# `project.assign_member` was seeded in migration 002 and granted to the
+# Lead. No route used it, so a project could never gain a second member.
+# Membership is the RLS predicate for every project-scoped table, which
+# makes this the difference between a colleague seeing the project's data
+# and not.
+
+
+class MemberAdd(BaseModel):
+    user_id: uuid.UUID
+    project_role: str = Field(pattern="^(lead|chemist|engineer|technician|qa|director|observer)$")
+
+
+class MemberRemove(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@router.get("/{project_id}/members", tags=["projects"])
+def get_members(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> dict:
+    return {
+        "project_id": project_id,
+        "members": list_members(
+            session, project_id=project_id, organization_id=principal.organization_id
+        ),
+    }
+
+
+@router.post("/{project_id}/members", status_code=status.HTTP_201_CREATED, tags=["projects"])
+def post_member(
+    project_id: uuid.UUID,
+    payload: MemberAdd,
+    principal: Principal = Depends(require_permission("project.assign_member")),
+    _member: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> dict:
+    try:
+        member_id = add_member(
+            session,
+            project_id=project_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            user_id=payload.user_id,
+            project_role=payload.project_role,
+        )
+    except CrossTenantReferenceError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    return {"member_id": member_id}
+
+
+@router.post(
+    "/{project_id}/members/{user_id}/remove",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["projects"],
+)
+def post_member_removal(
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload: MemberRemove,
+    principal: Principal = Depends(require_permission("project.assign_member")),
+    _member: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> None:
+    """POST /remove rather than DELETE /members/{user_id}.
+
+    Removal takes a mandatory reason, and a DELETE with a required body is
+    both awkward for clients and, per RFC 9110, of undefined semantics --
+    several proxies and HTTP clients drop the body. The same reasoning
+    already applies to requirement revision, which is POST /revise rather
+    than PUT.
+
+    It is also not a deletion: the membership row survives as `inactive`,
+    so the record of who once had access remains.
+    """
+    try:
+        remove_member(
+            session,
+            project_id=project_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            user_id=user_id,
+            reason=payload.reason,
+        )
+    except ProjectLeadNotRemovableError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except MemberNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc

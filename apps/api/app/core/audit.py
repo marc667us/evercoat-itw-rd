@@ -184,18 +184,34 @@ def write_audit(session: Session, event: AuditEvent) -> int:
 
 
 def verify_chain(
-    session: Session, *, start_id: int = 0, limit: int | None = None
+    session: Session,
+    *,
+    organization_id: uuid.UUID | None,
+    start_id: int = 0,
+    limit: int | None = None,
 ) -> ChainBreak | None:
-    """Walk the chain in id order and return the first break, or None.
+    """Walk ONE organization's chain in id order; return the first break.
 
     Returns on the *first* break rather than collecting all of them: after
     one break every subsequent row mismatches by construction, so a full
     list would be noise. The first break is the interesting one.
 
-    Runs against whatever rows RLS lets the caller see, so an
-    organization-scoped verification is a legitimate operation for that
-    organization's administrator -- but a full-chain verification requires
-    a role that can read every row, and that is a break-glass action.
+    **``organization_id`` is required, and that is the point.** Since
+    migration 011 the chain is per organization: ``prev_hash`` resolves
+    against the last row carrying the same ``organization_id``. A walk of
+    the whole table therefore sees several independent chains interleaved
+    in one id sequence and reports each boundary as a break -- a false
+    alarm, and a tamper alarm that cries wolf is one that stops being read.
+
+    Passing ``None`` is meaningful rather than a default: it verifies the
+    SYSTEM chain, the rows written by the platform itself (migrations,
+    maintenance, the bootstrap path) which carry no organization.
+
+    Before 011 this argument did not exist and the function walked
+    whatever RLS happened to show the caller. That worked only because the
+    *writer* was filtered by the same policy, so the scope was correct by
+    coincidence rather than by construction -- and it silently produced a
+    different answer depending on which role called it.
     """
     # One statement with a NULL-tolerant LIMIT rather than concatenating
     # a clause. The concatenated version was in fact safe -- `limit` was
@@ -211,14 +227,50 @@ def verify_chain(
                    reason, occurred_at, prev_hash, row_hash
             FROM audit.events
             WHERE id > :start_id
+              -- IS NOT DISTINCT FROM, not `=`: the system chain is
+              -- selected by organization_id IS NULL, and `= NULL` would
+              -- silently match nothing and report an empty chain as
+              -- intact.
+              AND organization_id IS NOT DISTINCT FROM :organization_id
             ORDER BY id ASC
             LIMIT :limit
             """
         ),
-        {"start_id": start_id, "limit": limit},
+        {"start_id": start_id, "limit": limit, "organization_id": organization_id},
     ).mappings()
 
-    expected_prev: str | None = None
+    # Seed the expectation for the FIRST row, rather than trusting it.
+    #
+    # Skipping the first row's prev_hash check leaves the head of the walk
+    # unauthenticated: delete an organization's genesis event and its
+    # second event becomes the first row returned, whose prev_hash names a
+    # row that no longer exists -- and the walk reports the chain intact.
+    # Deleting a row is precisely what this mechanism exists to detect
+    # (Codex review, finding 4).
+    #
+    # A full walk (start_id = 0) must begin at GENESIS. A bounded walk
+    # must match the row_hash of the last row of the SAME chain at or
+    # before the boundary, which is what the writer would have chained on.
+    if start_id <= 0:
+        expected_prev: str | None = GENESIS
+    else:
+        expected_prev = session.execute(
+            text(
+                """
+                SELECT row_hash
+                FROM audit.events
+                WHERE id <= :start_id
+                  AND organization_id IS NOT DISTINCT FROM :organization_id
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ),
+            {"start_id": start_id, "organization_id": organization_id},
+        ).scalar_one_or_none()
+        # None means there is no earlier row in this chain, so the first
+        # row returned really is the chain's head and must say GENESIS.
+        if expected_prev is None:
+            expected_prev = GENESIS
 
     for row in rows:
         if expected_prev is not None and row["prev_hash"] != expected_prev:

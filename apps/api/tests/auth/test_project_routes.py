@@ -16,7 +16,6 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
 
 pytestmark = [pytest.mark.db]
 
@@ -30,112 +29,9 @@ def client():
     return TestClient(app, raise_server_exceptions=False)
 
 
-@pytest.fixture
-def lead_ctx(owner_session):
-    """A lead who is a member of one project and not of another.
-
-    The second project is the point: same organization, holds every
-    permission, still must not reach it.
-    """
-    suffix = uuid.uuid4().hex[:8]
-    sub = f"routes-{suffix}"
-
-    org_id = owner_session.execute(
-        text("INSERT INTO core.organizations (code,name) VALUES (:c,:n) RETURNING id"),
-        {"c": f"RT-{suffix}", "n": "Route Test Org"},
-    ).scalar_one()
-    user_id = owner_session.execute(
-        text(
-            "INSERT INTO core.users (keycloak_sub,email,display_name) "
-            "VALUES (:s,:e,'Route Lead') RETURNING id"
-        ),
-        {"s": sub, "e": f"{sub}@example.test"},
-    ).scalar_one()
-    member_id = owner_session.execute(
-        text(
-            "INSERT INTO core.organization_members (organization_id,user_id) "
-            "VALUES (:o,:u) RETURNING id"
-        ),
-        {"o": org_id, "u": user_id},
-    ).scalar_one()
-    owner_session.execute(
-        text(
-            "INSERT INTO core.member_roles (member_id, role_id) "
-            "SELECT :m, id FROM core.roles WHERE code='product_development_lead'"
-        ),
-        {"m": member_id},
-    )
-
-    for code, name, seq in [("REQUIREMENTS", "Requirements", 1), ("RESEARCH", "Research", 2)]:
-        owner_session.execute(
-            text(
-                "INSERT INTO workflow.stage_definitions "
-                "(organization_id,stage_code,name,sequence) VALUES (:o,:c,:n,:s)"
-            ),
-            {"o": org_id, "c": code, "n": name, "s": seq},
-        )
-
-    mine = owner_session.execute(
-        text(
-            "INSERT INTO projects.projects (organization_id,project_code,name,"
-            "confidentiality) VALUES (:o,:c,'My Project','restricted') RETURNING id"
-        ),
-        {"o": org_id, "c": f"RDP-MINE-{suffix}"},
-    ).scalar_one()
-    theirs = owner_session.execute(
-        text(
-            "INSERT INTO projects.projects (organization_id,project_code,name,"
-            "confidentiality) VALUES (:o,:c,'Other Project','restricted') RETURNING id"
-        ),
-        {"o": org_id, "c": f"RDP-THEIRS-{suffix}"},
-    ).scalar_one()
-    owner_session.execute(
-        text(
-            "INSERT INTO projects.project_members "
-            "(organization_id,project_id,user_id,project_role) "
-            "VALUES (:o,:p,:u,'lead')"
-        ),
-        {"o": org_id, "p": mine, "u": user_id},
-    )
-    owner_session.commit()
-
-    yield {"org_id": org_id, "user_id": user_id, "sub": sub, "mine": mine, "theirs": theirs}
-
-    owner_session.rollback()
-    # stage_transitions is append-only by trigger -- the same design that
-    # makes the history trustworthy also makes it undeletable. Tests must
-    # disable the trigger explicitly (as owner) rather than discovering
-    # the refusal in teardown, where it cascades: the raise poisons the
-    # transaction and every subsequent delete fails, turning one expected
-    # refusal into a wall of errors that look like real failures.
-    owner_session.execute(
-        text("ALTER TABLE workflow.stage_transitions DISABLE TRIGGER stage_transitions_immutable")
-    )
-    for stmt in [
-        "DELETE FROM projects.requirements WHERE organization_id=:o",
-        "DELETE FROM workflow.stage_transitions WHERE organization_id=:o",
-        "DELETE FROM workflow.project_stages WHERE organization_id=:o",
-        "DELETE FROM workflow.stage_definitions WHERE organization_id=:o",
-        "DELETE FROM projects.project_members WHERE organization_id=:o",
-        "DELETE FROM projects.projects WHERE organization_id=:o",
-        "DELETE FROM core.member_roles WHERE member_id=:m",
-        "DELETE FROM core.organization_members WHERE id=:m",
-        "DELETE FROM core.organizations WHERE id=:o",
-    ]:
-        owner_session.execute(text(stmt), {"o": org_id, "m": member_id})
-    owner_session.execute(text("DELETE FROM core.users WHERE id=:u"), {"u": user_id})
-    owner_session.execute(
-        text("ALTER TABLE workflow.stage_transitions ENABLE TRIGGER stage_transitions_immutable")
-    )
-    owner_session.commit()
-
-
-@pytest.fixture
-def auth(make_token, lead_ctx):
-    return {
-        "Authorization": f"Bearer {make_token(sub=lead_ctx['sub'])}",
-        ORG_HEADER: str(lead_ctx["org_id"]),
-    }
+# `lead_ctx` and `auth` now live in tests/auth/conftest.py, because more
+# than one module drives routes as a Lead and the fixture encodes the
+# tenancy setup those modules must agree on.
 
 
 # ---------------------------------------------------------------------------

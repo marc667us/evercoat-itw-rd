@@ -253,18 +253,25 @@ def test_chain_detects_tampering(owner_session, audit_chain):
 
     # Verify only the rows this test created, not the whole table.
     #
-    # The chain is GLOBAL and single-linked, so it forks when two
-    # transactions each read the tail before either commits: both write
-    # prev_hash='GENESIS' and the walk reports a break that is an
-    # artefact of concurrency, not tampering. A test suite running many
-    # transactions reproduces this immediately.
+    # This comment previously said the chain was GLOBAL and forked "when
+    # two transactions each read the tail before either commits". That was
+    # wrong, and it was wrong in a way worth recording: audit.chain_row()
+    # takes pg_advisory_xact_lock(), which is transaction-scoped, so the
+    # second writer blocks until the first commits and then reads a fresh
+    # snapshot. Concurrency alone never forked this chain.
     #
-    # Recorded as a real limitation in TODO.md, not papered over: a
-    # tamper-evidence mechanism that reports false breaks under normal
-    # concurrent load is one whose alarms get ignored. The fix is to
-    # chain per organization rather than globally.
+    # What actually happened was RLS: the trigger's tail read was SECURITY
+    # INVOKER and filtered by audit_org_isolation, so every writer chained
+    # onto its own organization's tail. Two organizations therefore both
+    # started at GENESIS -- the observed symptom -- for a reason that had
+    # nothing to do with concurrency. Migration 011 makes the per-
+    # organization scope explicit and stops unscoped writers splicing
+    # across tenants.
+    #
+    # The fixture writes rows with no organization_id, so these belong to
+    # the SYSTEM chain and organization_id=None is what selects them.
     start = audit_chain[0] - 1
-    assert verify_chain(owner_session, start_id=start) is None, (
+    assert verify_chain(owner_session, organization_id=None, start_id=start) is None, (
         "the rows this test just wrote must verify"
     )
 
@@ -276,7 +283,7 @@ def test_chain_detects_tampering(owner_session, audit_chain):
     )
     owner_session.execute(text("ALTER TABLE audit.events ENABLE TRIGGER audit_events_no_update"))
 
-    break_found = verify_chain(owner_session, start_id=start)
+    break_found = verify_chain(owner_session, organization_id=None, start_id=start)
     assert break_found is not None, "tampering went undetected"
     assert break_found.event_id == target, (
         f"expected the break at the altered row {target}, got {break_found.event_id}"

@@ -125,6 +125,12 @@ def verify_audit_chain(self, organization_id: str) -> dict[str, Any]:
     Scheduled rather than on-demand because tamper *evidence* is only
     useful if someone looks. A chain nobody verifies is a chain that
     detects nothing.
+
+    The organization is passed to `verify_chain` explicitly rather than
+    left to RLS. Both scoped the walk to the same rows before migration
+    011, so the previous call was not wrong -- but it was correct by
+    coincidence, and a verifier whose scope is implicit reports a
+    different answer when the role or the policy changes underneath it.
     """
     from app.core.audit import verify_chain
 
@@ -132,7 +138,7 @@ def verify_audit_chain(self, organization_id: str) -> dict[str, Any]:
     ctx = RequestContext(organization_id=org, user_id=_SYSTEM_ACTOR)
 
     with session_scope(ctx) as session:
-        result = verify_chain(session)
+        result = verify_chain(session, organization_id=org)
 
     if result is None:
         log_queue("audit_chain_verified", organization_id=organization_id, status="intact")

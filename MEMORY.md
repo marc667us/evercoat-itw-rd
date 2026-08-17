@@ -38,7 +38,19 @@ Durable project facts. Not a debug log — temporary work belongs in `TODO.md` a
 ## Slice 1 outcome — code-complete, gate-incomplete
 
 - **63 tests passing** (API 37, Web 26). Migrations applied via Alembic twice from empty, second run a no-op. API served over HTTP with correct health, auth and metrics responses. Web built and served.
-- **The golden E2E has never run.** Deferred by the operator 2026-08-16. `TODO.md` GATE-1 carries it. Do not let a later slice assume it passed.
+- **The golden E2E has never run — and CANNOT run yet.** Corrected 2026-08-17. It was recorded as deferred and blocked by Docker VM memory; both were wrong. Eleven of the scenario's fifteen arrows (formula, formula version, lab batch, sample, test, raw measurement, failure investigation, the approval engine) have **no table, no route, no service and no page**, and Playwright has **no config and no spec files** anywhere in the repository — only devDependencies and an `npm run e2e` script. It belongs in Slice 7, where `IMPLEMENTATION_PLAN.md:436` already places it. Do not let a later session try to "just run" it, and do not stop the `aw-*` containers to make room.
+
+## Durable facts established 2026-08-17
+
+- **The audit chain is PER ORGANIZATION** (migration 011). `prev_hash` resolves against the last row with the same `organization_id`; `NULL` forms its own system chain. **Verification must name an organization** — `verify_chain` requires the argument. A walk of the whole table sees several independent chains interleaved in one id sequence and reports their boundaries as breaks.
+- **Why the earlier "forks under concurrency" record was wrong:** `audit.chain_row()` already took `pg_advisory_xact_lock()`, which is transaction-scoped, so concurrency could not fork it. The chain was already per-organization because the trigger was SECURITY INVOKER and its tail read was filtered by RLS — **correct by accident**. The real defect was an unscoped writer (no `app.current_org`) splicing one tenant's chain onto another's. A symptom can be observed correctly and explained wrongly.
+- **`audit.events`' insert policy was `WITH CHECK (true)`** until 011 — any session could forge audit rows attributed to any organization.
+- **After a FORCE-RLS cutover the chain trigger must be revisited.** It is immune today only because RLS is ENABLED but not FORCED and an owner is exempt from a non-forced policy. `test_the_force_rls_cutover_must_revisit_the_chain_trigger` fails the moment that changes.
+- **`digest()` lives in `public`** (pgcrypto), which is why `chain_row()`'s pinned `search_path` includes it. Narrowing that search_path breaks the hash chain.
+- **Milestones, risks and project members now have write paths** (migration 012). The milestone and risk permissions **did not exist in the catalogue at all** — migration 002 seeded codes for every future domain and none for these.
+- **A project's lead cannot be removed from its member list.** Migration 006 rescues the lead's view of the project ROW only; every child policy tests `core.is_project_member` and nothing else, so removing them from a restricted project leaves the header and none of its contents — which presents as "the project is empty", not as a permission error.
+- **`mypy` is not installed** in this environment, so `CLAUDE.md` §13's `mypy app` cannot run. Ruff check and format do.
+- **Only three web pages exist** — `/`, `/dashboard`, `/admin`. Every Slice 2 API surface is unreachable by a human, and `CURRENT_SLICE = 1` in `apps/web/lib/navigation.ts` disables the rest of the sidebar.
 
 ### Five defects that only running things exposed
 
