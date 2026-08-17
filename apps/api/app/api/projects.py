@@ -30,6 +30,7 @@ from app.domains.pipeline.service import (
     project_pipeline,
     stage_history,
 )
+from app.domains.projects.dashboard import project_dashboard
 from app.domains.requirements.service import (
     RequirementError,
     RequirementImmutableError,
@@ -240,6 +241,28 @@ def get_project(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
     _ = principal
     return ProjectSummary(**row)
+
+
+@router.get("/{project_id}/dashboard", tags=["projects"])
+def get_dashboard(
+    project_id: uuid.UUID,
+    principal: Principal = Depends(require_project_member()),
+    session: Session = Depends(get_db),
+) -> dict:
+    """The project workspace, shaped to CLAUDE.md §11's five questions.
+
+    Returns one key per question rather than whatever the first screen
+    needed, so a missing answer shows up as a missing key instead of as a
+    panel somebody forgot. Every count ships with the records behind it --
+    a KPI tile that cannot say *which* four are overdue is a number the
+    user has to re-derive by hand.
+    """
+    data = project_dashboard(
+        session, project_id=project_id, organization_id=principal.organization_id
+    )
+    if data["context"] is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+    return data
 
 
 # ---------------------------------------------------------------------------

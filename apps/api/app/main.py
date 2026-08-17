@@ -20,8 +20,11 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from app.api.admin import router as admin_router
+from app.api.admin_stage_gates import router as admin_stage_gates_router
 from app.api.health import router as health_router
+from app.api.opportunities import router as opportunities_router
 from app.api.projects import router as projects_router
+from app.api.tasks import router as tasks_router
 from app.core.config import settings
 from app.core.logging import configure_logging
 
@@ -146,7 +149,16 @@ def create_app() -> FastAPI:
     # permissions. Live from Slice 1 (ADR-021): a configuration value
     # with no screen is a value nobody can write.
     application.include_router(admin_router, prefix="/api/admin")
+    # Administration section 2 -- stage-gate configuration. Same prefix,
+    # separate module: the pipeline reads stage_definitions on every
+    # transition, so ADR-021 requires the screen that writes them to ship
+    # in the same slice as the code that reads them.
+    application.include_router(admin_stage_gates_router, prefix="/api/admin")
     application.include_router(projects_router, prefix="/api/projects")
+    application.include_router(opportunities_router, prefix="/api/opportunities")
+    # My Work. Mounted at its own prefix rather than under /api/projects
+    # because a task need not belong to a project at all.
+    application.include_router(tasks_router, prefix="/api/my-work")
 
     if settings.metrics_enabled:
 
