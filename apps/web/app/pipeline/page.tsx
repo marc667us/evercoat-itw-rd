@@ -7,7 +7,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import {
   PROJECTS,
   STAGES,
-  requirementCounts,
+  requirementSetStatus,
   userName,
 } from "@/lib/demo/dataset";
 
@@ -67,7 +67,7 @@ export default function PipelinePage() {
                   </li>
                 )}
                 {inStage.map((p) => {
-                  const c = requirementCounts(p.requirements);
+                  const verdict = requirementSetStatus(p.requirements);
                   return (
                     <li key={p.project_code}>
                       <Link
@@ -83,22 +83,22 @@ export default function PipelinePage() {
                         <div className="mt-1 text-[11px] text-slate-600">
                           Lead {userName(p.lead)}
                         </div>
+                        {/* A card with no requirements said "ALL PASSED".
+                            Absence of evidence is not success. */}
                         <div className="mt-2">
-                          {c.red > 0 ? (
-                            <StatusBadge
-                              status="red"
-                              label={`${c.red} FAILED`}
-                              size="sm"
-                            />
-                          ) : c.yellow > 0 ? (
+                          {verdict.status === "yellow" ? (
                             <StatusBadge
                               status="yellow"
-                              label={`${c.yellow} UNVERIFIED`}
-                              reason="Requirements not yet measured, or passing on a low margin."
+                              label={verdict.label}
+                              reason={verdict.reason ?? ""}
                               size="sm"
                             />
                           ) : (
-                            <StatusBadge status="green" label="ALL PASSED" size="sm" />
+                            <StatusBadge
+                              status={verdict.status}
+                              label={verdict.label}
+                              size="sm"
+                            />
                           )}
                         </div>
                       </Link>

@@ -26,7 +26,9 @@
     "the build clock makes two builds incomparable and makes a snapshot",
     "test impossible to write.",
     "",
-    "NOTE: requirements carry NO stored verification status. The state is derived from measured_value against minimum/maximum and warning_threshold, because CLAUDE.md section 10 requires it to be computed and never a field anyone sets. A stored `result` column was removed for exactly that reason -- it could disagree with the measurement beside it, and did."
+    "NOTE: requirements carry NO stored verification status. The state is derived from measured_value against minimum/maximum and warning_threshold, because CLAUDE.md section 10 requires it to be computed and never a field anyone sets. A stored `result` column was removed for exactly that reason -- it could disagree with the measurement beside it, and did.",
+    "Warning bands are TWO fields, warning_minimum and warning_maximum, not one shared threshold. A requirement with both a minimum and a maximum cannot express its warning band with a single number -- every reading except that exact value would land inside one side of the band.",
+    "stages carry normal_path. FAILURE_REWORK is false: it is entered only on a critical failure, so including it in a progress denominator makes a healthy project permanently incomplete."
   ],
   "organization": {
     "name": "ITW Evercoat (Demo)",
@@ -93,7 +95,8 @@
       "required_deliverables": "Approved requirement set",
       "responsible_role": "product_development_lead",
       "requires_approval": true,
-      "approval_role": "product_development_lead"
+      "approval_role": "product_development_lead",
+      "normal_path": true
     },
     {
       "stage_code": "RESEARCH",
@@ -103,7 +106,8 @@
       "required_deliverables": "Research dossier",
       "responsible_role": "product_development_chemist",
       "requires_approval": false,
-      "approval_role": null
+      "approval_role": null,
+      "normal_path": true
     },
     {
       "stage_code": "MATERIALS",
@@ -113,7 +117,8 @@
       "required_deliverables": "Candidate material set",
       "responsible_role": "product_development_chemist",
       "requires_approval": false,
-      "approval_role": null
+      "approval_role": null,
+      "normal_path": true
     },
     {
       "stage_code": "FORMULATION",
@@ -123,7 +128,8 @@
       "required_deliverables": "Submitted formula version",
       "responsible_role": "product_development_chemist",
       "requires_approval": true,
-      "approval_role": "product_development_lead"
+      "approval_role": "product_development_lead",
+      "normal_path": true
     },
     {
       "stage_code": "LABORATORY",
@@ -133,7 +139,8 @@
       "required_deliverables": "Completed batch with samples",
       "responsible_role": "laboratory_technician",
       "requires_approval": false,
-      "approval_role": null
+      "approval_role": null,
+      "normal_path": true
     },
     {
       "stage_code": "TESTING",
@@ -143,7 +150,8 @@
       "required_deliverables": "Approved test results",
       "responsible_role": "product_development_engineer",
       "requires_approval": true,
-      "approval_role": "product_development_lead"
+      "approval_role": "product_development_lead",
+      "normal_path": true
     },
     {
       "stage_code": "FAILURE_REWORK",
@@ -153,7 +161,8 @@
       "required_deliverables": "Accepted root cause and corrective action",
       "responsible_role": "product_development_chemist",
       "requires_approval": true,
-      "approval_role": "product_development_lead"
+      "approval_role": "product_development_lead",
+      "normal_path": false
     },
     {
       "stage_code": "VALIDATION_CANDIDATE",
@@ -163,7 +172,8 @@
       "required_deliverables": "Nominated formula version",
       "responsible_role": "product_development_lead",
       "requires_approval": true,
-      "approval_role": "product_development_director"
+      "approval_role": "product_development_director",
+      "normal_path": true
     }
   ],
   "opportunities": [
@@ -358,7 +368,8 @@
           "verification_method": "laboratory_test",
           "test_method_code": "ASTM D792",
           "measured_value": "1.19",
-          "warning_threshold": "1.22"
+          "warning_minimum": null,
+          "warning_maximum": "1.22"
         },
         {
           "requirement_code": "REQ-014-02",
@@ -372,7 +383,8 @@
           "verification_method": "laboratory_test",
           "test_method_code": "ASTM D4541",
           "measured_value": "6.8",
-          "warning_threshold": "7.0"
+          "warning_minimum": "7.0",
+          "warning_maximum": null
         },
         {
           "requirement_code": "REQ-014-03",
@@ -386,7 +398,8 @@
           "verification_method": "laboratory_test",
           "test_method_code": "INT-SAND-01",
           "measured_value": "22",
-          "warning_threshold": "24"
+          "warning_minimum": null,
+          "warning_maximum": "24"
         },
         {
           "requirement_code": "REQ-014-04",
@@ -400,7 +413,8 @@
           "verification_method": "laboratory_test",
           "test_method_code": "INT-SAND-01",
           "measured_value": "47",
-          "warning_threshold": "38"
+          "warning_minimum": null,
+          "warning_maximum": "38"
         },
         {
           "requirement_code": "REQ-014-05",
@@ -414,7 +428,8 @@
           "verification_method": "laboratory_test",
           "test_method_code": "INT-SHR-02",
           "measured_value": null,
-          "warning_threshold": "0.45"
+          "warning_minimum": null,
+          "warning_maximum": "0.45"
         },
         {
           "requirement_code": "REQ-014-06",
@@ -428,7 +443,8 @@
           "verification_method": "stability_study",
           "test_method_code": "INT-STAB-01",
           "measured_value": null,
-          "warning_threshold": null
+          "warning_minimum": null,
+          "warning_maximum": null
         }
       ]
     },
@@ -523,7 +539,8 @@
           "verification_method": "laboratory_test",
           "test_method_code": "ASTM D7091",
           "measured_value": null,
-          "warning_threshold": "130"
+          "warning_minimum": "130",
+          "warning_maximum": null
         },
         {
           "requirement_code": "REQ-009-02",
@@ -537,7 +554,8 @@
           "verification_method": "laboratory_test",
           "test_method_code": "ASTM D4400",
           "measured_value": null,
-          "warning_threshold": "1.8"
+          "warning_minimum": null,
+          "warning_maximum": "1.8"
         }
       ]
     },
@@ -661,7 +679,8 @@
           "verification_method": "laboratory_test",
           "test_method_code": "ASTM B117",
           "measured_value": "4.6",
-          "warning_threshold": "4.4"
+          "warning_minimum": "4.4",
+          "warning_maximum": null
         },
         {
           "requirement_code": "REQ-003-02",
@@ -675,7 +694,8 @@
           "verification_method": "laboratory_test",
           "test_method_code": "ASTM D570",
           "measured_value": "0.7",
-          "warning_threshold": "0.9"
+          "warning_minimum": null,
+          "warning_maximum": "0.9"
         }
       ]
     }

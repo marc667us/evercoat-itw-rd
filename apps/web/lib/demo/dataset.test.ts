@@ -8,7 +8,9 @@ import {
   USERS,
   allRequirements,
   projectByCode,
+  openOpportunities,
   requirementCounts,
+  requirementSetStatus,
   requirementStatus,
   requirementsNeedingAction,
   riskSeverity,
@@ -39,7 +41,8 @@ const req = (over: Partial<DemoRequirement>): DemoRequirement => ({
   verification_method: "laboratory_test",
   test_method_code: "ASTM X",
   measured_value: "9",
-  warning_threshold: null,
+  warning_minimum: null,
+  warning_maximum: null,
   ...over,
 });
 
@@ -83,7 +86,7 @@ describe("requirement status is derived from the measurement", () => {
 
   it("flags a pass that sits inside the warning band", () => {
     const d = requirementStatus(
-      req({ minimum_value: "6.5", warning_threshold: "7.0", measured_value: "6.8" }),
+      req({ minimum_value: "6.5", warning_minimum: "7.0", measured_value: "6.8" }),
     );
     expect(d.status).toBe("yellow");
     expect(d.label).toBe("PASS — LOW MARGIN");
@@ -92,10 +95,48 @@ describe("requirement status is derived from the measurement", () => {
 
   it("passes cleanly when comfortably inside the limits", () => {
     const d = requirementStatus(
-      req({ minimum_value: "6.5", warning_threshold: "7.0", measured_value: "9.2" }),
+      req({ minimum_value: "6.5", warning_minimum: "7.0", measured_value: "9.2" }),
     );
     expect(d.status).toBe("green");
     expect(d.label).toBe("PASS");
+  });
+
+  it("judges a TWO-SIDED requirement against the right band", () => {
+    // The defect a single shared threshold caused: with both a minimum and
+    // a maximum, every reading except exactly the threshold fell inside one
+    // side of the band, so everything in tolerance reported LOW MARGIN and
+    // the reason cited the wrong limit. Raised by the Supervisor while no
+    // record had both limits — latent, and now impossible.
+    const twoSided = {
+      minimum_value: "1.0",
+      maximum_value: "2.0",
+      warning_minimum: "1.1",
+      warning_maximum: "1.9",
+    };
+    expect(requirementStatus(req({ ...twoSided, measured_value: "1.5" })).status).toBe(
+      "green",
+    );
+    const low = requirementStatus(req({ ...twoSided, measured_value: "1.05" }));
+    expect(low.status).toBe("yellow");
+    expect(low.reason).toContain("minimum");
+    const high = requirementStatus(req({ ...twoSided, measured_value: "1.95" }));
+    expect(high.status).toBe("yellow");
+    expect(high.reason).toContain("maximum");
+  });
+
+  it("treats a BLANK measurement as unmeasured, not as zero", () => {
+    // `Number("")` is 0, so a blank field parsed as a measured zero and,
+    // against a maximum-limited requirement, rendered a green PASS for a
+    // value nobody recorded. Raised by the Supervisor.
+    for (const blank of ["", "   "]) {
+      const d = requirementStatus(
+        req({ minimum_value: null, maximum_value: "0.5", measured_value: blank }),
+      );
+      expect(d.status, `blank ${JSON.stringify(blank)} read as a measurement`).toBe(
+        "yellow",
+      );
+      expect(d.status).not.toBe("green");
+    }
   });
 
   it("fails safe on a measurement that is not a number", () => {
@@ -108,8 +149,9 @@ describe("requirement status is derived from the measurement", () => {
     // §10: "a yellow with no explanation is a defect".
     const yellows = [
       req({ measured_value: null }),
+      req({ measured_value: "" }),
       req({ measured_value: "not-a-number" }),
-      req({ minimum_value: "6.5", warning_threshold: "7.0", measured_value: "6.8" }),
+      req({ minimum_value: "6.5", warning_minimum: "7.0", measured_value: "6.8" }),
     ];
     for (const r of yellows) {
       const d = requirementStatus(r);
@@ -152,9 +194,15 @@ describe("aggregates", () => {
   });
 
   it("derives gate progress from distinct stages, so a rework cannot inflate it", () => {
+    // The denominator is the NORMAL path — Failure / Rework is entered only
+    // on a critical failure, so counting it would make a healthy project
+    // permanently incomplete. Asserted against the flag in the data rather
+    // than a hardcoded number.
+    const normalPath = STAGES.filter((s) => s.normal_path).length;
+    expect(normalPath).toBeLessThan(STAGES.length);
     for (const p of PROJECTS) {
       const { done, total } = stageProgress(p);
-      expect(total).toBe(STAGES.length);
+      expect(total).toBe(normalPath);
       expect(done).toBeLessThanOrEqual(total);
     }
   });
@@ -187,8 +235,46 @@ describe("aggregates", () => {
     };
 
     const { done, total } = stageProgress(reworked);
-    expect(done).toBe(STAGES.length);
+    const normalPath = STAGES.filter((s) => s.normal_path).length;
+    expect(done).toBe(normalPath);
     expect(done).toBeLessThanOrEqual(total);
+  });
+});
+
+describe("a requirement SET verdict", () => {
+  it("NEVER reports an empty set as passed", () => {
+    // Three screens fell through to green for an empty requirement set, so
+    // a project at the REQUIREMENTS stage — which by definition has none —
+    // was badged "ALL REQUIREMENTS PASSED". Absence of evidence rendering
+    // as success is the one failure the traffic-light design exists to
+    // prevent. Raised by the Supervisor.
+    const d = requirementSetStatus([]);
+    expect(d.status).toBe("neutral");
+    expect(d.status).not.toBe("green");
+    expect(d.label).toBe("NO REQUIREMENTS DEFINED");
+  });
+
+  it("reports a failure ahead of anything unverified", () => {
+    const failing = req({ minimum_value: "8", measured_value: "1" });
+    const unverified = req({ measured_value: null });
+    expect(requirementSetStatus([failing, unverified]).status).toBe("red");
+  });
+
+  it("reports green only when every requirement has passed", () => {
+    const passing = req({ minimum_value: "1", measured_value: "9" });
+    expect(requirementSetStatus([passing]).status).toBe("green");
+    expect(requirementSetStatus([passing, req({ measured_value: null })]).status).toBe(
+      "yellow",
+    );
+  });
+});
+
+describe("open opportunities", () => {
+  it("counts only what is genuinely still open", () => {
+    // `!== "converted"` counted rejected and closed opportunities as open.
+    for (const o of openOpportunities()) {
+      expect(["proposed", "under_review"]).toContain(o.status);
+    }
   });
 });
 

@@ -23,9 +23,9 @@ import { DemoBanner } from "@/components/ui/demo-banner";
 import { KpiCard, KpiRow } from "@/components/ui/kpi-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
-  OPPORTUNITIES,
   PROJECTS,
   allRequirements,
+  openOpportunities,
   openTasks,
   requirementCounts,
   requirementsNeedingAction,
@@ -37,7 +37,9 @@ export function DashboardView() {
   const counts = requirementCounts(allRequirements());
   const attention = requirementsNeedingAction();
   const tasks = openTasks();
-  const openOpportunities = OPPORTUNITIES.filter((o) => o.status !== "converted");
+  // A POSITIVE filter. `!== "converted"` counted rejected and closed
+  // opportunities as open, contradicting this KPI's own caption.
+  const opportunities = openOpportunities();
 
   const failing = attention.filter((a) => a.derived.status === "red");
 
@@ -76,7 +78,7 @@ export function DashboardView() {
             />
             <KpiCard
               label="Opportunities open"
-              value={openOpportunities.length}
+              value={opportunities.length}
               href="/innovation"
               context="Proposed or under review, not yet converted."
             />
@@ -96,7 +98,9 @@ export function DashboardView() {
           <ul className="mt-3 divide-y divide-slate-200 rounded border border-slate-200 bg-white">
             {attention.length === 0 && (
               <li className="p-4 text-sm text-slate-600">
-                Every requirement across every project has passed.
+                {allRequirements().length === 0
+                  ? "No requirements have been defined yet — nothing has been verified."
+                  : "Every requirement across every project has passed."}
               </li>
             )}
             {attention.map(({ project, requirement, derived }) => (

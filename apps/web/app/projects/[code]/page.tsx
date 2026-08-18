@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 
+import { notFound } from "next/navigation";
+
 import { PROJECTS, projectByCode } from "@/lib/demo/dataset";
 
 import { ProjectDetail } from "./project-detail";
@@ -43,5 +45,12 @@ export default async function ProjectPage({
   // `params` is a Promise in Next 15 — awaiting it is required, not
   // stylistic. Reading it synchronously is a build-time error.
   const { code } = await params;
+  // A real 404, not a 200 carrying a "not found" body.
+  //
+  // `dynamicParams` defaults to true, so under `next start` — which is the
+  // mode the E2E suite runs — /projects/NOPE server-rendered the fallback
+  // with HTTP 200, contradicting this suite's own rule that an unbuilt
+  // route is never silently served. Raised by the Supervisor.
+  if (!projectByCode(code)) notFound();
   return <ProjectDetail code={code} />;
 }

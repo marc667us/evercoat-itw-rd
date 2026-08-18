@@ -16,7 +16,7 @@ import type { Metadata } from "next";
 
 import { Sidebar } from "@/components/nav/sidebar";
 import { TopBar } from "@/components/nav/top-bar";
-import { openTasks } from "@/lib/demo/dataset";
+import { DEMO_VIEWER, tasksAssignedTo } from "@/lib/demo/dataset";
 import { ALL_NAV_PERMISSIONS } from "@/lib/navigation";
 
 import "./globals.css";
@@ -59,9 +59,11 @@ export default function RootLayout({
   const permissions = ALL_NAV_PERMISSIONS;
 
   // Actionable counts, from the demo dataset. CLAUDE.md §11: a badge shows
-  // items needing ACTION, never total rows — so this is the open-task
-  // count, not TASKS.length.
-  const counts = { "my-work": openTasks().length };
+  // items needing action BY THE HOLDER, never total rows. So this counts
+  // the demonstration viewer's own open tasks — not TASKS.length, and not
+  // the organisation's open tasks either, which is what a badge beside the
+  // words "My Work" would have been claiming.
+  const counts = { "my-work": tasksAssignedTo(DEMO_VIEWER).length };
 
   return (
     <html lang="en">

@@ -167,7 +167,14 @@ export function ContextSubmenu({
               {item.unavailable ? (
                 <span
                   aria-disabled="true"
-                  className="flex items-center gap-1.5 border-b-2 border-transparent px-1 pb-2 text-xs text-slate-400"
+                  // slate-500, not slate-400. At this size WCAG 2.1 AA
+                  // wants 4.5:1 and slate-400 on white is about 2.9:1 —
+                  // the identical contrast failure already corrected in
+                  // the sidebar. axe skips it because of aria-disabled, so
+                  // CI would have stayed green while seven of the eight
+                  // Administration sections were unreadable to a low-vision
+                  // reader. Raised by the Supervisor.
+                  className="flex items-center gap-1.5 border-b-2 border-transparent px-1 pb-2 text-xs text-slate-500"
                 >
                   {mark && (
                     <span aria-hidden className={`text-[11px] ${mark.className}`}>

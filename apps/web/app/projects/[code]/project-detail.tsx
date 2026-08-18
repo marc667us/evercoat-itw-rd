@@ -26,6 +26,7 @@ import {
   milestoneStatus,
   projectByCode,
   requirementCounts,
+  requirementSetStatus,
   requirementStatus,
   riskSeverity,
   stageName,
@@ -35,16 +36,18 @@ import {
 } from "@/lib/demo/dataset";
 
 function Section({
+  id,
   title,
   note,
   children,
 }: {
+  id?: string;
   title: string;
   note?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="mt-8">
+    <section id={id} className="mt-8 scroll-mt-4">
       <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
       {note && <p className="mt-1 max-w-3xl text-xs text-slate-600">{note}</p>}
       <div className="mt-3">{children}</div>
@@ -140,6 +143,7 @@ export function ProjectDetail({ code }: { code: string }) {
   }
 
   const counts = requirementCounts(project.requirements);
+  const verdict = requirementSetStatus(project.requirements);
   const openRisks = project.risks.filter((r) => r.status !== "closed");
   const tasks = tasksForProject(project.project_code);
   const visited = new Map(project.stage_history.map((v) => [v.stage_code, v]));
@@ -162,41 +166,49 @@ export function ProjectDetail({ code }: { code: string }) {
           { label: "Target release", value: project.target_release_date ?? "—" },
           { label: "Confidentiality", value: project.confidentiality },
         ]}
+        // A project with NO requirements is not a project that passed.
+        // The previous chain fell through to green for an empty set, which
+        // is exactly the state a project sits in at the REQUIREMENTS stage.
         status={
-          counts.red > 0 ? (
-            <StatusBadge status="red" label={`${counts.red} REQUIREMENT FAILED`} />
-          ) : counts.yellow > 0 ? (
+          verdict.status === "yellow" ? (
             <StatusBadge
               status="yellow"
-              label="IN VERIFICATION"
-              reason={`${counts.yellow} requirement(s) not yet confirmed.`}
+              label={verdict.label}
+              reason={verdict.reason ?? ""}
             />
           ) : (
-            <StatusBadge status="green" label="ALL REQUIREMENTS PASSED" />
+            <StatusBadge status={verdict.status} label={verdict.label} />
           )
         }
       />
 
       <div className="p-6">
         <KpiRow>
+          {/* Each card links to the section holding the records behind it.
+              They previously all pointed at the page they were already on,
+              so KpiCard's own promise — "View the records behind …" —
+              resolved to a no-op reload. Raised by the Supervisor. */}
           <KpiCard
             label="Requirements failed"
             value={counts.red}
-            href={`/projects/${project.project_code}`}
+            href={`/projects/${project.project_code}#requirements`}
             tone={counts.red > 0 ? "red" : "neutral"}
-            context="Critical or high requirements with a measured failure."
+            // Says "any", because requirementCounts counts every
+            // criticality. The old caption claimed "critical or high",
+            // a filter the code does not apply.
+            context="Requirements at any criticality with a measured failure."
           />
           <KpiCard
             label="Awaiting verification"
             value={counts.yellow}
-            href={`/projects/${project.project_code}`}
+            href={`/projects/${project.project_code}#requirements`}
             tone={counts.yellow > 0 ? "yellow" : "neutral"}
             context="Not yet measured, or passing on a low margin."
           />
           <KpiCard
             label="Open risks"
             value={openRisks.length}
-            href={`/projects/${project.project_code}`}
+            href={`/projects/${project.project_code}#risks`}
             tone={openRisks.some((r) => riskSeverity(r).status === "red") ? "red" : "neutral"}
             context="Risks not yet closed."
           />
@@ -244,13 +256,25 @@ export function ProjectDetail({ code }: { code: string }) {
             {STAGES.map((s) => {
               const visit = visited.get(s.stage_code);
               const isCurrent = s.stage_code === project.current_stage;
-              const tone = visit?.outcome === "failed"
-                ? "border-red-300 bg-red-50 text-status-fail"
-                : isCurrent
-                  ? "border-slate-900 bg-slate-900 text-white"
-                  : visit
-                    ? "border-emerald-200 bg-emerald-50 text-status-pass"
-                    : "border-slate-200 bg-white text-slate-500";
+              // Chip colour AND a matching colour for the date line.
+              //
+              // The date line used `opacity-80`, which axe-core reported as
+              // a SERIOUS contrast failure the first time this page was
+              // scanned: 80% opacity over bg-emerald-50 drops the text below
+              // the 4.5:1 AA threshold. Opacity is not a colour choice — it
+              // silently rescales whatever contrast the token had. Each tone
+              // now names a real colour that passes on its own background.
+              const [tone, dateTone] =
+                visit?.outcome === "failed"
+                  ? ["border-red-300 bg-red-50 text-status-fail", "text-red-900"]
+                  : isCurrent
+                    ? ["border-slate-900 bg-slate-900 text-white", "text-slate-100"]
+                    : visit
+                      ? [
+                          "border-emerald-200 bg-emerald-50 text-status-pass",
+                          "text-emerald-900",
+                        ]
+                      : ["border-slate-200 bg-white text-slate-500", "text-slate-600"];
               return (
                 <li
                   key={s.stage_code}
@@ -267,7 +291,7 @@ export function ProjectDetail({ code }: { code: string }) {
                           : "○ "}
                     {s.sequence}. {s.name}
                   </div>
-                  <div className="mt-0.5 opacity-80">
+                  <div className={`mt-0.5 ${dateTone}`}>
                     {visit
                       ? `${visit.entered_on} → ${visit.exited_on ?? "in progress"}`
                       : "not entered"}
@@ -279,6 +303,7 @@ export function ProjectDetail({ code }: { code: string }) {
         </Section>
 
         <Section
+          id="requirements"
           title="Requirements verification matrix"
           note="Every requirement with its target, the measurement taken against it,
                 the method used, and the derived verification state. The state is
@@ -288,16 +313,24 @@ export function ProjectDetail({ code }: { code: string }) {
             data={[...project.requirements]}
             columns={requirementColumns}
             caption={`Requirements for ${project.project_code}`}
-            emptyMessage="No requirements defined."
+            emptyMessage="No requirements defined yet — nothing has been verified."
           />
         </Section>
 
         <Section title="Milestones">
           <ul className="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
-            {project.milestones.map((m) => {
+            {project.milestones.map((m, i) => {
               const d = milestoneStatus(m);
               return (
-                <li key={m.name} className="flex flex-wrap items-center gap-3 p-3">
+                // Keyed by name AND position: two milestones can legitimately
+                // share a name across stages (a repeated "Design review"),
+                // and a duplicate React key drops or mis-orders rows on
+                // re-render. The dataset has no milestone id, which is the
+                // underlying gap. Raised by the Supervisor.
+                <li
+                  key={`${m.planned_date}-${m.name}-${i}`}
+                  className="flex flex-wrap items-center gap-3 p-3"
+                >
                   <span className="min-w-64 flex-1 text-sm text-slate-800">
                     {m.name}
                   </span>
@@ -321,7 +354,7 @@ export function ProjectDetail({ code }: { code: string }) {
           </ul>
         </Section>
 
-        <Section title="Risks">
+        <Section id="risks" title="Risks">
           <ul className="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
             {project.risks.map((r) => {
               const d = riskSeverity(r);

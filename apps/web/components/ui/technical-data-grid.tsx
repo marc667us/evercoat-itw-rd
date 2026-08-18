@@ -108,6 +108,15 @@ export function TechnicalDataGrid<T>({
     // sideways.
     <div
       ref={scrollRef}
+      // tabIndex={0} because this container scrolls. Without it the
+      // rows below the fold are unreachable by keyboard — axe-core
+      // reports `scrollable-region-focusable` (serious). The same
+      // defect was fixed in chart-wrapper.tsx; this one survived
+      // because no tested page had ever rendered a data grid.
+      // Raised by the Supervisor.
+      tabIndex={0}
+      role="group"
+      aria-label={caption ? `${caption} — scrollable table` : "Scrollable table"}
       className="max-h-[70vh] overflow-auto rounded border border-slate-200 bg-white"
     >
       <table className="w-full border-collapse text-sm">

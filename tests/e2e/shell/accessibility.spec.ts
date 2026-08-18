@@ -29,6 +29,15 @@ const STANDARD = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 const PAGES = [
   { name: "dashboard", path: "/dashboard" },
   { name: "administration", path: "/admin" },
+  // The Slice 2 screens. Adding them is what caught the data grid's
+  // scroll container having no tabIndex — the identical
+  // `scrollable-region-focusable` defect fixed in chart-wrapper.tsx, which
+  // survived only because no scanned page had ever rendered a grid.
+  { name: "projects", path: "/projects" },
+  { name: "project workspace", path: "/projects/RDP-2026-014" },
+  { name: "my work", path: "/my-work" },
+  { name: "pipeline", path: "/pipeline" },
+  { name: "innovation", path: "/innovation" },
 ];
 
 for (const target of PAGES) {

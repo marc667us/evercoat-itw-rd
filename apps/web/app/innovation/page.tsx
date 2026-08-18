@@ -53,22 +53,26 @@ export default function InnovationPage() {
             </div>
 
             <dl className="mt-3 grid gap-x-6 gap-y-2 text-xs md:grid-cols-2">
-              <div>
-                <dt className="font-medium text-slate-500">Market need</dt>
-                <dd className="text-slate-700">{o.market_need}</dd>
-              </div>
-              <div>
-                <dt className="font-medium text-slate-500">Technical concept</dt>
-                <dd className="text-slate-700">{o.technical_concept}</dd>
-              </div>
-              <div>
-                <dt className="font-medium text-slate-500">Product family</dt>
-                <dd className="text-slate-700">{o.product_family}</dd>
-              </div>
-              <div>
-                <dt className="font-medium text-slate-500">Target application</dt>
-                <dd className="text-slate-700">{o.target_application}</dd>
-              </div>
+              {/* An em dash for an unfilled field. These are all nullable,
+                  and rendering null leaves a labelled term above an empty
+                  definition — which reads as data that failed to load
+                  rather than data nobody has entered. Raised by the
+                  Supervisor. */}
+              {(
+                [
+                  ["Market need", o.market_need],
+                  ["Technical concept", o.technical_concept],
+                  ["Product family", o.product_family],
+                  ["Target application", o.target_application],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label}>
+                  <dt className="font-medium text-slate-500">{label}</dt>
+                  <dd className="text-slate-700">
+                    {value ?? <span className="text-slate-500">— not stated</span>}
+                  </dd>
+                </div>
+              ))}
             </dl>
 
             {o.rationale && (

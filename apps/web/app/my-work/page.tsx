@@ -18,7 +18,13 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { DemoPage } from "@/components/ui/demo-banner";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
-import { openTasks, userName, type DemoTask } from "@/lib/demo/dataset";
+import {
+  DEMO_VIEWER,
+  openTasks,
+  tasksAssignedTo,
+  userName,
+  type DemoTask,
+} from "@/lib/demo/dataset";
 
 export default function MyWorkPage() {
   const columns = useMemo<ColumnDef<DemoTask, unknown>[]>(
@@ -81,21 +87,51 @@ export default function MyWorkPage() {
     [],
   );
 
-  const tasks = openTasks();
+  // MINE, then everyone else's — and the two are labelled separately.
+  //
+  // The page previously showed the whole organisation's queue under the
+  // heading "My Work", while the sidebar badge counted the same set. §11
+  // is that a count is items needing action BY THE HOLDER, so a single
+  // undifferentiated list under that title was simply mislabelled. Raised
+  // by the Supervisor.
+  const mine = tasksAssignedTo(DEMO_VIEWER);
+  const others = openTasks().filter((t) => t.assigned_to !== DEMO_VIEWER);
 
   return (
     <DemoPage
       title="My Work"
-      lede="Everything awaiting action across the organisation's projects. Each row
-            states what is being asked, who holds it and when it is due —
-            a queue that only lists titles tells you nothing about what to do next."
+      lede={`Assigned to ${userName(DEMO_VIEWER)}, then everything else awaiting
+             action across the organisation. Each row states what is being asked,
+             who holds it and when it is due — a queue that only lists titles
+             tells you nothing about what to do next.`}
     >
-      <TechnicalDataGrid
-        data={[...tasks]}
-        columns={columns}
-        caption="Open tasks"
-        emptyMessage="Nothing awaiting action."
-      />
+      <h2 className="text-sm font-semibold text-slate-900">
+        Assigned to {userName(DEMO_VIEWER)}
+      </h2>
+      <div className="mt-3">
+        <TechnicalDataGrid
+          data={[...mine]}
+          columns={columns}
+          caption={`Tasks assigned to ${userName(DEMO_VIEWER)}`}
+          emptyMessage="Nothing assigned to you."
+        />
+      </div>
+
+      <h2 className="mt-8 text-sm font-semibold text-slate-900">
+        Elsewhere in the organisation
+      </h2>
+      <p className="mt-1 text-xs text-slate-600">
+        Held by other people. Shown for context — these are not counted in the
+        My Work badge.
+      </p>
+      <div className="mt-3">
+        <TechnicalDataGrid
+          data={[...others]}
+          columns={columns}
+          caption="Open tasks held by others"
+          emptyMessage="Nothing outstanding elsewhere."
+        />
+      </div>
     </DemoPage>
   );
 }

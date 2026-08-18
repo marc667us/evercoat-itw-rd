@@ -18,10 +18,17 @@
  * impossible to mistake for real R&D records. Hence `<DemoBanner />` on
  * every page and `DEMO_NOTICE` below — not a footnote, a standing label.
  *
- * ONE SOURCE. `demo-data.json` is read by BOTH this module and
- * `scripts/seed.py`, which loads the same records into PostgreSQL. A
- * TypeScript copy and a Python copy kept in step by hand is the exact
- * defect this repository keeps hitting.
+ * ONE SOURCE, FOR WHAT IS ACTUALLY SHARED. `demo-data.json` is read by
+ * this module and by `scripts/seed.py` — but the seeder consumes only
+ * `users` and `stages`. Projects, requirements, milestones, risks,
+ * opportunities and tasks are NOT seeded into PostgreSQL; they exist for
+ * the static demonstration alone.
+ *
+ * Stated precisely because the earlier wording here claimed the seeder
+ * "loads the same records", which would lead a reader to expect /projects
+ * to work against the API after running it. The shared part is real and
+ * worth having — users and pipeline stages were previously duplicated as
+ * Python literals — but it is not the whole file. Raised by the Supervisor.
  *
  * SHAPES MIRROR THE REAL API (`app/api/projects.py`, `tasks.py`,
  * `opportunities.py`). When the API is wired in, the data source changes
@@ -58,6 +65,12 @@ export interface DemoStage {
   readonly responsible_role: string | null;
   readonly requires_approval: boolean;
   readonly approval_role: string | null;
+  /**
+   * False for stages entered only by exception — Failure / Rework. Counting
+   * them in a progress denominator makes a healthy project permanently
+   * incomplete.
+   */
+  readonly normal_path: boolean;
 }
 
 export interface DemoOpportunity {
@@ -118,11 +131,17 @@ export interface DemoRequirement {
   readonly test_method_code: string | null;
   readonly measured_value: string | null;
   /**
-   * The value on the failing side of which a pass is reported as a LOW
-   * MARGIN pass. Compared below the limit for a minimum, above it for a
-   * maximum. Null means no warning band is configured.
+   * Warning bands, ONE PER LIMIT.
+   *
+   * A single shared threshold cannot describe a two-sided requirement: with
+   * both a minimum and a maximum, every reading except exactly the
+   * threshold falls inside one side of the band, so everything in tolerance
+   * reports LOW MARGIN and the reason cites the wrong limit. Raised by the
+   * Supervisor while no record had both limits — latent, but the type and
+   * the seeder both permitted it.
    */
-  readonly warning_threshold: string | null;
+  readonly warning_minimum: string | null;
+  readonly warning_maximum: string | null;
 }
 
 export interface DemoProject {
@@ -158,6 +177,8 @@ export interface DemoTask {
 }
 
 interface DemoDataset {
+  /** Documentation inside the data file. Typed so it can be ignored safely. */
+  readonly _README?: readonly string[];
   readonly organization: { readonly name: string; readonly note: string };
   readonly users: readonly DemoUser[];
   readonly stages: readonly DemoStage[];
@@ -166,9 +187,15 @@ interface DemoDataset {
   readonly tasks: readonly DemoTask[];
 }
 
-// The JSON carries a `_README` array that is documentation, not data. It is
-// dropped here rather than typed, so no consumer can accidentally render it.
-const data = raw as unknown as DemoDataset;
+// A DIRECT cast, not `as unknown as`.
+//
+// Routing through `unknown` disabled all structural checking, not just the
+// `_README` field the old comment described: a renamed or missing JSON key
+// compiled clean and surfaced at runtime as NaN or a crash on
+// `undefined.map`. `_README` is typed as optional above, so the direct cast
+// is accepted AND TypeScript still rejects a requirement missing
+// `warning_minimum` or a project missing `risks`. Raised by the Supervisor.
+const data = raw as DemoDataset;
 
 export const ORGANIZATION = data.organization;
 export const USERS: readonly DemoUser[] = data.users;
@@ -241,6 +268,20 @@ export function requirementStatus(r: DemoRequirement): Derived {
     };
   }
 
+  // `Number("")` is 0, not NaN. A blank measurement therefore parses as a
+  // measured zero and, against a maximum-limited requirement, renders a
+  // GREEN PASS for a value nobody recorded — the precise invariant the
+  // docstring above claims to make impossible. An empty string is the
+  // likeliest shape of a blank field once this comes from a form or a
+  // database column. Raised by the Supervisor.
+  if (r.measured_value.trim() === "") {
+    return {
+      status: "yellow",
+      label: "NOT MEASURED",
+      reason: "The measurement field is blank — this requirement is unverified.",
+    };
+  }
+
   const measured = Number(r.measured_value);
   if (!Number.isFinite(measured)) {
     // Fails safe. An unparseable measurement is not a pass.
@@ -253,7 +294,8 @@ export function requirementStatus(r: DemoRequirement): Derived {
 
   const min = r.minimum_value === null ? null : Number(r.minimum_value);
   const max = r.maximum_value === null ? null : Number(r.maximum_value);
-  const warn = r.warning_threshold === null ? null : Number(r.warning_threshold);
+  const warnMin = r.warning_minimum === null ? null : Number(r.warning_minimum);
+  const warnMax = r.warning_maximum === null ? null : Number(r.warning_maximum);
 
   // 2. Outside a stated limit.
   if (min !== null && measured < min) {
@@ -271,19 +313,23 @@ export function requirementStatus(r: DemoRequirement): Derived {
     };
   }
 
-  // 3. Inside the warning band — a pass, but one worth stating.
-  if (warn !== null) {
-    const nearMinimum = min !== null && measured < warn;
-    const nearMaximum = max !== null && measured > warn;
-    if (nearMinimum || nearMaximum) {
-      return {
-        status: "yellow",
-        label: "PASS — LOW MARGIN",
-        reason: `Measured ${measured}${unit} against a ${
-          nearMinimum ? `minimum of ${min}` : `maximum of ${max}`
-        }${unit} — inside tolerance but past the warning threshold of ${warn}${unit}.`,
-      };
-    }
+  // 3. Inside a warning band — a pass, but one worth stating.
+  //
+  // Each limit has its OWN threshold, so a two-sided requirement is judged
+  // correctly and the reason always names the limit actually approached.
+  if (warnMin !== null && min !== null && measured < warnMin) {
+    return {
+      status: "yellow",
+      label: "PASS — LOW MARGIN",
+      reason: `Measured ${measured}${unit} against a minimum of ${min}${unit} — inside tolerance but below the warning threshold of ${warnMin}${unit}.`,
+    };
+  }
+  if (warnMax !== null && max !== null && measured > warnMax) {
+    return {
+      status: "yellow",
+      label: "PASS — LOW MARGIN",
+      reason: `Measured ${measured}${unit} against a maximum of ${max}${unit} — inside tolerance but above the warning threshold of ${warnMax}${unit}.`,
+    };
   }
 
   // 4. A pass, with no qualification needed.
@@ -347,6 +393,39 @@ export function requirementCounts(
   return counts;
 }
 
+/**
+ * One verification verdict for a whole requirement SET.
+ *
+ * 🔴 THE EMPTY CASE IS WHY THIS EXISTS. Three screens previously fell
+ * through `red > 0` → `yellow > 0` → green, so a project whose requirement
+ * set had not been written yet was badged "ALL REQUIREMENTS PASSED" — and
+ * a project at the REQUIREMENTS stage is exactly the case that has none.
+ * Absence of evidence rendering as success is the single failure the
+ * traffic-light design exists to prevent. Raised by the Supervisor.
+ */
+export function requirementSetStatus(
+  reqs: readonly DemoRequirement[],
+): Derived {
+  if (reqs.length === 0) {
+    return {
+      status: "neutral",
+      label: "NO REQUIREMENTS DEFINED",
+    };
+  }
+  const c = requirementCounts(reqs);
+  if (c.red > 0) {
+    return { status: "red", label: `${c.red} REQUIREMENT FAILED` };
+  }
+  if (c.yellow > 0) {
+    return {
+      status: "yellow",
+      label: "IN VERIFICATION",
+      reason: `${c.yellow} requirement(s) not yet confirmed.`,
+    };
+  }
+  return { status: "green", label: "ALL REQUIREMENTS PASSED" };
+}
+
 export function allRequirements(): readonly DemoRequirement[] {
   return PROJECTS.flatMap((p) => p.requirements);
 }
@@ -366,10 +445,21 @@ export function stageProgress(p: DemoProject): { done: number; total: number } {
   // re-enters and re-completes a stage, and counting visits would report
   // "9 of 8 complete" — a progress figure above 100%, from data that is
   // perfectly valid. Raised by Codex.
-  const completed = new Set(
-    p.stage_history.filter((v) => v.outcome === "complete").map((v) => v.stage_code),
+  // The denominator is the NORMAL path. Failure / Rework is entered only
+  // when a critical test fails, so counting it means a project that goes
+  // cleanly through every gate can never report better than "7 of 8" —
+  // under-reporting a healthy project as incomplete forever. Raised by the
+  // Supervisor. Driven by the data's own `normal_path` flag rather than by
+  // a hardcoded stage code.
+  const normal = new Set(
+    STAGES.filter((s) => s.normal_path).map((s) => s.stage_code),
   );
-  return { done: completed.size, total: STAGES.length };
+  const completed = new Set(
+    p.stage_history
+      .filter((v) => v.outcome === "complete" && normal.has(v.stage_code))
+      .map((v) => v.stage_code),
+  );
+  return { done: completed.size, total: normal.size };
 }
 
 /** Requirements needing action across every project, worst first. */
@@ -401,6 +491,36 @@ export function requirementsNeedingAction(): {
   return rows.sort((a, b) => rank[a.derived.status] - rank[b.derived.status]);
 }
 
+/**
+ * Whose work "My Work" is.
+ *
+ * There is no authenticated principal in a static export, and a badge
+ * labelled "My Work" that counts the whole organisation's tasks is simply
+ * false — §11 requires a count to be items needing action BY THE HOLDER.
+ * The demonstration therefore names a viewer explicitly rather than
+ * pretending the number is personal. Replaced by the verified principal
+ * when Keycloak is wired in. Raised by the Supervisor.
+ */
+export const DEMO_VIEWER = "lead.demo";
+
+export function tasksAssignedTo(username: string): readonly DemoTask[] {
+  return TASKS.filter((t) => t.assigned_to === username && t.status !== "complete");
+}
+
 export function openTasks(): readonly DemoTask[] {
   return TASKS.filter((t) => t.status !== "complete");
+}
+
+/**
+ * Opportunities still awaiting a decision.
+ *
+ * A POSITIVE filter, not `!== "converted"`. The negative form counted
+ * rejected and closed opportunities as open, so the first rejection would
+ * silently inflate the dashboard figure while its caption said "proposed or
+ * under review". Raised by the Supervisor.
+ */
+export function openOpportunities(): readonly DemoOpportunity[] {
+  return OPPORTUNITIES.filter(
+    (o) => o.status === "proposed" || o.status === "under_review",
+  );
 }
