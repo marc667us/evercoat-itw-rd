@@ -100,6 +100,17 @@ strict = true
 warn_unreachable = true
 disallow_any_generics = true
 
+# Celery ships no type stubs. Scoped to the single module that imports
+# it, so the strictness stays on everywhere else -- a global relaxation
+# would silently cover future untyped dependencies too.
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["app.worker.celery_app"]
+disallow_untyped_decorators = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Auth tests are async because _decode awaits the JWKS fetch.

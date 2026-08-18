@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -280,7 +281,7 @@ def advance_stage(
 
 def project_pipeline(
     session: Session, project_id: uuid.UUID, organization_id: uuid.UUID
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Every configured stage with this project's progress against it.
 
     Returns all stages, not just visited ones, because the pipeline UI
@@ -329,7 +330,7 @@ def project_pipeline(
     ]
 
 
-def stage_history(session: Session, project_id: uuid.UUID) -> list[dict]:
+def stage_history(session: Session, project_id: uuid.UUID) -> list[dict[str, Any]]:
     """The append-only transition log, oldest first.
 
     This is the answer to "how did this project get here" — including

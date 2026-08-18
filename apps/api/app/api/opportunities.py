@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -77,7 +78,7 @@ def get_opportunities(
     status_filter: str | None = Query(default=None, alias="status"),
     principal: Principal = Depends(require_permission("opportunity.view")),
     session: Session = Depends(get_db),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """The funnel. Optionally filtered to one status."""
     return list_opportunities(
         session, organization_id=principal.organization_id, status=status_filter
@@ -107,7 +108,7 @@ def get_opportunity(
     opportunity_id: uuid.UUID,
     principal: Principal = Depends(require_permission("opportunity.view")),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     try:
         return opportunity_detail(
             session,

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -97,7 +98,7 @@ def list_my_work(
     include_done: bool = Query(default=False),
     principal: Principal = Depends(get_principal),
     session: Session = Depends(get_db),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """The caller's inbox, most urgent first."""
     return my_work(
         session,
@@ -237,7 +238,7 @@ def list_project_tasks(
     principal: Principal = Depends(require_permission("project.view")),
     _scope: Principal = Depends(require_project_member("project_id")),
     session: Session = Depends(get_db),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Everything outstanding on a project, not just the caller's share.
 
     Both dependencies, as everywhere: `project.view` asks whether this

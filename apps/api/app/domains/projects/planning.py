@@ -33,6 +33,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -141,7 +142,7 @@ def create_milestone(
     after the fact, which is precisely the record the dashboard's overdue
     count is supposed to make impossible to hide.
     """
-    milestone_id = session.execute(
+    milestone_id: uuid.UUID = session.execute(
         text(
             """
             INSERT INTO projects.milestones
@@ -184,7 +185,7 @@ def set_milestone_status(
     status: str,
     actual_date: dt.date | None = None,
     reason: str,
-) -> dict:
+) -> dict[str, Any]:
     """Move a milestone's status, keeping ``actual_date`` consistent.
 
     The date is derived rather than trusted from the caller, because the
@@ -284,7 +285,7 @@ def set_milestone_status(
 
 def list_milestones(
     session: Session, *, project_id: uuid.UUID, organization_id: uuid.UUID
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """The plan, in the order it is meant to happen.
 
     Includes `is_overdue` computed the same way the dashboard counts it.
@@ -355,7 +356,7 @@ def create_risk(
         raise RiskDuplicateError(f"risk code {spec.risk_code} already exists")
 
     try:
-        risk_id = session.execute(
+        risk_id: uuid.UUID = session.execute(
             text(
                 """
                 INSERT INTO projects.risks
@@ -417,7 +418,7 @@ def update_risk(
     probability: str | None = None,
     impact: str | None = None,
     owner_user_id: uuid.UUID | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Re-assess or progress a risk.
 
     Every argument is optional and ``None`` means "leave unchanged", so a
@@ -529,7 +530,7 @@ def update_risk(
 
 def list_risks(
     session: Session, *, project_id: uuid.UUID, organization_id: uuid.UUID
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Open risks first, worst first.
 
     Ordered by the same probability x impact the dashboard's `high_high`

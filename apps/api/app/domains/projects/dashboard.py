@@ -26,6 +26,7 @@ is a second answer to a safety-critical question.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -35,7 +36,7 @@ __all__ = ["project_context", "project_dashboard"]
 
 def project_context(
     session: Session, *, project_id: uuid.UUID, organization_id: uuid.UUID
-) -> dict | None:
+) -> dict[str, Any] | None:
     """The context bar: who and what, on every page inside a project.
 
     Returns None when the project is not visible to the caller. The
@@ -80,7 +81,7 @@ def project_context(
 
 def project_dashboard(
     session: Session, *, project_id: uuid.UUID, organization_id: uuid.UUID
-) -> dict:
+) -> dict[str, Any]:
     """The five questions, answered from source records.
 
     Each query is separate rather than one wide join. A single join across

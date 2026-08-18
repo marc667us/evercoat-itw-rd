@@ -27,6 +27,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -120,7 +121,7 @@ def create_task(
             role_description="assignee",
         )
 
-    task_id = session.execute(
+    task_id: uuid.UUID = session.execute(
         text(
             """
             INSERT INTO workflow.tasks
@@ -178,7 +179,7 @@ def my_work(
     organization_id: uuid.UUID,
     role_codes: frozenset[str] | set[str],
     include_done: bool = False,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """The caller's inbox: their tasks and their roles' unclaimed tasks.
 
     Ordered by urgency rather than by creation, because an inbox sorted
@@ -540,7 +541,7 @@ def reassign_task(
 
 def project_tasks(
     session: Session, *, project_id: uuid.UUID, organization_id: uuid.UUID
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Every task on a project, for the project workspace.
 
     Unlike :func:`my_work` this is not filtered by assignee -- the project

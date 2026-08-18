@@ -26,6 +26,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -131,7 +132,7 @@ def create_opportunity(
     if clash:
         raise OpportunityStateError(f"opportunity code {data.opportunity_code} already exists")
 
-    opportunity_id = session.execute(
+    opportunity_id: uuid.UUID = session.execute(
         text(
             """
             INSERT INTO innovation.opportunities
@@ -370,7 +371,7 @@ def convert_to_project(
     if clash:
         raise OpportunityStateError(f"project code {project_code} already exists")
 
-    project_id = session.execute(
+    project_id: uuid.UUID = session.execute(
         text(
             """
             INSERT INTO projects.projects
@@ -444,7 +445,7 @@ def convert_to_project(
 
 def list_opportunities(
     session: Session, *, organization_id: uuid.UUID, status: str | None = None
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """The innovation funnel, most urgent first."""
     rows = session.execute(
         text(
@@ -480,7 +481,7 @@ def list_opportunities(
 
 def opportunity_detail(
     session: Session, *, opportunity_id: uuid.UUID, organization_id: uuid.UUID
-) -> dict:
+) -> dict[str, Any]:
     """One opportunity with its decision and resulting project."""
     row = (
         session.execute(

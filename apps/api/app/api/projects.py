@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -272,7 +273,7 @@ def get_dashboard(
     project_id: uuid.UUID,
     principal: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """The project workspace, shaped to CLAUDE.md §11's five questions.
 
     Returns one key per question rather than whatever the first screen
@@ -299,7 +300,7 @@ def get_pipeline(
     project_id: uuid.UUID,
     principal: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     return {
         "project_id": project_id,
         "stages": project_pipeline(session, project_id, principal.organization_id),
@@ -311,7 +312,7 @@ def get_pipeline_history(
     project_id: uuid.UUID,
     principal: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """The append-only transition log.
 
     Includes every backwards move, which is the part a `current_stage`
@@ -328,7 +329,7 @@ def post_stage_advance(
     principal: Principal = Depends(require_permission("project.advance_stage")),
     _member: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """Advance the pipeline.
 
     Both dependencies are required: holding `project.advance_stage` does
@@ -369,7 +370,7 @@ def get_verification_matrix(
     project_id: uuid.UUID,
     principal: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     return verification_matrix(
         session, project_id=project_id, organization_id=principal.organization_id
     )
@@ -384,7 +385,7 @@ def post_requirement(
     principal: Principal = Depends(require_permission("requirement.create")),
     _member: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     try:
         requirement_id = create_requirement(
             session,
@@ -437,7 +438,7 @@ def post_requirement_revision(
     principal: Principal = Depends(require_permission("requirement.create")),
     _member: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """Supersede a requirement with a new revision.
 
     Deliberately POST /revise rather than PUT /requirements/{id}. A PUT
@@ -521,7 +522,7 @@ def get_milestones(
     project_id: uuid.UUID,
     principal: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     return {
         "project_id": project_id,
         "milestones": list_milestones(
@@ -537,7 +538,7 @@ def post_milestone(
     principal: Principal = Depends(require_permission("milestone.manage")),
     _member: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     milestone_id = create_milestone(
         session,
         project_id=project_id,
@@ -560,7 +561,7 @@ def patch_milestone_status(
     principal: Principal = Depends(require_permission("milestone.manage")),
     _member: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     try:
         return set_milestone_status(
             session,
@@ -589,7 +590,7 @@ def get_risks(
     project_id: uuid.UUID,
     principal: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     return {
         "project_id": project_id,
         "risks": list_risks(
@@ -605,7 +606,7 @@ def post_risk(
     principal: Principal = Depends(require_permission("risk.create")),
     _member: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     try:
         risk_id = create_risk(
             session,
@@ -642,7 +643,7 @@ def patch_risk(
     principal: Principal = Depends(require_permission("risk.manage")),
     _member: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     try:
         return update_risk(
             session,
@@ -691,7 +692,7 @@ def get_members(
     project_id: uuid.UUID,
     principal: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     return {
         "project_id": project_id,
         "members": list_members(
@@ -707,7 +708,7 @@ def post_member(
     principal: Principal = Depends(require_permission("project.assign_member")),
     _member: Principal = Depends(require_project_member()),
     session: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     try:
         member_id = add_member(
             session,

@@ -100,6 +100,34 @@
 BEGIN;
 
 -- ---------------------------------------------------------------------
+-- PART 0 — audit.events must be OWNED by evercoat_owner
+-- ---------------------------------------------------------------------
+-- Added after CI caught what a developer machine could not.
+--
+-- Migration 001 creates the schemas `AUTHORIZATION evercoat_owner`, but the
+-- TABLES inside them are created by whoever runs the migration — the
+-- `postgres` superuser — and schema ownership is not table ownership. So on
+-- a FRESH database `audit.events` is owned by the migration role, while on
+-- this project's long-lived development database it had come to be owned by
+-- `evercoat_owner`. The two environments disagreed, silently.
+--
+-- That matters here specifically because PART 1 makes `chain_row()`
+-- SECURITY DEFINER owned by `evercoat_owner`. On a fresh database that
+-- function then could not read the table at all:
+--
+--     psycopg.errors.InsufficientPrivilege: permission denied for table events
+--
+-- A bare GRANT SELECT would silence that error and quietly destroy the
+-- point of the change. A non-owner is subject to RLS, so the tail read
+-- would be filtered by the CALLER's organization context again — which is
+-- exactly the context-dependence this migration exists to remove. The
+-- guarantee needs ownership, not permission.
+--
+-- Idempotent: re-assigning an owner that is already the owner is a no-op,
+-- so this is safe on the development database where it already holds.
+ALTER TABLE audit.events OWNER TO evercoat_owner;
+
+-- ---------------------------------------------------------------------
 -- PART 1 — Chain per organization, explicitly
 -- ---------------------------------------------------------------------
 

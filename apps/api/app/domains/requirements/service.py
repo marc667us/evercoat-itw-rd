@@ -30,6 +30,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -128,7 +129,7 @@ def create_requirement(
 ) -> uuid.UUID:
     _validate(spec)
 
-    requirement_id = session.execute(
+    requirement_id: uuid.UUID = session.execute(
         text(
             """
             INSERT INTO projects.requirements
@@ -280,7 +281,7 @@ def revise_requirement(
         {"id": requirement_id},
     )
 
-    new_id = session.execute(
+    new_id: uuid.UUID = session.execute(
         text(
             """
             INSERT INTO projects.requirements
@@ -335,7 +336,7 @@ def revise_requirement(
 
 def verification_matrix(
     session: Session, *, project_id: uuid.UUID, organization_id: uuid.UUID
-) -> dict:
+) -> dict[str, Any]:
     """Every requirement against its verification evidence.
 
     Answers the four questions the source names. Until Slice 5 supplies

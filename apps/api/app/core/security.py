@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -138,7 +139,9 @@ async def _decode(token: str) -> dict[str, Any]:
     """Verify signature, issuer, audience and expiry. All four."""
     jwks = await _get_jwks()
     try:
-        return jwt.decode(
+        # cast: python-jose is untyped, so decode() is Any. The claims are
+        # validated by the options below, not by the type system.
+        decoded: dict[str, Any] = jwt.decode(
             token,
             jwks,
             algorithms=["RS256"],
@@ -151,6 +154,7 @@ async def _decode(token: str) -> dict[str, Any]:
                 "verify_exp": True,
             },
         )
+        return decoded
     except JWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -259,7 +263,7 @@ async def get_principal(
     )
 
 
-def get_db(principal: Principal = Depends(get_principal)) -> Session:
+def get_db(principal: Principal = Depends(get_principal)) -> Iterator[Session]:
     """Yield a session with the caller's RLS context applied.
 
     This is the only supported route to the database in request handling.
@@ -276,7 +280,7 @@ def get_db(principal: Principal = Depends(get_principal)) -> Session:
 # ---------------------------------------------------------------------------
 
 
-def require_permission(*permissions: str, require_all: bool = False):
+def require_permission(*permissions: str, require_all: bool = False) -> Callable[..., Principal]:
     """Dependency factory: assert the caller holds the permission(s).
 
     Args:
@@ -298,7 +302,9 @@ def require_permission(*permissions: str, require_all: bool = False):
     return _check
 
 
-def require_project_member(project_id_param: str = "project_id"):
+def require_project_member(
+    project_id_param: str = "project_id",
+) -> Callable[..., Principal]:
     """Dependency factory: assert membership of the project in the path.
 
     Separate from :func:`require_permission` on purpose. Permission asks

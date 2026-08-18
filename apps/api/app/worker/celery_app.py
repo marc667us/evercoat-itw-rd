@@ -82,7 +82,7 @@ def _configure_worker_logging(**_: Any) -> None:
     max_retries=3,
     default_retry_delay=60,
 )
-def refresh_analytics(self, organization_id: str, scope: str = "hourly") -> dict[str, Any]:
+def refresh_analytics(self: Any, organization_id: str, scope: str = "hourly") -> dict[str, Any]:
     """Refresh analytics materialized views for one organization.
 
     Scoped per organization rather than globally, because materialized
@@ -119,7 +119,7 @@ def refresh_analytics(self, organization_id: str, scope: str = "hourly") -> dict
 
 
 @celery_app.task(name="audit.verify_chain", bind=True)
-def verify_audit_chain(self, organization_id: str) -> dict[str, Any]:
+def verify_audit_chain(self: Any, organization_id: str) -> dict[str, Any]:
     """Walk the audit hash chain and report the first break.
 
     Scheduled rather than on-demand because tamper *evidence* is only

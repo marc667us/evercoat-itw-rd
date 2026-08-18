@@ -23,6 +23,7 @@ after an incident.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -83,7 +84,7 @@ def add_member(
         role_description="project member",
     )
 
-    member_id = session.execute(
+    member_id: uuid.UUID = session.execute(
         text(
             """
             INSERT INTO projects.project_members
@@ -226,7 +227,7 @@ def remove_member(
 
 def list_members(
     session: Session, *, project_id: uuid.UUID, organization_id: uuid.UUID
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Who is on the project, including who used to be.
 
     Inactive members are returned rather than filtered out. "Who has ever

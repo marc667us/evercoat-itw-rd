@@ -32,10 +32,12 @@ is a gate that never opens.
 from __future__ import annotations
 
 import uuid
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -499,21 +501,31 @@ def reorder_stage_definitions(
     # constraint being DEFERRABLE is already enough to move the check to
     # statement end. Deferring further, to COMMIT, would push a violation
     # past this function's error handling and turn a 409 into a 500.
-    updated = session.execute(
-        text(
-            """
-            UPDATE workflow.stage_definitions sd
-            SET sequence = ordering.position
-            FROM (
-                SELECT id, ordinality AS position
-                FROM unnest(CAST(:ids AS UUID[])) WITH ORDINALITY AS t(id, ordinality)
-            ) AS ordering
-            WHERE sd.id = ordering.id
-              AND sd.organization_id = :org
-            """
+    # `Session.execute` is typed as returning `Result`, which has no
+    # `rowcount` — that lives on `CursorResult`, which is what a DML
+    # statement actually returns at runtime. The cast records that, rather
+    # than the alternative of counting the rows again in a second query,
+    # which would reintroduce exactly the read-then-write gap the count is
+    # here to close.
+    result = cast(
+        "CursorResult[Any]",
+        session.execute(
+            text(
+                """
+                UPDATE workflow.stage_definitions sd
+                SET sequence = ordering.position
+                FROM (
+                    SELECT id, ordinality AS position
+                    FROM unnest(CAST(:ids AS UUID[])) WITH ORDINALITY AS t(id, ordinality)
+                ) AS ordering
+                WHERE sd.id = ordering.id
+                  AND sd.organization_id = :org
+                """
+            ),
+            {"ids": [str(i) for i in payload.ordered_stage_ids], "org": principal.organization_id},
         ),
-        {"ids": [str(i) for i in payload.ordered_stage_ids], "org": principal.organization_id},
-    ).rowcount
+    )
+    updated = result.rowcount
 
     if updated != len(payload.ordered_stage_ids):
         # One or more ids belong to another organization, or do not

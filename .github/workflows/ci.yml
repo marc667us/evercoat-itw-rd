@@ -302,7 +302,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Trivy — filesystem
-        uses: aquasecurity/trivy-action@0.28.0
+        # 0.28.0 was never a published tag, so this step failed to resolve
+        # on every run with "unable to find version" — the scan had never
+        # executed once. A security job that cannot start is worse than an
+        # absent one: it occupies the slot where the check is supposed to
+        # be. Pinned to a tag that exists (verified against the action's
+        # releases) rather than a floating ref, so a supply-chain change
+        # upstream cannot silently alter what runs here.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
