@@ -74,7 +74,16 @@ def formulas(draw, min_size: int = 1, max_size: int = 12, with_density: bool = F
 
 
 @settings(max_examples=250)
-@given(components=formulas(), batch=masses)
+@given(
+    components=formulas(),
+    # Batches large enough to be EXPRESSIBLE at milligram precision across up
+    # to twelve components. Below roughly 100 g the rounding residue can
+    # exceed the largest line, and `scale_to_batch` refuses rather than
+    # printing a negative mass or a total that is not the batch — that
+    # refusal is asserted separately below. The invariant is about weighing a
+    # batch, and a 3-gram batch split twelve ways is not one.
+    batch=st.decimals(min_value=Decimal("0.5"), max_value=Decimal("100000"), places=3),
+)
 def test_component_masses_sum_exactly_to_the_batch_mass(components, batch):
     """THE stated invariant: *for any VALID 100% formula and any positive
     batch quantity, the sum of component masses equals the batch mass.*
@@ -152,6 +161,41 @@ def test_scaling_refuses_a_formula_that_does_not_total_one_hundred():
     components = [Component("A", Decimal("60")), Component("B", Decimal("38.5"))]
     with pytest.raises(ValueError, match="outside the"):
         scale_to_batch(components, Decimal("25"))
+
+
+def test_a_batch_too_small_for_its_precision_is_refused():
+    """Refused, not fudged.
+
+    Twelve components at milligram precision cannot express a three-gram
+    batch: every line rounds up to the same step and their sum overshoots.
+    The only honest outcomes are a negative mass, a total that is not the
+    batch, or an error — and the first two are worse.
+    """
+    # 6.1 grams over twelve equal components: each line is 0.000508 kg, which
+    # rounds UP to 0.001, and eleven of those already total 0.011 — nearly
+    # twice the batch. Found by searching for a genuine overshoot rather than
+    # guessing one; the first value chosen rounded DOWN and the branch was
+    # never reached, so the test passed while asserting nothing.
+    # A VALID formula — the twelve lines total exactly 100. The first attempt
+    # used twelve 1% lines and hit the ±tolerance refusal instead, passing for
+    # entirely the wrong reason and proving nothing about precision.
+    components = [Component(f"RM-{i}", Decimal("8.3333")) for i in range(11)]
+    components.append(Component("RM-11", Decimal("8.3337")))
+    assert total_percentage(components) == Decimal("100")
+
+    with pytest.raises(ValueError, match="cannot be expressed"):
+        scale_to_batch(components, Decimal("0.0061"))
+
+
+def test_the_remainder_lands_on_the_largest_line():
+    """So it is proportionally smallest, and cannot drive a line negative."""
+    components = [
+        Component("TINY", Decimal("0.01")),
+        Component("BULK", Decimal("99.99")),
+    ]
+    out = scale_to_batch(components, Decimal("7.777"))
+    assert sum(out.values()) == Decimal("7.777")
+    assert out["BULK"] > out["TINY"]
 
 
 def test_batch_mass_must_be_positive():

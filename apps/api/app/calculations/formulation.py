@@ -13,7 +13,7 @@ densities; these signatures enforce it rather than trusting callers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 
 __all__ = [
@@ -220,7 +220,13 @@ def normalize_to_100(components: list[Component]) -> list[Component]:
     for c in components[:-1]:
         pct = (c.percentage * HUNDRED / total).quantize(Decimal("0.0001"))
         running += pct
-        scaled.append(Component(**{**_as_dict(c), "percentage": pct}))
+        # `dataclasses.replace`, not `Component(**{**_as_dict(c), ...})`.
+        # The dict form widens every field to `object`, so mypy could not
+        # check a single argument and rejected the call outright — six errors
+        # for what is one idea. `replace` keeps the field types and still
+        # re-runs __post_init__, which is where the Decimal and range
+        # validation lives.
+        scaled.append(replace(c, percentage=pct))
 
     # Clamped, for the same reason and with worse consequences than in
     # scale_to_batch: `HUNDRED - running` going negative makes
@@ -229,22 +235,8 @@ def normalize_to_100(components: list[Component]) -> list[Component]:
     # Reproduced by the Supervisor in 13 random trials.
     last = components[-1]
     residue = HUNDRED - running
-    scaled.append(
-        Component(**{**_as_dict(last), "percentage": residue if residue > ZERO else ZERO})
-    )
+    scaled.append(replace(last, percentage=residue if residue > ZERO else ZERO))
     return scaled
-
-
-def _as_dict(c: Component) -> dict[str, object]:
-    return {
-        "material_code": c.material_code,
-        "percentage": c.percentage,
-        "role": c.role,
-        "density_g_cm3": c.density_g_cm3,
-        "solids_fraction": c.solids_fraction,
-        "voc_fraction": c.voc_fraction,
-        "cost_per_kg": c.cost_per_kg,
-    }
 
 
 # ------------------------------------------------------------- batching
@@ -317,21 +309,44 @@ def scale_to_batch(
             f"contradict the stated percentages."
         )
 
+    # THE REMAINDER GOES ON THE LARGEST LINE, NOT THE LAST.
+    #
+    # The Supervisor offered two fixes for a remainder that can go negative:
+    # clamp it, or move it to the largest line. Clamping was tried first and
+    # is WRONG — Hypothesis found it immediately. Clamping a -0.001 residue
+    # to zero makes the masses sum to 0.495 for a 0.494 kg batch, so it
+    # trades a negative mass for a broken total: the one invariant this
+    # function exists to guarantee, sacrificed to fix a cosmetic symptom of
+    # the same underlying problem.
+    #
+    # The largest line is the one that can absorb a few rounding steps
+    # without going anywhere near zero. It is chosen by percentage, not by
+    # position, so the residue lands where it is proportionally smallest.
+    largest = max(range(len(components)), key=lambda i: components[i].percentage)
+
     out: dict[str, Decimal] = {}
     running = ZERO
-    for c in components[:-1]:
+    for i, c in enumerate(components):
+        if i == largest:
+            continue
         part = (c.percentage / total * mass).quantize(places)
         out[c.material_code] = part
         running += part
 
-    # The remainder, clamped at zero.
-    #
-    # `mass - running` can go NEGATIVE when the last line is 0% and the
-    # round-half-even residue on the other lines exceeds the batch — the
-    # Supervisor found 11 components at 871.3 kg printing `-0.001 kg` on a
-    # weigh-up sheet. A negative mass is not a quantity anyone can weigh.
     remainder = mass - running
-    out[components[-1].material_code] = remainder if remainder > ZERO else ZERO
+    if remainder < ZERO:
+        # Not reachable with any realistic batch, and refused rather than
+        # fudged when it is. It means the batch is too small to express at
+        # this precision across this many components — every line has
+        # rounded up to the same step and their sum has overshot. Producing
+        # a weigh-up here would mean printing either a negative mass or a
+        # total that is not the batch, and both are worse than saying so.
+        raise ValueError(
+            f"a {mass} kg batch cannot be expressed to {places} across "
+            f"{len(components)} components — the rounding residue exceeds the "
+            f"batch. Use a larger batch or a finer precision."
+        )
+    out[components[largest].material_code] = remainder
     return out
 
 

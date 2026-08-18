@@ -1062,12 +1062,12 @@
             "batch": {
               "batch_mass_kg": "25",
               "masses_kg": {
-                "RM-RES-01": "9.500",
                 "RM-FIL-01": "8.500",
                 "RM-FIL-02": "2.250",
                 "RM-PIG-01": "0.750",
                 "RM-ADD-01": "0.750",
-                "RM-CAT-01": "3.250"
+                "RM-CAT-01": "3.250",
+                "RM-RES-01": "9.500"
               }
             },
             "diff_vs_parent": []
@@ -1125,13 +1125,13 @@
             "batch": {
               "batch_mass_kg": "25",
               "masses_kg": {
-                "RM-RES-01": "9.500",
                 "RM-FIL-01": "7.000",
                 "RM-FIL-03": "1.500",
                 "RM-FIL-02": "2.250",
                 "RM-PIG-01": "0.750",
                 "RM-ADD-01": "0.750",
-                "RM-CAT-01": "3.250"
+                "RM-CAT-01": "3.250",
+                "RM-RES-01": "9.500"
               }
             },
             "diff_vs_parent": [
@@ -1250,14 +1250,14 @@
             "batch": {
               "batch_mass_kg": "25",
               "masses_kg": {
-                "RM-RES-02": "9.500",
                 "RM-FIL-01": "6.000",
                 "RM-FIL-03": "2.500",
                 "RM-FIL-02": "2.125",
                 "RM-PIG-01": "0.750",
                 "RM-ADD-01": "0.625",
                 "RM-ADD-02": "0.250",
-                "RM-CAT-01": "3.250"
+                "RM-CAT-01": "3.250",
+                "RM-RES-02": "9.500"
               }
             },
             "diff_vs_parent": [
@@ -1394,14 +1394,14 @@
             "batch": {
               "batch_mass_kg": "25",
               "masses_kg": {
-                "RM-RES-02": "9.500",
                 "RM-FIL-01": "5.500",
                 "RM-FIL-03": "3.125",
                 "RM-FIL-02": "2.000",
                 "RM-PIG-01": "0.750",
                 "RM-ADD-01": "0.625",
                 "RM-ADD-02": "0.250",
-                "RM-CAT-01": "3.250"
+                "RM-CAT-01": "3.250",
+                "RM-RES-02": "9.500"
               }
             },
             "diff_vs_parent": [
@@ -1672,12 +1672,12 @@
             "batch": {
               "batch_mass_kg": "25",
               "masses_kg": {
-                "RM-RES-01": "10.500",
                 "RM-FIL-02": "6.500",
                 "RM-FIL-01": "3.000",
                 "RM-PIG-01": "1.000",
                 "RM-ADD-01": "1.000",
-                "RM-CAT-01": "3.000"
+                "RM-CAT-01": "3.000",
+                "RM-RES-01": "10.500"
               }
             },
             "diff_vs_parent": []
