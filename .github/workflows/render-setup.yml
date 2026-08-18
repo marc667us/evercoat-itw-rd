@@ -152,6 +152,31 @@ jobs:
           # ---------------------------------------------------------------
           rule("3. EVERCOAT SERVICE — does it exist?")
           st, svcs = api("GET", "/services?limit=100")
+
+          # Inventory FIRST, before looking for our own service.
+          #
+          # Creating the service failed with
+          #   400 "free tier usage quota has been exhausted, new services
+          #        are not allowed"
+          # which is an account-wide condition, not a fault in this
+          # payload. Without a printed inventory that error is a dead end:
+          # it says the allowance is gone and nothing about what spent it,
+          # so the next person re-runs the same POST and gets the same 400.
+          #
+          # Read-only, and printed in BOTH modes — a plan run is exactly
+          # when someone needs to see this.
+          print("   account inventory:")
+          for row in (svcs or []):
+              s = row.get("service", row)
+              det = s.get("serviceDetails", {}) or {}
+              print(
+                  f"     {s.get('name'):<28} {s.get('type','?'):<12} "
+                  f"plan={det.get('plan','?'):<10} "
+                  f"env={det.get('env','?'):<8} "
+                  f"suspended={s.get('suspended','?')}"
+              )
+          print(f"   ({len(svcs or [])} service(s) on this account)")
+
           existing = None
           for row in (svcs or []):
               s = row.get("service", row)

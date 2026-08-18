@@ -94,36 +94,34 @@ jobs:
           fi
           alembic current
 
-      - name: Configure test roles
+      - name: Grant the test roles a login
         env:
           PGPASSWORD: ci-postgres
         run: |
           set -euo pipefail
-          # The migration creates these NOLOGIN by design. CI grants LOGIN
-          # so the suite can connect AS the runtime role -- running the
-          # tenancy tests as superuser would bypass RLS entirely and pass
-          # against a schema with no isolation at all.
+          # LOGIN and a password are the ONLY things this step may do.
+          #
+          # It used to also grant privileges and reassign table ownership
+          # for `core, projects, audit`. That list was wrong -- it omitted
+          # `innovation` and `workflow` -- so the first CI run that ever
+          # executed failed 37 tests with 50 `permission denied` errors
+          # while the same suite passed 152/0/0 locally, because the local
+          # database had been repaired by hand with a DIFFERENT list.
+          #
+          # Two hand-maintained lists in two files, which nothing can check
+          # against each other, is this platform's most repeated defect.
+          # Ownership and grants now belong to migration 014 and are
+          # asserted by tests/db/test_object_ownership.py, so there is one
+          # decider and a test that fails if a new table misses it.
+          #
+          # Credentials genuinely are CI-only: the migration creates these
+          # roles NOLOGIN by design, and the suite must connect AS the
+          # runtime role -- running the tenancy tests as superuser would
+          # bypass RLS and pass against a schema with no isolation at all.
           psql -h localhost -U postgres -d evercoat_itw_rd -v ON_ERROR_STOP=1 <<'SQL'
           ALTER ROLE evercoat_owner LOGIN PASSWORD 'ci-owner';
           ALTER ROLE evercoat_app   LOGIN PASSWORD 'ci-app';
           GRANT CONNECT ON DATABASE evercoat_itw_rd TO evercoat_owner, evercoat_app;
-          GRANT CREATE ON SCHEMA core, projects, audit TO evercoat_owner;
-          GRANT SELECT, INSERT, UPDATE, DELETE
-            ON ALL TABLES IN SCHEMA core, projects, audit TO evercoat_owner;
-          GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA audit
-            TO evercoat_owner, evercoat_app;
-          DO $$
-          DECLARE r RECORD;
-          BEGIN
-            FOR r IN SELECT n.nspname, c.relname FROM pg_class c
-                     JOIN pg_namespace n ON n.oid = c.relnamespace
-                     WHERE c.relkind IN ('r','S')
-                       AND n.nspname IN ('core','projects','audit')
-            LOOP
-              EXECUTE format('ALTER TABLE IF EXISTS %I.%I OWNER TO evercoat_owner',
-                             r.nspname, r.relname);
-            END LOOP;
-          END $$;
           SQL
 
       - name: Tests
@@ -248,6 +246,26 @@ jobs:
           KEYCLOAK_ISSUER: http://127.0.0.1:1/realms/evercoat
         run: alembic upgrade head
 
+      - name: Grant the application role a login
+        env:
+          PGPASSWORD: ci-postgres
+        run: |
+          set -euo pipefail
+          # The API refuses to start as a superuser -- `Settings` validates
+          # it, deliberately, because the runtime role is the one FORCE RLS
+          # applies to. This job had no such step and pointed the server at
+          # `postgres`, so Playwright's webServer died on a pydantic
+          # ValidationError before a single test ran and the failure read
+          # as a broken E2E suite rather than a misconfigured job.
+          #
+          # That refusal is worth keeping exactly as it is: it turned a
+          # silent "CI tests something production can never be" into a hard
+          # stop. The job is what was wrong.
+          psql -h localhost -U postgres -d evercoat_itw_rd -v ON_ERROR_STOP=1 <<'SQL'
+          ALTER ROLE evercoat_app LOGIN PASSWORD 'ci-app';
+          GRANT CONNECT ON DATABASE evercoat_itw_rd TO evercoat_app;
+          SQL
+
       - name: Install web dependencies
         working-directory: apps/web
         run: npm ci || npm install
@@ -263,7 +281,10 @@ jobs:
 
       - name: Run E2E
         env:
-          DATABASE_URL: postgresql+psycopg://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
+          # The RUNTIME role, never `postgres`. Playwright starts the API
+          # itself and the API refuses a superuser connection string, so
+          # this must match what production actually connects as.
+          DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://127.0.0.1:1/realms/evercoat
           # CI supplies a real database, so readiness reporting 503 here
           # means something is genuinely broken. Locally the suite tolerates
