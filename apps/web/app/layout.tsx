@@ -14,6 +14,7 @@
 
 import type { Metadata } from "next";
 
+import { QueryProvider } from "@/components/providers/query-provider";
 import { Sidebar } from "@/components/nav/sidebar";
 import { TopBar } from "@/components/nav/top-bar";
 import { DEMO_VIEWER, tasksAssignedTo } from "@/lib/demo/dataset";
@@ -68,6 +69,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-slate-50 text-slate-900 antialiased">
+        {/* TanStack Query, for the whole tree. It wraps the shell rather
+            than each page so that a query started on one screen is still
+            cached when the reader navigates back to it — and so that a
+            page added later is wired by existing, not by remembering. */}
+        <QueryProvider>
         <div className="flex h-screen overflow-hidden">
           <Sidebar permissions={permissions} counts={counts} />
           <div className="flex min-w-0 flex-1 flex-col">
@@ -92,6 +98,7 @@ export default function RootLayout({
             </main>
           </div>
         </div>
+        </QueryProvider>
       </body>
     </html>
   );

@@ -16,6 +16,8 @@
 
 import { useState } from "react";
 
+import { ApiStatus } from "@/components/nav/api-status";
+
 export function TopBar() {
   const [query, setQuery] = useState("");
 
@@ -51,6 +53,10 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-1.5">
+        {/* Whether the API is reachable, at a glance and on every page.
+            "showing old figures" and "cannot reach the database" look
+            identical to a chemist, and only the second is actionable. */}
+        <ApiStatus />
         <TopBarButton label="Quick Create" hint="New project, formula, batch, failure" />
         {/* MSD — Material Science & Development Assistant. Persistent but
             unobtrusive, per Concept Note §33. Arrives in Slice 7. */}

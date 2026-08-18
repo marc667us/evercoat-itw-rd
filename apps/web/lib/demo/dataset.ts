@@ -689,8 +689,18 @@ export function currentVersion(f: DemoFormula): DemoFormulaVersion {
  * "unavailable" and must not collapse into one grey pill: a restricted
  * material may be used with an exemption, an obsolete one may not be used
  * at all but still appears in historical batches.
+ *
+ * Takes ONLY the field it reads, not a whole `DemoMaterial`.
+ *
+ * That is what lets the same derivation serve a live API row and a
+ * demonstration row without either being converted into the other's
+ * shape. The alternative — casting an API row to `DemoMaterial` — would
+ * have compiled and would have been a lie the type system then defended.
+ * The status vocabulary is identical on both sides by construction: a
+ * database CHECK constraint takes its five values from this very dataset,
+ * asserted by `tests/db/test_015_materials_formulations.py`.
  */
-export function materialStatus(m: DemoMaterial): Derived {
+export function materialStatus(m: { status: string }): Derived {
   switch (m.status) {
     case "preferred":
       return { status: "green", label: "PREFERRED" };

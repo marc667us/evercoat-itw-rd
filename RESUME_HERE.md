@@ -87,17 +87,42 @@ the whole suite. **Check the Release run before trusting any of this.**
 The demonstration on the live site still uses figures baked at BUILD time,
 because the deployed site is a static export with no API (below).
 
-### 4b. 🔴 THE WEB APP HAS NEVER MADE AN API CALL — the largest gap in MVP-1
-`grep -rln "fetch(|axios|useQuery|NEXT_PUBLIC_API" apps/web` returns
-**nothing**. Twelve pages, all rendering `apps/web/lib/demo/demo-data.json`.
-`next-auth` is a declared dependency that nothing imports, and there is no
-sign-in flow.
+### 4b. ~~THE WEB APP HAS NEVER MADE AN API CALL~~ — WIRED 2026-08-18 pt4
 
-This is not in any slice's line item and it gates GATE-1: no browser test
-can drive the digital thread until one screen calls one endpoint. It also
-needs the deployment shape to change — the live site is a Render **static
-site** (no server, no API), and a free Render *web* service was refused for
-quota. Treat this as the next structural decision, not as polish.
+`apps/web` now calls the API. `tests/e2e/shell/api-wiring.spec.ts` asserts
+it in a real browser: the top bar's health probe reaches uvicorn and
+PostgreSQL **with nothing stubbed**, and `/materials` issues its own
+request carrying both headers the API requires.
+
+What exists now:
+
+- `lib/api/client.ts` — the one place this app talks to the API. Typed
+  errors, **no fallbacks**, `X-Organization-Id` + bearer on every call.
+- `lib/api/materials.ts` — zod-parsed responses, so a renamed field is a
+  NAMED error instead of a column of blank cells.
+- `lib/api/hooks.ts` — returns `source` alongside `data`, so a page
+  cannot render figures without also saying where they came from.
+- `components/ui/data-source-banner.tsx` — LIVE or DEMONSTRATION, always
+  visible; and a failed request renders the failure rather than
+  substituting synthetic rows.
+- `components/nav/api-status.tsx` — the API's reachability on every page.
+
+🔴 **THE SIGN-IN FLOW IS STILL MISSING, AND IT IS THE LAST BLOCKER.**
+No Keycloak is deployed anywhere — not on Render, not in CI, not on this
+host — so no authenticated call can succeed against a real server. The
+deployed site therefore still shows the demonstration dataset, now behind
+a banner that says exactly why. `lib/api/session.ts` is the seam the OIDC
+implementation drops into; nothing above it changes when it does.
+
+The E2E suite establishes a client-side session through a hook that is
+**compiled out of production builds** (`NEXT_PUBLIC_E2E_SESSION_HOOK`) and
+that grants nothing, because the API verifies every token against the
+realm's JWKS and reads permissions from the database. Read the comment in
+`session.ts` before touching it.
+
+**Still true:** the live site is a Render STATIC site with no API beside
+it, and a free Render *web* service was quota-refused. Wiring the deployed
+site to a deployed API is a spend decision and therefore the operator's.
 
 ### 5. Slice 4 — Laboratory
 Guided batch flow, planned-vs-actual with tolerance flagging, samples with

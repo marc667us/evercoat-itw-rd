@@ -56,6 +56,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.calculations.formulation import fraction_to_percent
 from app.core.audit import AuditEvent, write_audit
 from app.core.tenancy import require_active_member
 
@@ -705,7 +706,7 @@ def list_materials(
             "limit": limit,
         },
     ).mappings()
-    return [dict(r) for r in rows]
+    return [_with_percentages(dict(r)) for r in rows]
 
 
 def get_material(
@@ -1182,6 +1183,36 @@ def list_material_documents(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _with_percentages(row: dict[str, Any]) -> dict[str, Any]:
+    """Add the percentage forms of the stored fractions.
+
+    🔴 THE CONVERSION IS THE ENGINE'S, NOT THIS MODULE'S AND NOT THE UI'S.
+
+    `solids_fraction` and `voc_fraction` are stored 0-1 because that is
+    what the engine consumes. Every screen displays them as percentages,
+    and the obvious place to multiply by 100 is the React cell that
+    renders them -- which is exactly where Codex already caught it once on
+    this project, and where it is genuinely wrong rather than merely
+    misplaced, because `0.35 * 100` in JavaScript is 35.000000000000004.
+
+    So the API sends both forms and the browser does no arithmetic at all.
+    `fraction_to_percent` is exact under `Decimal` and preserves the scale,
+    so a solids fraction recorded to four places renders to four places.
+
+    A missing fraction stays missing. It is NOT rendered as 0% -- an
+    unmeasured solids content and a genuinely zero one are different
+    facts, and this project has already shipped a defect where a blank
+    measurement rendered a green PASS.
+    """
+    for fraction_key, percent_key in (
+        ("solids_fraction", "solids_percent"),
+        ("voc_fraction", "voc_percent"),
+    ):
+        value = row.get(fraction_key)
+        row[percent_key] = None if value is None else str(fraction_to_percent(value))
+    return row
 
 
 def _num(value: Decimal | None) -> str | None:

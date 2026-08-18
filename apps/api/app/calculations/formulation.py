@@ -21,6 +21,7 @@ __all__ = [
     "SubmissionBlock",
     "binder_to_filler_ratio",
     "cost_per_kg",
+    "fraction_to_percent",
     "normalize_to_100",
     "scale_to_batch",
     "solids_content",
@@ -99,6 +100,33 @@ def _require(components: list[Component]) -> None:
 
 
 # ---------------------------------------------------------------- totals
+
+
+def fraction_to_percent(fraction: Decimal | int | str) -> Decimal:
+    """A 0-1 fraction as a percentage, exactly.
+
+    WHY A THREE-LINE FUNCTION LIVES IN THE ENGINE.
+
+    It is one multiplication, and it was written here because the
+    alternative kept being written somewhere worse. `fraction * 100` has
+    now been caught TWICE in review on this project -- once in a React
+    component and once in a build script -- and `CLAUDE.md` rule 2 gives
+    deterministic calculation on a controlled quantity to Python without
+    an exception for easy arithmetic.
+
+    In JavaScript the same expression is genuinely wrong rather than
+    merely misplaced: `0.35 * 100` is 35.000000000000004, and a solids
+    content is a controlled figure on a technical datasheet.
+
+    Exact under `Decimal`, and the trailing scale is preserved --
+    `Decimal("0.3500") * 100` is `35.0000`, which keeps the significant
+    figures the laboratory actually recorded rather than silently
+    rounding them away.
+    """
+    value = _dec(fraction, "fraction")
+    if not (ZERO <= value <= Decimal("1")):
+        raise ValueError(f"a fraction must be between 0 and 1, not {value}")
+    return value * HUNDRED
 
 
 def total_percentage(components: list[Component]) -> Decimal:

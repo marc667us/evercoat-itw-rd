@@ -15,11 +15,22 @@ import { defineConfig, devices } from "@playwright/test";
  * named after it would be worse than not having one.
  *
  * Eleven of that scenario's fifteen steps have no table, no route, no
- * service and no page. Separately, `apps/web` makes **no API calls at
- * all** — there is no `fetch`, no `next-auth` wiring and no sign-in flow
- * in the application today, so a browser physically cannot drive the
- * thread. The golden scenario belongs to Slice 7, where
+ * service and no page. The golden scenario belongs to Slice 7, where
  * `IMPLEMENTATION_PLAN.md:436` already puts it.
+ *
+ * CORRECTED 2026-08-18. This paragraph used to continue: "Separately,
+ * `apps/web` makes **no API calls at all** — there is no `fetch`, no
+ * `next-auth` wiring and no sign-in flow in the application today, so a
+ * browser physically cannot drive the thread."
+ *
+ * That was true for three slices and is no longer. `shell/api-wiring.spec.ts`
+ * asserts the application issuing real requests: the top bar's health
+ * probe reaches uvicorn and PostgreSQL with nothing stubbed, and the
+ * materials page sends its own authenticated request with both headers the
+ * API requires. What is still absent is a SIGN-IN FLOW — no Keycloak is
+ * deployed anywhere, so no authenticated call can succeed against a real
+ * server, and the suite establishes a client-side session through a seam
+ * that is compiled out of production builds (`lib/api/session.ts`).
  *
  * What this suite does prove, for the first time in this project:
  *
@@ -27,6 +38,13 @@ import { defineConfig, devices } from "@playwright/test";
  *           navigation gating behaves as its unit tests claim, and the
  *           pages pass an axe-core accessibility scan. `CLAUDE.md` §11
  *           requires axe-core in CI; until now it had never run.
+ *
+ *   shell/api-wiring.spec.ts
+ *           the web application CALLS the API — the claim that could not
+ *           be made before Slice 3's back half existed. Both directions
+ *           are asserted: live rows render and are labelled as live, and a
+ *           failed request shows the failure rather than quietly
+ *           substituting demonstration figures.
  *
  *   api/    the API boots under a real ASGI server and serves over real
  *           HTTP — not through Starlette's TestClient. That distinction
@@ -136,6 +154,27 @@ export default defineConfig({
       command: `npx next build && npx next start --port ${WEB_PORT} --hostname 127.0.0.1`,
       cwd: "apps/web",
       url: WEB_BASE_URL,
+      env: {
+        // THE ADDRESS OF THE API THIS BUILD TALKS TO.
+        //
+        // `NEXT_PUBLIC_*` is inlined at BUILD time, so it has to be here on
+        // the build command rather than set beside `next start` — a value
+        // supplied to the running server changes nothing, and this platform
+        // has already been bitten by exactly that.
+        //
+        // Setting it is what makes the suite able to prove anything about
+        // the wiring at all: without it every page resolves to the
+        // demonstration dataset and the tests below would pass against an
+        // application that still made no API calls.
+        NEXT_PUBLIC_API_BASE_URL: API_BASE_URL,
+        // The client-side session seam. Compiled out of every build that
+        // does not set this, so the production bundle does not contain it.
+        // It grants nothing: the API verifies token signatures against the
+        // realm's JWKS and reads permissions from the database, so a
+        // session set here with an unissued token is refused exactly as any
+        // forgery would be. See lib/api/session.ts.
+        NEXT_PUBLIC_E2E_SESSION_HOOK: "1",
+      },
       // NEVER reuse. `reuseExistingServer: !process.env.CI` is the usual
       // default and it directly contradicts the rebuild above: locally,
       // any process already answering on this port makes Playwright skip
@@ -163,6 +202,17 @@ export default defineConfig({
         APP_ENV: "development",
         LOG_FORMAT: "console",
         METRICS_ENABLED: "true",
+        // The browser calls this API from a DIFFERENT ORIGIN — the web app
+        // is on :3100 and the API on :8100 — so without this every request
+        // the suite is meant to observe would be refused by the browser
+        // before it was sent, and would surface as "the API could not be
+        // reached" with no clue that CORS was the cause.
+        //
+        // A JSON array because pydantic-settings parses `list[str]` as
+        // JSON. A bare comma-separated string is accepted by neither, and
+        // fails at startup rather than at request time — which is the
+        // better of the two failures but still a confusing one.
+        CORS_ALLOWED_ORIGINS: JSON.stringify([WEB_BASE_URL]),
       },
       // NEVER reuse. `reuseExistingServer: !process.env.CI` is the usual
       // default and it directly contradicts the rebuild above: locally,

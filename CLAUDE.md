@@ -328,14 +328,27 @@ database schema · relationships · migrations · indexes · constraints · Pyda
 
 **A green build is not a working feature.** Build it, run it, and look at it in a browser.
 
-> **What the E2E suite can and cannot prove today (2026-08-17).** The
-> golden MVP scenario (§44) and the RBAC/MSD-boundary suite are **not**
-> written, and a file named after either would be worse than none.
-> Eleven of the golden scenario's fifteen steps have no table, route,
-> service or page, and `apps/web` currently makes **no API calls at all**
-> — no `fetch`, no `next-auth` wiring, no sign-in — so a browser cannot
-> drive the digital thread. Both belong to Slice 7, where
+> **What the E2E suite can and cannot prove today (updated 2026-08-18).**
+> The golden MVP scenario (§44) and the RBAC/MSD-boundary suite are
+> **not** written, and a file named after either would be worse than
+> none. Eleven of the golden scenario's fifteen steps have no table,
+> route, service or page. Both belong to Slice 7, where
 > `IMPLEMENTATION_PLAN.md:436` already places them.
+>
+> **CORRECTED.** This paragraph used to add that `apps/web` makes "no API
+> calls at all — no `fetch`, no `next-auth` wiring, no sign-in — so a
+> browser cannot drive the digital thread". That was true for three
+> slices and is no longer: `tests/e2e/shell/api-wiring.spec.ts` asserts
+> the application issuing real requests, including an unstubbed health
+> probe that reaches uvicorn and PostgreSQL.
+>
+> **What is still missing is the SIGN-IN FLOW.** No Keycloak is deployed
+> anywhere — not on Render, not in CI, not on the development host — so
+> no authenticated call can succeed against a real server, and the
+> deployed site shows the demonstration dataset behind a banner that says
+> so. The E2E suite establishes a client-side session through a seam that
+> is compiled OUT of production builds and that grants nothing, because
+> the API verifies every token independently (`lib/api/session.ts`).
 >
 > What runs today: the shell in a real Chromium (routing, navigation
 > gating, keyboard reachability), **axe-core against WCAG 2.1 AA** — which
