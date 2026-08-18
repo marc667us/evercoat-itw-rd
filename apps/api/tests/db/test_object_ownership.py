@@ -68,6 +68,28 @@ APP_SCHEMAS = (
 )
 
 
+# TWO definer functions are meant to belong to evercoat_owner, each for
+# the same reason and each named here with the migration that decided
+# it. A definer function runs with ITS OWNER's privileges, so this list
+# is a security decision and grows only on purpose.
+#
+# This test caught the second one being added (migration 015), which is
+# exactly what it is for: the entry below is the deliberate
+# acknowledgement, not a way of quieting the check.
+DEFINER_OWNED_BY_DESIGN = {
+    # Migration 013. The audit trigger must read its own chain tail
+    # regardless of who is writing, or the chain forks per RLS view.
+    "audit.chain_row",
+    # Migration 015. The trigger that freezes the composition of a
+    # non-draft formula version looks that version up before deciding.
+    # As SECURITY INVOKER, a session whose RLS view of
+    # `formula_versions` is empty would find no row -- and a guard that
+    # passes when it cannot see its subject is the "check that walks
+    # through its own gap" this platform has already been bitten by.
+    "formulations.deny_component_mutation",
+}
+
+
 def test_every_table_and_sequence_is_owned_by_the_owner_role(owner_session: Session) -> None:
     """No object in an application schema may belong to anyone else.
 
@@ -191,14 +213,11 @@ def test_security_definer_functions_were_not_swept_along(owner_session: Session)
         ).all()
     )
 
-    # Exactly one definer function is meant to belong to evercoat_owner.
-    # Migration 013 moved it there deliberately: a definer function runs
-    # with ITS OWNER's privileges, which is how the audit trigger reads its
-    # own chain tail regardless of the caller.
-    assert owner_of.get("audit.chain_row") == "evercoat_owner", (
-        "audit.chain_row must be owned by evercoat_owner — migration 013 put it "
-        f"there so the chain can read its own tail; found {owner_of.get('audit.chain_row')!r}"
-    )
+    for name in sorted(DEFINER_OWNED_BY_DESIGN):
+        assert owner_of.get(name) == "evercoat_owner", (
+            f"{name} must be owned by evercoat_owner so it executes with the "
+            f"owner's privileges; found {owner_of.get(name)!r}"
+        )
 
     # Every OTHER definer function must have been left where it was. The
     # assertion is "not evercoat_owner" rather than a named role because
@@ -210,7 +229,7 @@ def test_security_definer_functions_were_not_swept_along(owner_session: Session)
     swept = {
         name: owner
         for name, owner in owner_of.items()
-        if name != "audit.chain_row" and owner == "evercoat_owner"
+        if name not in DEFINER_OWNED_BY_DESIGN and owner == "evercoat_owner"
     }
     assert not swept, (
         "these SECURITY DEFINER functions were reassigned to evercoat_owner. A "

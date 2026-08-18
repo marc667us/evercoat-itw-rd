@@ -133,7 +133,12 @@ ORPHANED_UNTIL_THEIR_SLICE: dict[str, str] = {
 }
 
 
-@pytest.fixture(scope="module")
+# Function-scoped, deliberately. `owner_session` is function-scoped (it
+# rolls back after every test, which is what keeps this suite re-runnable
+# against a developer's database), and a module-scoped fixture cannot
+# depend on one -- pytest raises ScopeMismatch at setup. Caching this
+# would save one trivial SELECT and cost the isolation.
+@pytest.fixture
 def seeded_permissions(owner_session: Session) -> set[str]:
     return {
         row[0] for row in owner_session.execute(text("SELECT code FROM core.permissions")).all()

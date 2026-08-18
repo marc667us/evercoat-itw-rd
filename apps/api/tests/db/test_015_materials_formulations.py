@@ -286,11 +286,33 @@ def test_a_version_cannot_be_attached_to_another_projects_formula(
     project's confidentiality, so a version spliced onto a formula in
     another project would carry a `project_id` that no longer matches the
     composition's real owner -- and the RLS policy reads `project_id`.
+
+    **The fixture is shaped to isolate the constraint under test.** The
+    first version of this inserted `version_number = 2` with no parent,
+    and CI failed it -- not because the key was missing, but because
+    `formula_versions_first_has_no_parent` fired FIRST and the assertion
+    named the wrong constraint. A test that is refused for the wrong
+    reason proves nothing about the reason it was written for. So the
+    formula here has no versions at all, and the insert is a legitimate
+    version 1: every other constraint is satisfied and the composite
+    foreign key is the only thing left that can refuse it.
     """
     org = _org(owner_session, "A")
     project_one = _project(owner_session, org)
     project_two = _project(owner_session, org)
-    formula_id, _ = _formula(owner_session, org, project_one, actor)
+
+    # A formula with NO versions, so version_number 1 is available.
+    code = f"FRM-{uuid.uuid4().hex[:6]}"
+    formula_id = owner_session.execute(
+        text(
+            """
+            INSERT INTO formulations.formulas
+                (organization_id, project_id, formula_code, name, owner_user_id, created_by)
+            VALUES (:o, :p, :c, 'Versionless fixture', :a, :a) RETURNING id
+            """
+        ),
+        {"o": org, "p": project_one, "c": code, "a": actor},
+    ).scalar_one()
     owner_session.flush()
 
     with pytest.raises(IntegrityError) as caught:
@@ -300,14 +322,14 @@ def test_a_version_cannot_be_attached_to_another_projects_formula(
                 INSERT INTO formulations.formula_versions
                     (organization_id, project_id, formula_id, version_number,
                      version_code, status, created_by)
-                VALUES (:o, :p2, :f, 2, :vc, 'draft', :a)
+                VALUES (:o, :p2, :f, 1, :vc, 'draft', :a)
                 """
             ),
             {
                 "o": org,
                 "p2": project_two,  # <- a DIFFERENT project, same tenant
                 "f": formula_id,
-                "vc": f"X-{uuid.uuid4().hex[:6]}",
+                "vc": f"{code}-V001",
                 "a": actor,
             },
         )
