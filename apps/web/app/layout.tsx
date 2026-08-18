@@ -74,8 +74,22 @@ export default function RootLayout({
             <TopBar />
             {/* min-w-0 above and here is what lets wide technical tables
                 scroll inside the workspace instead of pushing the page
-                into a horizontal scroll. */}
-            <main className="min-w-0 flex-1 overflow-y-auto">{children}</main>
+                into a horizontal scroll.
+
+                tabIndex={0} because this element SCROLLS. axe-core reports
+                `scrollable-region-focusable` (serious) for a scroll
+                container a keyboard cannot reach, and it surfaced the first
+                time a page shipped with no focusable content of its own —
+                /suppliers is entirely static cards, so there was nothing to
+                tab to and the region below the fold was unreachable.
+
+                Fixed here rather than by adding a link to that one page: the
+                next static page would have reintroduced it. A scroll
+                container needs keyboard access as a property of scrolling,
+                not as a side effect of what happens to be inside it. */}
+            <main tabIndex={0} className="min-w-0 flex-1 overflow-y-auto">
+              {children}
+            </main>
           </div>
         </div>
       </body>

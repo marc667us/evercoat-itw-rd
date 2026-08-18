@@ -177,6 +177,9 @@ export interface DemoTask {
 }
 
 interface DemoDataset {
+  readonly suppliers: readonly DemoSupplier[];
+  readonly materials: readonly DemoMaterial[];
+  readonly formulas: readonly DemoFormula[];
   /** Documentation inside the data file. Typed so it can be ignored safely. */
   readonly _README?: readonly string[];
   readonly organization: { readonly name: string; readonly note: string };
@@ -523,4 +526,198 @@ export function openOpportunities(): readonly DemoOpportunity[] {
   return OPPORTUNITIES.filter(
     (o) => o.status === "proposed" || o.status === "under_review",
   );
+}
+
+// ------------------------------------------------------- Slice 3 types
+
+export interface DemoSupplier {
+  readonly supplier_code: string;
+  readonly name: string;
+  readonly country: string;
+  readonly status: string;
+  readonly quality_rating: string;
+  readonly note: string;
+}
+
+export interface DemoMaterial {
+  readonly material_code: string;
+  readonly name: string;
+  readonly category: string;
+  readonly role: string;
+  readonly status: string;
+  readonly density_g_cm3: string;
+  readonly solids_fraction: string;
+  readonly voc_fraction: string;
+  /**
+   * The same values as percentages, computed in PYTHON by
+   * `scripts/build_demo_formulations.py`.
+   *
+   * Present so no component multiplies a fraction by 100 in JavaScript.
+   * That is float arithmetic on a controlled percentage, which §5 forbids —
+   * and which happened here until Codex caught it.
+   */
+  readonly solids_percent: string;
+  readonly voc_percent: string;
+  readonly cost_per_kg: string;
+  readonly suppliers: readonly string[];
+  readonly note: string;
+}
+
+export interface DemoComponent {
+  readonly material_code: string;
+  readonly percentage: string;
+}
+
+export interface DemoSubmissionBlock {
+  readonly code: string;
+  readonly message: string;
+}
+
+export interface DemoDiffRow {
+  readonly material_code: string;
+  readonly change: string;
+  readonly old_percentage: string | null;
+  readonly new_percentage: string | null;
+  readonly delta: string | null;
+  readonly percent_delta: string | null;
+}
+
+/**
+ * Everything under here was produced by `app.calculations.formulation`
+ * at build time, via `scripts/build_demo_formulations.py`.
+ *
+ * 🔴 NOTHING IN TYPESCRIPT MAY RECOMPUTE ANY OF IT. `CLAUDE.md` rule 2
+ * gives deterministic scientific calculation to Python, and a second
+ * implementation here — even of something as small as a percentage delta —
+ * is that rule broken. These are values to RENDER, not inputs to arithmetic.
+ */
+export interface DemoComputed {
+  readonly total_percentage: string;
+  readonly theoretical_density_g_cm3: string;
+  readonly binder_to_filler: string;
+  readonly solids_percent: string;
+  readonly voc_g_per_l: string;
+  readonly raw_material_cost_per_kg: string;
+  readonly submission_blocks: readonly DemoSubmissionBlock[];
+  readonly batch: {
+    readonly batch_mass_kg: string;
+    readonly masses_kg: Readonly<Record<string, string>>;
+  };
+  readonly diff_vs_parent: readonly DemoDiffRow[];
+}
+
+export interface DemoFormulaVersion {
+  readonly version_number: number;
+  readonly version_code: string;
+  readonly status: string;
+  readonly parent_version: string | null;
+  readonly created_on: string;
+  readonly created_by: string;
+  readonly approved_by?: string;
+  readonly approved_on?: string;
+  readonly change_reason: string;
+  readonly technical_hypothesis: string;
+  readonly expected_effect: string;
+  readonly observed_effect: string | null;
+  readonly components: readonly DemoComponent[];
+  readonly computed: DemoComputed;
+}
+
+export interface DemoFormula {
+  readonly formula_code: string;
+  readonly name: string;
+  readonly project_code: string;
+  readonly product_family: string;
+  readonly owner: string;
+  readonly versions: readonly DemoFormulaVersion[];
+}
+
+export const SUPPLIERS: readonly DemoSupplier[] = data.suppliers;
+export const MATERIALS: readonly DemoMaterial[] = data.materials;
+export const FORMULAS: readonly DemoFormula[] = data.formulas;
+
+export function materialByCode(code: string): DemoMaterial | undefined {
+  return MATERIALS.find((m) => m.material_code === code);
+}
+
+export function materialName(code: string): string {
+  return materialByCode(code)?.name ?? code;
+}
+
+export function supplierByCode(code: string): DemoSupplier | undefined {
+  return SUPPLIERS.find((s) => s.supplier_code === code);
+}
+
+export function formulaByCode(code: string): DemoFormula | undefined {
+  return FORMULAS.find((f) => f.formula_code === code);
+}
+
+export function materialsFromSupplier(code: string): readonly DemoMaterial[] {
+  return MATERIALS.filter((m) => m.suppliers.includes(code));
+}
+
+export function formulasForProject(projectCode: string): readonly DemoFormula[] {
+  return FORMULAS.filter((f) => f.project_code === projectCode);
+}
+
+/**
+ * The version a reader should be shown first.
+ *
+ * The APPROVED one, not simply the highest number. `CLAUDE.md` §8 makes
+ * released formulations immutable and revisions additive, so the newest
+ * version is frequently an unapproved draft — showing that by default would
+ * present an unapproved composition as the formula.
+ */
+export function currentVersion(f: DemoFormula): DemoFormulaVersion {
+  const approved = [...f.versions]
+    .filter((v) => v.status === "approved" || v.status === "released")
+    .sort((a, b) => b.version_number - a.version_number)[0];
+  if (approved) return approved;
+  return [...f.versions].sort((a, b) => b.version_number - a.version_number)[0]!;
+}
+
+/**
+ * Material status, presented. Restricted and obsolete are NOT the same as
+ * "unavailable" and must not collapse into one grey pill: a restricted
+ * material may be used with an exemption, an obsolete one may not be used
+ * at all but still appears in historical batches.
+ */
+export function materialStatus(m: DemoMaterial): Derived {
+  switch (m.status) {
+    case "preferred":
+      return { status: "green", label: "PREFERRED" };
+    case "approved":
+      return { status: "green", label: "APPROVED" };
+    case "development":
+      return {
+        status: "yellow",
+        label: "IN DEVELOPMENT",
+        reason: "Under evaluation — not yet approved for released formulations.",
+      };
+    case "restricted":
+      return {
+        status: "red",
+        label: "RESTRICTED",
+      };
+    case "obsolete":
+      return { status: "neutral", label: "OBSOLETE" };
+    default:
+      return { status: "neutral", label: m.status.toUpperCase() };
+  }
+}
+
+/**
+ * Whether a version may be submitted, from the blocks the ENGINE returned.
+ *
+ * Reads `computed.submission_blocks`; it does not re-derive them.
+ */
+export function submissionStatus(v: DemoFormulaVersion): Derived {
+  const blocks = v.computed.submission_blocks;
+  if (blocks.length === 0) {
+    return { status: "green", label: "SUBMITTABLE" };
+  }
+  return {
+    status: "red",
+    label: `${blocks.length} BLOCKER${blocks.length === 1 ? "" : "S"}`,
+  };
 }

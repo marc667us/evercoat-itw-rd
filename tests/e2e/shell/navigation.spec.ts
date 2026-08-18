@@ -79,7 +79,10 @@ test.describe("application shell", () => {
   }) => {
     // A notice that appears on the landing page and nowhere else is worse
     // than none: a viewer who navigates once will believe the rest is real.
-    for (const path of ["/dashboard", "/projects", "/my-work", "/pipeline", "/innovation"]) {
+    for (const path of [
+      "/dashboard", "/projects", "/my-work", "/pipeline", "/innovation",
+      "/materials", "/suppliers", "/formulations", "/formulations/FRM-014",
+    ]) {
       await page.goto(path);
       await expect(
         page.getByRole("note", { name: /demonstration data/i }),
@@ -94,22 +97,22 @@ test.describe("navigation gating", () => {
     await page.goto("/dashboard");
     const nav = page.getByRole("navigation", { name: "Main navigation" });
 
-    // "Formulations" is slice 3. Its page does not exist. It must be
-    // present (so the structure is legible) and NOT navigable (so it
-    // cannot 404).
+    // "Laboratory" is slice 4. Its page does not exist. It must be present
+    // (so the structure is legible) and NOT navigable (so it cannot 404).
     //
-    // This test named "My Work" until Slice 2 shipped and built it. The
-    // example has to be a destination that is genuinely still unbuilt —
-    // asserting inertness about a page that now exists would either fail
-    // or, worse, be quietly weakened until it asserted nothing.
-    const item = nav.getByText("Formulations", { exact: true });
+    // This named "My Work" until Slice 2 built it, then "Formulations"
+    // until Slice 3 built it. The example has to be a destination that is
+    // genuinely still unbuilt, or the assertion says nothing — and moving
+    // it each slice is the cost of the assertion continuing to mean
+    // something.
+    const item = nav.getByText("Laboratory", { exact: true });
     await expect(item).toBeVisible();
 
-    const inert = nav.locator('[aria-disabled="true"]', { hasText: "Formulations" });
+    const inert = nav.locator('[aria-disabled="true"]', { hasText: "Laboratory" });
     await expect(inert).toHaveCount(1);
 
     // The decisive assertion: no anchor points at it.
-    await expect(nav.locator('a[href^="/formulations"]')).toHaveCount(0);
+    await expect(nav.locator('a[href^="/laboratory"]')).toHaveCount(0);
   });
 
   test("every unbuilt item is inert and every built item is a link", async ({ page }) => {
@@ -186,7 +189,10 @@ test.describe("navigation gating", () => {
     // anchor on it. In a client demonstration a dead link is the single most
     // visible possible failure, so it is worth the extra seconds.
     const seen = new Set<string>();
-    const pages = ["/dashboard", "/projects", "/my-work", "/pipeline", "/innovation", "/admin"];
+    const pages = [
+      "/dashboard", "/projects", "/my-work", "/pipeline", "/innovation", "/admin",
+      "/materials", "/suppliers", "/formulations", "/formulations/FRM-014",
+    ];
 
     for (const path of pages) {
       await page.goto(path);
@@ -201,11 +207,30 @@ test.describe("navigation gating", () => {
       for (const href of hrefs) {
         if (seen.has(href)) continue;
         seen.add(href);
-        const response = await page.goto(href);
+
+        // A SAME-DOCUMENT FRAGMENT IS NOT A NAVIGATION.
+        //
+        // `page.goto("/x#y")` while already on /x resolves without a network
+        // request, so `response` is null and `.status()` is undefined — the
+        // first version reported "#composition is a dead link" about a link
+        // that works perfectly. The right question for a fragment is not
+        // "what status did it return" but "does the target element exist",
+        // because an anchor pointing at a missing id is the actual defect.
+        const [pathPart, fragment] = href.split("#");
+
+        const response = await page.goto(pathPart || path);
         expect(
           response?.status(),
           `${href}, linked from ${path}, is a dead link`,
         ).toBe(200);
+
+        if (fragment) {
+          await expect(
+            page.locator(`#${fragment}`),
+            `${href}, linked from ${path}, points at an element that does not exist`,
+          ).toHaveCount(1);
+        }
+
         await page.goto(path);
       }
     }
@@ -244,12 +269,12 @@ test.describe("routes that exist are reachable", () => {
   });
 
   test("an unbuilt route is not silently served", async ({ page }) => {
-    // `/formulations` is slice 3: no page exists. It must 404 rather than
+    // `/laboratory` is slice 4: no page exists. It must 404 rather than
     // render an empty shell that looks like a working screen with no data.
     //
-    // This named `/my-work` until Slice 2 built it. The route under test has
-    // to be one that is genuinely unbuilt, or the assertion says nothing.
-    const response = await page.goto("/formulations");
+    // This named `/my-work` until Slice 2 built it and `/formulations`
+    // until Slice 3 built it.
+    const response = await page.goto("/laboratory");
     expect(response?.status()).toBe(404);
   });
 });

@@ -28,7 +28,8 @@
     "",
     "NOTE: requirements carry NO stored verification status. The state is derived from measured_value against minimum/maximum and warning_threshold, because CLAUDE.md section 10 requires it to be computed and never a field anyone sets. A stored `result` column was removed for exactly that reason -- it could disagree with the measurement beside it, and did.",
     "Warning bands are TWO fields, warning_minimum and warning_maximum, not one shared threshold. A requirement with both a minimum and a maximum cannot express its warning band with a single number -- every reading except that exact value would land inside one side of the band.",
-    "stages carry normal_path. FAILURE_REWORK is false: it is entered only on a critical failure, so including it in a progress denominator makes a healthy project permanently incomplete."
+    "stages carry normal_path. FAILURE_REWORK is false: it is entered only on a critical failure, so including it in a progress denominator makes a healthy project permanently incomplete.",
+    "materials, suppliers and formulas are Slice 3. Every DERIVED figure on a formula version lives under `computed` and is produced by scripts/build_demo_formulations.py running app.calculations.formulation -- the real engine. Nothing in TypeScript performs formulation arithmetic; CLAUDE.md rule 2 gives that to Python and a second implementation in the frontend would be that rule broken on purpose."
   ],
   "organization": {
     "name": "ITW Evercoat (Demo)",
@@ -780,6 +781,922 @@
       "assigned_to": "dir.demo",
       "due_date": "2026-08-28",
       "required_action": "Confirm the formula version to carry into validation."
+    }
+  ],
+  "suppliers": [
+    {
+      "supplier_code": "SUP-001",
+      "name": "Aksa Polymer Chemicals",
+      "country": "Turkey",
+      "status": "approved",
+      "quality_rating": "A",
+      "note": "Primary polyester resin source."
+    },
+    {
+      "supplier_code": "SUP-002",
+      "name": "Volta Minerals Ltd",
+      "country": "Ghana",
+      "status": "approved",
+      "quality_rating": "A",
+      "note": "Carbonate and talc, regional."
+    },
+    {
+      "supplier_code": "SUP-003",
+      "name": "Ceramica Sphere GmbH",
+      "country": "Germany",
+      "status": "qualified",
+      "quality_rating": "B",
+      "note": "Sole approved source for glass microspheres — see risk RSK-014-01."
+    },
+    {
+      "supplier_code": "SUP-004",
+      "name": "Adriatic Additives SpA",
+      "country": "Italy",
+      "status": "approved",
+      "quality_rating": "A",
+      "note": "Silanes and rheology additives."
+    }
+  ],
+  "materials": [
+    {
+      "material_code": "RM-RES-01",
+      "name": "Unsaturated Polyester Resin (orthophthalic)",
+      "category": "Resin",
+      "role": "resin",
+      "status": "approved",
+      "density_g_cm3": "1.10",
+      "solids_fraction": "0.65",
+      "voc_fraction": "0.35",
+      "cost_per_kg": "2.80",
+      "suppliers": [
+        "SUP-001"
+      ],
+      "note": "Workhorse resin. High styrene content drives the VOC figure.",
+      "solids_percent": "65.0",
+      "voc_percent": "35.0"
+    },
+    {
+      "material_code": "RM-RES-02",
+      "name": "Low-Styrene Polyester Resin",
+      "category": "Resin",
+      "role": "resin",
+      "status": "preferred",
+      "density_g_cm3": "1.12",
+      "solids_fraction": "0.78",
+      "voc_fraction": "0.22",
+      "cost_per_kg": "3.40",
+      "suppliers": [
+        "SUP-001"
+      ],
+      "note": "Reduces VOC at a cost premium. Preferred for new development.",
+      "solids_percent": "78.0",
+      "voc_percent": "22.0"
+    },
+    {
+      "material_code": "RM-FIL-01",
+      "name": "Calcium Carbonate (fine ground)",
+      "category": "Filler",
+      "role": "filler",
+      "status": "approved",
+      "density_g_cm3": "2.70",
+      "solids_fraction": "1.00",
+      "voc_fraction": "0.00",
+      "cost_per_kg": "0.18",
+      "suppliers": [
+        "SUP-002"
+      ],
+      "note": "Cheapest bulk filler. Heavy — the main obstacle to the density target.",
+      "solids_percent": "100.0",
+      "voc_percent": "0.0"
+    },
+    {
+      "material_code": "RM-FIL-02",
+      "name": "Talc (platy)",
+      "category": "Filler",
+      "role": "filler",
+      "status": "approved",
+      "density_g_cm3": "2.75",
+      "solids_fraction": "1.00",
+      "voc_fraction": "0.00",
+      "cost_per_kg": "0.32",
+      "suppliers": [
+        "SUP-002"
+      ],
+      "note": "Improves sanding feel and sag resistance.",
+      "solids_percent": "100.0",
+      "voc_percent": "0.0"
+    },
+    {
+      "material_code": "RM-FIL-03",
+      "name": "Glass Microspheres (hollow)",
+      "category": "Filler",
+      "role": "filler",
+      "status": "approved",
+      "density_g_cm3": "0.38",
+      "solids_fraction": "1.00",
+      "voc_fraction": "0.00",
+      "cost_per_kg": "9.50",
+      "suppliers": [
+        "SUP-003"
+      ],
+      "note": "The lightweighting lever. Single-sourced — risk RSK-014-01.",
+      "solids_percent": "100.0",
+      "voc_percent": "0.0"
+    },
+    {
+      "material_code": "RM-PIG-01",
+      "name": "Titanium Dioxide (rutile)",
+      "category": "Pigment",
+      "role": "pigment",
+      "status": "approved",
+      "density_g_cm3": "4.10",
+      "solids_fraction": "1.00",
+      "voc_fraction": "0.00",
+      "cost_per_kg": "3.10",
+      "suppliers": [
+        "SUP-004"
+      ],
+      "note": "Opacity and tint base.",
+      "solids_percent": "100.0",
+      "voc_percent": "0.0"
+    },
+    {
+      "material_code": "RM-ADD-01",
+      "name": "Fumed Silica (hydrophobic)",
+      "category": "Additive",
+      "role": "additive",
+      "status": "approved",
+      "density_g_cm3": "2.20",
+      "solids_fraction": "1.00",
+      "voc_fraction": "0.00",
+      "cost_per_kg": "6.40",
+      "suppliers": [
+        "SUP-004"
+      ],
+      "note": "Thixotrope. Controls sag.",
+      "solids_percent": "100.0",
+      "voc_percent": "0.0"
+    },
+    {
+      "material_code": "RM-ADD-02",
+      "name": "Silane Coupling Agent",
+      "category": "Additive",
+      "role": "additive",
+      "status": "development",
+      "density_g_cm3": "1.04",
+      "solids_fraction": "1.00",
+      "voc_fraction": "0.00",
+      "cost_per_kg": "12.90",
+      "suppliers": [
+        "SUP-004"
+      ],
+      "note": "Under evaluation for adhesion to aluminium — see REQ-014-02.",
+      "solids_percent": "100.0",
+      "voc_percent": "0.0"
+    },
+    {
+      "material_code": "RM-SOLV-01",
+      "name": "Styrene Monomer",
+      "category": "Solvent",
+      "role": "solvent",
+      "status": "restricted",
+      "density_g_cm3": "0.906",
+      "solids_fraction": "0.00",
+      "voc_fraction": "1.00",
+      "cost_per_kg": "2.10",
+      "suppliers": [
+        "SUP-001"
+      ],
+      "note": "RESTRICTED. Free monomer additions require an approved exemption.",
+      "solids_percent": "0.0",
+      "voc_percent": "100.0"
+    },
+    {
+      "material_code": "RM-CAT-01",
+      "name": "BPO Hardener Paste (50%)",
+      "category": "Hardener",
+      "role": "hardener",
+      "status": "approved",
+      "density_g_cm3": "1.20",
+      "solids_fraction": "1.00",
+      "voc_fraction": "0.00",
+      "cost_per_kg": "7.80",
+      "suppliers": [
+        "SUP-001"
+      ],
+      "note": "Two-component cure. Charged at the bench, not pre-blended.",
+      "solids_percent": "100.0",
+      "voc_percent": "0.0"
+    },
+    {
+      "material_code": "RM-FIL-04",
+      "name": "Calcium Carbonate (coarse)",
+      "category": "Filler",
+      "role": "filler",
+      "status": "obsolete",
+      "density_g_cm3": "2.71",
+      "solids_fraction": "1.00",
+      "voc_fraction": "0.00",
+      "cost_per_kg": "0.14",
+      "suppliers": [
+        "SUP-002"
+      ],
+      "note": "OBSOLETE — superseded by RM-FIL-01. Retained because historical batches reference it; R&D history is never deleted.",
+      "solids_percent": "100.0",
+      "voc_percent": "0.0"
+    }
+  ],
+  "formulas": [
+    {
+      "formula_code": "FRM-014",
+      "name": "Premium Lightweight Automotive Putty",
+      "project_code": "RDP-2026-014",
+      "product_family": "Polyester Fillers",
+      "owner": "chem.demo",
+      "versions": [
+        {
+          "version_number": 1,
+          "version_code": "FRM-014-V001",
+          "status": "superseded",
+          "parent_version": null,
+          "created_on": "2026-05-22",
+          "created_by": "chem.demo",
+          "change_reason": "Baseline from the existing production putty.",
+          "technical_hypothesis": "Establish a reference before any lightweighting.",
+          "expected_effect": "Matches incumbent density and sanding time.",
+          "observed_effect": "Density 1.62 g/cm3 — far above the 1.25 maximum, as expected.",
+          "components": [
+            {
+              "material_code": "RM-RES-01",
+              "percentage": "38.00"
+            },
+            {
+              "material_code": "RM-FIL-01",
+              "percentage": "34.00"
+            },
+            {
+              "material_code": "RM-FIL-02",
+              "percentage": "9.00"
+            },
+            {
+              "material_code": "RM-PIG-01",
+              "percentage": "3.00"
+            },
+            {
+              "material_code": "RM-ADD-01",
+              "percentage": "3.00"
+            },
+            {
+              "material_code": "RM-CAT-01",
+              "percentage": "13.00"
+            }
+          ],
+          "computed": {
+            "total_percentage": "100.0000",
+            "theoretical_density_g_cm3": "1.5788",
+            "binder_to_filler": "1.109",
+            "solids_percent": "86.70",
+            "voc_g_per_l": "210.0",
+            "raw_material_cost_per_kg": "2.4530",
+            "submission_blocks": [],
+            "batch": {
+              "batch_mass_kg": "25",
+              "masses_kg": {
+                "RM-RES-01": "9.500",
+                "RM-FIL-01": "8.500",
+                "RM-FIL-02": "2.250",
+                "RM-PIG-01": "0.750",
+                "RM-ADD-01": "0.750",
+                "RM-CAT-01": "3.250"
+              }
+            },
+            "diff_vs_parent": []
+          }
+        },
+        {
+          "version_number": 2,
+          "version_code": "FRM-014-V002",
+          "status": "superseded",
+          "parent_version": "FRM-014-V001",
+          "created_on": "2026-06-04",
+          "created_by": "chem.demo",
+          "change_reason": "Introduce hollow microspheres to attack density.",
+          "technical_hypothesis": "Replacing carbonate with microspheres lowers density more than proportionally, because the spheres displace volume at a seventh of the mass.",
+          "expected_effect": "Density below 1.40 g/cm3.",
+          "observed_effect": "1.36 g/cm3. Still short of target; sanding improved.",
+          "components": [
+            {
+              "material_code": "RM-RES-01",
+              "percentage": "38.00"
+            },
+            {
+              "material_code": "RM-FIL-01",
+              "percentage": "28.00"
+            },
+            {
+              "material_code": "RM-FIL-03",
+              "percentage": "6.00"
+            },
+            {
+              "material_code": "RM-FIL-02",
+              "percentage": "9.00"
+            },
+            {
+              "material_code": "RM-PIG-01",
+              "percentage": "3.00"
+            },
+            {
+              "material_code": "RM-ADD-01",
+              "percentage": "3.00"
+            },
+            {
+              "material_code": "RM-CAT-01",
+              "percentage": "13.00"
+            }
+          ],
+          "computed": {
+            "total_percentage": "100.0000",
+            "theoretical_density_g_cm3": "1.3003",
+            "binder_to_filler": "1.109",
+            "solids_percent": "86.70",
+            "voc_g_per_l": "172.9",
+            "raw_material_cost_per_kg": "3.0122",
+            "submission_blocks": [],
+            "batch": {
+              "batch_mass_kg": "25",
+              "masses_kg": {
+                "RM-RES-01": "9.500",
+                "RM-FIL-01": "7.000",
+                "RM-FIL-03": "1.500",
+                "RM-FIL-02": "2.250",
+                "RM-PIG-01": "0.750",
+                "RM-ADD-01": "0.750",
+                "RM-CAT-01": "3.250"
+              }
+            },
+            "diff_vs_parent": [
+              {
+                "material_code": "RM-ADD-01",
+                "change": "unchanged",
+                "old_percentage": "3.0000",
+                "new_percentage": "3.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-CAT-01",
+                "change": "unchanged",
+                "old_percentage": "13.0000",
+                "new_percentage": "13.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-FIL-01",
+                "change": "changed",
+                "old_percentage": "34.0000",
+                "new_percentage": "28.0000",
+                "delta": "-6.0000",
+                "percent_delta": "-17.65"
+              },
+              {
+                "material_code": "RM-FIL-02",
+                "change": "unchanged",
+                "old_percentage": "9.0000",
+                "new_percentage": "9.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-FIL-03",
+                "change": "added",
+                "old_percentage": null,
+                "new_percentage": "6.0000",
+                "delta": "6.0000",
+                "percent_delta": null
+              },
+              {
+                "material_code": "RM-PIG-01",
+                "change": "unchanged",
+                "old_percentage": "3.0000",
+                "new_percentage": "3.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-RES-01",
+                "change": "unchanged",
+                "old_percentage": "38.0000",
+                "new_percentage": "38.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              }
+            ]
+          }
+        },
+        {
+          "version_number": 3,
+          "version_code": "FRM-014-V003",
+          "status": "superseded",
+          "parent_version": "FRM-014-V002",
+          "created_on": "2026-06-19",
+          "created_by": "chem.demo",
+          "change_reason": "Move to low-styrene resin and raise microsphere loading.",
+          "technical_hypothesis": "Low-styrene resin cuts VOC without hurting cure; the extra microspheres carry density down further.",
+          "expected_effect": "Density below 1.25, VOC below 250 g/L.",
+          "observed_effect": "Measured density 1.24 g/cm3 against a theoretical 1.16 — the gap is microsphere breakage under high-shear dispersion, which the volume-additive model cannot see. Adhesion to aluminium fell to 6.1 MPa, below the 6.5 minimum.",
+          "components": [
+            {
+              "material_code": "RM-RES-02",
+              "percentage": "38.00"
+            },
+            {
+              "material_code": "RM-FIL-01",
+              "percentage": "24.00"
+            },
+            {
+              "material_code": "RM-FIL-03",
+              "percentage": "10.00"
+            },
+            {
+              "material_code": "RM-FIL-02",
+              "percentage": "8.50"
+            },
+            {
+              "material_code": "RM-PIG-01",
+              "percentage": "3.00"
+            },
+            {
+              "material_code": "RM-ADD-01",
+              "percentage": "2.50"
+            },
+            {
+              "material_code": "RM-ADD-02",
+              "percentage": "1.00"
+            },
+            {
+              "material_code": "RM-CAT-01",
+              "percentage": "13.00"
+            }
+          ],
+          "computed": {
+            "total_percentage": "100.0000",
+            "theoretical_density_g_cm3": "1.1643",
+            "binder_to_filler": "1.121",
+            "solids_percent": "91.64",
+            "voc_g_per_l": "97.3",
+            "raw_material_cost_per_kg": "3.7084",
+            "submission_blocks": [],
+            "batch": {
+              "batch_mass_kg": "25",
+              "masses_kg": {
+                "RM-RES-02": "9.500",
+                "RM-FIL-01": "6.000",
+                "RM-FIL-03": "2.500",
+                "RM-FIL-02": "2.125",
+                "RM-PIG-01": "0.750",
+                "RM-ADD-01": "0.625",
+                "RM-ADD-02": "0.250",
+                "RM-CAT-01": "3.250"
+              }
+            },
+            "diff_vs_parent": [
+              {
+                "material_code": "RM-ADD-01",
+                "change": "changed",
+                "old_percentage": "3.0000",
+                "new_percentage": "2.5000",
+                "delta": "-0.5000",
+                "percent_delta": "-16.67"
+              },
+              {
+                "material_code": "RM-ADD-02",
+                "change": "added",
+                "old_percentage": null,
+                "new_percentage": "1.0000",
+                "delta": "1.0000",
+                "percent_delta": null
+              },
+              {
+                "material_code": "RM-CAT-01",
+                "change": "unchanged",
+                "old_percentage": "13.0000",
+                "new_percentage": "13.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-FIL-01",
+                "change": "changed",
+                "old_percentage": "28.0000",
+                "new_percentage": "24.0000",
+                "delta": "-4.0000",
+                "percent_delta": "-14.29"
+              },
+              {
+                "material_code": "RM-FIL-02",
+                "change": "changed",
+                "old_percentage": "9.0000",
+                "new_percentage": "8.5000",
+                "delta": "-0.5000",
+                "percent_delta": "-5.56"
+              },
+              {
+                "material_code": "RM-FIL-03",
+                "change": "changed",
+                "old_percentage": "6.0000",
+                "new_percentage": "10.0000",
+                "delta": "4.0000",
+                "percent_delta": "66.67"
+              },
+              {
+                "material_code": "RM-PIG-01",
+                "change": "unchanged",
+                "old_percentage": "3.0000",
+                "new_percentage": "3.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-RES-01",
+                "change": "removed",
+                "old_percentage": "38.0000",
+                "new_percentage": null,
+                "delta": "-38.0000",
+                "percent_delta": "-100.00"
+              },
+              {
+                "material_code": "RM-RES-02",
+                "change": "added",
+                "old_percentage": null,
+                "new_percentage": "38.0000",
+                "delta": "38.0000",
+                "percent_delta": null
+              }
+            ]
+          }
+        },
+        {
+          "version_number": 4,
+          "version_code": "FRM-014-V004",
+          "status": "approved",
+          "parent_version": "FRM-014-V003",
+          "created_on": "2026-07-02",
+          "created_by": "chem.demo",
+          "approved_by": "lead.demo",
+          "approved_on": "2026-07-08",
+          "change_reason": "Restore adhesion by raising the silane and trimming carbonate.",
+          "technical_hypothesis": "Silane at 1% couples the resin to the aluminium oxide layer; removing 2% carbonate keeps density in band.",
+          "expected_effect": "Adhesion back above 6.5 MPa with density held under 1.25.",
+          "observed_effect": "Measured density 1.19 g/cm3 against a theoretical 1.09, the same breakage gap as V003. Adhesion recovered to 6.8 MPa. Both requirements in tolerance; adhesion on a low margin.",
+          "components": [
+            {
+              "material_code": "RM-RES-02",
+              "percentage": "38.00"
+            },
+            {
+              "material_code": "RM-FIL-01",
+              "percentage": "22.00"
+            },
+            {
+              "material_code": "RM-FIL-03",
+              "percentage": "12.50"
+            },
+            {
+              "material_code": "RM-FIL-02",
+              "percentage": "8.00"
+            },
+            {
+              "material_code": "RM-PIG-01",
+              "percentage": "3.00"
+            },
+            {
+              "material_code": "RM-ADD-01",
+              "percentage": "2.50"
+            },
+            {
+              "material_code": "RM-ADD-02",
+              "percentage": "1.00"
+            },
+            {
+              "material_code": "RM-CAT-01",
+              "percentage": "13.00"
+            }
+          ],
+          "computed": {
+            "total_percentage": "100.0000",
+            "theoretical_density_g_cm3": "1.0924",
+            "binder_to_filler": "1.121",
+            "solids_percent": "91.64",
+            "voc_g_per_l": "91.3",
+            "raw_material_cost_per_kg": "3.9407",
+            "submission_blocks": [],
+            "batch": {
+              "batch_mass_kg": "25",
+              "masses_kg": {
+                "RM-RES-02": "9.500",
+                "RM-FIL-01": "5.500",
+                "RM-FIL-03": "3.125",
+                "RM-FIL-02": "2.000",
+                "RM-PIG-01": "0.750",
+                "RM-ADD-01": "0.625",
+                "RM-ADD-02": "0.250",
+                "RM-CAT-01": "3.250"
+              }
+            },
+            "diff_vs_parent": [
+              {
+                "material_code": "RM-ADD-01",
+                "change": "unchanged",
+                "old_percentage": "2.5000",
+                "new_percentage": "2.5000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-ADD-02",
+                "change": "unchanged",
+                "old_percentage": "1.0000",
+                "new_percentage": "1.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-CAT-01",
+                "change": "unchanged",
+                "old_percentage": "13.0000",
+                "new_percentage": "13.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-FIL-01",
+                "change": "changed",
+                "old_percentage": "24.0000",
+                "new_percentage": "22.0000",
+                "delta": "-2.0000",
+                "percent_delta": "-8.33"
+              },
+              {
+                "material_code": "RM-FIL-02",
+                "change": "changed",
+                "old_percentage": "8.5000",
+                "new_percentage": "8.0000",
+                "delta": "-0.5000",
+                "percent_delta": "-5.88"
+              },
+              {
+                "material_code": "RM-FIL-03",
+                "change": "changed",
+                "old_percentage": "10.0000",
+                "new_percentage": "12.5000",
+                "delta": "2.5000",
+                "percent_delta": "25.00"
+              },
+              {
+                "material_code": "RM-PIG-01",
+                "change": "unchanged",
+                "old_percentage": "3.0000",
+                "new_percentage": "3.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-RES-02",
+                "change": "unchanged",
+                "old_percentage": "38.0000",
+                "new_percentage": "38.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              }
+            ]
+          }
+        },
+        {
+          "version_number": 5,
+          "version_code": "FRM-014-V005",
+          "status": "draft",
+          "parent_version": "FRM-014-V004",
+          "created_on": "2026-08-14",
+          "created_by": "chem.demo",
+          "change_reason": "Trial free styrene to cut viscosity for the 5 C sanding failure.",
+          "technical_hypothesis": "Thinning the wet paste should shorten low-temperature sanding time.",
+          "expected_effect": "5 C sanding below the 40 minute maximum.",
+          "observed_effect": null,
+          "components": [
+            {
+              "material_code": "RM-RES-02",
+              "percentage": "36.00"
+            },
+            {
+              "material_code": "RM-FIL-01",
+              "percentage": "22.00"
+            },
+            {
+              "material_code": "RM-FIL-03",
+              "percentage": "12.50"
+            },
+            {
+              "material_code": "RM-FIL-02",
+              "percentage": "8.00"
+            },
+            {
+              "material_code": "RM-PIG-01",
+              "percentage": "3.00"
+            },
+            {
+              "material_code": "RM-ADD-01",
+              "percentage": "2.50"
+            },
+            {
+              "material_code": "RM-ADD-02",
+              "percentage": "1.00"
+            },
+            {
+              "material_code": "RM-CAT-01",
+              "percentage": "13.00"
+            },
+            {
+              "material_code": "RM-SOLV-01",
+              "percentage": "0.50"
+            }
+          ],
+          "computed": {
+            "total_percentage": "98.5000",
+            "theoretical_density_g_cm3": "1.0907",
+            "binder_to_filler": "1.077",
+            "solids_percent": "91.45",
+            "voc_g_per_l": "93.2",
+            "raw_material_cost_per_kg": "3.9423",
+            "submission_blocks": [
+              {
+                "code": "TOTAL_OUT_OF_TOLERANCE",
+                "message": "Components total 98.50%, outside the ±0.01% tolerance around 100%."
+              },
+              {
+                "code": "RESTRICTED_MATERIAL",
+                "message": "RM-SOLV-01 is restricted and may not be used without an approved exemption."
+              }
+            ],
+            "batch": {
+              "batch_mass_kg": "25",
+              "masses_kg": {
+                "RM-RES-02": "9.137",
+                "RM-FIL-01": "5.584",
+                "RM-FIL-03": "3.173",
+                "RM-FIL-02": "2.030",
+                "RM-PIG-01": "0.761",
+                "RM-ADD-01": "0.635",
+                "RM-ADD-02": "0.254",
+                "RM-CAT-01": "3.299",
+                "RM-SOLV-01": "0.127"
+              }
+            },
+            "diff_vs_parent": [
+              {
+                "material_code": "RM-ADD-01",
+                "change": "unchanged",
+                "old_percentage": "2.5000",
+                "new_percentage": "2.5000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-ADD-02",
+                "change": "unchanged",
+                "old_percentage": "1.0000",
+                "new_percentage": "1.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-CAT-01",
+                "change": "unchanged",
+                "old_percentage": "13.0000",
+                "new_percentage": "13.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-FIL-01",
+                "change": "unchanged",
+                "old_percentage": "22.0000",
+                "new_percentage": "22.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-FIL-02",
+                "change": "unchanged",
+                "old_percentage": "8.0000",
+                "new_percentage": "8.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-FIL-03",
+                "change": "unchanged",
+                "old_percentage": "12.5000",
+                "new_percentage": "12.5000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-PIG-01",
+                "change": "unchanged",
+                "old_percentage": "3.0000",
+                "new_percentage": "3.0000",
+                "delta": "0.0000",
+                "percent_delta": "0.00"
+              },
+              {
+                "material_code": "RM-RES-02",
+                "change": "changed",
+                "old_percentage": "38.0000",
+                "new_percentage": "36.0000",
+                "delta": "-2.0000",
+                "percent_delta": "-5.26"
+              },
+              {
+                "material_code": "RM-SOLV-01",
+                "change": "added",
+                "old_percentage": null,
+                "new_percentage": "0.5000",
+                "delta": "0.5000",
+                "percent_delta": null
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "formula_code": "FRM-009",
+      "name": "High-Build Polyester Primer",
+      "project_code": "RDP-2026-009",
+      "product_family": "Primers",
+      "owner": "chem.demo",
+      "versions": [
+        {
+          "version_number": 1,
+          "version_code": "FRM-009-V001",
+          "status": "submitted",
+          "parent_version": null,
+          "created_on": "2026-08-11",
+          "created_by": "chem.demo",
+          "change_reason": "First trial build for the high-build primer.",
+          "technical_hypothesis": "High talc loading with fumed silica should hold film build without sag.",
+          "expected_effect": "150 um per coat with no sag at 200 um.",
+          "observed_effect": null,
+          "components": [
+            {
+              "material_code": "RM-RES-01",
+              "percentage": "42.00"
+            },
+            {
+              "material_code": "RM-FIL-02",
+              "percentage": "26.00"
+            },
+            {
+              "material_code": "RM-FIL-01",
+              "percentage": "12.00"
+            },
+            {
+              "material_code": "RM-PIG-01",
+              "percentage": "4.00"
+            },
+            {
+              "material_code": "RM-ADD-01",
+              "percentage": "4.00"
+            },
+            {
+              "material_code": "RM-CAT-01",
+              "percentage": "12.00"
+            }
+          ],
+          "computed": {
+            "total_percentage": "100.0000",
+            "theoretical_density_g_cm3": "1.5414",
+            "binder_to_filler": "1.286",
+            "solids_percent": "85.30",
+            "voc_g_per_l": "226.6",
+            "raw_material_cost_per_kg": "2.5968",
+            "submission_blocks": [],
+            "batch": {
+              "batch_mass_kg": "25",
+              "masses_kg": {
+                "RM-RES-01": "10.500",
+                "RM-FIL-02": "6.500",
+                "RM-FIL-01": "3.000",
+                "RM-PIG-01": "1.000",
+                "RM-ADD-01": "1.000",
+                "RM-CAT-01": "3.000"
+              }
+            },
+            "diff_vs_parent": []
+          }
+        }
+      ]
     }
   ]
 }

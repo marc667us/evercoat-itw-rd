@@ -160,14 +160,15 @@ export function visibleNavigation(permissions: ReadonlySet<string>): NavGroup[] 
 }
 
 /** Current slice. Items above it render disabled instead of linking into a 404. */
-// Slice 2 shipped: Projects, R&D Pipeline, Innovation and My Work now have
-// real pages backed by the demo dataset, so they are no longer inert.
+// Slice 3 shipped: Materials, Suppliers and Formulations join the Slice 2
+// destinations. Every formulation figure they show is computed by the Python
+// engine at build time, not by the frontend.
 //
 // This constant is the ONLY thing that decides whether a destination is a
 // link or a disabled item. Raising it without building the pages would turn
 // every Slice 2 item into a live link into a 404 — which is exactly the
 // failure `isAvailable` exists to prevent, so the two must move together.
-export const CURRENT_SLICE = 2;
+export const CURRENT_SLICE = 3;
 
 /**
  * Every permission any navigation item asks for, derived from NAVIGATION.

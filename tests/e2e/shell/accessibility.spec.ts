@@ -38,6 +38,11 @@ const PAGES = [
   { name: "my work", path: "/my-work" },
   { name: "pipeline", path: "/pipeline" },
   { name: "innovation", path: "/innovation" },
+  // Slice 3.
+  { name: "materials", path: "/materials" },
+  { name: "suppliers", path: "/suppliers" },
+  { name: "formulations", path: "/formulations" },
+  { name: "formula workspace", path: "/formulations/FRM-014" },
 ];
 
 for (const target of PAGES) {

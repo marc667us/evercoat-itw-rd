@@ -133,10 +133,34 @@ describe("permission filtering", () => {
 });
 
 describe("slice availability", () => {
-  it("marks future-slice items unavailable", () => {
-    const formulations = ALL_NAV_ITEMS.find((i) => i.id === "formulations");
-    expect(formulations).toBeDefined();
-    expect(isAvailable(formulations!)).toBe(false);
+  it("marks future-slice items unavailable and shipped ones available", () => {
+    // A PROPERTY OVER EVERY ITEM, not an assertion about one named
+    // destination.
+    //
+    // This test used to name "formulations" as the future-slice example.
+    // Slice 3 built it and the test failed — correctly, but for a reason
+    // that has nothing to do with the rule it exists to protect. Naming a
+    // specific item means editing this test every slice, and a test edited
+    // that often is a test people stop reading.
+    //
+    // Stated as a property it holds forever: availability is exactly
+    // "slice <= CURRENT_SLICE", for all items, whatever CURRENT_SLICE is.
+    const future = ALL_NAV_ITEMS.filter((i) => (i.slice ?? 1) > CURRENT_SLICE);
+    const shipped = ALL_NAV_ITEMS.filter((i) => (i.slice ?? 1) <= CURRENT_SLICE);
+
+    // Both sides must be non-empty, or the property is vacuously true — a
+    // green test asserting nothing is worse than a red one.
+    expect(future.length, "no future-slice items left to check").toBeGreaterThan(0);
+    expect(shipped.length, "no shipped items to check").toBeGreaterThan(0);
+
+    for (const item of future) {
+      expect(isAvailable(item), `${item.id} is slice ${item.slice} and should be inert`).toBe(
+        false,
+      );
+    }
+    for (const item of shipped) {
+      expect(isAvailable(item), `${item.id} has shipped and should be a link`).toBe(true);
+    }
   });
 
   it("treats items with no slice as available now", () => {
