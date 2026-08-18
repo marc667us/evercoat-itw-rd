@@ -81,8 +81,13 @@ echo "--- live content vs local dataset ---"
 # Pull a handful of values the ENGINE produced and look for them verbatim in
 # the served HTML. If the deployed bundle were built from different data or
 # different code, these would not all be present.
+# `tr -d` because python on Windows terminates print() with CRLF, so the LAST
+# field read carries a trailing carriage return. That is why the first three
+# values matched the live page and only the fourth did not: it looked like a
+# deployment mismatch and was a quoting bug in this script. Third appearance
+# of this exact trap in this repo -- see scripts/live-suite.sh.
 read -r F_CODE DENSITY VOC SOLIDS TOTAL < <(
-python - "${DATA}" <<'PY'
+python - "${DATA}" <<'PY' | tr -d '\r'
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 f = d["formulas"][0]
