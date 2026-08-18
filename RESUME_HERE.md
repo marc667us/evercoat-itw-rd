@@ -1,35 +1,33 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-**Session closed 2026-08-17. Read this file first, then `TODO.md`.**
+**Session closed 2026-08-18. Read this file first, then `TODO.md`.**
 
-Repository: **https://github.com/marc667us/evercoat-itw-rd (PRIVATE)**, remote `origin`, branch `master`.
+Repository: **https://github.com/marc667us/evercoat-itw-rd — now PUBLIC**,
+remote `origin`, branch `master`. Tip **`96bbf4c`**, working tree clean.
 
 ---
 
 ## 🔴 THE ONE THING TO READ BEFORE PLANNING ANYTHING
 
-**The previous version of this file put GATE-1 (the golden end-to-end
-scenario) at the top of the queue and said Docker VM memory was blocking
-it. That was wrong, and following it would have burnt this session** —
-and pushed at the `aw-*` containers the operator forbade touching.
+**There is still no working URL, and the reason changed twice in one
+session.** Do not act on a recorded blocker without re-measuring it —
+that is now the third time in this project a stated blocker was wrong.
 
-The scenario cannot run at any amount of memory, because eleven of its
-fifteen arrows have nothing to drive. Formula, formula version, lab
-batch, sample, test, raw measurement, failure investigation and the
-approval engine have **no table, no route, no service and no page**.
-Verified against the filesystem and confirmed independently by Codex.
+1. The blocker was recorded as *"Render's GitHub App cannot read the
+   PRIVATE repo."* The operator chose to make the repo **PUBLIC**. That
+   worked; the repo-access error is gone.
+   *(`gh repo edit --visibility` fails on this gh build — the flag it
+   demands does not exist. Use `gh api -X PATCH repos/... -f visibility=public`.)*
+2. The real blocker now is account-wide:
+   `POST /services` → **400 `"free tier usage quota has been exhausted,
+   new services are not allowed"`**. Measured: **all five Render services
+   are `plan=standard`; none are free.** The exhausted allowance is the
+   workspace's 750 free instance-hours per month, which resets with the
+   billing cycle.
 
-**Playwright was never configured.** The packages are devDependencies and
-`npm run e2e` exists, but there is no `playwright.config.*` and no
-`.spec.ts` in the repository. The golden E2E was never written.
-
-`IMPLEMENTATION_PLAN.md:436` schedules it in **Slice 7**, which is
-correct — it needs Slices 3–6 first. GATE-1 is unbuilt work that had been
-misfiled as a blocked run. Full detail in `TODO.md`.
-
-**The lesson, which is the reusable part:** measure the repository; do not
-quote the handover. This is the third status artifact in this project
-found to be wrong.
+**Nothing was created and nothing was billed.** `render-setup.yml` now
+takes an explicit `plan` input defaulting to `free`, so a careless
+dispatch 400s rather than costing money.
 
 ---
 
@@ -37,12 +35,12 @@ found to be wrong.
 
 | | |
 |---|---|
-| Tests | **152 passed / 0 failed / 0 skipped** (was 124) |
-| API routes | **51 registered** (was 42), app boots clean |
-| Migrations | **013**, each applied and verified against a real database |
-| Web pages | **3** — `/`, `/dashboard`, `/admin`. No Slice 2 surface is clickable. |
-| E2E | **29 passed / 0 failed / 0 skipped** — Playwright: browser shell, axe-core, API over real HTTP |
-| Deploy | `render.yaml` blueprint for the WEB service only. Image builds and serves (verified locally). Not yet created on Render. |
+| API tests | **155 passed / 0 failed / 0 skipped** (was 152) |
+| Web tests | 26 passed · E2E 29 green in CI |
+| Migrations | **014**, each applied and verified against a real database |
+| CI | **API ✓ · E2E ✓ · Web ✓ — the first time any of them passed.** |
+| CI, still red | **Security scan** — Trivy, 3 HIGH dependency CVEs (`postcss 8.4.31 → 8.5.12` + 2 more). More exposed now the repo is public. |
+| Deploy | **Nothing deployed. No URL.** |
 | Slice 1 | code-complete; full stack has still never run at once |
 | Slice 2 | complete except the frontend |
 
@@ -64,110 +62,147 @@ DATABASE_URL="$DATABASE_URL" KEYCLOAK_ISSUER="$KEYCLOAK_ISSUER" \
 python -m pytest tests -q -rs
 ```
 
-> **`alembic_version` is owned by `postgres`, not `evercoat_owner`.** Use
-> `MIGRATION_DATABASE_URL` with the superuser; `DATABASE_URL` stays on
-> the app role.
-
-**`mypy` is NOT installed** in this environment, so `mypy app` from
-`CLAUDE.md` §13 cannot run. Ruff check and format are clean.
+> **`mypy` is NOT installed locally** — `CLAUDE.md` §13's `mypy app` cannot
+> run here. It DOES run in CI and passes. Ruff check and format are clean.
 
 ---
 
 ## 🔴 THE STANDING CONSTRAINT — do not violate it
 
-**The owner's words: *"if i find the autoworkshop in issues you will be
-responsible for breaking it."***
-
-Do not touch `aw-postgres`, `aw-keycloak`, or any `aw-*` container. All
-database work uses **`evercoat-postgres` on port 55432**. Nothing this
-session touched an `aw-*` container.
+**The operator's words: *"if i find the autoworkshop in issues you will be
+responsible for breaking it."*** Do not touch `aw-postgres`,
+`aw-keycloak`, or any `aw-*` container. All database work uses
+**`evercoat-postgres` on port 55432**. Nothing this session touched one.
 
 ---
 
 ## What this session changed
 
-**Migration 011 — the audit chain, on a corrected diagnosis.**
-`TODO.md` blamed concurrency. `pg_advisory_xact_lock` is
-transaction-scoped, so concurrency cannot fork this chain. Measured on a
-live database, the real mechanism was RLS: `audit.chain_row()` was
-SECURITY INVOKER and its tail read was filtered by `audit_org_isolation`,
-so the chain was **already per-organization by accident**. The actual
-defect was an **unscoped writer** — no `app.current_org` — which saw
-every row and spliced one tenant's chain onto another's,
-non-deterministically. A second defect surfaced on the way: the insert
-policy was `WITH CHECK (true)`, so any session could forge audit rows
-attributed to any organization.
+**Migration 014 — ownership, because nothing had ever decided it.**
+CI failed `37 failed / 65 passed / 50 errors`, all `permission denied`,
+while the same suite passed locally, from the same migrations. 001
+declares `CREATE SCHEMA ... AUTHORIZATION evercoat_owner` and `env.py`
+says migrations run as the owner role — but 001 must `CREATE ROLE`, so
+alembic runs as `postgres` and every table belonged to `postgres`. The
+dev database only looked right because it had been **repaired by hand**;
+`ci.yml` repaired a **different subset** of schemas. Two hand-maintained
+lists that nothing could check against each other.
 
-**Migration 012 + new write paths.** `projects.milestones` and
-`projects.risks` had dashboard counters and no writer — `milestones` did
-not have one even in a test, so its counters had never been non-zero.
-`project.assign_member` was a granted permission no route used. All three
-now have endpoints, and the permissions for milestones and risks **did
-not exist in the catalogue at all** and had to be created.
+Rehearsed rather than reasoned about: a scratch database built exactly as
+CI builds it reproduced the failure, and the new invariant test was
+**verified to fail at b4000** before being trusted.
 
-**Documentation.** `DATA_MODEL.md` written (queue item #2; blocks Slice
-5). It marks every section BUILT or SPECIFIED, because mixing the two is
-how this project's status artifacts went wrong.
+**Functions deliberately not swept.** A SECURITY DEFINER function runs
+with its OWNER's privileges — 013 moved `audit.chain_row` on purpose, and
+`core.is_project_member` runs inside RLS policies and must not gain the
+owner's exemption.
+
+**The E2E job pointed the API at the `postgres` superuser,** which
+`app/core/config.py` refuses by design. The refusal is correct; the job
+was wrong. It now connects as `evercoat_app`.
+
+**Cloudflare Pages stopgap, built to be reversed.** `output` is now a
+switch on `NEXT_OUTPUT`, not a replacement — `render.yaml`, the
+Dockerfile and `render-setup.yml` are untouched, and the standalone build
+was re-verified. **The operator's stated intent is to move back to Render
+once the quota resets.**
 
 ---
 
-## ▶ NEXT SESSION — in this order
+## ▶ NEXT SESSION — TASK 1 IS THE ONLY ONE THAT MATTERS TO THE OPERATOR
 
-1. **Wire the E2E suite into CI.** It exists and passes but
-   `.github/workflows/ci.yml` never runs it, so every PR can be green
-   without Playwright or axe-core having executed — the same shape as
-   axe-core being 'required in CI' for months while never running.
-   Six other Codex findings on suite strength are listed in `TODO.md`.
-2. **The Slice 2 frontend.** Five API surfaces have no clickable page and
-   `CURRENT_SLICE = 1` in `apps/web/lib/navigation.ts` disables the rest
-   of the sidebar. *A route with no caller is not shipped.*
-3. **Slice 3**, per `IMPLEMENTATION_PLAN.md`.
-4. Move GATE-1 to Slice 7 in the plan, where it belongs.
+**The operator has asked to see this online, at a real web URL, across
+two sessions. It is still not online. Do this FIRST and do not offer
+localhost or a tunnel as a substitute — both were explicitly rejected.**
+
+- `127.0.0.1` is not an answer; the operator said so directly.
+- Cloudflare **quick tunnels are blocked on their machine** (DNS error
+  1001 + "not secured"). Do not offer one again.
+- The target URL is **`https://itwevercoatrd.aiappinvent.com`**.
+
+### 1. Get it online. Three routes, cheapest effort first.
+
+**(a) GitHub Pages — needs NOTHING from the operator. Start here.**
+**Pages was ENABLED on the repo on 2026-08-18** (`build_type: workflow`,
+source `master`) and is serving nothing yet:
+`https://marc667us.github.io/evercoat-itw-rd/`. The repo is public and
+Actions already has the token, so no new account, secret or approval is
+required — this is the only route with zero operator dependencies.
+Remaining work: a deploy workflow that runs the static export
+(`NEXT_OUTPUT=export`) and publishes `apps/web/out` via
+`actions/deploy-pages`. **Note the subpath:** the project site is served
+from `/evercoat-itw-rd/`, so the export needs `basePath` and
+`assetPrefix` or every asset 404s — add a `NEXT_BASE_PATH` switch beside
+the existing `NEXT_OUTPUT` one. `public/_redirects` is Cloudflare-only
+and does NOT apply here, so the root `redirect()` export stub must be
+handled another way (a `basePath`-aware `index.html`, or make `/` render
+the dashboard).
+
+**(b) Cloudflare Pages** — `.github/workflows/deploy-cloudflare-pages.yml`
+is written and validated but needs **two secrets only the operator can
+create**: `CLOUDFLARE_API_TOKEN` (permission *Cloudflare Pages: Edit*)
+and `CLOUDFLARE_ACCOUNT_ID`. Then dispatch with `confirm=DEPLOY`.
+
+**(c) Render — the operator's stated end state.** Only once the free
+quota resets: `render-setup.yml -f mode=apply -f confirm=APPLY -f plan=free`.
+**DNS already points at `evercoat-itw-rd-web`; no DNS change needed.**
+Confirm the run id actually STARTED — a concurrency group is a one-slot
+replacement waiting room, not a queue.
+
+**Custom domain** on (a) or (b) needs the Namecheap CNAME repointed —
+**no Namecheap credentials exist on this machine**, so that step is the
+operator's. Skip it entirely if (c) is close, since the CNAME is already
+correct for Render.
+
+### 2. Then, in order
+
+2. **Fix the live-suite / API gap** (below) before claiming GATE-2. It
+   reported 0/0/0 because it waits on `/health/ready`, an API route, and
+   `render.yaml` is web-only.
+3. **Trivy** — the last red CI job.
+4. **Slice 2 frontend**, then Slice 3. Five API surfaces still have no
+   clickable page; `CURRENT_SLICE = 1` in `apps/web/lib/navigation.ts`.
 
 ---
 
 ## 🔴 Lessons worth carrying forward
 
-**A HANDOVER'S STATED BLOCKER IS A CLAIM, NOT A MEASUREMENT.** GATE-1's
-blocker was recorded as Docker memory. The truth was that eleven of the
-scenario's fifteen nouns do not exist. The memory figure was even
-re-measured last session and corrected — which made the *rest* of the
-entry look freshly verified when it had never been checked at all.
+**A GREEN BUILD IS NOT A WORKING FRONT DOOR.** `app/page.tsx` is
+`redirect("/dashboard")`. Under `output: "export"` there is no server to
+issue it, so the root exports as `<html id="__next_error__">` — while
+`next build` exits 0 and prints `✓ Exporting (2/2)`. The site would have
+served an error document at `/` with every gate green. Found by reading
+the generated `out/index.html`; fixed with `public/_redirects` and proven
+against Cloudflare's own runtime, not assumed.
 
-**A SYMPTOM CAN BE OBSERVED CORRECTLY AND EXPLAINED WRONGLY.** Two audit
-rows really did both carry `prev_hash = 'GENESIS'`. The recorded cause —
-a concurrency race — was impossible given the advisory lock already in
-the code. The fix that follows from a wrong cause is the wrong fix; the
-right one was found by writing six interleaved rows and looking at what
-each `prev_hash` actually pointed at.
+**TWO HAND-KEPT LISTS CANNOT BE CHECKED AGAINST EACH OTHER.** The whole
+CI failure was a schema list in YAML disagreeing with a repair someone had
+once typed into a database. The fix was not to extend the list; it was to
+make one thing decide and assert it in a test.
 
-**CORRECT BY COINCIDENCE IS NOT CORRECT.** The chain was already
-per-organization, and `verify_chain` already scoped itself — both because
-RLS filtered them, not because anyone chose it. Behaviour that depends on
-who is looking changes the moment a role, a policy or a call site
-changes.
+**A COMMENT ASSERTING ENGINE SEMANTICS IS A CLAIM.** I wrote that the
+owner "remains subject to policies under FORCE RLS". Codex challenged it;
+measurement showed `relforcerowsecurity` is **false on all 18 tables**.
+**So `owner_session` bypasses RLS — isolation assertions must use
+`app_session`,** or they pass whether or not RLS works.
 
-**ASK OF EVERY ENTITY: WHICH PRODUCTION PATH WRITES IT?** Caught
-milestones (no writer anywhere, not even a test), risks (only a test
-fixture), and project members (a granted permission with no route). Same
-question, same result, third project running.
+**REPORT THREE NUMBERS, EVEN WHEN THEY ARE ZERO.** The live suite reported
+**passed=0 / failed=0 / skipped=0 — it did not run.** It waits on
+`/health/ready`, an API route, and only the web app was reachable. That is
+not a tunnel artefact: `render.yaml` is web-only by ADR-009, so the same
+gap will hit the Render deploy.
 
 ---
 
 ## Governance record for this session
 
-- **Codex CLI** — invoked twice. First on the GATE-1 question, where it
-  independently confirmed the finding with file-level evidence and
-  sharpened one of my own claims (Playwright *is* a declared dependency;
-  what is missing is the config and the specs). Then a full review of
-  this session's diff.
-- **Supervisor** — run independently rather than as an adjudicator of
-  Codex. It established the audit-chain mechanism by direct database
-  experiment, verified `digest()`'s schema against the pinned
-  `search_path`, confirmed the function's owner and security attributes
-  in `pg_proc`, and found the FORCE-RLS cutover risk now covered by a
-  failing tripwire test.
-- **Live-test rule** — still not applicable: nothing is deployed. GATE-2
-  remains open and `scripts/live-suite.sh` has still never run against a
-  real deployment.
-- **Not used this session, by instruction:** Google ADK, Stitch.
+- **Codex CLI** — run on the full diff. **4 findings, all fixed**,
+  including a correct HIGH on the FORCE-RLS claim and a definer-ownership
+  test that would still have passed if every function had been swept.
+- **Supervisor** — replaced this session by direct measurement against a
+  purpose-built rehearsal database: the CI condition reproduced, table
+  privileges probed, and the new test verified to fail without the fix.
+- **Live-test rule** — reported honestly as 0/0/0, did not run. GATE-2
+  remains open.
+- **Not used, by standing instruction:** Google ADK, Stitch.
+- No servers left running — ports 3210 and 8788 verified free at close.
