@@ -160,7 +160,33 @@ export function visibleNavigation(permissions: ReadonlySet<string>): NavGroup[] 
 }
 
 /** Current slice. Items above it render disabled instead of linking into a 404. */
-export const CURRENT_SLICE = 1;
+// Slice 2 shipped: Projects, R&D Pipeline, Innovation and My Work now have
+// real pages backed by the demo dataset, so they are no longer inert.
+//
+// This constant is the ONLY thing that decides whether a destination is a
+// link or a disabled item. Raising it without building the pages would turn
+// every Slice 2 item into a live link into a 404 — which is exactly the
+// failure `isAvailable` exists to prevent, so the two must move together.
+export const CURRENT_SLICE = 2;
+
+/**
+ * Every permission any navigation item asks for, derived from NAVIGATION.
+ *
+ * Derived rather than listed, for the reason this whole file exists: a
+ * hand-written second list of permission strings would drift the moment
+ * someone added a destination, and nothing would fail to compile.
+ *
+ * This is a PRESENTATION set. It says nothing about authorization —
+ * SECURITY.md §3 and CLAUDE.md §6 are explicit that hiding an item is a
+ * usability feature and every route is re-authorized server-side
+ * regardless. Handing this set to the sidebar shows the full module map;
+ * it grants nothing.
+ */
+export const ALL_NAV_PERMISSIONS: ReadonlySet<string> = new Set(
+  NAVIGATION.flatMap((g) =>
+    g.items.map((i) => i.permission).filter((p): p is string => Boolean(p)),
+  ),
+);
 
 export function isAvailable(item: NavItem): boolean {
   return (item.slice ?? 1) <= CURRENT_SLICE;

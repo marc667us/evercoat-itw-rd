@@ -166,7 +166,21 @@ function ChartTable({
   caption: string;
 }): ReactNode {
   return (
-    <div className="max-h-72 overflow-auto">
+    // tabIndex={0} is REQUIRED, not a nicety. A region that scrolls but
+    // cannot receive focus is unreachable by keyboard: a sighted mouse user
+    // scrolls the table, a keyboard user cannot reach the rows below the
+    // fold at all. axe-core reports it as `scrollable-region-focusable`
+    // (serious), and it did — the first time any tested page rendered a
+    // chart. The defect predates that page; nothing had ever exercised it.
+    //
+    // role="group" with a label so the focus stop announces what it is
+    // rather than landing the user on an unnamed box.
+    <div
+      className="max-h-72 overflow-auto"
+      tabIndex={0}
+      role="group"
+      aria-label={`${caption} — scrollable table`}
+    >
       <table className="w-full border-collapse text-xs">
         <caption className="sr-only">{caption} — tabular data</caption>
         <thead>

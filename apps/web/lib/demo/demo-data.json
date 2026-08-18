@@ -1,0 +1,765 @@
+{
+  "_README": [
+    "SYNTHETIC DEMO DATA. Not real R&D records. Every project, formula,",
+    "requirement, test target and person below is invented.",
+    "",
+    "WHY THIS FILE EXISTS, AND WHY IT IS JSON RATHER THAN CODE.",
+    "It is read by TWO consumers: scripts/seed.py, which loads it into",
+    "PostgreSQL, and apps/web/lib/demo/dataset.ts, which bakes it into the",
+    "static export so the deployed demo site has something to show without",
+    "an API. Those two had to agree. Keeping a Python list and a TypeScript",
+    "list in step by hand is the exact failure this repository keeps",
+    "hitting -- two literals in two files that nothing can check against",
+    "each other -- so there is one file and both read it.",
+    "",
+    "THE SHAPES MIRROR THE REAL API CONTRACT (app/api/projects.py,",
+    "tasks.py, opportunities.py, admin_stage_gates.py). That is deliberate:",
+    "when the API is wired in at a later slice, the frontend swaps its data",
+    "source without reshaping a single component. Demo data in a different",
+    "shape from the real thing would guarantee a rewrite.",
+    "",
+    "ADR-009 scopes the Render deployment to demo staging that must never",
+    "hold real R&D records. Baking THIS data in is consistent with that:",
+    "there is nothing confidential here to leak.",
+    "",
+    "Dates are fixed literals, never generated. A dataset that shifts with",
+    "the build clock makes two builds incomparable and makes a snapshot",
+    "test impossible to write.",
+    "",
+    "NOTE: requirements carry NO stored verification status. The state is derived from measured_value against minimum/maximum and warning_threshold, because CLAUDE.md section 10 requires it to be computed and never a field anyone sets. A stored `result` column was removed for exactly that reason -- it could disagree with the measurement beside it, and did."
+  ],
+  "organization": {
+    "name": "ITW Evercoat (Demo)",
+    "note": "DEMO ORGANISATION — synthetic data only"
+  },
+  "users": [
+    {
+      "username": "chem.demo",
+      "display_name": "Ama Chemist",
+      "role": "product_development_chemist"
+    },
+    {
+      "username": "eng.demo",
+      "display_name": "Kofi Engineer",
+      "role": "product_development_engineer"
+    },
+    {
+      "username": "lead.demo",
+      "display_name": "Esi Lead",
+      "role": "product_development_lead"
+    },
+    {
+      "username": "dir.demo",
+      "display_name": "Yaw Director",
+      "role": "product_development_director"
+    },
+    {
+      "username": "qa.demo",
+      "display_name": "Akua QA",
+      "role": "qa_compliance_officer"
+    },
+    {
+      "username": "tech.demo",
+      "display_name": "Kwesi Technician",
+      "role": "laboratory_technician"
+    },
+    {
+      "username": "proc.demo",
+      "display_name": "Abena Procurement",
+      "role": "procurement_specialist"
+    },
+    {
+      "username": "prod.demo",
+      "display_name": "Kojo Production",
+      "role": "production_engineer"
+    },
+    {
+      "username": "exec.demo",
+      "display_name": "Adwoa Executive",
+      "role": "executive_viewer"
+    },
+    {
+      "username": "admin.demo",
+      "display_name": "Kwame Administrator",
+      "role": "administrator"
+    }
+  ],
+  "stages": [
+    {
+      "stage_code": "REQUIREMENTS",
+      "name": "Requirements",
+      "sequence": 1,
+      "entry_criteria": "Project authorized",
+      "required_deliverables": "Approved requirement set",
+      "responsible_role": "product_development_lead",
+      "requires_approval": true,
+      "approval_role": "product_development_lead"
+    },
+    {
+      "stage_code": "RESEARCH",
+      "name": "Research",
+      "sequence": 2,
+      "entry_criteria": "Requirements approved",
+      "required_deliverables": "Research dossier",
+      "responsible_role": "product_development_chemist",
+      "requires_approval": false,
+      "approval_role": null
+    },
+    {
+      "stage_code": "MATERIALS",
+      "name": "Materials",
+      "sequence": 3,
+      "entry_criteria": "Research complete",
+      "required_deliverables": "Candidate material set",
+      "responsible_role": "product_development_chemist",
+      "requires_approval": false,
+      "approval_role": null
+    },
+    {
+      "stage_code": "FORMULATION",
+      "name": "Formulation",
+      "sequence": 4,
+      "entry_criteria": "Materials selected",
+      "required_deliverables": "Submitted formula version",
+      "responsible_role": "product_development_chemist",
+      "requires_approval": true,
+      "approval_role": "product_development_lead"
+    },
+    {
+      "stage_code": "LABORATORY",
+      "name": "Laboratory",
+      "sequence": 5,
+      "entry_criteria": "Formula approved for lab",
+      "required_deliverables": "Completed batch with samples",
+      "responsible_role": "laboratory_technician",
+      "requires_approval": false,
+      "approval_role": null
+    },
+    {
+      "stage_code": "TESTING",
+      "name": "Testing",
+      "sequence": 6,
+      "entry_criteria": "Samples available",
+      "required_deliverables": "Approved test results",
+      "responsible_role": "product_development_engineer",
+      "requires_approval": true,
+      "approval_role": "product_development_lead"
+    },
+    {
+      "stage_code": "FAILURE_REWORK",
+      "name": "Failure / Rework",
+      "sequence": 7,
+      "entry_criteria": "Critical test failed",
+      "required_deliverables": "Accepted root cause and corrective action",
+      "responsible_role": "product_development_chemist",
+      "requires_approval": true,
+      "approval_role": "product_development_lead"
+    },
+    {
+      "stage_code": "VALIDATION_CANDIDATE",
+      "name": "Validation Candidate",
+      "sequence": 8,
+      "entry_criteria": "All critical requirements passed",
+      "required_deliverables": "Nominated formula version",
+      "responsible_role": "product_development_lead",
+      "requires_approval": true,
+      "approval_role": "product_development_director"
+    }
+  ],
+  "opportunities": [
+    {
+      "opportunity_code": "OPP-2026-007",
+      "title": "Low-density body filler for EV panel repair",
+      "market_need": "EV bodyshops report cure shrinkage on aluminium panels at low ambient temperature.",
+      "product_family": "Polyester Fillers",
+      "target_application": "Automotive refinish — aluminium and mixed substrate",
+      "technical_concept": "Micro-sphere loaded polyester with modified initiator package.",
+      "priority": "high",
+      "status": "converted",
+      "decision": "approved",
+      "rationale": "Clear market pull and an existing resin platform to build on.",
+      "converted_to_project": "RDP-2026-014"
+    },
+    {
+      "opportunity_code": "OPP-2026-011",
+      "title": "Fast-sand glazing putty, sub-10 minute",
+      "market_need": "Refinish shops want a glaze that can be sanded inside a single bay cycle.",
+      "product_family": "Glazing Putties",
+      "target_application": "Spot repair and pinhole filling",
+      "technical_concept": "Reduced filler loading with accelerated peroxide cure.",
+      "priority": "medium",
+      "status": "under_review",
+      "decision": null,
+      "rationale": null,
+      "converted_to_project": null
+    },
+    {
+      "opportunity_code": "OPP-2026-013",
+      "title": "Solvent-free seam sealer for marine substrates",
+      "market_need": "Regulatory pressure on VOC in enclosed marine fabrication.",
+      "product_family": "Seam Sealers",
+      "target_application": "Marine hull seam and joint sealing",
+      "technical_concept": "Hybrid MS-polymer with silane crosslinker.",
+      "priority": "medium",
+      "status": "proposed",
+      "decision": null,
+      "rationale": null,
+      "converted_to_project": null
+    }
+  ],
+  "projects": [
+    {
+      "project_code": "RDP-2026-014",
+      "name": "Premium Lightweight Automotive Putty",
+      "product_family": "Polyester Fillers",
+      "status": "active",
+      "priority": "high",
+      "confidentiality": "normal",
+      "current_stage": "TESTING",
+      "target_release_date": "2026-11-30",
+      "description": "DEMO DATA — synthetic project from the source worked example.",
+      "technical_objective": "Lower density than benchmark with sanding time below target.",
+      "commercial_objective": "Hold price parity with the incumbent while reducing shipped weight.",
+      "lead": "lead.demo",
+      "director": "dir.demo",
+      "stage_history": [
+        {
+          "stage_code": "REQUIREMENTS",
+          "entered_on": "2026-03-02",
+          "exited_on": "2026-03-27",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "RESEARCH",
+          "entered_on": "2026-03-27",
+          "exited_on": "2026-04-21",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "MATERIALS",
+          "entered_on": "2026-04-21",
+          "exited_on": "2026-05-19",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "FORMULATION",
+          "entered_on": "2026-05-19",
+          "exited_on": "2026-06-30",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "LABORATORY",
+          "entered_on": "2026-06-30",
+          "exited_on": "2026-07-28",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "TESTING",
+          "entered_on": "2026-07-28",
+          "exited_on": null,
+          "outcome": "active"
+        }
+      ],
+      "members": [
+        {
+          "username": "lead.demo",
+          "project_role": "Project Lead",
+          "status": "active"
+        },
+        {
+          "username": "chem.demo",
+          "project_role": "Lead Chemist",
+          "status": "active"
+        },
+        {
+          "username": "eng.demo",
+          "project_role": "Test Engineer",
+          "status": "active"
+        },
+        {
+          "username": "tech.demo",
+          "project_role": "Lab Technician",
+          "status": "active"
+        },
+        {
+          "username": "qa.demo",
+          "project_role": "QA Reviewer",
+          "status": "active"
+        }
+      ],
+      "milestones": [
+        {
+          "name": "Requirement set approved",
+          "planned_date": "2026-03-27",
+          "actual_date": "2026-03-27",
+          "status": "complete"
+        },
+        {
+          "name": "Candidate formula submitted",
+          "planned_date": "2026-06-26",
+          "actual_date": "2026-06-30",
+          "status": "complete"
+        },
+        {
+          "name": "First full test panel complete",
+          "planned_date": "2026-08-22",
+          "actual_date": null,
+          "status": "in_progress"
+        },
+        {
+          "name": "Validation candidate nominated",
+          "planned_date": "2026-10-09",
+          "actual_date": null,
+          "status": "not_started"
+        }
+      ],
+      "risks": [
+        {
+          "risk_code": "RSK-014-01",
+          "title": "Micro-sphere supply is single-sourced",
+          "probability": "medium",
+          "impact": "high",
+          "category": "supply",
+          "status": "mitigating",
+          "mitigation": "Second supplier qualification opened with Procurement.",
+          "owner": "proc.demo"
+        },
+        {
+          "risk_code": "RSK-014-02",
+          "title": "Sanding time may regress at low temperature",
+          "probability": "high",
+          "impact": "medium",
+          "category": "technical",
+          "status": "open",
+          "mitigation": "Low-temperature panel series added to the test plan.",
+          "owner": "eng.demo"
+        },
+        {
+          "risk_code": "RSK-014-03",
+          "title": "Density target conflicts with adhesion minimum",
+          "probability": "medium",
+          "impact": "high",
+          "category": "technical",
+          "status": "open",
+          "mitigation": "DOE planned across filler loading and coupling agent.",
+          "owner": "chem.demo"
+        }
+      ],
+      "requirements": [
+        {
+          "requirement_code": "REQ-014-01",
+          "name": "Cured density",
+          "category": "physical",
+          "target_value": "1.15",
+          "minimum_value": null,
+          "maximum_value": "1.25",
+          "canonical_unit": "g/cm3",
+          "criticality": "critical",
+          "verification_method": "laboratory_test",
+          "test_method_code": "ASTM D792",
+          "measured_value": "1.19",
+          "warning_threshold": "1.22"
+        },
+        {
+          "requirement_code": "REQ-014-02",
+          "name": "Adhesion to aluminium",
+          "category": "mechanical",
+          "target_value": "8.0",
+          "minimum_value": "6.5",
+          "maximum_value": null,
+          "canonical_unit": "MPa",
+          "criticality": "critical",
+          "verification_method": "laboratory_test",
+          "test_method_code": "ASTM D4541",
+          "measured_value": "6.8",
+          "warning_threshold": "7.0"
+        },
+        {
+          "requirement_code": "REQ-014-03",
+          "name": "Sanding time at 20 C",
+          "category": "process",
+          "target_value": "20",
+          "minimum_value": null,
+          "maximum_value": "25",
+          "canonical_unit": "minutes",
+          "criticality": "high",
+          "verification_method": "laboratory_test",
+          "test_method_code": "INT-SAND-01",
+          "measured_value": "22",
+          "warning_threshold": "24"
+        },
+        {
+          "requirement_code": "REQ-014-04",
+          "name": "Sanding time at 5 C",
+          "category": "process",
+          "target_value": "30",
+          "minimum_value": null,
+          "maximum_value": "40",
+          "canonical_unit": "minutes",
+          "criticality": "high",
+          "verification_method": "laboratory_test",
+          "test_method_code": "INT-SAND-01",
+          "measured_value": "47",
+          "warning_threshold": "38"
+        },
+        {
+          "requirement_code": "REQ-014-05",
+          "name": "Cure shrinkage",
+          "category": "physical",
+          "target_value": "0.30",
+          "minimum_value": null,
+          "maximum_value": "0.50",
+          "canonical_unit": "%",
+          "criticality": "high",
+          "verification_method": "laboratory_test",
+          "test_method_code": "INT-SHR-02",
+          "measured_value": null,
+          "warning_threshold": "0.45"
+        },
+        {
+          "requirement_code": "REQ-014-06",
+          "name": "Storage stability at 40 C",
+          "category": "stability",
+          "target_value": "6",
+          "minimum_value": "6",
+          "maximum_value": null,
+          "canonical_unit": "months",
+          "criticality": "medium",
+          "verification_method": "stability_study",
+          "test_method_code": "INT-STAB-01",
+          "measured_value": null,
+          "warning_threshold": null
+        }
+      ]
+    },
+    {
+      "project_code": "RDP-2026-009",
+      "name": "High-Build Polyester Primer",
+      "product_family": "Primers",
+      "status": "active",
+      "priority": "medium",
+      "confidentiality": "normal",
+      "current_stage": "FORMULATION",
+      "target_release_date": "2027-02-26",
+      "description": "DEMO DATA — synthetic project.",
+      "technical_objective": "Increase film build per coat without sag on vertical panels.",
+      "commercial_objective": "Reduce coats required from three to two.",
+      "lead": "lead.demo",
+      "director": "dir.demo",
+      "stage_history": [
+        {
+          "stage_code": "REQUIREMENTS",
+          "entered_on": "2026-05-11",
+          "exited_on": "2026-06-05",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "RESEARCH",
+          "entered_on": "2026-06-05",
+          "exited_on": "2026-07-03",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "MATERIALS",
+          "entered_on": "2026-07-03",
+          "exited_on": "2026-08-04",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "FORMULATION",
+          "entered_on": "2026-08-04",
+          "exited_on": null,
+          "outcome": "active"
+        }
+      ],
+      "members": [
+        {
+          "username": "lead.demo",
+          "project_role": "Project Lead",
+          "status": "active"
+        },
+        {
+          "username": "chem.demo",
+          "project_role": "Lead Chemist",
+          "status": "active"
+        }
+      ],
+      "milestones": [
+        {
+          "name": "Requirement set approved",
+          "planned_date": "2026-06-05",
+          "actual_date": "2026-06-05",
+          "status": "complete"
+        },
+        {
+          "name": "Candidate formula submitted",
+          "planned_date": "2026-09-18",
+          "actual_date": null,
+          "status": "in_progress"
+        }
+      ],
+      "risks": [
+        {
+          "risk_code": "RSK-009-01",
+          "title": "Sag resistance may limit achievable build",
+          "probability": "medium",
+          "impact": "medium",
+          "category": "technical",
+          "status": "open",
+          "mitigation": "Rheology modifier screen scheduled.",
+          "owner": "chem.demo"
+        }
+      ],
+      "requirements": [
+        {
+          "requirement_code": "REQ-009-01",
+          "name": "Film build per coat",
+          "category": "physical",
+          "target_value": "150",
+          "minimum_value": "120",
+          "maximum_value": null,
+          "canonical_unit": "um",
+          "criticality": "critical",
+          "verification_method": "laboratory_test",
+          "test_method_code": "ASTM D7091",
+          "measured_value": null,
+          "warning_threshold": "130"
+        },
+        {
+          "requirement_code": "REQ-009-02",
+          "name": "Sag at 200 um",
+          "category": "process",
+          "target_value": "0",
+          "minimum_value": null,
+          "maximum_value": "2",
+          "canonical_unit": "mm",
+          "criticality": "high",
+          "verification_method": "laboratory_test",
+          "test_method_code": "ASTM D4400",
+          "measured_value": null,
+          "warning_threshold": "1.8"
+        }
+      ]
+    },
+    {
+      "project_code": "RDP-2026-003",
+      "name": "Marine Epoxy Repair Compound",
+      "product_family": "Epoxy Putties",
+      "status": "active",
+      "priority": "medium",
+      "confidentiality": "restricted",
+      "current_stage": "VALIDATION_CANDIDATE",
+      "target_release_date": "2026-09-30",
+      "description": "DEMO DATA — synthetic project.",
+      "technical_objective": "Sustained adhesion after 1000 h salt-spray exposure.",
+      "commercial_objective": "Enter the marine repair segment with one SKU.",
+      "lead": "lead.demo",
+      "director": "dir.demo",
+      "stage_history": [
+        {
+          "stage_code": "REQUIREMENTS",
+          "entered_on": "2026-01-08",
+          "exited_on": "2026-02-02",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "RESEARCH",
+          "entered_on": "2026-02-02",
+          "exited_on": "2026-03-06",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "MATERIALS",
+          "entered_on": "2026-03-06",
+          "exited_on": "2026-04-01",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "FORMULATION",
+          "entered_on": "2026-04-01",
+          "exited_on": "2026-05-13",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "LABORATORY",
+          "entered_on": "2026-05-13",
+          "exited_on": "2026-06-10",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "TESTING",
+          "entered_on": "2026-06-10",
+          "exited_on": "2026-07-01",
+          "outcome": "failed"
+        },
+        {
+          "stage_code": "FAILURE_REWORK",
+          "entered_on": "2026-07-01",
+          "exited_on": "2026-08-05",
+          "outcome": "complete"
+        },
+        {
+          "stage_code": "VALIDATION_CANDIDATE",
+          "entered_on": "2026-08-05",
+          "exited_on": null,
+          "outcome": "active"
+        }
+      ],
+      "members": [
+        {
+          "username": "lead.demo",
+          "project_role": "Project Lead",
+          "status": "active"
+        },
+        {
+          "username": "eng.demo",
+          "project_role": "Test Engineer",
+          "status": "active"
+        },
+        {
+          "username": "qa.demo",
+          "project_role": "QA Reviewer",
+          "status": "active"
+        }
+      ],
+      "milestones": [
+        {
+          "name": "Root cause accepted",
+          "planned_date": "2026-07-31",
+          "actual_date": "2026-08-05",
+          "status": "complete"
+        },
+        {
+          "name": "Validation candidate nominated",
+          "planned_date": "2026-08-28",
+          "actual_date": null,
+          "status": "in_progress"
+        }
+      ],
+      "risks": [
+        {
+          "risk_code": "RSK-003-01",
+          "title": "Salt-spray result not yet reproduced on the reworked formula",
+          "probability": "medium",
+          "impact": "high",
+          "category": "technical",
+          "status": "mitigating",
+          "mitigation": "Repeat exposure running to 1000 h with duplicate panels.",
+          "owner": "eng.demo"
+        }
+      ],
+      "requirements": [
+        {
+          "requirement_code": "REQ-003-01",
+          "name": "Adhesion after salt spray",
+          "category": "mechanical",
+          "target_value": "5.0",
+          "minimum_value": "4.0",
+          "maximum_value": null,
+          "canonical_unit": "MPa",
+          "criticality": "critical",
+          "verification_method": "laboratory_test",
+          "test_method_code": "ASTM B117",
+          "measured_value": "4.6",
+          "warning_threshold": "4.4"
+        },
+        {
+          "requirement_code": "REQ-003-02",
+          "name": "Water absorption",
+          "category": "physical",
+          "target_value": "0.5",
+          "minimum_value": null,
+          "maximum_value": "1.0",
+          "canonical_unit": "%",
+          "criticality": "high",
+          "verification_method": "laboratory_test",
+          "test_method_code": "ASTM D570",
+          "measured_value": "0.7",
+          "warning_threshold": "0.9"
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "task_type": "test_execution",
+      "title": "Run low-temperature sanding series on RDP-2026-014",
+      "project_code": "RDP-2026-014",
+      "priority": "high",
+      "status": "in_progress",
+      "assigned_to": "tech.demo",
+      "due_date": "2026-08-21",
+      "required_action": "Complete five panels at 5 C and record raw replicates."
+    },
+    {
+      "task_type": "review",
+      "title": "Review adhesion result REQ-014-02 (low margin)",
+      "project_code": "RDP-2026-014",
+      "priority": "high",
+      "status": "open",
+      "assigned_to": "eng.demo",
+      "due_date": "2026-08-20",
+      "required_action": "Confirm whether 6.8 MPa against a 6.5 minimum is acceptable."
+    },
+    {
+      "task_type": "approval",
+      "title": "Approve requirement change on REQ-014-04",
+      "project_code": "RDP-2026-014",
+      "priority": "high",
+      "status": "open",
+      "assigned_to": "lead.demo",
+      "due_date": "2026-08-22",
+      "required_action": "Decide whether the 5 C sanding maximum moves to 45 minutes."
+    },
+    {
+      "task_type": "investigation",
+      "title": "Root cause for 5 C sanding failure",
+      "project_code": "RDP-2026-014",
+      "priority": "high",
+      "status": "open",
+      "assigned_to": "chem.demo",
+      "due_date": "2026-08-26",
+      "required_action": "Propose a hypothesis with supporting evidence."
+    },
+    {
+      "task_type": "procurement",
+      "title": "Qualify second micro-sphere supplier",
+      "project_code": "RDP-2026-014",
+      "priority": "medium",
+      "status": "in_progress",
+      "assigned_to": "proc.demo",
+      "due_date": "2026-09-04",
+      "required_action": "Obtain samples and certificates of analysis."
+    },
+    {
+      "task_type": "formulation",
+      "title": "Rheology modifier screen for RDP-2026-009",
+      "project_code": "RDP-2026-009",
+      "priority": "medium",
+      "status": "open",
+      "assigned_to": "chem.demo",
+      "due_date": "2026-09-01",
+      "required_action": "Screen three modifiers at two loadings."
+    },
+    {
+      "task_type": "test_execution",
+      "title": "Repeat 1000 h salt spray on reworked RDP-2026-003",
+      "project_code": "RDP-2026-003",
+      "priority": "high",
+      "status": "in_progress",
+      "assigned_to": "tech.demo",
+      "due_date": "2026-09-12",
+      "required_action": "Duplicate panels, record intermediate readings."
+    },
+    {
+      "task_type": "approval",
+      "title": "Nominate validation candidate for RDP-2026-003",
+      "project_code": "RDP-2026-003",
+      "priority": "medium",
+      "status": "open",
+      "assigned_to": "dir.demo",
+      "due_date": "2026-08-28",
+      "required_action": "Confirm the formula version to carry into validation."
+    }
+  ]
+}

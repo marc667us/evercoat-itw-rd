@@ -16,6 +16,8 @@ import type { Metadata } from "next";
 
 import { Sidebar } from "@/components/nav/sidebar";
 import { TopBar } from "@/components/nav/top-bar";
+import { openTasks } from "@/lib/demo/dataset";
+import { ALL_NAV_PERMISSIONS } from "@/lib/navigation";
 
 import "./globals.css";
 
@@ -35,19 +37,37 @@ export const metadata: Metadata = {
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  // Slice 1 renders the shell with an empty permission set so the
-  // structure can be reviewed before Keycloak wiring lands. Slice 2
-  // replaces this with the verified principal. It is deliberately empty
-  // rather than permissive: a shell that shows everything by default
-  // would make the RBAC filter look like it works when it has never
-  // been exercised.
-  const permissions = new Set<string>();
+  // THE DEMONSTRATION PRINCIPAL.
+  //
+  // Slice 1 passed an EMPTY set, deliberately, so that a shell showing
+  // everything could not be mistaken for a working RBAC filter. That was
+  // right while nothing was built — and wrong the moment Slice 2 shipped
+  // pages: with no permissions, `visibleNavigation` filtered Projects,
+  // Innovation and R&D Pipeline out of the sidebar entirely, so the pages
+  // existed and were unreachable. Found by looking at the rendered page,
+  // not by any test.
+  //
+  // This is a PRESENTATION set and nothing more. CLAUDE.md §6 and
+  // SECURITY.md §3 both state that frontend permission checks are
+  // cosmetic and every route is re-authorized server-side; handing the
+  // sidebar the full set grants no access to anything. Destinations that
+  // are not built yet still render inert via `isAvailable`, so the module
+  // map is honest about what exists.
+  //
+  // When Keycloak is wired in, this becomes the verified principal's own
+  // permissions and the RBAC filter is exercised for real.
+  const permissions = ALL_NAV_PERMISSIONS;
+
+  // Actionable counts, from the demo dataset. CLAUDE.md §11: a badge shows
+  // items needing ACTION, never total rows — so this is the open-task
+  // count, not TASKS.length.
+  const counts = { "my-work": openTasks().length };
 
   return (
     <html lang="en">
       <body className="bg-slate-50 text-slate-900 antialiased">
         <div className="flex h-screen overflow-hidden">
-          <Sidebar permissions={permissions} />
+          <Sidebar permissions={permissions} counts={counts} />
           <div className="flex min-w-0 flex-1 flex-col">
             <TopBar />
             {/* min-w-0 above and here is what lets wide technical tables

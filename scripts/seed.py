@@ -25,11 +25,45 @@ Idempotent: re-running updates rather than duplicating.
 
 from __future__ import annotations
 
+import json
 import os
+import pathlib
 import sys
 import uuid
 
 import psycopg
+
+# ---------------------------------------------------------------------
+# ONE SOURCE FOR THE DEMO RECORDS.
+#
+# The users and pipeline stages below used to be Python literals in this
+# file, while apps/web carried its own TypeScript copy for the static
+# demonstration build. Two lists, in two languages, that had to agree and
+# that nothing could check against each other -- the exact defect this
+# repository keeps rediscovering.
+#
+# Both now read this file. It lives under apps/web because TypeScript can
+# only import JSON from inside its own project root, and Python can read
+# any path; putting it there costs this script one relative path and buys
+# the guarantee that the seeded database and the deployed demonstration
+# show the same records.
+# ---------------------------------------------------------------------
+DEMO_DATA_PATH = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "apps"
+    / "web"
+    / "lib"
+    / "demo"
+    / "demo-data.json"
+)
+
+try:
+    _DEMO = json.loads(DEMO_DATA_PATH.read_text(encoding="utf-8"))
+except FileNotFoundError:  # pragma: no cover - operator-facing failure
+    sys.exit(
+        f"demo dataset not found at {DEMO_DATA_PATH}. It is shared with the web "
+        "application; do not re-create it here as a Python literal."
+    )
 
 DSN = os.getenv(
     "SEED_DATABASE_URL",
@@ -42,40 +76,25 @@ ORG_CODE = "EVERCOAT-DEMO"
 # operator's own most-repeated lesson: a role nobody holds is a role with
 # no production write path.
 USERS = [
-    ("chem.demo", "Ama Chemist", "product_development_chemist"),
-    ("eng.demo", "Kofi Engineer", "product_development_engineer"),
-    ("lead.demo", "Esi Lead", "product_development_lead"),
-    ("dir.demo", "Yaw Director", "product_development_director"),
-    ("qa.demo", "Akua QA", "qa_compliance_officer"),
-    ("tech.demo", "Kwesi Technician", "laboratory_technician"),
-    ("proc.demo", "Abena Procurement", "procurement_specialist"),
-    ("prod.demo", "Kojo Production", "production_engineer"),
-    ("exec.demo", "Adwoa Executive", "executive_viewer"),
-    ("admin.demo", "Kwame Administrator", "administrator"),
+    (u["username"], u["display_name"], u["role"]) for u in _DEMO["users"]
 ]
 
 # The MVP pipeline: 8 stages. The full build expands to 18 — which is an
 # INSERT, because stages are configuration rows rather than a code enum.
 STAGES = [
-    ("REQUIREMENTS", "Requirements", 1, "Project authorized",
-     "Approved requirement set", "product_development_lead", True, "product_development_lead"),
-    ("RESEARCH", "Research", 2, "Requirements approved",
-     "Research dossier", "product_development_chemist", False, None),
-    ("MATERIALS", "Materials", 3, "Research complete",
-     "Candidate material set", "product_development_chemist", False, None),
-    ("FORMULATION", "Formulation", 4, "Materials selected",
-     "Submitted formula version", "product_development_chemist", True, "product_development_lead"),
-    ("LABORATORY", "Laboratory", 5, "Formula approved for lab",
-     "Completed batch with samples", "laboratory_technician", False, None),
-    ("TESTING", "Testing", 6, "Samples available",
-     "Approved test results", "product_development_engineer", True, "product_development_lead"),
-    ("FAILURE_REWORK", "Failure / Rework", 7, "Critical test failed",
-     "Accepted root cause and corrective action", "product_development_chemist", True,
-     "product_development_lead"),
-    ("VALIDATION_CANDIDATE", "Validation Candidate", 8, "All critical requirements passed",
-     "Nominated formula version", "product_development_lead", True,
-     "product_development_director"),
+    (
+        st["stage_code"],
+        st["name"],
+        st["sequence"],
+        st["entry_criteria"],
+        st["required_deliverables"],
+        st["responsible_role"],
+        st["requires_approval"],
+        st["approval_role"],
+    )
+    for st in sorted(_DEMO["stages"], key=lambda x: x["sequence"])
 ]
+
 
 
 def main() -> None:

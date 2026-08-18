@@ -23,17 +23,17 @@ export const metadata: Metadata = { title: "Administration" };
 
 const SECTIONS = [
   { label: "Users & Members", href: "/admin", state: "active" as const },
-  { label: "Roles", href: "/admin/roles", state: "active" as const },
-  { label: "Permissions", href: "/admin/permissions", state: "active" as const },
-  { label: "Organization", href: "/admin/organization", state: "active" as const },
+  { label: "Roles", href: "/admin/roles", state: "active" as const, unavailable: true },
+  { label: "Permissions", href: "/admin/permissions", state: "active" as const, unavailable: true },
+  { label: "Organization", href: "/admin/organization", state: "active" as const, unavailable: true },
   // Ship with the slice that first depends on them (ADR-021). Shown as
   // not-started rather than hidden, so the shape of Administration is
   // visible and nobody re-invents a section that is already scheduled.
-  { label: "Stage Gates", href: "/admin/stage-gates", state: "not-started" as const },
-  { label: "Test Methods", href: "/admin/test-methods", state: "not-started" as const },
-  { label: "Approval Templates", href: "/admin/approval-templates", state: "not-started" as const },
-  { label: "Notifications", href: "/admin/notifications", state: "not-started" as const },
-  { label: "Audit", href: "/admin/audit", state: "not-started" as const },
+  { label: "Stage Gates", href: "/admin/stage-gates", state: "not-started" as const, unavailable: true },
+  { label: "Test Methods", href: "/admin/test-methods", state: "not-started" as const, unavailable: true },
+  { label: "Approval Templates", href: "/admin/approval-templates", state: "not-started" as const, unavailable: true },
+  { label: "Notifications", href: "/admin/notifications", state: "not-started" as const, unavailable: true },
+  { label: "Audit", href: "/admin/audit", state: "not-started" as const, unavailable: true },
 ];
 
 export default function AdministrationPage() {

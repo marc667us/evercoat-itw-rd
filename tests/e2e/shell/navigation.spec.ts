@@ -57,13 +57,35 @@ test.describe("application shell", () => {
     await expect(page).not.toHaveTitle(/ITERDRD/i);
   });
 
-  test("the dashboard shows no fabricated figures", async ({ page }) => {
-    // Rule 3 of the seven non-negotiables: predictions must never render
-    // as confirmed results. A placeholder dashboard of invented KPIs is
-    // the same failure in a smaller costume — indistinguishable from a
-    // working one at a glance.
+  test("every figure is unmistakably labelled as demonstration data", async ({ page }) => {
+    // Rule 3 of the seven non-negotiables: predictions must never render as
+    // confirmed results, and §10 that a dashboard of invented KPIs is
+    // indistinguishable from a working one at a glance.
+    //
+    // This test used to assert "No data yet" was on screen, because the
+    // dashboard had nothing on it. It now carries real figures derived from
+    // the demonstration dataset, so the SAME rule is enforced differently:
+    // the figures may exist, but the standing notice that they are
+    // synthetic must exist too, and must be reachable by assistive
+    // technology rather than being a faint line of grey text.
     await page.goto("/dashboard");
-    await expect(page.getByText(/No data yet/i)).toBeVisible();
+    const notice = page.getByRole("note", { name: /demonstration data/i });
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText(/synthetic/i);
+  });
+
+  test("the demonstration notice is on every page, not just the dashboard", async ({
+    page,
+  }) => {
+    // A notice that appears on the landing page and nowhere else is worse
+    // than none: a viewer who navigates once will believe the rest is real.
+    for (const path of ["/dashboard", "/projects", "/my-work", "/pipeline", "/innovation"]) {
+      await page.goto(path);
+      await expect(
+        page.getByRole("note", { name: /demonstration data/i }),
+        `no demonstration notice on ${path}`,
+      ).toBeVisible();
+    }
   });
 });
 
@@ -72,17 +94,22 @@ test.describe("navigation gating", () => {
     await page.goto("/dashboard");
     const nav = page.getByRole("navigation", { name: "Main navigation" });
 
-    // "My Work" is slice 2. Its API exists; its page does not. It must be
+    // "Formulations" is slice 3. Its page does not exist. It must be
     // present (so the structure is legible) and NOT navigable (so it
     // cannot 404).
-    const myWork = nav.getByText("My Work", { exact: true });
-    await expect(myWork).toBeVisible();
+    //
+    // This test named "My Work" until Slice 2 shipped and built it. The
+    // example has to be a destination that is genuinely still unbuilt —
+    // asserting inertness about a page that now exists would either fail
+    // or, worse, be quietly weakened until it asserted nothing.
+    const item = nav.getByText("Formulations", { exact: true });
+    await expect(item).toBeVisible();
 
-    const inert = nav.locator('[aria-disabled="true"]', { hasText: "My Work" });
+    const inert = nav.locator('[aria-disabled="true"]', { hasText: "Formulations" });
     await expect(inert).toHaveCount(1);
 
     // The decisive assertion: no anchor points at it.
-    await expect(nav.locator('a[href="/my-work"]')).toHaveCount(0);
+    await expect(nav.locator('a[href^="/formulations"]')).toHaveCount(0);
   });
 
   test("every unbuilt item is inert and every built item is a link", async ({ page }) => {
@@ -110,29 +137,80 @@ test.describe("navigation gating", () => {
     }
   });
 
-  test("a permission-gated item is absent entirely, not merely disabled", async ({ page }) => {
+  test("every enabled sidebar link reaches a real page", async ({ page }) => {
+    // WHAT REPLACED WHAT, AND WHY, STATED PLAINLY.
+    //
+    // This test used to assert that Administration was ABSENT, because the
+    // layout passed an empty permission set. That is no longer true: the
+    // demonstration shell passes ALL_NAV_PERMISSIONS so a client can see
+    // the whole module map. The old test's own comment anticipated exactly
+    // this and asked the right question — was the filter made permissive?
+    // Yes, deliberately, and only in the shell's presentation layer.
+    //
+    // That is safe here for one specific reason: `visibleNavigation` is
+    // covered exhaustively by lib/navigation.test.ts, including
+    // "never leaks an item the user cannot hold", which checks EVERY
+    // permissioned item against a principal lacking exactly that
+    // permission. Removing the browser-level assertion drops a duplicate,
+    // not the coverage.
+    //
+    // What replaces it is the guarantee this deployment actually needs and
+    // that nothing previously checked: no enabled link anywhere in the
+    // sidebar leads to a page that does not exist. A dead link in a client
+    // demonstration is worse than a greyed-out one.
     await page.goto("/dashboard");
     const nav = page.getByRole("navigation", { name: "Main navigation" });
 
-    // Administration requires `admin.users`. The layout supplies no
-    // permissions, so it must be filtered out of the DOM completely —
-    // this is the filter behaving correctly, NOT a missing feature.
-    //
-    // Recorded explicitly because `/admin` DOES exist and is reachable by
-    // URL: if this ever starts failing because the item appeared, the
-    // question to ask is whether real permissions were wired in (fine) or
-    // whether the filter was made permissive (not fine).
-    await expect(nav.getByText("Administration", { exact: true })).toHaveCount(0);
-    // Prefix match, for the same reason as the URL assertion above: the
-    // static export emits href="/admin/". An exact-match selector would
-    // find nothing there and pass whether or not the item was filtered —
-    // the assertion would be vacuously true exactly where it matters.
-    await expect(nav.locator('a[href^="/admin"]')).toHaveCount(0);
+    const hrefs = await nav
+      .locator("a")
+      .evaluateAll((els) =>
+        els
+          .map((e) => (e as HTMLAnchorElement).getAttribute("href"))
+          .filter((h): h is string => Boolean(h)),
+      );
+    expect(hrefs.length, "the sidebar rendered no links at all").toBeGreaterThan(3);
 
-    // Groups whose every item is permission-gated are dropped, so nobody
-    // stares at a heading with nothing under it.
-    await expect(nav.getByRole("heading", { name: "Development" })).toHaveCount(0);
-    await expect(nav.getByRole("heading", { name: "Resources" })).toHaveCount(0);
+    for (const href of hrefs) {
+      const response = await page.goto(href);
+      expect(response?.status(), `${href} is a dead link`).toBe(200);
+    }
+  });
+
+  test("no page contains a dead internal link", async ({ page }) => {
+    // The sidebar check above is not enough, and Codex said so: the
+    // Administration header advertised /admin/roles, /admin/permissions and
+    // five more as live links into pages that do not exist, and a
+    // sidebar-only crawl walked straight past them.
+    //
+    // This visits every route a viewer can reach and follows EVERY internal
+    // anchor on it. In a client demonstration a dead link is the single most
+    // visible possible failure, so it is worth the extra seconds.
+    const seen = new Set<string>();
+    const pages = ["/dashboard", "/projects", "/my-work", "/pipeline", "/innovation", "/admin"];
+
+    for (const path of pages) {
+      await page.goto(path);
+      const hrefs = await page
+        .locator("a[href^='/']")
+        .evaluateAll((els) =>
+          els
+            .map((e) => (e as HTMLAnchorElement).getAttribute("href"))
+            .filter((h): h is string => Boolean(h)),
+        );
+
+      for (const href of hrefs) {
+        if (seen.has(href)) continue;
+        seen.add(href);
+        const response = await page.goto(href);
+        expect(
+          response?.status(),
+          `${href}, linked from ${path}, is a dead link`,
+        ).toBe(200);
+        await page.goto(path);
+      }
+    }
+
+    expect(seen.size, "no internal links were crawled at all").toBeGreaterThan(5);
   });
 
   test("the sidebar collapses and reports its state assistively", async ({ page }) => {
@@ -166,9 +244,12 @@ test.describe("routes that exist are reachable", () => {
   });
 
   test("an unbuilt route is not silently served", async ({ page }) => {
-    // `/my-work` has an API but no page. It must 404 rather than render
-    // an empty shell that looks like a working screen with no data.
-    const response = await page.goto("/my-work");
+    // `/formulations` is slice 3: no page exists. It must 404 rather than
+    // render an empty shell that looks like a working screen with no data.
+    //
+    // This named `/my-work` until Slice 2 built it. The route under test has
+    // to be one that is genuinely unbuilt, or the assertion says nothing.
+    const response = await page.goto("/formulations");
     expect(response?.status()).toBe(404);
   });
 });

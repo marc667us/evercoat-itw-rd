@@ -29,6 +29,18 @@ export interface HeaderField {
 export interface SubmenuItem {
   label: string;
   href: string;
+  /**
+   * No page exists at this href yet.
+   *
+   * Rendered as an inert span rather than a link, exactly as the sidebar
+   * treats a future-slice destination. Without this every submenu entry was
+   * a live anchor regardless of its `state`, so the Administration header
+   * advertised /admin/roles, /admin/permissions and five more as working
+   * links straight into a 404. Invisible while Administration was filtered
+   * out of the sidebar; a client-facing defect the moment it was not.
+   * Raised by Codex.
+   */
+  unavailable?: boolean;
   /** Workflow state, rendered as a marker beside the label. */
   state?: "complete" | "active" | "not-started" | "blocked" | "failed";
   /** Actionable count, e.g. 3 open failures. Never a total row count. */
@@ -152,6 +164,20 @@ export function ContextSubmenu({
 
           return (
             <li key={item.href}>
+              {item.unavailable ? (
+                <span
+                  aria-disabled="true"
+                  className="flex items-center gap-1.5 border-b-2 border-transparent px-1 pb-2 text-xs text-slate-400"
+                >
+                  {mark && (
+                    <span aria-hidden className={`text-[11px] ${mark.className}`}>
+                      {mark.glyph}
+                    </span>
+                  )}
+                  {item.label}
+                  <span className="sr-only"> — not yet available</span>
+                </span>
+              ) : (
               <Link
                 href={item.href}
                 aria-current={active ? "page" : undefined}
@@ -178,6 +204,7 @@ export function ContextSubmenu({
                   </span>
                 )}
               </Link>
+              )}
             </li>
           );
         })}
