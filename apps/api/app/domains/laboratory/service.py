@@ -303,50 +303,110 @@ def create_batch(
 # ---------------------------------------------------------------------------
 
 
+# THE TRANSITION STATEMENTS ARE COMPLETE LITERALS, NOT A TEMPLATE.
+#
+# 🔴 THE FIRST VERSION OF THIS INTERPOLATED, AND DEFENDED IT IN A COMMENT.
+#
+# `_advance` built its SQL with an f-string carrying an `extra_set`
+# fragment, and silenced ruff's S608 with a suppression comment arguing
+# that the fragment was a literal from this module and never a caller's.
+# Semgrep flagged it anyway (`avoid-sqlalchemy-text`) and was right to.
+#
+# (Ruff read the original wording of this paragraph as a live suppression
+# directive, which is its own small lesson about writing rule names into
+# prose.)
+#
+# That is the SAME defect this repository fixed hours earlier in
+# `app/api/admin_reference_data.py`, where a table name was interpolated
+# and defended with "it comes from a closed dictionary" -- and the same
+# one it fixed before that in the RLS GUC setter, which argued in a
+# docstring that a `uuid.UUID` cannot carry SQL. Three times now the
+# safety has been an ARGUMENT that depends on a future edit not widening
+# something, rather than a MECHANISM.
+#
+# So there is no template. Three transitions, three whole statements,
+# nothing to build. The shared machinery below is the audit record and
+# the error translation -- which is what was actually worth sharing.
+_TRANSITIONS: dict[str, str] = {
+    "authorize": """
+        WITH prev AS (
+            SELECT id, status, batch_number FROM laboratory.batches
+            WHERE id = :bid AND organization_id = :org
+            FOR UPDATE
+        )
+        UPDATE laboratory.batches b
+        SET status = 'authorized',
+            authorized_by = :actor,
+            authorized_at = now(),
+            updated_at = now()
+        FROM prev
+        WHERE b.id = prev.id AND prev.status = 'draft'
+        RETURNING b.id, b.batch_number, b.status, prev.status AS previous_status
+    """,
+    "start": """
+        WITH prev AS (
+            SELECT id, status, batch_number FROM laboratory.batches
+            WHERE id = :bid AND organization_id = :org
+            FOR UPDATE
+        )
+        UPDATE laboratory.batches b
+        SET status = 'in_progress',
+            executed_by = :actor,
+            started_at = now(),
+            updated_at = now()
+        FROM prev
+        WHERE b.id = prev.id AND prev.status = 'authorized'
+        RETURNING b.id, b.batch_number, b.status, prev.status AS previous_status
+    """,
+    "complete": """
+        WITH prev AS (
+            SELECT id, status, batch_number FROM laboratory.batches
+            WHERE id = :bid AND organization_id = :org
+            FOR UPDATE
+        )
+        UPDATE laboratory.batches b
+        SET status = 'completed',
+            completed_at = now(),
+            updated_at = now()
+        FROM prev
+        WHERE b.id = prev.id AND prev.status = 'in_progress'
+        RETURNING b.id, b.batch_number, b.status, prev.status AS previous_status
+    """,
+}
+
+# Which statuses each transition may run from, for the refusal message
+# only. The predicate itself lives in the SQL above -- stating it twice
+# would be the two-lists-that-must-agree defect in miniature, so this is
+# derived from nothing and used for nothing else.
+_TRANSITION_SOURCES: dict[str, str] = {
+    "authorize": "draft",
+    "start": "authorized",
+    "complete": "in_progress",
+}
+
+
 def _advance(
     session: Session,
     *,
+    transition: str,
     batch_id: uuid.UUID,
     organization_id: uuid.UUID,
     actor_id: uuid.UUID,
-    to_status: str,
-    from_statuses: tuple[str, ...],
-    extra_set: str = "",
-    params: dict[str, Any] | None = None,
     action: str,
     reason: str,
 ) -> dict[str, Any]:
-    """Move a batch one step, with the source status in the WHERE clause.
+    """Move a batch one step.
 
     Every transition goes through here so the guard cannot be written
-    three different ways. The permitted source statuses are part of the
-    UPDATE's own predicate: a batch that moved between a check and a write
-    matches nothing and changes nothing, rather than being overwritten.
+    three different ways. The permitted source status is part of the
+    UPDATE's own predicate: a batch that moved between a check and a
+    write matches nothing and changes nothing, rather than being
+    overwritten.
     """
     row = (
         session.execute(
-            text(
-                f"""
-                WITH prev AS (
-                    SELECT id, status, batch_number FROM laboratory.batches
-                    WHERE id = :bid AND organization_id = :org
-                    FOR UPDATE
-                )
-                UPDATE laboratory.batches b
-                SET status = :to_status{extra_set}, updated_at = now()
-                FROM prev
-                WHERE b.id = prev.id
-                  AND prev.status = ANY(CAST(:from_statuses AS TEXT[]))
-                RETURNING b.id, b.batch_number, b.status, prev.status AS previous_status
-                """  # noqa: S608 - `extra_set` is a literal from this module, never a caller
-            ),
-            {
-                "bid": batch_id,
-                "org": organization_id,
-                "to_status": to_status,
-                "from_statuses": list(from_statuses),
-                **(params or {}),
-            },
+            text(_TRANSITIONS[transition]),
+            {"bid": batch_id, "org": organization_id, "actor": actor_id},
         )
         .mappings()
         .one_or_none()
@@ -356,7 +416,7 @@ def _advance(
         current = _batch_row(session, batch_id=batch_id, organization_id=organization_id)
         raise BatchStateError(
             f"batch {current['batch_number']} is {current['status']}; this step is only "
-            f"available from {', '.join(from_statuses)}"
+            f"available from {_TRANSITION_SOURCES[transition]}"
         )
 
     write_audit(
@@ -368,7 +428,7 @@ def _advance(
             organization_id=organization_id,
             user_id=actor_id,
             previous_state={"status": row["previous_status"]},
-            new_state={"status": to_status},
+            new_state={"status": row["status"]},
             reason=reason,
         ),
     )
@@ -387,13 +447,10 @@ def authorize_batch(
     """
     return _advance(
         session,
+        transition="authorize",
         batch_id=batch_id,
         organization_id=organization_id,
         actor_id=actor_id,
-        to_status="authorized",
-        from_statuses=("draft",),
-        extra_set=", authorized_by = :actor, authorized_at = now()",
-        params={"actor": actor_id},
         action="batch.authorized",
         reason="weigh-up sheet issued",
     )
@@ -405,13 +462,10 @@ def start_batch(
     """Begin execution. Records who is at the bench and when."""
     return _advance(
         session,
+        transition="start",
         batch_id=batch_id,
         organization_id=organization_id,
         actor_id=actor_id,
-        to_status="in_progress",
-        from_statuses=("authorized",),
-        extra_set=", executed_by = :actor, started_at = now()",
-        params={"actor": actor_id},
         action="batch.started",
         reason="batch execution started",
     )
@@ -568,12 +622,10 @@ def complete_batch(
 
     return _advance(
         session,
+        transition="complete",
         batch_id=batch_id,
         organization_id=organization_id,
         actor_id=actor_id,
-        to_status="completed",
-        from_statuses=("in_progress",),
-        extra_set=", completed_at = now()",
         action="batch.completed",
         reason="batch execution completed",
     )

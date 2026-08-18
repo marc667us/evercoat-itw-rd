@@ -87,6 +87,16 @@ DEFINER_OWNED_BY_DESIGN = {
     # passes when it cannot see its subject is the "check that walks
     # through its own gap" this platform has already been bitten by.
     "formulations.deny_component_mutation",
+    # Migration 017. Identical reasoning one slice later: the trigger
+    # that freezes an issued weigh-up sheet reads
+    # `laboratory.batches.status` before deciding, and must reach that
+    # row regardless of the caller.
+    #
+    # This test has now caught the addition TWICE, which is the argument
+    # for keeping it exact rather than loosening it to "any definer
+    # function in an application schema". Each entry is a deliberate
+    # security decision, made once and written down.
+    "laboratory.deny_component_mutation",
 }
 
 
