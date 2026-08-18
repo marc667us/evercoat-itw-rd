@@ -222,8 +222,16 @@ def normalize_to_100(components: list[Component]) -> list[Component]:
         running += pct
         scaled.append(Component(**{**_as_dict(c), "percentage": pct}))
 
+    # Clamped, for the same reason and with worse consequences than in
+    # scale_to_batch: `HUNDRED - running` going negative makes
+    # Component.__post_init__ raise "percentage cannot be negative", so the
+    # function whose whole job is to FIX a total crashes on the way out.
+    # Reproduced by the Supervisor in 13 random trials.
     last = components[-1]
-    scaled.append(Component(**{**_as_dict(last), "percentage": HUNDRED - running}))
+    residue = HUNDRED - running
+    scaled.append(
+        Component(**{**_as_dict(last), "percentage": residue if residue > ZERO else ZERO})
+    )
     return scaled
 
 
@@ -247,6 +255,7 @@ def scale_to_batch(
     batch_mass_kg: Decimal | int | str,
     *,
     places: Decimal = Decimal("0.001"),
+    tolerance: Decimal = Decimal("0.01"),
 ) -> dict[str, Decimal]:
     """Component masses for a batch, summing EXACTLY to the batch mass.
 
@@ -260,6 +269,19 @@ def scale_to_batch(
     So every component but the last is rounded, and the last takes the
     remainder. The residue lands on ONE line, visibly, instead of being
     smeared invisibly across all of them.
+
+    🔴 AN OFF-100% FORMULA IS REFUSED, NOT QUIETLY RENORMALISED.
+    This divided by the ACTUAL total, so a formula stated at 98.5% produced
+    masses for a 100% formula: a component written as 36.00% came out as
+    9.137 kg of 25 kg, which is 36.55%. The stated percentage and the mass
+    were then displayed in adjacent columns. That is exactly the invented
+    discrepancy the paragraph above says this function exists to prevent —
+    committed inside the same function that says so. Raised by the
+    Supervisor, which reproduced it against the shipped draft version.
+
+    A formula outside tolerance cannot be submitted (§8) and therefore has
+    no business producing a weigh-up sheet. Normalise it deliberately with
+    `normalize_to_100` first if that is what you mean.
     """
     _require(components)
     mass = _dec(batch_mass_kg, "batch_mass_kg")
@@ -287,6 +309,13 @@ def scale_to_batch(
     total = total_percentage(components)
     if total <= ZERO:
         raise ValueError("cannot scale a formula whose components total zero")
+    if abs(total - HUNDRED) > tolerance:
+        raise ValueError(
+            f"cannot scale a formula totalling {total}% — outside the "
+            f"±{tolerance}% tolerance around 100%. Normalise it first if that "
+            f"is intended; scaling it silently would produce masses that "
+            f"contradict the stated percentages."
+        )
 
     out: dict[str, Decimal] = {}
     running = ZERO
@@ -295,7 +324,14 @@ def scale_to_batch(
         out[c.material_code] = part
         running += part
 
-    out[components[-1].material_code] = mass - running
+    # The remainder, clamped at zero.
+    #
+    # `mass - running` can go NEGATIVE when the last line is 0% and the
+    # round-half-even residue on the other lines exceeds the batch — the
+    # Supervisor found 11 components at 871.3 kg printing `-0.001 kg` on a
+    # weigh-up sheet. A negative mass is not a quantity anyone can weigh.
+    remainder = mass - running
+    out[components[-1].material_code] = remainder if remainder > ZERO else ZERO
     return out
 
 

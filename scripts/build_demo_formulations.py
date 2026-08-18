@@ -61,9 +61,15 @@ RESTRICTED = frozenset({"RM-SOLV-01"})
 DEMO_BATCH_KG = Decimal("25")
 
 
-def _components(version: dict) -> list[Component]:
-    """Build engine Components from the JSON, resolving material properties."""
-    materials = {m["material_code"]: m for m in _data["materials"]}
+def _components(version: dict, data: dict) -> list[Component]:
+    """Build engine Components from the JSON, resolving material properties.
+
+    The dataset is a PARAMETER, not a module global. `_data` was bound only
+    inside `main()`, so importing this module and calling `compute()` — which
+    the freshness test's docstring invites — raised
+    `NameError: name '_data' is not defined`. Raised by the Supervisor.
+    """
+    materials = {m["material_code"]: m for m in data["materials"]}
     out: list[Component] = []
     for line in version["components"]:
         m = materials[line["material_code"]]
@@ -91,8 +97,25 @@ def _q(value: Decimal, places: str) -> str:
     return str(value.quantize(Decimal(places)))
 
 
-def compute(version: dict) -> dict:
-    comps = _components(version)
+def compute(version: dict, data: dict) -> dict:
+    """Derive a version's figures, and its weigh-up ONLY if it is submittable.
+
+    The blockers are evaluated first and the batch is skipped when there are
+    any. Two reasons, both found by the Supervisor:
+
+      · A formula outside tolerance now makes `scale_to_batch` raise, so
+        computing it unconditionally would abort the whole build the moment
+        anyone seeded a version to demonstrate that blocker.
+      · A version that cannot be submitted has no business showing a
+        weigh-up sheet at all — that is the point of blocking it.
+
+    `require_density=True` was also inert as written: a material with no
+    density raised a KeyError building the Components long before the
+    validator could emit MISSING_MATERIAL_DATA. It is honest now only
+    because every demo material has one; the real fix belongs with the API,
+    where materials can genuinely lack data.
+    """
+    comps = _components(version, data)
     blocks = validate_for_submission(
         comps, restricted_materials=RESTRICTED, require_density=True
     )
@@ -104,14 +127,16 @@ def compute(version: dict) -> dict:
         "voc_g_per_l": _q(voc_content_g_per_l(comps), "0.1"),
         "raw_material_cost_per_kg": _q(cost_per_kg(comps), "0.0001"),
         "submission_blocks": [{"code": b.code, "message": b.message} for b in blocks],
-        "batch": {
+        "batch": None,
+    }
+    if not blocks:
+        computed["batch"] = {
             "batch_mass_kg": str(DEMO_BATCH_KG),
             "masses_kg": {
                 code: str(mass)
                 for code, mass in scale_to_batch(comps, DEMO_BATCH_KG).items()
             },
-        },
-    }
+        }
     return computed
 
 
@@ -163,7 +188,6 @@ def diff_versions(parent: dict, child: dict) -> list[dict]:
 
 
 def main() -> int:
-    global _data
     _data = json.loads(DATA.read_text(encoding="utf-8"))
 
     if "formulas" not in _data:
@@ -188,7 +212,7 @@ def main() -> int:
     for formula in _data["formulas"]:
         by_code = {v["version_code"]: v for v in formula["versions"]}
         for version in formula["versions"]:
-            version["computed"] = compute(version)
+            version["computed"] = compute(version, _data)
             parent_code = version.get("parent_version")
             parent = by_code.get(parent_code) if parent_code else None
             version["computed"]["diff_vs_parent"] = (

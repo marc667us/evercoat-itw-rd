@@ -6,6 +6,7 @@ import {
   SUPPLIERS,
   materialStatus,
   materialsFromSupplier,
+  supplierStatus,
 } from "@/lib/demo/dataset";
 
 export const metadata: Metadata = { title: "Suppliers" };
@@ -46,16 +47,23 @@ export default function SuppliersPage() {
                 <h2 className="flex-1 text-sm font-semibold text-slate-900">
                   {s.name}
                 </h2>
-                {s.status === "approved" ? (
-                  <StatusBadge status="green" label="APPROVED" size="sm" />
-                ) : (
-                  <StatusBadge
-                    status="yellow"
-                    label="QUALIFIED"
-                    reason="Qualified but not yet fully approved for released products."
-                    size="sm"
-                  />
-                )}
+                {/* Derived, not a hardcoded else-arm. Every non-approved
+                    status previously rendered as "QUALIFIED", so a suspended
+                    or disqualified source would have been presented as
+                    usable. Raised by the Supervisor. */}
+                {(() => {
+                  const d = supplierStatus(s);
+                  return d.status === "yellow" ? (
+                    <StatusBadge
+                      status="yellow"
+                      label={d.label}
+                      reason={d.reason ?? ""}
+                      size="sm"
+                    />
+                  ) : (
+                    <StatusBadge status={d.status} label={d.label} size="sm" />
+                  );
+                })()}
               </div>
 
               <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600">

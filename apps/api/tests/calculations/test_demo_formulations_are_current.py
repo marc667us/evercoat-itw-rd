@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -47,30 +48,67 @@ def test_the_dataset_this_module_guards_actually_exists():
 
 
 @pytest.mark.skipif(not DATA.exists(), reason="demo dataset not present")
-def test_committed_demo_figures_match_a_fresh_computation():
-    before = json.loads(DATA.read_text(encoding="utf-8"))
+def test_committed_demo_figures_match_a_fresh_computation(tmp_path):
+    """Recompute into a COPY and compare the whole document.
+
+    🔴 THE FIRST VERSION ERASED ITS OWN EVIDENCE. It ran the build script,
+    which writes `demo-data.json` in place, then compared a pre-read copy
+    against the rewritten file. So it failed once on stale data and passed
+    on the very next run — because the failing run had already fixed the
+    file. A developer rerunning "to confirm" saw green and would have
+    committed a regenerated dataset they never looked at. Demonstrated by
+    the Supervisor, which seeded a stale figure and watched exactly that.
+
+    🔴 AND IT COMPARED ONLY `formulas[].versions[].computed`. The material
+    display percentages baked this round sit outside that sub-tree, so
+    changing a material's solids fraction left `solids_percent` stale and
+    the guard still passed. `/materials` would have rendered a percentage
+    for a fraction nobody recorded.
+
+    So: copy the repo out, recompute in the copy, diff the ENTIRE document,
+    and never write a tracked file from a test.
+    """
+    work = tmp_path / "repo"
+    shutil.copytree(
+        REPO,
+        work,
+        ignore=shutil.ignore_patterns(
+            ".git",
+            "node_modules",
+            ".next",
+            "out",
+            "__pycache__",
+            ".venv",
+            "playwright-report",
+            "test-results",
+            "tmp",
+        ),
+    )
+
+    committed = json.loads(DATA.read_text(encoding="utf-8"))
 
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [sys.executable, str(SCRIPT)],
+        [sys.executable, str(work / "scripts" / "build_demo_formulations.py")],
         capture_output=True,
         text=True,
-        cwd=str(REPO),
+        cwd=str(work),
         check=False,
     )
     assert result.returncode == 0, result.stderr
 
-    after = json.loads(DATA.read_text(encoding="utf-8"))
+    recomputed = json.loads(
+        (work / "apps" / "web" / "lib" / "demo" / "demo-data.json").read_text(encoding="utf-8")
+    )
 
-    stale = []
-    for f_before, f_after in zip(before["formulas"], after["formulas"], strict=True):
-        for v_before, v_after in zip(f_before["versions"], f_after["versions"], strict=True):
-            if v_before.get("computed") != v_after["computed"]:
-                stale.append(v_after["version_code"])
+    assert committed == recomputed, (
+        "The committed demonstration dataset is STALE — recomputing it produced "
+        "something different. Someone changed a formula or a material without "
+        "rerunning the engine. Fix with: python scripts/build_demo_formulations.py"
+    )
 
-    assert not stale, (
-        "The committed demonstration figures are stale for "
-        f"{', '.join(stale)}. Someone changed a formula without recomputing. "
-        "Run: python scripts/build_demo_formulations.py"
+    # The repo file must be untouched by this test.
+    assert json.loads(DATA.read_text(encoding="utf-8")) == committed, (
+        "this test wrote to a tracked file"
     )
 
 

@@ -599,10 +599,18 @@ export interface DemoComputed {
   readonly voc_g_per_l: string;
   readonly raw_material_cost_per_kg: string;
   readonly submission_blocks: readonly DemoSubmissionBlock[];
+  /**
+   * NULL when the version cannot be submitted.
+   *
+   * A formula outside tolerance has no business producing a weigh-up: the
+   * masses would be scaled from a total that is not 100, so a component
+   * stated at 36.00% would print as 36.55% of the batch and the two numbers
+   * would sit in adjacent columns contradicting each other.
+   */
   readonly batch: {
     readonly batch_mass_kg: string;
     readonly masses_kg: Readonly<Record<string, string>>;
-  };
+  } | null;
   readonly diff_vs_parent: readonly DemoDiffRow[];
 }
 
@@ -703,6 +711,61 @@ export function materialStatus(m: DemoMaterial): Derived {
       return { status: "neutral", label: "OBSOLETE" };
     default:
       return { status: "neutral", label: m.status.toUpperCase() };
+  }
+}
+
+/**
+ * Supplier status, presented.
+ *
+ * Exhaustive with a default, like `materialStatus`. The suppliers page
+ * previously rendered a hardcoded yellow "QUALIFIED" for every non-approved
+ * state, so the moment a supplier became `suspended` or `disqualified` a
+ * blocked source would have been shown as a usable one. Raised by the
+ * Supervisor.
+ */
+export function supplierStatus(s: DemoSupplier): Derived {
+  switch (s.status) {
+    case "approved":
+      return { status: "green", label: "APPROVED" };
+    case "qualified":
+      return {
+        status: "yellow",
+        label: "QUALIFIED",
+        reason: "Qualified but not yet fully approved for released products.",
+      };
+    case "suspended":
+      return { status: "red", label: "SUSPENDED" };
+    case "disqualified":
+      return { status: "red", label: "DISQUALIFIED" };
+    default:
+      return { status: "neutral", label: s.status.toUpperCase() };
+  }
+}
+
+/**
+ * Version status, presented. Shared by the formulations index and the
+ * workspace so the two cannot disagree — they did: the index greened only
+ * `approved` while the workspace greened `released` too, so a released
+ * formula showed a neutral grey badge on one screen and green on the other.
+ */
+export function versionStatus(v: DemoFormulaVersion): Derived {
+  switch (v.status) {
+    case "approved":
+      return { status: "green", label: "APPROVED" };
+    case "released":
+      return { status: "green", label: "RELEASED" };
+    case "submitted":
+      return {
+        status: "yellow",
+        label: "SUBMITTED",
+        reason: "Submitted for approval — not yet approved for laboratory work.",
+      };
+    case "draft":
+      return { status: "neutral", label: "DRAFT" };
+    case "superseded":
+      return { status: "neutral", label: "SUPERSEDED" };
+    default:
+      return { status: "neutral", label: v.status.toUpperCase() };
   }
 }
 

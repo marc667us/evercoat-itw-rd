@@ -9,6 +9,7 @@ import {
   currentVersion,
   submissionStatus,
   userName,
+  versionStatus,
 } from "@/lib/demo/dataset";
 
 export const metadata: Metadata = { title: "Formulations" };
@@ -55,11 +56,27 @@ export default function FormulationsPage() {
                 <span className="text-xs text-slate-600">
                   {f.versions.length} version{f.versions.length === 1 ? "" : "s"}
                 </span>
-                <StatusBadge
-                  status={v.status === "approved" ? "green" : "neutral"}
-                  label={`${v.version_code} · ${v.status.toUpperCase()}`}
-                  size="sm"
-                />
+                {/* The SHARED derivation. This greened only `approved` while
+                    the workspace greened `released` too, so a released formula
+                    showed grey here and green there — two literals encoding one
+                    rule, disagreeing. Raised by the Supervisor. */}
+                {(() => {
+                  const t = versionStatus(v);
+                  return t.status === "yellow" ? (
+                    <StatusBadge
+                      status="yellow"
+                      label={`${v.version_code} · ${t.label}`}
+                      reason={t.reason ?? ""}
+                      size="sm"
+                    />
+                  ) : (
+                    <StatusBadge
+                      status={t.status}
+                      label={`${v.version_code} · ${t.label}`}
+                      size="sm"
+                    />
+                  );
+                })()}
               </div>
 
               <div className="mt-3 grid grid-cols-2 gap-3 text-xs md:grid-cols-5">

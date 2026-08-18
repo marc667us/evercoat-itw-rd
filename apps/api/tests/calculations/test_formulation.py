@@ -76,13 +76,22 @@ def formulas(draw, min_size: int = 1, max_size: int = 12, with_density: bool = F
 @settings(max_examples=250)
 @given(components=formulas(), batch=masses)
 def test_component_masses_sum_exactly_to_the_batch_mass(components, batch):
-    """THE stated invariant, over arbitrary formulas and batch sizes.
+    """THE stated invariant: *for any VALID 100% formula and any positive
+    batch quantity, the sum of component masses equals the batch mass.*
+
+    Normalised first, deliberately. The generator draws arbitrary
+    percentages, so most formulas it produces do not total 100 — and
+    `scale_to_batch` now refuses those, because scaling them would print
+    masses that contradict the stated percentages. The invariant was always
+    stated about a valid formula; the earlier version of this test simply
+    asked it of inputs the contract never covered.
 
     Exact equality, not "within tolerance". Rounding each line
     independently would drift, and a technician reconciling a weigh-up
     against the sheet would find a discrepancy the software invented.
     """
-    masses_out = scale_to_batch(components, batch)
+    valid = normalize_to_100(components)
+    masses_out = scale_to_batch(valid, batch)
     assert sum(masses_out.values()) == batch
 
 
@@ -107,14 +116,15 @@ def test_scaling_is_linear_in_the_batch_size(components, batch, factor):
     remainder line legitimately absorbs a rounding residue that does not
     scale linearly at the last decimal place.
     """
-    single = scale_to_batch(components, batch)
-    multiple = scale_to_batch(components, batch * factor)
+    valid = normalize_to_100(components)
+    single = scale_to_batch(valid, batch)
+    multiple = scale_to_batch(valid, batch * factor)
 
     # The LAST line is the designated remainder and is excluded on purpose.
     # `scale_to_batch` documents that it absorbs the rounding residue so the
     # total is exact; that residue does not scale, by design. Asserting
     # linearity on it would be asserting the opposite of the contract.
-    scaling_lines = [c.material_code for c in components[:-1]]
+    scaling_lines = [c.material_code for c in valid[:-1]]
 
     for code in scaling_lines:
         mass = single[code]
@@ -128,6 +138,20 @@ def test_scaling_is_linear_in_the_batch_size(components, batch, factor):
             # failed at factor 8 on a 0.15% deviation that is simply the
             # milligram quantiser doing its job.
             assert abs(ratio - factor) / factor < Decimal("0.01")
+
+
+def test_scaling_refuses_a_formula_that_does_not_total_one_hundred():
+    """A formula outside tolerance cannot be submitted (§8) and therefore has
+    no business producing a weigh-up.
+
+    This silently renormalised: a component stated at 36.00% of a 98.5%
+    formula came out as 9.137 kg of a 25 kg batch — 36.55% — and the stated
+    percentage and the mass were then displayed in adjacent columns. The
+    Supervisor reproduced it against the shipped draft version.
+    """
+    components = [Component("A", Decimal("60")), Component("B", Decimal("38.5"))]
+    with pytest.raises(ValueError, match="outside the"):
+        scale_to_batch(components, Decimal("25"))
 
 
 def test_batch_mass_must_be_positive():

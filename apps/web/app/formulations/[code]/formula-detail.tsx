@@ -25,6 +25,7 @@ import {
   materialName,
   submissionStatus,
   userName,
+  versionStatus,
   type DemoDiffRow,
   type DemoFormulaVersion,
 } from "@/lib/demo/dataset";
@@ -48,27 +49,6 @@ function Section({
     </section>
   );
 }
-
-/**
- * Version status, and the reason a yellow one is yellow.
- *
- * The reason is carried in the table rather than invented at the call site,
- * because StatusBadge refuses a yellow without one — §10, enforced by the
- * type system.
- */
-const VERSION_TONE: Record<
-  string,
-  { tone: "green" | "yellow" | "neutral"; reason?: string }
-> = {
-  approved: { tone: "green" },
-  released: { tone: "green" },
-  submitted: {
-    tone: "yellow",
-    reason: "Submitted for approval — not yet approved for laboratory work.",
-  },
-  draft: { tone: "neutral" },
-  superseded: { tone: "neutral" },
-};
 
 export function FormulaDetail({ code }: { code: string }) {
   const formula = formulaByCode(code);
@@ -99,7 +79,10 @@ export function FormulaDetail({ code }: { code: string }) {
     formula.versions.find((v) => v.version_code === selectedCode) ?? fallback;
   const c = version.computed;
   const submission = submissionStatus(version);
-  const masses = c.batch.masses_kg;
+  // Null when the version is blocked — a formula outside tolerance has no
+  // weigh-up, because scaling it would print masses that contradict its own
+  // stated percentages.
+  const batch = c.batch;
 
   return (
     <>
@@ -156,8 +139,12 @@ export function FormulaDetail({ code }: { code: string }) {
               teaches a chemist to distrust the software.
             </p>
             <ul className="mt-2 space-y-1">
-              {c.submission_blocks.map((b) => (
-                <li key={b.code} className="text-xs text-red-900">
+              {/* Keyed by code AND index: validate_for_submission emits one
+                  block PER offending component, so two restricted materials
+                  produce two RESTRICTED_MATERIAL entries and a code-only key
+                  duplicates. Raised by the Supervisor. */}
+              {c.submission_blocks.map((b, i) => (
+                <li key={`${b.code}-${i}`} className="text-xs text-red-900">
                   <span className="font-mono font-semibold">{b.code}</span> —{" "}
                   {b.message}
                 </li>
@@ -222,20 +209,18 @@ export function FormulaDetail({ code }: { code: string }) {
                           {v.version_code}
                         </span>
                         {(() => {
-                          const t = VERSION_TONE[v.status] ?? { tone: "neutral" as const };
-                          return t.tone === "yellow" ? (
+                          // Shared with the formulations index, so the two
+                          // screens cannot disagree about what a status means.
+                          const t = versionStatus(v);
+                          return t.status === "yellow" ? (
                             <StatusBadge
                               status="yellow"
-                              label={v.status.toUpperCase()}
+                              label={t.label}
                               reason={t.reason ?? ""}
                               size="sm"
                             />
                           ) : (
-                            <StatusBadge
-                              status={t.tone}
-                              label={v.status.toUpperCase()}
-                              size="sm"
-                            />
+                            <StatusBadge status={t.status} label={t.label} size="sm" />
                           );
                         })()}
                         {v.parent_version && (
@@ -299,26 +284,28 @@ export function FormulaDetail({ code }: { code: string }) {
         <Section
           id="composition"
           title={`Composition — ${version.version_code}`}
-          note={`Percentages are mass percent. The weigh-up column is a ${c.batch.batch_mass_kg} kg
-                 batch scaled by the engine, and the component masses sum exactly to the
-                 batch mass — rounding each line independently would drift, and a
-                 technician reconciling the sheet would find a discrepancy the software
-                 invented.`}
+          note={
+            batch
+              ? `Percentages are mass percent. The weigh-up column is a ${batch.batch_mass_kg} kg batch scaled by the engine, and the component masses sum exactly to the batch mass — rounding each line independently would drift, and a technician reconciling the sheet would find a discrepancy the software invented.`
+              : "Percentages are mass percent. NO WEIGH-UP IS SHOWN: this version cannot be submitted, and scaling a formula whose components do not total 100% would print masses that contradict the percentages beside them."
+          }
         >
           <div className="overflow-x-auto rounded border border-slate-200 bg-white">
             <table className="w-full border-collapse text-xs">
               <caption className="sr-only">
-                Composition of {version.version_code} with a {c.batch.batch_mass_kg} kg
-                weigh-up
+                Composition of {version.version_code}
+                {batch ? ` with a ${batch.batch_mass_kg} kg weigh-up` : ""}
               </caption>
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-left">
                   <th scope="col" className="px-3 py-2 font-medium text-slate-600">Code</th>
                   <th scope="col" className="px-3 py-2 font-medium text-slate-600">Material</th>
                   <th scope="col" className="px-3 py-2 text-right font-medium text-slate-600">%</th>
-                  <th scope="col" className="px-3 py-2 text-right font-medium text-slate-600">
-                    {c.batch.batch_mass_kg} kg batch
-                  </th>
+                  {batch && (
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-slate-600">
+                      {batch.batch_mass_kg} kg batch
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -338,9 +325,11 @@ export function FormulaDetail({ code }: { code: string }) {
                     <td className="px-3 py-2 text-right font-medium tabular-nums text-slate-900">
                       {line.percentage}
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">
-                      {masses[line.material_code] ?? "—"} kg
-                    </td>
+                    {batch && (
+                      <td className="px-3 py-2 text-right tabular-nums text-slate-700">
+                        {batch.masses_kg[line.material_code] ?? "—"} kg
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -352,9 +341,11 @@ export function FormulaDetail({ code }: { code: string }) {
                   <td className="px-3 py-2 text-right tabular-nums">
                     {c.total_percentage}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {c.batch.batch_mass_kg} kg
-                  </td>
+                  {batch && (
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {batch.batch_mass_kg} kg
+                    </td>
+                  )}
                 </tr>
               </tfoot>
             </table>

@@ -1538,20 +1538,7 @@
                 "message": "RM-SOLV-01 is restricted and may not be used without an approved exemption."
               }
             ],
-            "batch": {
-              "batch_mass_kg": "25",
-              "masses_kg": {
-                "RM-RES-02": "9.137",
-                "RM-FIL-01": "5.584",
-                "RM-FIL-03": "3.173",
-                "RM-FIL-02": "2.030",
-                "RM-PIG-01": "0.761",
-                "RM-ADD-01": "0.635",
-                "RM-ADD-02": "0.254",
-                "RM-CAT-01": "3.299",
-                "RM-SOLV-01": "0.127"
-              }
-            },
+            "batch": null,
             "diff_vs_parent": [
               {
                 "material_code": "RM-ADD-01",
