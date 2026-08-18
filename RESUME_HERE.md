@@ -1,50 +1,88 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-**Session closed 2026-08-18. Read this file first, then `TODO.md`.**
+**Session closed 2026-08-18 (pt2). Read this file first, then `TODO.md`.**
 
-Repository: **https://github.com/marc667us/evercoat-itw-rd — now PUBLIC**,
-remote `origin`, branch `master`. Tip **`96bbf4c`**, working tree clean.
-
----
-
-## 🔴 THE ONE THING TO READ BEFORE PLANNING ANYTHING
-
-**There is still no working URL, and the reason changed twice in one
-session.** Do not act on a recorded blocker without re-measuring it —
-that is now the third time in this project a stated blocker was wrong.
-
-1. The blocker was recorded as *"Render's GitHub App cannot read the
-   PRIVATE repo."* The operator chose to make the repo **PUBLIC**. That
-   worked; the repo-access error is gone.
-   *(`gh repo edit --visibility` fails on this gh build — the flag it
-   demands does not exist. Use `gh api -X PATCH repos/... -f visibility=public`.)*
-2. The real blocker now is account-wide:
-   `POST /services` → **400 `"free tier usage quota has been exhausted,
-   new services are not allowed"`**. Measured: **all five Render services
-   are `plan=standard`; none are free.** The exhausted allowance is the
-   workspace's 750 free instance-hours per month, which resets with the
-   billing cycle.
-
-**Nothing was created and nothing was billed.** `render-setup.yml` now
-takes an explicit `plan` input defaulting to `free`, so a careless
-dispatch 400s rather than costing money.
+Repository: **https://github.com/marc667us/evercoat-itw-rd** (PUBLIC),
+remote `origin`, branch `master`. Tip **`5c4973a`**, working tree clean.
 
 ---
 
-## Where the build actually is
+## ✅ THE APP IS ONLINE
+
+# https://itwevercoatrd.aiappinvent.com
+
+Two sessions of "there is still no URL" are closed. Do not re-plan this.
 
 | | |
 |---|---|
-| API tests | **155 passed / 0 failed / 0 skipped** (was 152) |
-| Web tests | 26 passed · E2E 29 green in CI |
-| Migrations | **014**, each applied and verified against a real database |
-| CI | **API ✓ · E2E ✓ · Web ✓ — the first time any of them passed.** |
-| CI, still red | **Security scan** — Trivy, 3 HIGH dependency CVEs (`postcss 8.4.31 → 8.5.12` + 2 more). More exposed now the repo is public. |
-| Deploy | **Nothing deployed. No URL.** |
-| Slice 1 | code-complete; full stack has still never run at once |
-| Slice 2 | complete except the frontend |
+| Live suite, against the DEPLOYED site | **passed=14 · failed=0 · skipped=1** |
+| Certificate | Google Trust Services WE1 · 2026-08-18 → 2026-11-16 · TLS 1.3 · auto-renewing |
+| Render service | `evercoat-itw-rd-web` — `srv-da242g37uimc73dqnmg0`, type **`static_site`** |
+| CI | **ALL FOUR JOBS GREEN** — API ✓ Web ✓ E2E ✓ **Security ✓** (Security had never passed before) |
+| Cost | **zero** |
 
-### Start the environment
+The one skip is the API surface, which is not deployed. It is a coverage
+gap reported as a gap, never as a pass.
+
+```bash
+# Re-prove the deployment at any time:
+./scripts/live-suite.sh https://itwevercoatrd.aiappinvent.com web
+
+# Create/reconcile the Render service (plan mode is read-only and the default):
+gh workflow run render-setup.yml -f mode=apply -f confirm=APPLY
+```
+
+---
+
+## 🔴 THE THINGS MOST LIKELY TO BITE THE NEXT PERSON
+
+**The certificate failure was never a DNS fault.** Namecheap was correct
+throughout — the CNAME resolved, and there are no CAA records blocking
+issuance. **No Render service existed**, so the domain was attached to
+nothing, so Render never *requested* a certificate. That is what the
+browser was reporting as "not secure". Do not go looking in Namecheap.
+
+**A free WEB SERVICE is refused by this account; a STATIC SITE is not.**
+`POST /services` with a web service returns
+`400 free tier usage quota has been exhausted`. The exhausted allowance is
+the workspace's 750 free INSTANCE-hours. A static site has **no instance**,
+so it never touches that allowance, is free, does not spin down, and gets
+free auto-renewing TLS. `static_site` has **no `plan` field at all**, which
+is why the `plan` input was deleted — **no dispatch of `render-setup.yml`
+can now cost money.**
+
+**Render does NOT do clean-URL fallback.** There is no implicit `.html`
+lookup, so a default Next export (`dashboard.html`) would make `/dashboard`
+404. `next.config.mjs` sets `trailingSlash` for the export so it writes
+directory indexes. **And Render never applies a redirect/rewrite rule to a
+path where a resource already exists** — which is why the broken root could
+not be fixed with a rule and had to be fixed in `app/page.tsx`.
+
+**`NODE_ENV=production` must NOT be a Render service variable.** It applies
+to `npm ci`, which npm reads as `omit=dev`, so typescript, tailwindcss and
+postcss never install and the build fails. It is set inline on the build
+command instead — exactly as `ci.yml` sets it on its build step and not its
+install step.
+
+**`renderSubdomainPolicy` must stay `enabled` and the service must keep its
+name.** `itwevercoatrd.aiappinvent.com` is a CNAME to
+`evercoat-itw-rd-web.onrender.com`. Rename the service, or disable the
+subdomain, and the custom domain resolves to something Render no longer
+serves — the site goes dark and the certificate stops renewing.
+
+---
+
+## 🔴 THE STANDING CONSTRAINT
+
+**The operator's words: *"if i find the autoworkshop in issues you will be
+responsible for breaking it."*** Do not touch `aw-postgres`, `aw-keycloak`
+or any `aw-*` container. All database work uses **`evercoat-postgres` on
+port 55432**. `render-setup.yml` guards AutoWorkshop's own domain and
+refuses to run if it is not present before and after.
+
+---
+
+## Start the environment
 
 ```bash
 docker start evercoat-postgres          # host port 55432
@@ -59,7 +97,7 @@ TEST_DB_HOST=localhost TEST_DB_PORT=55432 POSTGRES_DB=evercoat_itw_rd \
 TEST_OWNER_USER=evercoat_owner TEST_OWNER_PASSWORD=dev-owner-pw \
 APP_DB_USER=evercoat_app APP_DB_PASSWORD=dev-app-pw \
 DATABASE_URL="$DATABASE_URL" KEYCLOAK_ISSUER="$KEYCLOAK_ISSUER" \
-python -m pytest tests -q -rs
+python -m pytest tests -q -rs          # 155 passed / 0 failed / 0 skipped
 ```
 
 > **`mypy` is NOT installed locally** — `CLAUDE.md` §13's `mypy app` cannot
@@ -67,142 +105,65 @@ python -m pytest tests -q -rs
 
 ---
 
-## 🔴 THE STANDING CONSTRAINT — do not violate it
-
-**The operator's words: *"if i find the autoworkshop in issues you will be
-responsible for breaking it."*** Do not touch `aw-postgres`,
-`aw-keycloak`, or any `aw-*` container. All database work uses
-**`evercoat-postgres` on port 55432**. Nothing this session touched one.
-
----
-
 ## What this session changed
 
-**Migration 014 — ownership, because nothing had ever decided it.**
-CI failed `37 failed / 65 passed / 50 errors`, all `permission denied`,
-while the same suite passed locally, from the same migrations. 001
-declares `CREATE SCHEMA ... AUTHORIZATION evercoat_owner` and `env.py`
-says migrations run as the owner role — but 001 must `CREATE ROLE`, so
-alembic runs as `postgres` and every table belonged to `postgres`. The
-dev database only looked right because it had been **repaired by hand**;
-`ci.yml` repaired a **different subset** of schemas. Two hand-maintained
-lists that nothing could check against each other.
+1. **Created the Render static site**, attached and verified the domain,
+   and got the certificate issued. The setup workflow no longer stops at
+   "attached" and calls that success — it waits for the deploy to go LIVE
+   and then makes a real validating HTTPS request, which is the only thing
+   that can actually prove a certificate exists.
 
-Rehearsed rather than reasoned about: a scratch database built exactly as
-CI builds it reproduced the failure, and the new invariant test was
-**verified to fail at b4000** before being trusted.
+2. **Fixed the front door and `/dashboard` BEFORE deploying** — both were
+   broken in the export and both would have shipped green. See above.
 
-**Functions deliberately not swept.** A SECURITY DEFINER function runs
-with its OWNER's privileges — 013 moved `audit.chain_row` on purpose, and
-`core.is_project_member` runs inside RLS policies and must not gain the
-owner's exemption.
+3. **Made the live suite able to test a live site.** Playwright's
+   `baseURL` was hardcoded to `127.0.0.1:3100` and *nothing read*
+   `PLAYWRIGHT_BASE_URL`, so the "live" E2E run tested localhost while
+   reporting against the deployed URL — it would have passed with the
+   deployment entirely broken. It now has a real live mode and a
+   `web|api|full` profile.
 
-**The E2E job pointed the API at the `postgres` superuser,** which
-`app/core/config.py` refuses by design. The refusal is correct; the job
-was wrong. It now connects as `evercoat_app`.
+4. **Made the setup workflow able to change anything.** It was create-only:
+   every re-run reconciled nothing, and the deploy poll found the
+   *previous* deploy already live and reported success. It now PATCHes,
+   reconciles env vars (a separate endpoint), triggers a deploy and waits
+   on *that* deploy id.
 
-**Cloudflare Pages stopgap, built to be reversed.** `output` is now a
-switch on `NEXT_OUTPUT`, not a replacement — `render.yaml`, the
-Dockerfile and `render-setup.yml` are untouched, and the standalone build
-was re-verified. **The operator's stated intent is to move back to Render
-once the quota resets.**
-
----
-
-## ▶ NEXT SESSION — TASK 1 IS THE ONLY ONE THAT MATTERS TO THE OPERATOR
-
-**The operator has asked to see this online, at a real web URL, across
-two sessions. It is still not online. Do this FIRST and do not offer
-localhost or a tunnel as a substitute — both were explicitly rejected.**
-
-- `127.0.0.1` is not an answer; the operator said so directly.
-- Cloudflare **quick tunnels are blocked on their machine** (DNS error
-  1001 + "not secured"). Do not offer one again.
-- The target URL is **`https://itwevercoatrd.aiappinvent.com`**.
-
-### 1. Get it online. Three routes, cheapest effort first.
-
-**(a) GitHub Pages — needs NOTHING from the operator. Start here.**
-**Pages was ENABLED on the repo on 2026-08-18** (`build_type: workflow`,
-source `master`) and is serving nothing yet:
-`https://marc667us.github.io/evercoat-itw-rd/`. The repo is public and
-Actions already has the token, so no new account, secret or approval is
-required — this is the only route with zero operator dependencies.
-Remaining work: a deploy workflow that runs the static export
-(`NEXT_OUTPUT=export`) and publishes `apps/web/out` via
-`actions/deploy-pages`. **Note the subpath:** the project site is served
-from `/evercoat-itw-rd/`, so the export needs `basePath` and
-`assetPrefix` or every asset 404s — add a `NEXT_BASE_PATH` switch beside
-the existing `NEXT_OUTPUT` one. `public/_redirects` is Cloudflare-only
-and does NOT apply here, so the root `redirect()` export stub must be
-handled another way (a `basePath`-aware `index.html`, or make `/` render
-the dashboard).
-
-**(b) Cloudflare Pages** — `.github/workflows/deploy-cloudflare-pages.yml`
-is written and validated but needs **two secrets only the operator can
-create**: `CLOUDFLARE_API_TOKEN` (permission *Cloudflare Pages: Edit*)
-and `CLOUDFLARE_ACCOUNT_ID`. Then dispatch with `confirm=DEPLOY`.
-
-**(c) Render — the operator's stated end state.** Only once the free
-quota resets: `render-setup.yml -f mode=apply -f confirm=APPLY -f plan=free`.
-**DNS already points at `evercoat-itw-rd-web`; no DNS change needed.**
-Confirm the run id actually STARTED — a concurrency group is a one-slot
-replacement waiting room, not a queue.
-
-**Custom domain** on (a) or (b) needs the Namecheap CNAME repointed —
-**no Namecheap credentials exist on this machine**, so that step is the
-operator's. Skip it entirely if (c) is close, since the CNAME is already
-correct for Render.
-
-### 2. Then, in order
-
-2. **Fix the live-suite / API gap** (below) before claiming GATE-2. It
-   reported 0/0/0 because it waits on `/health/ready`, an API route, and
-   `render.yaml` is web-only.
-3. **Trivy** — the last red CI job.
-4. **Slice 2 frontend**, then Slice 3. Five API surfaces still have no
-   clickable page; `CURRENT_SLICE = 1` in `apps/web/lib/navigation.ts`.
+5. **Turned the Security job green for the first time.** Trivy's 3 HIGH
+   CVEs closed via `overrides`; that revealed **Semgrep had never run**,
+   and its 14 findings included the RLS GUC setter interpolating its value
+   into SQL. Now parameterised with `set_config`, proven by the full API
+   suite against a real database.
 
 ---
 
-## 🔴 Lessons worth carrying forward
+## ▶ NEXT
 
-**A GREEN BUILD IS NOT A WORKING FRONT DOOR.** `app/page.tsx` is
-`redirect("/dashboard")`. Under `output: "export"` there is no server to
-issue it, so the root exports as `<html id="__next_error__">` — while
-`next build` exits 0 and prints `✓ Exporting (2/2)`. The site would have
-served an error document at `/` with every gate green. Found by reading
-the generated `out/index.html`; fixed with `public/_redirects` and proven
-against Cloudflare's own runtime, not assumed.
-
-**TWO HAND-KEPT LISTS CANNOT BE CHECKED AGAINST EACH OTHER.** The whole
-CI failure was a schema list in YAML disagreeing with a repair someone had
-once typed into a database. The fix was not to extend the list; it was to
-make one thing decide and assert it in a test.
-
-**A COMMENT ASSERTING ENGINE SEMANTICS IS A CLAIM.** I wrote that the
-owner "remains subject to policies under FORCE RLS". Codex challenged it;
-measurement showed `relforcerowsecurity` is **false on all 18 tables**.
-**So `owner_session` bypasses RLS — isolation assertions must use
-`app_session`,** or they pass whether or not RLS works.
-
-**REPORT THREE NUMBERS, EVEN WHEN THEY ARE ZERO.** The live suite reported
-**passed=0 / failed=0 / skipped=0 — it did not run.** It waits on
-`/health/ready`, an API route, and only the web app was reachable. That is
-not a tunnel artefact: `render.yaml` is web-only by ADR-009, so the same
-gap will hit the Render deploy.
+1. **Slice 2 frontend** — five API surfaces still have no clickable page;
+   `CURRENT_SLICE = 1` in `apps/web/lib/navigation.ts`. Then Slice 3.
+2. **At Slice 3 the site must stop being static.** `apps/web` makes no API
+   calls today, which is the only reason a static export is honest. Once
+   the API is wired in, a static host cannot serve the product — and that
+   deployment needs either restored free instance-hours or an explicit,
+   operator-approved paid tier. It also closes the live suite's 1 skip.
+3. **Rotate `RENDER_API_KEY`** — it was pasted into chat on 2026-08-17 and
+   is account-wide across AutoWorkshop, Solar and Evercoat.
+4. Two **stale `next start` servers** (ports 3200 and 13099) predate this
+   session and were deliberately left running. They are not this project's.
 
 ---
 
 ## Governance record for this session
 
-- **Codex CLI** — run on the full diff. **4 findings, all fixed**,
-  including a correct HIGH on the FORCE-RLS claim and a definer-ownership
-  test that would still have passed if every function had been swept.
-- **Supervisor** — replaced this session by direct measurement against a
-  purpose-built rehearsal database: the CI condition reproduced, table
-  privileges probed, and the new test verified to fail without the fix.
-- **Live-test rule** — reported honestly as 0/0/0, did not run. GATE-2
-  remains open.
-- **Not used, by standing instruction:** Google ADK, Stitch.
-- No servers left running — ports 3210 and 8788 verified free at close.
+- **Codex CLI** — run twice on the full diff. **4 findings, all fixed**,
+  including a same-named service being reused without a type check (which
+  could have attached the production domain to a BILLED service) and
+  env vars never being reconciled — which was **true of the live service**:
+  the run log's `env before` proved `NODE_ENV` was missing.
+- **Supervisor** (`/code-review`) — **10 findings**, several Codex missed,
+  including the create-only workflow and CI never building the export mode.
+  One of its claims was **wrong** (`<main>` is supplied by the layout) and
+  was checked against the generated HTML before acting.
+- **Neither reviewer alone was enough — seven sessions running.**
+- **Live-test rule** — satisfied: **14 / 0 / 1** against the deployed site.
+- **Not used, by operator instruction:** Google ADK, Stitch, Cloudflare.
