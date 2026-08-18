@@ -35,9 +35,9 @@ from decimal import Decimal, InvalidOperation
 
 __all__ = [
     "Disposition",
+    "DispositionInputs",
     "MeasurementEvaluation",
     "ReplicateStatistics",
-    "TestState",
     "derive_disposition",
     "evaluate_against_requirement",
     "replicate_statistics",
@@ -277,8 +277,13 @@ def evaluate_against_requirement(
 
 
 @dataclass(frozen=True, slots=True)
-class TestState:
+class DispositionInputs:
     """Everything the derivation reads. Nothing it does not.
+
+    Named `DispositionInputs` and not `TestState`: pytest collects any
+    class whose name begins with `Test`, so the obvious name made the
+    suite emit a collection warning on every run. Noise in a test report
+    is not harmless -- it is where a real warning goes to hide.
 
     A single frozen input makes the algorithm total and testable: every
     rule's trigger is a field here, so a rule cannot come to depend on
@@ -326,7 +331,7 @@ class Disposition:
     rule: int
 
 
-def derive_disposition(state: TestState) -> Disposition:
+def derive_disposition(state: DispositionInputs) -> Disposition:
     """The fourteen rules, in order, first match wins.
 
     🔴 THE ORDER IS THE SPECIFICATION. Rule 1 short-circuits before rule 2
@@ -380,8 +385,7 @@ def derive_disposition(state: TestState) -> Disposition:
         return Disposition(
             "yellow",
             "INCOMPLETE REPLICATES",
-            f"{state.replicates_valid} valid replicate(s) of "
-            f"{state.replicates_required} required",
+            f"{state.replicates_valid} valid replicate(s) of {state.replicates_required} required",
             "perform the remaining replicates",
             5,
         )
