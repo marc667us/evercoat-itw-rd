@@ -431,6 +431,23 @@ def main() -> None:
         # first carries a change_reason and a technical_hypothesis, which
         # the database requires -- section 8's rule that a genealogy must
         # record not only what changed but why.
+        #
+        # 🔴 EVERY VERSION IS CREATED AS A DRAFT AND MOVED AFTERWARDS.
+        #
+        # The first version of this seeded each version at its FINAL status
+        # and then inserted its components, and CI refused it on the very
+        # first run of the new seed gate:
+        #
+        #   seed failed: the composition of version FRM-014-V001 is frozen
+        #   (status superseded); clone it to a new draft version
+        #
+        # That is migration 015's immutability trigger working exactly as
+        # designed -- the composition of anything that has left `draft` is
+        # a controlled record, and a seed script is not an exception. It is
+        # also the honest order of events: a version really does start as a
+        # draft, receive its composition, and only then get submitted,
+        # approved and eventually superseded. Seeding it any other way
+        # would have required a hole in the rule.
         version_count = 0
         component_count = 0
         for formula in FORMULAS:
@@ -477,26 +494,24 @@ def main() -> None:
                         version["version_number"],
                         version["version_code"],
                         previous_version_id,
-                        version["status"],
+                        # 'draft' regardless of the target status; moved
+                        # below, after the components exist.
+                        "draft",
                         version.get("change_reason"),
                         version.get("technical_hypothesis"),
                         version.get("expected_effect"),
                         version.get("observed_effect"),
-                        # An approved version must name its approver -- a
-                        # CHECK constraint, because an approval nobody
-                        # signed is the one record an audit cannot accept.
-                        user_ids["product_development_lead"] if approved else None,
-                        # A real datetime, not the string "now()". psycopg
-                        # binds parameters as VALUES: PostgreSQL accepts
-                        # 'now'::timestamptz but there is no timestamp
-                        # literal spelled "now()", so this would have failed
-                        # on the first approved version and nowhere else.
-                        _dt.datetime.now(_dt.UTC) if approved else None,
+                        None,
+                        None,
                         user_ids["product_development_chemist"],
                     ),
                 )
                 row = cur.fetchone()
-                if row is None:
+                created = row is not None
+                if created:
+                    version_id = row[0]
+                    version_count += 1
+                else:
                     # Already seeded on a previous run. Fetch the id so the
                     # genealogy still links, rather than silently breaking
                     # the chain on the second run of an idempotent script.
@@ -508,9 +523,21 @@ def main() -> None:
                         (org_id, version["version_code"]),
                     )
                     version_id = cur.fetchone()[0]
-                else:
-                    version_id = row[0]
-                    version_count += 1
+                    previous_version_id = version_id
+                    # 🔴 AND NOTHING ELSE HAPPENS TO IT.
+                    #
+                    # `ON CONFLICT DO NOTHING` does NOT save the component
+                    # inserts below: a BEFORE INSERT trigger fires before
+                    # PostgreSQL ever checks the conflict, so re-seeding a
+                    # version that has since left `draft` raises "the
+                    # composition is frozen" -- on the SECOND run, which is
+                    # exactly the run that proves idempotence.
+                    #
+                    # The rule is not being worked around. An existing
+                    # version already has its composition; re-writing it is
+                    # precisely what section 8 forbids, and a seed script
+                    # is not an exception to that.
+                    continue
 
                 for component in version["components"]:
                     cur.execute(
@@ -530,6 +557,36 @@ def main() -> None:
                         ),
                     )
                     component_count += 1
+
+                # NOW move it to its real status. The trigger permits this:
+                # a draft is a workspace, so `deny_version_mutation` returns
+                # early and the row freezes on the way out rather than on
+                # the way in. `approved_by` goes on in the same statement,
+                # because `formula_versions_approved_states_have_an_approver`
+                # refuses an approved version that names no approver.
+                if version["status"] != "draft":
+                    cur.execute(
+                        """
+                        UPDATE formulations.formula_versions
+                        SET status = %s, approved_by = %s, approved_at = %s,
+                            submitted_by = %s, submitted_at = %s
+                        WHERE id = %s AND status = 'draft'
+                        """,
+                        (
+                            version["status"],
+                            user_ids["product_development_lead"] if approved else None,
+                            # A real datetime, not the string "now()".
+                            # psycopg binds parameters as VALUES, and there
+                            # is no timestamp literal spelled "now()" --
+                            # PostgreSQL accepts 'now'::timestamptz. That
+                            # bug would have failed on the first approved
+                            # version and nowhere else.
+                            _dt.datetime.now(_dt.UTC) if approved else None,
+                            user_ids["product_development_chemist"],
+                            _dt.datetime.now(_dt.UTC),
+                            version_id,
+                        ),
+                    )
 
                 previous_version_id = version_id
 
