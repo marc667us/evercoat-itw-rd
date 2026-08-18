@@ -266,7 +266,7 @@ if [[ -d "${REPO_ROOT}/tests/e2e" ]] && command -v npx >/dev/null 2>&1; then
         # Read the machine-readable summary. Prints three integers, or
         # nothing at all if the JSON is absent or unparseable -- in which
         # case the rc reconciliation below takes over.
-        # `tr -d ''` is not decoration. Python on Windows terminates
+        # `tr -d '\r'` is not decoration. Python on Windows terminates
         # print() with CRLF, so the last field arrived as "0" and the
         # arithmetic below died with "invalid arithmetic operator". The
         # suite then reported passed=0 failed=0 skipped=1 while Playwright
@@ -276,7 +276,7 @@ if [[ -d "${REPO_ROOT}/tests/e2e" ]] && command -v npx >/dev/null 2>&1; then
         # remainder of the line to the LAST name, so reading three names
         # from a four-field line put "0 0" into E2E_S and every later
         # $((...)) on it died with "syntax error in expression".
-        read -r E2E_P E2E_F E2E_S E2E_FLAKY < <(python - "${ARTIFACTS}/e2e.json" <<'PY' | tr -d '' || true
+        read -r E2E_P E2E_F E2E_S E2E_FLAKY < <(python - "${ARTIFACTS}/e2e.json" <<'PY' | tr -d '\r' || true
 import json, sys
 try:
     with open(sys.argv[1], encoding="utf-8") as fh:
@@ -327,6 +327,17 @@ print(passed, failed, skipped, 0)
 PY
         ) || true
     fi
+    # Strip CR at the shell level as well as in the pipeline.
+    #
+    # Belt and braces on purpose. The `tr` above once held a LITERAL
+    # carriage-return byte instead of the two-character escape, so it
+    # deleted nothing, every count arrived as "14", and every $((...))
+    # below died with "invalid arithmetic operator" -- which left the
+    # REPORT reading passed=0 failed=0 while Playwright had just passed 14
+    # tests against the live site. Counts destroyed by the reporter are
+    # indistinguishable, in the report, from a broken deployment.
+    E2E_P="${E2E_P//$''/}"; E2E_F="${E2E_F//$''/}"
+    E2E_S="${E2E_S//$''/}"; E2E_FLAKY="${E2E_FLAKY//$''/}"
     E2E_P="${E2E_P:-0}"; E2E_F="${E2E_F:-0}"; E2E_S="${E2E_S:-0}"
     E2E_FLAKY="${E2E_FLAKY:-0}"
     if [[ "${E2E_FLAKY}" != "0" ]]; then
