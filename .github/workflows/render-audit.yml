@@ -1,0 +1,165 @@
+# Render workspace audit — STRICTLY READ-ONLY.
+#
+# WHY A SEPARATE WORKFLOW. `render-setup.yml` can write. This one cannot:
+# it issues GET requests only, there is no mode input, no confirm input,
+# and no code path in it calls POST, PATCH, PUT or DELETE. That is the
+# point — an inventory you are about to make deletion decisions from
+# should not be produced by a tool that is also able to delete.
+#
+# WHAT IT ANSWERS. "What is actually on this workspace, and what is safe to
+# remove?" `/services` alone does NOT answer that: databases, key-value
+# stores, environment groups and blueprints are separate resources on
+# separate endpoints, and a service list that omits them reads as a
+# complete picture while hiding the thing that is actually costing money or
+# holding data.
+#
+# ENDPOINT NAMES ARE PROBED, NOT ASSUMED. Render has renamed resources
+# (Redis became Key Value). Each candidate endpoint is called and its HTTP
+# status printed, so an endpoint that does not exist shows up as a 404 line
+# in the report rather than as an absent section that looks like "you have
+# none of those".
+
+name: Render audit (read-only)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: render-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+
+    steps:
+      - name: Guard — key present
+        run: |
+          set -euo pipefail
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "::error::RENDER_API_KEY secret is not set on this repository."
+            exit 1
+          fi
+
+      - name: Audit
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys, urllib.request, urllib.error
+
+          KEY = os.environ["RENDER_API_KEY"]
+
+          def api(path):
+              """GET only. There is deliberately no method parameter."""
+              req = urllib.request.Request(
+                  f"https://api.render.com/v1{path}", method="GET",
+                  headers={"Authorization": f"Bearer {KEY}",
+                           "Accept": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      raw = r.read().decode()
+                      return r.status, (json.loads(raw) if raw.strip() else None)
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read().decode()[:300]
+
+          def rule(t):
+              print(f"\n{'='*78}\n{t}\n{'='*78}", flush=True)
+
+          def unwrap(rows, key):
+              out = []
+              for row in (rows or []):
+                  out.append(row.get(key, row) if isinstance(row, dict) else row)
+              return out
+
+          # ---------------------------------------------------------------
+          rule("OWNER")
+          st, owners = api("/owners?limit=10")
+          print(f"   GET /owners -> {st}")
+          for o in unwrap(owners if isinstance(owners, list) else [], "owner"):
+              print(f"   id={o.get('id')}  name={o.get('name')}  "
+                    f"email={o.get('email')}  type={o.get('type')}")
+              # Printed in full because the workspace PLAN decides the
+              # included custom-domain allowance, and the plan is the one
+              # thing this audit cannot infer from the resource lists.
+              for k, v in o.items():
+                  if k not in ("id", "name", "email", "type"):
+                      print(f"     {k}: {v}")
+
+          # ---------------------------------------------------------------
+          rule("SERVICES — every type")
+          st, svcs = api("/services?limit=100")
+          print(f"   GET /services -> {st}")
+          services = unwrap(svcs if isinstance(svcs, list) else [], "service")
+          for s in services:
+              det = s.get("serviceDetails", {}) or {}
+              print(f"\n   {s.get('name')}")
+              print(f"     id         {s.get('id')}")
+              print(f"     type       {s.get('type')}")
+              print(f"     plan       {det.get('plan', '-')}   (a static site has none)")
+              print(f"     region     {det.get('region', '-')}")
+              print(f"     env        {det.get('env', '-')}")
+              print(f"     suspended  {s.get('suspended')}")
+              print(f"     autoDeploy {s.get('autoDeploy')}")
+              print(f"     repo       {s.get('repo', '-')}")
+              print(f"     branch     {s.get('branch', '-')}")
+              print(f"     created    {s.get('createdAt')}")
+              print(f"     updated    {s.get('updatedAt')}")
+
+              dst, dl = api(f"/services/{s.get('id')}/custom-domains?limit=50")
+              doms = [d.get("name") for d in unwrap(dl if isinstance(dl, list) else [], "customDomain")]
+              print(f"     domains    {doms if doms else '(none)'}")
+
+              # The last deploy says whether anything has actually shipped
+              # here recently — a service nobody has deployed to in months is
+              # the first thing worth questioning.
+              pst, deps = api(f"/services/{s.get('id')}/deploys?limit=1")
+              dep = unwrap(deps if isinstance(deps, list) else [], "deploy")
+              if dep:
+                  print(f"     last deploy {dep[0].get('status')} at {dep[0].get('finishedAt') or dep[0].get('createdAt')}")
+              else:
+                  print("     last deploy (none)")
+
+          print(f"\n   TOTAL SERVICES: {len(services)}")
+
+          # ---------------------------------------------------------------
+          # Everything below is a SEPARATE resource that /services omits.
+          # A workspace review that stops at /services misses the database.
+          # ---------------------------------------------------------------
+          for title, path, key in [
+              ("POSTGRES DATABASES",  "/postgres?limit=100",   "postgres"),
+              ("KEY VALUE / REDIS",   "/key-value?limit=100",  "keyValue"),
+              ("REDIS (legacy name)", "/redis?limit=100",      "redis"),
+              ("ENVIRONMENT GROUPS",  "/env-groups?limit=100", "envGroup"),
+              ("BLUEPRINTS",          "/blueprints?limit=100", "blueprint"),
+              ("PROJECTS",            "/projects?limit=100",   "project"),
+              ("DISKS",               "/disks?limit=100",      "disk"),
+              ("REGISTRY CREDENTIALS","/registrycredentials?limit=100", "registryCredential"),
+          ]:
+              rule(title)
+              st, rows = api(path)
+              print(f"   GET {path.split('?')[0]} -> {st}")
+              if st != 200:
+                  # A 404 here means the endpoint does not exist on this API
+                  # version — NOT that the workspace has none of these.
+                  print(f"   (not readable: {rows})")
+                  continue
+              items = unwrap(rows if isinstance(rows, list) else [], key)
+              if not items:
+                  print("   (none)")
+                  continue
+              for it in items:
+                  name = it.get("name", "?")
+                  print(f"\n   {name}")
+                  for k in ("id", "plan", "status", "region", "version",
+                            "createdAt", "updatedAt", "expiresAt",
+                            "suspended", "diskSizeGB"):
+                      if k in it:
+                          print(f"     {k:<12} {it.get(k)}")
+
+          rule("READ-ONLY — NOTHING WAS CHANGED")
+          print("   This workflow issues GET requests only.")
+          print("   Deleting anything is a separate, deliberate decision.")
+          PY
