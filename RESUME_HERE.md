@@ -1,90 +1,134 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-**Session closed 2026-08-18 (pt2). Read this file first, then `TODO.md`.**
+**Session closed 2026-08-18. Read this file first, then `TODO.md`.**
 
 Repository: **https://github.com/marc667us/evercoat-itw-rd** (PUBLIC),
-remote `origin`, branch `master`. Tip **`5c4973a`**, working tree clean.
+branch `master`. Tip **`6f8e078`**, working tree clean, pushed.
 
 ---
 
-## ✅ THE APP IS ONLINE
+## ✅ LIVE, AND IT IS A PRODUCT NOW
 
 # https://itwevercoatrd.aiappinvent.com
 # https://itwevercoat.aiappinvent.com
 
-Two sessions of "there is still no URL" are closed. Do not re-plan this.
-Both hostnames are attached to the same service and **each has its own
-certificate** — one working proves nothing about the other, which is why
-`render-setup.yml` proves every hostname independently.
+Both hostnames, each with its own certificate. **Slices 1, 2 and 3 are
+deployed.** Do not re-plan any of this.
 
 | | |
 |---|---|
-| Live suite, against the DEPLOYED site | **passed=14 · failed=0 · skipped=1** |
-| Certificate | Google Trust Services WE1 · 2026-08-18 → 2026-11-16 · TLS 1.3 · auto-renewing |
-| Render service | `evercoat-itw-rd-web` — `srv-da242g37uimc73dqnmg0`, type **`static_site`** |
-| Workspace | 6 services + 2 Postgres, **all belonging to Evercoat / AutoWorkshop / Solar — nothing is removable.** There is no App Factory on Render. Audit it with `render-audit.yml` (read-only). |
-| ⏰ **`autoworkshop-postgres` is FREE and EXPIRES 2026-09-01** | Render deletes expired free databases. Not this project's, but it is on this workspace. |
-| CI | **ALL FOUR JOBS GREEN** — API ✓ Web ✓ E2E ✓ **Security ✓** (Security had never passed before) |
+| Live suite, against the DEPLOYED site | **25 passed · 0 failed · 1 skipped** |
+| Alignment (local ↔ origin ↔ live) | **ALIGNED** — `./scripts/verify-alignment.sh <url>` |
+| CI | **ALL FOUR JOBS GREEN** — API ✓ Web ✓ E2E ✓ Security ✓ |
+| Engine tests | **35** (Hypothesis property-based) |
+| Web unit tests | **54** · E2E **25** (axe-core on 9 pages) |
+| Certificates | Google Trust Services · valid to **2026-11-16** · auto-renewing |
 | Cost | **zero** |
 
-The one skip is the API surface, which is not deployed. It is a coverage
-gap reported as a gap, never as a pass.
-
 ```bash
-# Re-prove the deployment at any time:
-./scripts/live-suite.sh https://itwevercoatrd.aiappinvent.com web
-
-# Create/reconcile the Render service (plan mode is read-only and the default):
-gh workflow run render-setup.yml -f mode=apply -f confirm=APPLY
+./scripts/live-suite.sh https://itwevercoatrd.aiappinvent.com web   # 25/0/1
+./scripts/verify-alignment.sh https://itwevercoatrd.aiappinvent.com # local == live?
+gh workflow run render-setup.yml -f mode=apply -f confirm=APPLY     # deploy
+gh workflow run render-audit.yml                                    # read-only inventory
 ```
 
 ---
 
-## 🔴 THE THINGS MOST LIKELY TO BITE THE NEXT PERSON
+## 🔴 OUTSTANDING — IN PRIORITY ORDER
 
-**The certificate failure was never a DNS fault.** Namecheap was correct
-throughout — the CNAME resolved, and there are no CAA records blocking
-issuance. **No Render service existed**, so the domain was attached to
-nothing, so Render never *requested* a certificate. That is what the
-browser was reporting as "not secure". Do not go looking in Namecheap.
+### 1. ROTATE `RENDER_API_KEY` — needs the operator, not Claude
+Render has **no API for key management**; it is dashboard-only, so this
+cannot be automated. The key was pasted into chat on 2026-08-17 and is
+still live.
 
-**A free WEB SERVICE is refused by this account; a STATIC SITE is not.**
-`POST /services` with a web service returns
-`400 free tier usage quota has been exhausted`. The exhausted allowance is
-the workspace's 750 free INSTANCE-hours. A static site has **no instance**,
-so it never touches that allowance, is free, does not spin down, and gets
-free auto-renewing TLS. `static_site` has **no `plan` field at all**, which
-is why the `plan` input was deleted — **no dispatch of `render-setup.yml`
-can now cost money.**
+**Three repos hold a Render key** — check Render → Account Settings → API
+Keys to see whether they share ONE value:
 
-**Render does NOT do clean-URL fallback.** There is no implicit `.html`
-lookup, so a default Next export (`dashboard.html`) would make `/dashboard`
-404. `next.config.mjs` sets `trailingSlash` for the export so it writes
-directory indexes. **And Render never applies a redirect/rewrite rule to a
-path where a resource already exists** — which is why the broken root could
-not be fixed with a rule and had to be fixed in `app/page.tsx`.
+| Repo | secret set |
+|---|---|
+| `marc667us/evercoat-itw-rd` | 2026-08-17 ← the exposed one |
+| `marc667us/autoworkshop-ai` | 2026-07-27 |
+| `marc667us/solar-pv-designer-lite` | 2026-05-23 |
 
-**`NODE_ENV=production` must NOT be a Render service variable.** It applies
-to `npm ci`, which npm reads as `omit=dev`, so typescript, tailwindcss and
-postcss never install and the build fails. It is set inline on the build
-command instead — exactly as `ci.yml` sets it on its build step and not its
-install step.
+If there is only one key listed, **revoking it breaks AutoWorkshop and
+Solar deploys** unless all three secrets are updated first. Order: create
+new key → update the repo secrets in **GitHub's web UI** → then revoke the
+old one. **Never paste the new key into a chat or a terminal in an agent
+session** — that is the entire reason this rotation exists.
+
+### 2. ⏰ `autoworkshop-postgres` is FREE-TIER and EXPIRES 2026-09-01
+Render deletes expired free databases **and their data**. Not this
+project's, but it lives on the same workspace and it has a date on it.
+Confirmed by `render-audit.yml`. Databases do **not** appear in
+`/services`, which is why a service list is not a workspace review.
+
+### 3. The live suite's 1 skip — the API is not deployed
+`render.yaml` is web-only (ADR-009). The skip is a coverage gap reported
+honestly, not a pass. It closes when the API ships, which is Slice 3's
+back half (below).
+
+### 4. Slice 3 is FRONT-END COMPLETE, BACK-END UNBUILT
+The calculation engine exists and is tested, but nothing serves it:
+- no `materials` / `suppliers` / `formulas` / `formula_versions` tables
+- no migrations, no RLS policies, no API routes for any of them
+- the engine is not called by any endpoint
+The demonstration works because figures are baked at **build** time.
+
+### 5. Slice 4 — Laboratory
+Guided batch flow, planned-vs-actual with tolerance flagging, samples with
+traceability. `CURRENT_SLICE = 3` in `apps/web/lib/navigation.ts`.
+
+### 6. Two stale `next start` servers (ports 3200, 13099)
+Predate this session, not this project's. Deliberately left alone.
+
+---
+
+## 🔴 THINGS MOST LIKELY TO BITE THE NEXT PERSON
+
+**PYTHON OWNS THE ARITHMETIC — INCLUDING THE EASY ARITHMETIC.** The static
+export shows engine output baked at build time by
+`scripts/build_demo_formulations.py`. If a figure is missing, fix the
+engine or the build script. **Never add a calculation to a React
+component** — that includes percentage deltas and `fraction * 100`, both
+of which were caught in review this session.
+
+**THE BAKED FIGURES CAN GO STALE.**
+`tests/calculations/test_demo_formulations_are_current.py` recomputes into
+a temp copy and diffs the whole document. After editing any formula or
+material: `python scripts/build_demo_formulations.py`.
+
+**A CARRIAGE RETURN HAS BROKEN THREE SCRIPTS.** Python on Windows prints
+CRLF, so the LAST field a `read` takes carries a `\r`. It has silently
+zeroed the live-suite counts and produced a false "the live site is not
+this tree". Twice the fix itself went in as a literal CR byte inside the
+`tr -d` quotes. **Verify by reading the bytes back, not by looking at the
+rendered line** — `cat -A` shows what you expect.
+
+**RENDER DOES NO CLEAN-URL FALLBACK**, and **never applies a rule to a path
+where a resource exists**. The export writes directory indexes because of
+`trailingSlash`; do not remove it.
+
+**`NODE_ENV=production` MUST NOT BE A RENDER SERVICE VARIABLE.** It applies
+to `npm ci`, which npm reads as `omit=dev`, so typescript and tailwind
+never install. It is set inline on the build command.
 
 **`renderSubdomainPolicy` must stay `enabled` and the service must keep its
-name.** `itwevercoatrd.aiappinvent.com` is a CNAME to
-`evercoat-itw-rd-web.onrender.com`. Rename the service, or disable the
-subdomain, and the custom domain resolves to something Render no longer
-serves — the site goes dark and the certificate stops renewing.
+name** — both custom domains are CNAMEs to
+`evercoat-itw-rd-web.onrender.com`.
+
+**A FREE RENDER WEB SERVICE IS REFUSED** on this account; a **static site**
+has no instance, draws on no quota, and is free. `render-setup.yml` has no
+input that can cost money.
 
 ---
 
 ## 🔴 THE STANDING CONSTRAINT
 
 **The operator's words: *"if i find the autoworkshop in issues you will be
-responsible for breaking it."*** Do not touch `aw-postgres`, `aw-keycloak`
-or any `aw-*` container. All database work uses **`evercoat-postgres` on
-port 55432**. `render-setup.yml` guards AutoWorkshop's own domain and
-refuses to run if it is not present before and after.
+responsible for breaking it."*** Do not touch `aw-postgres`,
+`aw-keycloak`, or any `aw-*` container. Database work uses
+**`evercoat-postgres` on port 55432**. `render-setup.yml` refuses to run if
+AutoWorkshop's own domain is not intact before and after.
 
 ---
 
@@ -93,83 +137,63 @@ refuses to run if it is not present before and after.
 ```bash
 docker start evercoat-postgres          # host port 55432
 
-cd "apps/api"
+cd apps/api
 export MIGRATION_DATABASE_URL="postgresql+psycopg://postgres:dev-superuser-pw@localhost:55432/evercoat_itw_rd"
 export DATABASE_URL="postgresql+psycopg://evercoat_app:dev-app-pw@localhost:55432/evercoat_itw_rd"
 export KEYCLOAK_ISSUER="http://x/realms/y"
 python -m alembic upgrade head
-
-TEST_DB_HOST=localhost TEST_DB_PORT=55432 POSTGRES_DB=evercoat_itw_rd \
-TEST_OWNER_USER=evercoat_owner TEST_OWNER_PASSWORD=dev-owner-pw \
-APP_DB_USER=evercoat_app APP_DB_PASSWORD=dev-app-pw \
-DATABASE_URL="$DATABASE_URL" KEYCLOAK_ISSUER="$KEYCLOAK_ISSUER" \
-python -m pytest tests -q -rs          # 155 passed / 0 failed / 0 skipped
+python -m pytest tests -q -rs
 ```
 
-> **`mypy` is NOT installed locally** — `CLAUDE.md` §13's `mypy app` cannot
-> run here. It DOES run in CI and passes. Ruff check and format are clean.
+> **`mypy` and `hypothesis` ARE installable here** — both were installed
+> this session and both pass locally. The older note in this file saying
+> mypy could not run was wrong.
 
 ---
 
-## What this session changed
+## What this session built
 
-1. **Created the Render static site**, attached and verified the domain,
-   and got the certificate issued. The setup workflow no longer stops at
-   "attached" and calls that success — it waits for the deploy to go LIVE
-   and then makes a real validating HTTPS request, which is the only thing
-   that can actually prove a certificate exists.
+**Slice 3 — Materials, Suppliers, Formulations**, and the half of it that
+did not exist at all: `apps/api/app/calculations/` was **absent** while
+`CLAUDE.md` rule 2 gives deterministic scientific calculation to Python.
 
-2. **Fixed the front door and `/dashboard` BEFORE deploying** — both were
-   broken in the export and both would have shipped green. See above.
+The engine is pure, `Decimal` throughout, and **refuses a `float` at the
+boundary rather than converting it**. Total percentage, normalisation,
+batch scaling, theoretical density, binder:filler, solids, VOC, cost,
+epoxy stoichiometry, and §8's hard submission validation.
 
-3. **Made the live suite able to test a live site.** Playwright's
-   `baseURL` was hardcoded to `127.0.0.1:3100` and *nothing read*
-   `PLAYWRIGHT_BASE_URL`, so the "live" E2E run tested localhost while
-   reporting against the deployed URL — it would have passed with the
-   deployment entirely broken. It now has a real live mode and a
-   `web|api|full` profile.
+Density is **volume-additive**, `1/ρ = Σ(wᵢ/ρᵢ)`, with a test separating it
+from the mass-weighted average it is commonly confused with — 50/50 of 1.0
+and 3.0 is **1.5, not 2.0**. The wrong formula overstates the density of
+any blend containing a light filler, which is the case this product exists
+to optimise.
 
-4. **Made the setup workflow able to change anything.** It was create-only:
-   every re-run reconciled nothing, and the deploy poll found the
-   *previous* deploy already live and reported success. It now PATCHes,
-   reconciles env vars (a separate endpoint), triggers a deploy and waits
-   on *that* deploy id.
+The stated invariant is property-tested over 250 generated formulas: the
+component masses sum **exactly** to the batch mass.
 
-5. **Turned the Security job green for the first time.** Trivy's 3 HIGH
-   CVEs closed via `overrides`; that revealed **Semgrep had never run**,
-   and its 14 findings included the RLS GUC setter interpolating its value
-   into SQL. Now parameterised with `set_config`, proven by the full API
-   suite against a real database.
+**What the demo shows:** density falling 1.579 → 1.300 → 1.164 → 1.092
+across four versions as microspheres go in, VOC dropping 210 → 91 g/L,
+cost rising as the trade-off, and a draft **blocked on two counts** —
+§8's hard validation working in front of a viewer.
 
 ---
 
-## ▶ NEXT
+## Governance record
 
-1. **Slice 2 frontend** — five API surfaces still have no clickable page;
-   `CURRENT_SLICE = 1` in `apps/web/lib/navigation.ts`. Then Slice 3.
-2. **At Slice 3 the site must stop being static.** `apps/web` makes no API
-   calls today, which is the only reason a static export is honest. Once
-   the API is wired in, a static host cannot serve the product — and that
-   deployment needs either restored free instance-hours or an explicit,
-   operator-approved paid tier. It also closes the live suite's 1 skip.
-3. **Rotate `RENDER_API_KEY`** — it was pasted into chat on 2026-08-17 and
-   is account-wide across AutoWorkshop, Solar and Evercoat.
-4. Two **stale `next start` servers** (ports 3200 and 13099) predate this
-   session and were deliberately left running. They are not this project's.
-
----
-
-## Governance record for this session
-
-- **Codex CLI** — run twice on the full diff. **4 findings, all fixed**,
-  including a same-named service being reused without a type check (which
-  could have attached the production domain to a BILLED service) and
-  env vars never being reconciled — which was **true of the live service**:
-  the run log's `env before` proved `NODE_ENV` was missing.
-- **Supervisor** (`/code-review`) — **10 findings**, several Codex missed,
-  including the create-only workflow and CI never building the export mode.
-  One of its claims was **wrong** (`<main>` is supplied by the layout) and
-  was checked against the generated HTML before acting.
-- **Neither reviewer alone was enough — seven sessions running.**
-- **Live-test rule** — satisfied: **14 / 0 / 1** against the deployed site.
+- **Codex** — 3 findings, all fixed, including §8's fourth hard block being
+  listed in a docstring and absent from the code (a formula could fail a
+  critical safety check and still report SUBMITTABLE), and the materials
+  table doing `Number(fraction) * 100` in JavaScript inside the very commit
+  whose premise is that the frontend does no arithmetic.
+- **Supervisor** — 9 findings, all fixed, and every one reproduced rather
+  than asserted. Chiefly: `scale_to_batch` silently renormalised an
+  off-100% formula, so a component stated at 36.00% printed as 9.137 kg of
+  25 kg — 36.55% — with the two numbers in adjacent columns. And the
+  freshness guard **erased its own evidence**, passing on the rerun because
+  the failing run had already rewritten the file.
+- **Neither reviewer alone was enough — eight sessions running.**
+- **A FIX CAN BE WRONG:** clamping the remainder at zero (Supervisor's
+  first suggested option) broke the exact-sum invariant, and Hypothesis
+  caught it within seconds. The remainder now lands on the largest line.
+- **Live-test rule** — satisfied: **25 / 0 / 1** against the deployed site.
 - **Not used, by operator instruction:** Google ADK, Stitch, Cloudflare.
