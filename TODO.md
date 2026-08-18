@@ -496,6 +496,58 @@ Shipped 2026-08-18 pt4. The third link in the owner's loop
 
 ---
 
+## Slice 5 — Testing
+
+Shipped 2026-08-18 pt4. The plan calls this "maximum depth,
+non-deferrable"; the source says depth means the Test Module is not
+complete because a form exists to enter results.
+
+- [x] `app/calculations/testing.py` — the **fourteen-rule ordered
+      derivation**, pure and no I/O. Returns the rule number that fired,
+      so the ORDER is assertable rather than only the outcome. 29 tests.
+- [x] Migration 018 — methods, method versions, equipment, calibration
+      (Administration §5), tests with the **five stored axes**, RAW
+      MEASUREMENTS PER REPLICATE, and append-only decisions.
+- [x] Migration 019 — `test.confirm` had **no holder**; granted to Lead,
+      QA and Director per DATA_MODEL.md §3.5. Its allowlist entry in
+      `test_002_roles_permissions.py` is retired in the same change,
+      because that allowlist fails in both directions.
+- [x] `calculated_result` is **computed and accepted from nobody** — no
+      route exposes it, asserted by reading the whole OpenAPI schema.
+- [x] `display_color` and `final_status` are **not columns**. Derived on
+      every read; a stored copy would be a second implementation of the
+      algorithm that nothing could check against the first.
+- [x] Segregation of duties **against the decision record**, not role
+      names: reviewer ≠ executor, and ADR-019's independent approver ≠
+      anyone who supplied a development-side approval on the same test.
+- [x] Raw measurements cannot be edited or deleted — excluded with a
+      stated reason, and they stay on the record.
+- [x] Confirmation only from `approved`, never `conditionally_approved`
+      — service guard AND CHECK constraint.
+
+- [ ] **The approval ROUTING engine is Slice 6**, as the plan schedules
+      it. What exists here is the decision RECORD every template will
+      write into, plus a single-step approval. The five templates
+      (SCREENING_SIMPLE … RELEASE_CRITICAL), sequential vs parallel
+      routing, and `next_approver_role` being *derived from a template*
+      rather than stored are all Slice 6. Today `next_approver_role` has
+      no writer — rule 12 falls back to "the next approver".
+- [ ] **A RED confirmation result does not yet open a Failure
+      Investigation.** §10 requires it; `failure.*` tables are Slice 6.
+- [ ] Rule 10 (`trend_alert`) has no writer. The column and the rule
+      exist; the analytics that would set it are Slice 7. It is FALSE
+      for every test today, so rule 10 never fires — named here rather
+      than left to look like a working control.
+- [ ] `validity_status` has no route. Recording a deviation or
+      invalidating a test on a calibration breach is specified
+      (DATA_MODEL.md §3.5) and unbuilt; `calibration_breach_policy` is
+      therefore configuration nothing reads yet.
+- [ ] No Administration screens for methods/equipment, and no web UI for
+      the test module at all.
+- [ ] The CI seed gate does not cover `testing.*`.
+
+---
+
 ## Open decisions
 
 None blocking. ADR-002 (LangGraph) and ADR-024 (full depth, gate by gate)

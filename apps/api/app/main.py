@@ -30,6 +30,7 @@ from app.api.materials import suppliers_router
 from app.api.opportunities import router as opportunities_router
 from app.api.projects import router as projects_router
 from app.api.tasks import router as tasks_router
+from app.api.testing import router as testing_router
 from app.core.config import settings
 from app.core.logging import configure_logging
 
@@ -182,6 +183,10 @@ def create_app() -> FastAPI:
     # like formulations: RLS applies the project-membership predicate to
     # every row, so the prefix carries no project segment.
     application.include_router(laboratory_router, prefix="/api/laboratory/batches")
+    # Slice 5. The Test Module. Project-scoped through the sample the test
+    # was taken from, so RLS applies the membership predicate to every row
+    # and the prefix carries no project segment.
+    application.include_router(testing_router, prefix="/api/testing/tests")
 
     if settings.metrics_enabled:
 

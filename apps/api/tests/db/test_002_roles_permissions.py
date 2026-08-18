@@ -129,11 +129,12 @@ def _permission_codes_checked_in_source() -> set[str]:
 # fails as loudly as a new orphan would. That is what stops it becoming
 # the place orphans go to be forgotten.
 ORPHANED_UNTIL_THEIR_SLICE: dict[str, str] = {
-    # Slice 5. Confirmation authority is the top of the test-approval
-    # ladder and deliberately not folded into `test.approve_lead` or
-    # `test.approve_qa`; which role holds it is a decision that belongs
-    # with the approval-route templates, not with a guess made now.
-    "test.confirm": "Slice 5 -- Testing, with the approval route templates",
+    # `test.confirm` WAS HERE AND HAS BEEN RESOLVED. Migration 019 grants
+    # it to the Lead, QA/Compliance and the Director, per DATA_MODEL.md
+    # §3.5. The entry is removed rather than left with a note, because
+    # this allowlist asserts in BOTH directions: an entry that has gained
+    # a holder fails as loudly as a new orphan. That was the point of
+    # writing it that way.
     # Slice 8. Nothing can ingest into the Knowledge Library because the
     # Knowledge Library does not exist; `knowledge.promote` is granted
     # because promotion is referenced from Slice 7's messaging.

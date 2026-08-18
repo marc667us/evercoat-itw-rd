@@ -115,6 +115,20 @@ disallow_untyped_decorators = false
 testpaths = ["tests"]
 # Auth tests are async because _decode awaits the JWKS fetch.
 asyncio_mode = "auto"
+# 🔴 NO CLASS COLLECTION. Every test in this suite is a FUNCTION -- there
+# is not one `class Test...` in `tests/` -- while the domain this product
+# models is full of legitimate types whose names begin with "Test":
+# `TestInput`, `TestError`, `TestStateError`, `TestNotFoundError`.
+#
+# pytest's default `python_classes = ["Test"]` tries to collect every one
+# of them and emits a PytestCollectionWarning per class per importing
+# module. That noise is not harmless: a test report full of expected
+# warnings is where an unexpected one goes unnoticed.
+#
+# The alternative was renaming the domain types away from the word the
+# domain actually uses, which makes the code worse to serve the test
+# runner. This setting is the right way round.
+python_classes = []
 markers = [
     "rls: runs under SET ROLE evercoat_app to exercise FORCE ROW LEVEL SECURITY",
     "db: requires a live PostgreSQL",
