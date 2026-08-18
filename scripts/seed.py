@@ -25,6 +25,7 @@ Idempotent: re-running updates rather than duplicating.
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import pathlib
@@ -95,6 +96,38 @@ STAGES = [
     for st in sorted(_DEMO["stages"], key=lambda x: x["sequence"])
 ]
 
+
+# Slice 3. Every one of these comes out of the SAME `demo-data.json` the
+# deployed static site renders, for the reason the header already gives:
+# the seeded database and the demonstration must show the same records,
+# and a Python copy of the material list would be the second list that
+# drifts.
+SUPPLIERS = _DEMO["suppliers"]
+MATERIALS = _DEMO["materials"]
+FORMULAS = _DEMO["formulas"]
+
+# Administration section 3's reference data. These are NOT in the demo
+# JSON because nothing on the static site renders them -- they are the
+# canonical lists a FORM offers, and the static demonstration has no
+# forms. Kept minimal and honest: the units this product's own
+# requirements actually use.
+UNITS = [
+    ("g/cm3", "grams per cubic centimetre", "density", 10),
+    ("MPa", "megapascals", "stress", 20),
+    ("%", "per cent", "fraction", 30),
+    ("min", "minutes", "time", 40),
+    ("degC", "degrees Celsius", "temperature", 50),
+    ("g/L", "grams per litre", "concentration", 60),
+    ("mPa.s", "millipascal-seconds", "viscosity", 70),
+]
+
+PRODUCT_FAMILIES = [
+    ("POLYESTER_FILLER", "Polyester Fillers", 10),
+    ("EPOXY_PUTTY", "Epoxy Putties", 20),
+    ("STRUCTURAL_ADHESIVE", "Structural Adhesives", 30),
+    ("SEAM_SEALER", "Seam Sealers", 40),
+    ("PRIMER", "Primers and Coatings", 50),
+]
 
 
 def main() -> None:
@@ -240,6 +273,270 @@ def main() -> None:
                  warn, crit, user_ids["product_development_lead"]),
             )
         print(f"project RDP-2026-014 with {len(requirements)} requirements")
+
+        # --- Administration section 3 -- units and product families -------
+        # Config rows, so a deployment adds a product family without a
+        # migration. Seeded because a canonical list nobody has populated
+        # is a dropdown that renders empty, which reads to a chemist as a
+        # broken form rather than as an unconfigured one.
+        for code, name, kind, order in UNITS:
+            cur.execute(
+                """
+                INSERT INTO materials.units
+                    (organization_id, code, name, quantity_kind, display_order)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (organization_id, code) DO UPDATE
+                SET name = EXCLUDED.name, quantity_kind = EXCLUDED.quantity_kind
+                """,
+                (org_id, code, name, kind, order),
+            )
+
+        for code, name, order in PRODUCT_FAMILIES:
+            cur.execute(
+                """
+                INSERT INTO materials.product_families
+                    (organization_id, code, name, display_order)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (organization_id, code) DO UPDATE
+                SET name = EXCLUDED.name
+                """,
+                (org_id, code, name, order),
+            )
+        print(f"{len(UNITS)} units and {len(PRODUCT_FAMILIES)} product families")
+
+        # --- suppliers ----------------------------------------------------
+        supplier_ids: dict[str, uuid.UUID] = {}
+        for sup in SUPPLIERS:
+            cur.execute(
+                """
+                INSERT INTO materials.suppliers
+                    (organization_id, supplier_code, name, country, status,
+                     quality_rating, notes, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (organization_id, supplier_code) DO UPDATE
+                SET name = EXCLUDED.name, status = EXCLUDED.status,
+                    quality_rating = EXCLUDED.quality_rating
+                RETURNING id
+                """,
+                (
+                    org_id,
+                    sup["supplier_code"],
+                    sup["name"],
+                    sup.get("country"),
+                    sup["status"],
+                    sup.get("quality_rating"),
+                    sup.get("note"),
+                    user_ids["procurement_specialist"],
+                ),
+            )
+            supplier_ids[sup["supplier_code"]] = cur.fetchone()[0]
+
+        # --- materials ----------------------------------------------------
+        # The numeric columns are passed as STRINGS out of the JSON and
+        # cast by PostgreSQL into NUMERIC. Never through `float()`:
+        # CLAUDE.md section 5 forbids float for densities and percentages,
+        # and a seed that quietly rounded 1.10 to 1.1000000000000001 would
+        # make the seeded figures disagree with the baked ones by a margin
+        # nobody would think to look for.
+        material_ids: dict[str, uuid.UUID] = {}
+        for mat in MATERIALS:
+            cur.execute(
+                """
+                INSERT INTO materials.materials
+                    (organization_id, material_code, name, category, role, status,
+                     density_g_cm3, solids_fraction, voc_fraction, cost_per_kg,
+                     notes, requires_sds, restriction_reason, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s,
+                        CAST(%s AS NUMERIC), CAST(%s AS NUMERIC),
+                        CAST(%s AS NUMERIC), CAST(%s AS NUMERIC),
+                        %s, TRUE, %s, %s)
+                ON CONFLICT (organization_id, material_code) DO UPDATE
+                SET name = EXCLUDED.name,
+                    category = EXCLUDED.category,
+                    role = EXCLUDED.role,
+                    status = EXCLUDED.status,
+                    density_g_cm3 = EXCLUDED.density_g_cm3,
+                    solids_fraction = EXCLUDED.solids_fraction,
+                    voc_fraction = EXCLUDED.voc_fraction,
+                    cost_per_kg = EXCLUDED.cost_per_kg,
+                    restriction_reason = EXCLUDED.restriction_reason
+                RETURNING id
+                """,
+                (
+                    org_id,
+                    mat["material_code"],
+                    mat["name"],
+                    mat["category"],
+                    mat["role"],
+                    mat["status"],
+                    mat.get("density_g_cm3"),
+                    mat.get("solids_fraction"),
+                    mat.get("voc_fraction"),
+                    mat.get("cost_per_kg"),
+                    mat.get("note"),
+                    # A restricted material must state why -- a CHECK
+                    # constraint, and the reason the chemist whose formula
+                    # it blocks can act on it.
+                    mat.get("restriction_reason")
+                    or ("recorded in the demonstration dataset"
+                        if mat["status"] == "restricted" else None),
+                    user_ids["procurement_specialist"],
+                ),
+            )
+            material_ids[mat["material_code"]] = cur.fetchone()[0]
+
+            # The first listed supplier is the primary. At most one may
+            # be, enforced by a partial unique index, so the flag is
+            # derived from position rather than set twice.
+            for position, supplier_code in enumerate(mat.get("suppliers", [])):
+                cur.execute(
+                    """
+                    INSERT INTO materials.material_suppliers
+                        (organization_id, material_id, supplier_id, is_primary)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (organization_id, material_id, supplier_id)
+                    DO NOTHING
+                    """,
+                    (org_id, material_ids[mat["material_code"]],
+                     supplier_ids[supplier_code], position == 0),
+                )
+
+            # WITHOUT THIS, NO FORMULA CAN EVER BE SUBMITTED. `requires_sds`
+            # is TRUE on every material above, and the formulation safety
+            # check hard-blocks submission for any component with no SDS on
+            # file. Seeding the material without its safety data sheet
+            # would reproduce, in the demo data, the exact deadlock the
+            # Supervisor found in the code.
+            cur.execute(
+                """
+                INSERT INTO materials.material_documents
+                    (organization_id, material_id, document_type, title,
+                     storage_key, content_type, uploaded_by)
+                VALUES (%s, %s, 'SDS', %s, %s, 'application/pdf', %s)
+                ON CONFLICT (organization_id, storage_key) DO NOTHING
+                """,
+                (
+                    org_id,
+                    material_ids[mat["material_code"]],
+                    f"Safety Data Sheet — {mat['name']}",
+                    f"demo/sds/{mat['material_code']}.pdf",
+                    user_ids["procurement_specialist"],
+                ),
+            )
+        print(f"{len(SUPPLIERS)} suppliers and {len(MATERIALS)} materials, each with an SDS")
+
+        # --- formulas, versions, components -------------------------------
+        # The genealogy is seeded in version order, so `parent_version_id`
+        # can point at a row that already exists. Every version after the
+        # first carries a change_reason and a technical_hypothesis, which
+        # the database requires -- section 8's rule that a genealogy must
+        # record not only what changed but why.
+        version_count = 0
+        component_count = 0
+        for formula in FORMULAS:
+            cur.execute(
+                """
+                INSERT INTO formulations.formulas
+                    (organization_id, project_id, formula_code, name,
+                     product_family, owner_user_id, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (organization_id, formula_code) DO UPDATE
+                SET name = EXCLUDED.name
+                RETURNING id
+                """,
+                (
+                    org_id,
+                    project_id,
+                    formula["formula_code"],
+                    formula["name"],
+                    formula.get("product_family"),
+                    user_ids["product_development_chemist"],
+                    user_ids["product_development_chemist"],
+                ),
+            )
+            formula_id = cur.fetchone()[0]
+
+            previous_version_id = None
+            for version in sorted(formula["versions"], key=lambda v: v["version_number"]):
+                approved = version["status"] in ("approved", "superseded", "released")
+                cur.execute(
+                    """
+                    INSERT INTO formulations.formula_versions
+                        (organization_id, project_id, formula_id, version_number,
+                         version_code, parent_version_id, status, change_reason,
+                         technical_hypothesis, expected_effect, observed_effect,
+                         approved_by, approved_at, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (organization_id, version_code) DO NOTHING
+                    RETURNING id
+                    """,
+                    (
+                        org_id,
+                        project_id,
+                        formula_id,
+                        version["version_number"],
+                        version["version_code"],
+                        previous_version_id,
+                        version["status"],
+                        version.get("change_reason"),
+                        version.get("technical_hypothesis"),
+                        version.get("expected_effect"),
+                        version.get("observed_effect"),
+                        # An approved version must name its approver -- a
+                        # CHECK constraint, because an approval nobody
+                        # signed is the one record an audit cannot accept.
+                        user_ids["product_development_lead"] if approved else None,
+                        # A real datetime, not the string "now()". psycopg
+                        # binds parameters as VALUES: PostgreSQL accepts
+                        # 'now'::timestamptz but there is no timestamp
+                        # literal spelled "now()", so this would have failed
+                        # on the first approved version and nowhere else.
+                        _dt.datetime.now(_dt.UTC) if approved else None,
+                        user_ids["product_development_chemist"],
+                    ),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    # Already seeded on a previous run. Fetch the id so the
+                    # genealogy still links, rather than silently breaking
+                    # the chain on the second run of an idempotent script.
+                    cur.execute(
+                        """
+                        SELECT id FROM formulations.formula_versions
+                        WHERE organization_id = %s AND version_code = %s
+                        """,
+                        (org_id, version["version_code"]),
+                    )
+                    version_id = cur.fetchone()[0]
+                else:
+                    version_id = row[0]
+                    version_count += 1
+
+                for component in version["components"]:
+                    cur.execute(
+                        """
+                        INSERT INTO formulations.formula_components
+                            (organization_id, project_id, formula_version_id,
+                             material_id, percentage)
+                        VALUES (%s, %s, %s, %s, CAST(%s AS NUMERIC))
+                        ON CONFLICT (formula_version_id, material_id) DO NOTHING
+                        """,
+                        (
+                            org_id,
+                            project_id,
+                            version_id,
+                            material_ids[component["material_code"]],
+                            component["percentage"],
+                        ),
+                    )
+                    component_count += 1
+
+                previous_version_id = version_id
+
+        print(
+            f"{len(FORMULAS)} formulas, {version_count} new versions, "
+            f"{component_count} component lines"
+        )
 
         conn.commit()
 

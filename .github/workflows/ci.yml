@@ -171,6 +171,92 @@ jobs:
             exit 1
           fi
 
+      # AN UNRUN SEEDER IS NOT A SEEDER.
+      #
+      # The same rule this repository already applied to backup.sh, where
+      # the restore drill is what made the backup real. `scripts/seed.py`
+      # is the only thing that puts demonstration data into a database,
+      # it reads the SAME demo-data.json the deployed site renders, and
+      # until now nothing ever executed it -- so a schema change could
+      # break it and the break would surface on an operator's machine
+      # while every gate stayed green.
+      #
+      # Run LAST, after the tests, deliberately: seeding before them would
+      # put rows in front of assertions that were written against an empty
+      # database, and a suite that passes only because of seed data is a
+      # suite that has stopped saying what it means.
+      - name: Seed — run it, twice, and count what it wrote
+        working-directory: apps/api
+        env:
+          SEED_DATABASE_URL: postgresql://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
+          PGPASSWORD: ci-postgres
+        run: |
+          set -euo pipefail
+          python ../../scripts/seed.py
+
+          # TWICE, because the script claims to be idempotent and a claim
+          # is not a mechanism. The second run must not raise -- every
+          # INSERT carries an ON CONFLICT -- and must not double any row.
+          python ../../scripts/seed.py
+
+          # Counted from the database, not from the script's own printed
+          # summary. A seeder reporting what it MEANT to write is exactly
+          # the "report saying zero is indistinguishable from a broken
+          # deploy" shape already recorded against this platform.
+          counts=$(psql -h localhost -U postgres -d evercoat_itw_rd -tAF' ' -v ON_ERROR_STOP=1 -c "
+            SELECT
+              (SELECT count(*) FROM materials.materials),
+              (SELECT count(*) FROM materials.suppliers),
+              (SELECT count(*) FROM materials.material_documents WHERE document_type = 'SDS'),
+              (SELECT count(*) FROM materials.units),
+              (SELECT count(*) FROM formulations.formulas),
+              (SELECT count(*) FROM formulations.formula_versions),
+              (SELECT count(*) FROM formulations.formula_components)")
+          echo "materials suppliers sds units formulas versions components = $counts"
+
+          set -- $counts
+          materials=$1; suppliers=$2; sds=$3; units=$4
+          formulas=$5; versions=$6; components=$7
+
+          # The expected numbers come from demo-data.json, read here rather
+          # than hardcoded, so adding a material to the demonstration does
+          # not silently fail this gate.
+          expected=$(python - <<'PY'
+          import json, pathlib
+          d = json.loads(pathlib.Path("../../apps/web/lib/demo/demo-data.json").read_text(encoding="utf-8"))
+          versions = [v for f in d["formulas"] for v in f["versions"]]
+          print(len(d["materials"]), len(d["suppliers"]), len(d["formulas"]),
+                len(versions), sum(len(v["components"]) for v in versions))
+          PY
+          )
+          set -- $expected
+          exp_materials=$1; exp_suppliers=$2; exp_formulas=$3
+          exp_versions=$4; exp_components=$5
+
+          fail=0
+          check() {
+            if [ "$2" -ne "$3" ]; then
+              echo "MISMATCH $1: database has $2, demo-data.json has $3"; fail=1
+            fi
+          }
+          check materials  "$materials"  "$exp_materials"
+          check suppliers  "$suppliers"  "$exp_suppliers"
+          check formulas   "$formulas"   "$exp_formulas"
+          check versions   "$versions"   "$exp_versions"
+          check components "$components" "$exp_components"
+
+          # EVERY material must carry an SDS. Without one the formulation
+          # safety check hard-blocks submission, so a seeded database
+          # missing them is a demonstration in which no formula can be
+          # submitted -- the exact deadlock this slice's review found.
+          check sds "$sds" "$exp_materials"
+
+          if [ "$units" -lt 1 ]; then
+            echo "MISMATCH units: Administration section 3 seeded nothing"; fail=1
+          fi
+
+          exit "$fail"
+
   web:
     name: Web — lint, type, test
     runs-on: ubuntu-latest
