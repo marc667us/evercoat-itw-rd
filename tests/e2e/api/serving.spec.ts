@@ -31,23 +31,37 @@ test.describe("the server is actually serving", () => {
   });
 
   test("readiness reports the real state of the database", async ({ request }) => {
-    // Not asserted as 200. Readiness is a measurement, and a probe hard-
-    // coded to the answer we hope for is the "config reads correct while
-    // the mechanism is inert" failure in miniature.
     const response = await request.get("/health/ready");
     const body = await response.json();
 
-    expect([200, 503]).toContain(response.status());
-
-    if (response.status() === 503) {
-      // Legitimate — it means the database is genuinely unreachable. The
-      // test states which, so a red run is diagnosable without a rerun.
-      test.info().annotations.push({
-        type: "readiness",
-        description: `API reports NOT ready: ${JSON.stringify(body)}`,
-      });
-    }
     expect(body).toHaveProperty("status");
+
+    // Where a database is guaranteed — CI provisions one as a service
+    // container — 503 means something is genuinely broken and must fail
+    // the run. Accepting 503 unconditionally, as this first did, meant a
+    // wrong DATABASE_URL or an unapplied migration left the suite green:
+    // it tested the endpoint's response SHAPE while claiming to test the
+    // database's state.
+    if (process.env.E2E_REQUIRE_DB_READY === "1") {
+      expect(
+        response.status(),
+        `readiness returned ${response.status()} while a database was ` +
+          `guaranteed to be available: ${JSON.stringify(body)}`,
+      ).toBe(200);
+      return;
+    }
+
+    // Locally there may genuinely be no database, so both answers are
+    // legitimate — but which one occurred is recorded, so a green run is
+    // still diagnosable.
+    expect([200, 503]).toContain(response.status());
+    test.info().annotations.push({
+      type: "readiness",
+      description:
+        response.status() === 200
+          ? "200 — database reachable"
+          : `503 — database NOT reachable: ${JSON.stringify(body)}`,
+    });
   });
 
   test("metrics are exposed for scraping", async ({ request }) => {

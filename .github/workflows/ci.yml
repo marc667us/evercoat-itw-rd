@@ -6,7 +6,14 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `master` FIRST because that is this repository's actual default
+    # branch. This said `[main]` only, so every push since the repository
+    # was created matched nothing and CI never ran once — a workflow
+    # gated on a branch that does not exist is indistinguishable from
+    # having no CI at all, and it reports nothing while it happens.
+    # `main` is kept so a future default-branch rename does not silently
+    # switch CI off again.
+    branches: [master, main]
   pull_request:
   workflow_dispatch:
 
@@ -194,6 +201,90 @@ jobs:
         env:
           NODE_ENV: production
         run: npm run build
+
+  e2e:
+    name: E2E — browser shell, axe-core, API over HTTP
+    runs-on: ubuntu-latest
+
+    # The suite existed and passed locally while CI ran neither Playwright
+    # nor axe-core, so every PR could be green without either having
+    # executed. `CLAUDE.md` §11 has required axe-core in CI since Slice 1;
+    # this job is the first time that requirement is actually enforced
+    # rather than merely written down.
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: evercoat_itw_rd
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres -d evercoat_itw_rd"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+        ports: ["5432:5432"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install API
+        working-directory: apps/api
+        run: pip install -e ".[dev]"
+
+      - name: Apply migrations
+        working-directory: apps/api
+        env:
+          MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
+          DATABASE_URL: postgresql+psycopg://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
+          KEYCLOAK_ISSUER: http://127.0.0.1:1/realms/evercoat
+        run: alembic upgrade head
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci || npm install
+
+      - name: Install E2E dependencies
+        run: npm ci || npm install
+
+      # `--with-deps` because the GitHub runner lacks the shared libraries
+      # Chromium needs. Without it the browser downloads and then fails to
+      # launch, which reads as a broken test rather than a missing library.
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
+          KEYCLOAK_ISSUER: http://127.0.0.1:1/realms/evercoat
+          # CI supplies a real database, so readiness reporting 503 here
+          # means something is genuinely broken. Locally the suite tolerates
+          # 503 (there may be no database); accepting it in CI too would let
+          # a wrong DATABASE_URL leave the run green.
+          E2E_REQUIRE_DB_READY: "1"
+          CI: "true"
+        # --fail-on-flaky-tests: a retry that passes on the second attempt
+        # still means the suite is not trustworthy. Without this, `retries`
+        # quietly converts an intermittent failure into a green job.
+        run: npx playwright test --fail-on-flaky-tests
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
 
   security:
     name: Security scan
