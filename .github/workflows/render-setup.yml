@@ -40,6 +40,22 @@ on:
         description: "Type APPLY to allow writes. Ignored when mode=plan."
         type: string
         default: ""
+      plan:
+        # An input, not a constant in the payload, because this is the one
+        # setting on this workflow that COSTS MONEY. `free` was refused with
+        # 400 "free tier usage quota has been exhausted" -- the account's
+        # five existing services are all `standard` and none are free.
+        #
+        # The operator directed on 2026-08-18 that Evercoat join the paid
+        # services. `starter` is the default because it is the cheapest paid
+        # tier and ADR-009 scopes Render to demo staging that must never hold
+        # R&D records; `standard` is offered to match the neighbours. Whoever
+        # dispatches this picks the tier deliberately, and the choice is
+        # recorded in the run.
+        description: "Instance plan for the Evercoat service. Anything but 'free' COSTS MONEY."
+        type: choice
+        options: [free, starter, standard]
+        default: free
 
 # One at a time. Two concurrent runs mutating the same Render account would
 # interleave in ways the logs could not explain afterwards.
@@ -54,6 +70,7 @@ jobs:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       MODE: ${{ inputs.mode }}
       CONFIRM: ${{ inputs.confirm }}
+      PLAN: ${{ inputs.plan }}
       # Addressed by ID so no name lookup can drift onto a neighbour.
       AUTOWORKSHOP_WEB_ID: srv-d9ju49id0e5s7389fjlg
       EVERCOAT_DOMAIN: itwevercoatrd.aiappinvent.com
@@ -84,6 +101,12 @@ jobs:
 
           KEY  = os.environ["RENDER_API_KEY"]
           MODE = os.environ["MODE"]
+          # Defaulted rather than required: a run dispatched before this
+          # input existed would otherwise KeyError after the destructive
+          # domain work had already happened. Defaults to `free` so the
+          # failure mode of a stale or careless dispatch is a 400, never a
+          # bill.
+          PLAN = os.environ.get("PLAN") or "free"
           AW_ID   = os.environ["AUTOWORKSHOP_WEB_ID"]
           EV_DOM  = os.environ["EVERCOAT_DOMAIN"]
           AW_DOM  = os.environ["AUTOWORKSHOP_DOMAIN"]
@@ -185,6 +208,13 @@ jobs:
           print(f"   {EV_NAME}: {'EXISTS ' + existing['id'] if existing else 'does not exist'}")
 
           if not existing:
+              # Stated loudly and before the call, so the run log records
+              # what was spent and on whose instruction. A paid tier chosen
+              # silently is the kind of thing nobody can reconstruct later.
+              if PLAN != "free":
+                  print(f"   ::PAID PLAN:: creating on '{PLAN}' — this BILLS the account.")
+                  print("   (operator instruction 2026-08-18: add Evercoat to the paid services)")
+
               st, owners = api("GET", "/owners?limit=10")
               owner_id = (owners[0].get("owner", owners[0])).get("id") if owners else None
               print(f"   ownerId: {owner_id}")
@@ -199,7 +229,7 @@ jobs:
                   "rootDir": "",
                   "serviceDetails": {
                       "env": "docker",
-                      "plan": "free",
+                      "plan": PLAN,
                       "region": "oregon",
                       "healthCheckPath": "/dashboard",
                       "envSpecificDetails": {
