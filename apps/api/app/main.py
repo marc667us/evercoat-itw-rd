@@ -20,8 +20,12 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from app.api.admin import router as admin_router
+from app.api.admin_reference_data import router as admin_reference_data_router
 from app.api.admin_stage_gates import router as admin_stage_gates_router
+from app.api.formulations import router as formulations_router
 from app.api.health import router as health_router
+from app.api.materials import router as materials_router
+from app.api.materials import suppliers_router
 from app.api.opportunities import router as opportunities_router
 from app.api.projects import router as projects_router
 from app.api.tasks import router as tasks_router
@@ -154,11 +158,25 @@ def create_app() -> FastAPI:
     # transition, so ADR-021 requires the screen that writes them to ship
     # in the same slice as the code that reads them.
     application.include_router(admin_stage_gates_router, prefix="/api/admin")
+    # Administration section 3 -- units and product families. Slice 3's
+    # own Administration section: migration 015 creates the tables and
+    # this is their write path, so they do not join the list of tables
+    # nothing can write.
+    application.include_router(admin_reference_data_router, prefix="/api/admin")
     application.include_router(projects_router, prefix="/api/projects")
     application.include_router(opportunities_router, prefix="/api/opportunities")
     # My Work. Mounted at its own prefix rather than under /api/projects
     # because a task need not belong to a project at all.
     application.include_router(tasks_router, prefix="/api/my-work")
+    # Slice 3. Materials and suppliers are ORGANIZATION-scoped reference
+    # data, so they sit at the top level rather than under a project --
+    # a chemist on any project must be able to see the whole library.
+    application.include_router(materials_router, prefix="/api/materials")
+    application.include_router(suppliers_router, prefix="/api/suppliers")
+    # Formulations ARE project-scoped, but they are addressed by their own
+    # id and RLS applies the project-membership predicate to every row, so
+    # the prefix carries no project segment. See the module docstring.
+    application.include_router(formulations_router, prefix="/api/formulations")
 
     if settings.metrics_enabled:
 

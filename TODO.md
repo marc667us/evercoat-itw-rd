@@ -419,6 +419,42 @@ transition table, and Slice 5 cannot be built correctly without it.
 
 ---
 
+## Slice 3 — Materials, Suppliers, Formulations
+
+Front half shipped 2026-08-18 pt1 (engine + three demo pages). Back half
+shipped pt3.
+
+- [x] Migration 015 — `materials` (library, documents, lots, suppliers,
+      the M:M) and `formulations` (formulas, versions, components), with
+      composite three-column tenant+project keys, RLS, and immutability
+      triggers. **Applied by CI only — Docker was wedged on the dev host.**
+- [x] Migration 016 — `material.approve_production` had **no holder**, so
+      the material status `preferred` was unreachable by any user. Granted
+      to `qa_compliance_officer`.
+- [x] `tests/db/test_002_roles_permissions.py` — the file migration 002 has
+      claimed exists since Slice 1 and which **did not exist**. Five
+      claimed properties plus a sixth: every permission must have a holder.
+- [x] Domain services for materials and formulations; `evaluate_version`
+      is the engine's first runtime caller.
+- [x] 17 routes; Administration section 3 (units, product families) with a
+      real write path, in the same change that creates the tables.
+- [x] Codex findings 1–3 fixed and each covered by a test
+      (`tests/db/test_015_service_rules.py`).
+
+- [ ] **Wire a screen to one of these endpoints.** Nothing in `apps/web`
+      calls the API at all — see `RESUME_HERE.md` item 4b. Until one does,
+      Slice 3 is a back end nobody can reach and the demo figures stay
+      baked at build time.
+- [ ] Seed `materials.units` and `materials.product_families` for the demo
+      organization; the tables and their write path exist, the rows do not.
+- [ ] `materials.material_documents` has no upload path — object storage
+      (Garage) is in the Slice 1 compose stack but has no service or route.
+      Until it does, `requires_sds` can only ever fail its safety check.
+- [ ] Material usage/performance history on the material detail screen
+      (the API returns it; no page consumes it).
+
+---
+
 ## Open decisions
 
 None blocking. ADR-002 (LangGraph) and ADR-024 (full depth, gate by gate)

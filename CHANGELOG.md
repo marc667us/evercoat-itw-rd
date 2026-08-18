@@ -1,5 +1,171 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-18 (pt3) — Slice 3's back half: the engine finally has callers
+
+**229 tests collected** (from 155). **60 API routes** (from 51). Migrations
+through **016**. `ruff check`, `ruff format` and `mypy` all clean.
+
+🔴 **THE DATABASE TESTS IN THIS CHANGE HAVE NOT BEEN RUN LOCALLY.** The
+Docker daemon on this host is wedged — `docker exec` returns HTTP 500,
+`docker restart evercoat-postgres` fails with *"tried to kill container,
+but did not receive an exit event"*, and a TCP connection to port 55432 is
+accepted by the port proxy and then never answered (proven with a 90-second
+`connect_timeout`, not assumed from a short one). Migration 015 has never
+been applied on this machine. **Verification is CI's**, which starts a
+clean `pgvector/pg16`, runs `alembic upgrade head` twice and the full
+suite. What DID run here: `ruff`, `mypy`, an app-boot check confirming all
+17 new routes register, and **43 passed / 0 failed / 0 skipped** on the
+database-free tests.
+
+Recorded this plainly because the alternative — reporting a green lint run
+as though it were a green test run — is the exact failure this project's
+own rules exist to prevent.
+
+### What was built
+
+`apps/web` has shipped `/materials`, `/suppliers` and
+`/formulations/[code]` since Slice 3's front half, and
+`app/calculations/formulation.py` has been pure, exact and
+property-tested. **Nothing connected them.** There was no `materials`
+table, no `formulas` table, no service and no route, and every figure on
+the live formulation workspace is baked at BUILD time by
+`scripts/build_demo_formulations.py`.
+
+That is this codebase's most-repeated defect running backwards: normally a
+table exists with no write path; here a screen existed with no table. The
+question is the same one — *which production path WRITES this?* — and the
+answer for the whole workspace was "a build script".
+
+- **Migration 015** — `materials` (library, documents, lots, suppliers,
+  the M:M) and `formulations` (formulas, versions, components), plus
+  Administration section 3's `units` and `product_families`.
+- **`app/domains/materials/service.py`** and
+  **`app/domains/formulations/service.py`**.
+- **17 routes** across `/api/materials`, `/api/suppliers`,
+  `/api/formulations` and `/api/admin`.
+- **`evaluate_version` is the first runtime caller of the engine** in this
+  product's history.
+
+### One vocabulary, not three
+
+The status and role literals in migration 015 are taken from
+`apps/web/lib/demo/demo-data.json`, which the deployed pages already
+render — `development` / `approved` / `preferred` / `restricted` /
+`obsolete` — rather than the `evaluation` / `lab_approved` /
+`production_approved` that the permission names suggest. Inventing a
+second set would have had the API return statuses the shipped UI has no
+badge for. `test_015_materials_formulations.py` reads the CHECK constraint
+out of `pg_constraint` and compares it against that JSON, so the two
+cannot drift in silence.
+
+### 🔴 `material.approve_production` existed and NO ROLE HELD IT
+
+Found by asking the standing question of a *permission* rather than of a
+role. Migration 002 defines the code and grants it to none of the ten
+seeded roles: Chemist has create/edit, Lead has `approve_lab`, QA has
+`restrict`, Procurement has create/edit. Nobody had it.
+
+So **`preferred`, one of the five material statuses the deployed site
+already renders, was a state no user of this system could ever set** —
+not hidden, not permission-denied for most people; unreachable, for
+everyone, permanently. This is the sixth instance of that defect class on
+this platform, and the mirror image of the other five: a write path with
+no holder rather than a role with no write path.
+
+Migration 016 grants it to `qa_compliance_officer`, which already holds
+`material.restrict` — the negative control over the same judgement.
+Procurement was rejected as the holder for a stated reason: it holds
+`material.create` and `material.edit`, so the same person would enter a
+material's data and declare it fit for commercial production.
+
+### 🔴 `tests/db/test_002_roles_permissions.py` DID NOT EXIST
+
+Migration 002 has ended with this comment since Slice 1:
+
+```
+-- Verified by tests/db/test_002_roles_permissions.py:
+--   * every permission code referenced in application source exists here
+--   * every permission here is referenced somewhere in source
+--   ...
+```
+
+**None of those five properties was checked by anything.** A comment
+asserting a safety net made of prose, sitting at the bottom of the file
+that defines the entire authorization model — which is the worst possible
+place for it, because every other security claim in the product is
+downstream of these grants. It is also how the orphaned permission above
+survived.
+
+The file is now written, with a sixth property the original comment did
+not claim and which is the one that would have caught it: **every
+permission must have at least one holder.**
+
+### Immutability is the database's, not the service's
+
+`CLAUDE.md` section 8 requires a released master formula to be read-only
+*at the database level, not merely hidden in the UI*. Three triggers:
+`formula_code` is immutable once issued; a version that has left `draft`
+is frozen except for `status`, the approval columns and `observed_effect`;
+and **components follow their version** — freezing the version row while
+leaving its component rows writable would let an approved formula be
+changed without a single column of the version ever being touched.
+
+The component trigger is SECURITY DEFINER with a pinned `search_path`, so
+its own lookup cannot be defeated by a session whose RLS view of
+`formula_versions` is empty. A guard that passes when it cannot see its
+subject is the "check that walks through its own gap" already recorded
+twice against this platform. The FORCE-RLS cutover will need to revisit
+it, and that is written in the migration next to the existing tripwire.
+
+### Governance — three findings from Codex, all real, all fixed
+
+Checked against source before acting, as the standing rule requires.
+
+1. **HIGH — a non-member could WRITE into a restricted project.**
+   `create_formula` inserted with the caller's `project_id` and no
+   membership check. Migration 005 deliberately made the project-scoped
+   `WITH CHECK` organization-only (requiring membership to WRITE makes the
+   first row of a restricted project impossible to create), so the INSERT
+   **succeeded** for a non-member and the row merely became invisible to
+   them afterwards. Invisible is not refused: it landed in another team's
+   confidential project. **And the module docstring asserted the opposite
+   guarantee** — a comment claiming a rule the code did not implement,
+   committed inside the docstring making the claim. Now an
+   `INSERT ... SELECT` whose source row is the project under the same
+   predicate the RLS `USING` clause applies.
+2. **HIGH — `formula.view_cost` was bypassable one URL away.**
+   `GET /versions/{id}` requires only `formula.view` and returned every
+   component's `cost_per_kg` alongside its percentage — the whole cost of
+   the formula, to a caller who lacked the cost permission. The key is now
+   removed (not nulled: a null would say "no cost on file", which is a
+   different and false claim).
+3. **MEDIUM — production approval could skip laboratory approval.** QA
+   holds both `material.restrict` and, since migration 016,
+   `material.approve_production`, so QA could take a brand-new
+   `development` material straight to `preferred`, never passing through
+   `approved` or the Lead who holds `material.approve_lab`. Permission
+   answers "may this person ever do this"; it cannot answer "may it be
+   done from where the material is now". `ALLOWED_TRANSITIONS` now does,
+   enforced inside the UPDATE's own WHERE clause rather than checked in a
+   preceding SELECT.
+
+Two further defects were found in self-review before Codex ran: a dead
+branch in `compare_versions` reading a `_components` key that never
+existed, and a weigh-up sheet ordered by the engine's return dict — which
+places the largest line last because it absorbs the rounding remainder —
+rather than by the formula's own display order.
+
+### Administration section 3, in the same change that needed it
+
+Migration 015 creates `materials.units` and `materials.product_families`.
+Shipping two configuration tables with no writer, in the very change that
+criticises exactly that pattern, would have made them the seventh and
+eighth instances. `app/api/admin_reference_data.py` is their write path.
+
+Material statuses are deliberately NOT editable rows: each one is reachable
+through a distinct permission and rendered by a specific badge, so an
+added status would be one no permission grants and no component draws.
+
 ## 2026-08-17 — Audit chain scope, milestone/risk/member write paths
 
 **146 passed / 0 failed / 0 skipped** (from 124). **51 API routes** (from

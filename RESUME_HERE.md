@@ -21,6 +21,8 @@ deployed.** Do not re-plan any of this.
 | Alignment (local ↔ origin ↔ live) | **ALIGNED** — `./scripts/verify-alignment.sh <url>` |
 | CI | **ALL FOUR JOBS GREEN** — API ✓ Web ✓ E2E ✓ Security ✓ |
 | Engine tests | **35** (Hypothesis property-based) |
+| API tests collected | **229** (from 155) — the new DB ones UNRUN locally, see 4 below |
+| API routes | **60** (from 51) |
 | Web unit tests | **54** · E2E **25** (axe-core on 9 pages) |
 | Certificates | Google Trust Services · valid to **2026-11-16** · auto-renewing |
 | Cost | **zero** |
@@ -67,12 +69,35 @@ Confirmed by `render-audit.yml`. Databases do **not** appear in
 honestly, not a pass. It closes when the API ships, which is Slice 3's
 back half (below).
 
-### 4. Slice 3 is FRONT-END COMPLETE, BACK-END UNBUILT
-The calculation engine exists and is tested, but nothing serves it:
-- no `materials` / `suppliers` / `formulas` / `formula_versions` tables
-- no migrations, no RLS policies, no API routes for any of them
-- the engine is not called by any endpoint
-The demonstration works because figures are baked at **build** time.
+### 4. ~~Slice 3 back-end~~ — BUILT 2026-08-18 pt3, NOT YET VERIFIED ON A DATABASE
+Migrations 015 and 016, two domain services, 17 routes, and
+`evaluate_version` as the engine's first runtime caller.
+
+🔴 **NONE OF IT HAS TOUCHED A DATABASE.** Docker on this host is wedged:
+`docker exec` returns HTTP 500, `docker restart evercoat-postgres` fails
+with *"tried to kill container, but did not receive an exit event"*, and
+port 55432 accepts a TCP connection and then never answers (proven with a
+90-second `connect_timeout`). **Migration 015 has never been applied.**
+
+What actually ran: `ruff`, `mypy`, an app-boot check, and **43 passed /
+0 failed / 0 skipped** on the database-free tests. CI is the verification
+— it starts a clean `pgvector/pg16`, runs `alembic upgrade head` twice and
+the whole suite. **Check the Release run before trusting any of this.**
+
+The demonstration on the live site still uses figures baked at BUILD time,
+because the deployed site is a static export with no API (below).
+
+### 4b. 🔴 THE WEB APP HAS NEVER MADE AN API CALL — the largest gap in MVP-1
+`grep -rln "fetch(|axios|useQuery|NEXT_PUBLIC_API" apps/web` returns
+**nothing**. Twelve pages, all rendering `apps/web/lib/demo/demo-data.json`.
+`next-auth` is a declared dependency that nothing imports, and there is no
+sign-in flow.
+
+This is not in any slice's line item and it gates GATE-1: no browser test
+can drive the digital thread until one screen calls one endpoint. It also
+needs the deployment shape to change — the live site is a Render **static
+site** (no server, no API), and a free Render *web* service was refused for
+quota. Treat this as the next structural decision, not as polish.
 
 ### 5. Slice 4 — Laboratory
 Guided batch flow, planned-vs-actual with tolerance flagging, samples with
