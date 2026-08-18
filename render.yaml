@@ -120,6 +120,11 @@ services:
       # ever shows at deploy time.
       - key: NODE_VERSION
         value: "22"
+      # Pinned, as the Dockerfile, ci.yml and the Cloudflare workflow all
+      # do. `next build` under NODE_ENV=development ships the DEVELOPMENT
+      # React runtime — already shipped once on this platform.
+      - key: NODE_ENV
+        value: production
       - key: NEXT_TELEMETRY_DISABLED
         value: "1"
       # NOTE: NEXT_PUBLIC_* is inlined at BUILD time, not read at runtime.

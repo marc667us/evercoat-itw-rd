@@ -30,7 +30,13 @@ test.describe("application shell", () => {
     // Asserted in a browser because `redirect()` in a server component is
     // not something reading the file proves — it proves the intent.
     await page.goto("/");
-    await expect(page).toHaveURL(/\/dashboard$/);
+    // The trailing slash is optional on purpose. The standalone build
+    // serves `/dashboard`; the static export sets `trailingSlash` (so that
+    // it writes directory indexes, which every static host serves) and
+    // therefore lands on `/dashboard/`. Both are the same destination, and
+    // anchoring on `$` without the `\/?` made this test assert a build mode
+    // rather than the behaviour it is named after.
+    await expect(page).toHaveURL(/\/dashboard\/?$/);
     await expect(page.getByRole("heading", { name: "Dashboard", level: 1 })).toBeVisible();
   });
 
@@ -117,7 +123,11 @@ test.describe("navigation gating", () => {
     // question to ask is whether real permissions were wired in (fine) or
     // whether the filter was made permissive (not fine).
     await expect(nav.getByText("Administration", { exact: true })).toHaveCount(0);
-    await expect(nav.locator('a[href="/admin"]')).toHaveCount(0);
+    // Prefix match, for the same reason as the URL assertion above: the
+    // static export emits href="/admin/". An exact-match selector would
+    // find nothing there and pass whether or not the item was filtered —
+    // the assertion would be vacuously true exactly where it matters.
+    await expect(nav.locator('a[href^="/admin"]')).toHaveCount(0);
 
     // Groups whose every item is permission-gated are dropped, so nobody
     // stares at a heading with nothing under it.

@@ -40,6 +40,25 @@ import { defineConfig, devices } from "@playwright/test";
  * code in it.
  */
 
+// LIVE MODE. When PLAYWRIGHT_BASE_URL is set, the suite runs against an
+// ALREADY DEPLOYED site instead of servers it starts itself.
+//
+// This existed in name only until now: `scripts/live-suite.sh` exported
+// PLAYWRIGHT_BASE_URL, and nothing in this file ever read it. The variable
+// was ignored, Playwright started its own local servers, and the "live"
+// end-to-end run tested 127.0.0.1 while reporting against the deployed URL.
+// It would have passed with the deployment completely broken — the precise
+// false green the live-test rule exists to prevent.
+//
+// In live mode the `api` project is dropped rather than pointed somewhere.
+// `render.yaml` deploys the web application only (ADR-009), so there is no
+// deployed API to talk to; running it against a local uvicorn under a live
+// banner would be the same lie in the other direction. The live suite
+// counts the API surface as SKIPPED, which is a coverage gap honestly
+// reported rather than a pass.
+const LIVE_BASE_URL = process.env.PLAYWRIGHT_BASE_URL?.replace(/\/+$/, "");
+const LIVE = Boolean(LIVE_BASE_URL);
+
 const WEB_PORT = 3100;
 const API_PORT = 8100;
 
@@ -84,19 +103,30 @@ export default defineConfig({
     video: "off",
   },
 
-  projects: [
-    {
-      name: "shell",
-      testDir: "tests/e2e/shell",
-      use: { ...devices["Desktop Chrome"], baseURL: WEB_BASE_URL },
-    },
-    {
-      name: "api",
-      testDir: "tests/e2e/api",
-      use: { baseURL: API_BASE_URL },
-    },
-  ],
+  projects: LIVE
+    ? [
+        {
+          name: "shell",
+          testDir: "tests/e2e/shell",
+          use: { ...devices["Desktop Chrome"], baseURL: LIVE_BASE_URL },
+        },
+      ]
+    : [
+        {
+          name: "shell",
+          testDir: "tests/e2e/shell",
+          use: { ...devices["Desktop Chrome"], baseURL: WEB_BASE_URL },
+        },
+        {
+          name: "api",
+          testDir: "tests/e2e/api",
+          use: { baseURL: API_BASE_URL },
+        },
+      ],
 
+  // Omitted entirely in live mode. Starting a local server while testing a
+  // deployed URL is how a run ends up proving something about neither.
+  ...(LIVE ? {} : {
   webServer: [
     {
       // Built every run on purpose. `next start` will happily serve a
@@ -147,4 +177,5 @@ export default defineConfig({
       stderr: "pipe",
     },
   ],
+  }),
 });

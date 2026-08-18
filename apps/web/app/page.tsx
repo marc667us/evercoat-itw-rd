@@ -46,11 +46,17 @@ export default function Home() {
 
   return (
     <div className="p-6">
-      {/* aria-live so a screen reader announces the transition rather than
-          silently landing the user somewhere they did not ask for. */}
-      <p aria-live="polite" className="text-sm text-slate-600">
+      {/* A real <h1>, not an aria-live paragraph.
+          The first version used aria-live="polite" on text that is present
+          at first render and never changes. A live region announces
+          CHANGES to its contents, so static text inside one is never
+          announced — the accessibility benefit claimed in the comment did
+          not exist. Every other route has a heading; this one had none, so
+          a screen-reader user landing here got an unlabelled page.
+          The layout already supplies the <main> landmark. */}
+      <h1 className="text-sm font-medium text-slate-600">
         Redirecting to the dashboard…
-      </p>
+      </h1>
       <Link
         href="/dashboard"
         className="mt-2 inline-block text-sm font-medium text-slate-900 underline"

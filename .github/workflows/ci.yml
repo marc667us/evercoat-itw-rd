@@ -200,6 +200,38 @@ jobs:
           NODE_ENV: production
         run: npm run build
 
+      - name: Build the mode the site actually ships in, and assert it
+        working-directory: apps/web
+        # CI only ever built `standalone`. The DEPLOYED site is the static
+        # EXPORT, and the two differ in ways that have already broken the
+        # front door once: under `output: "export"` a server `redirect()`
+        # emits an error document, and without `trailingSlash` the export
+        # writes dashboard.html, which Render 404s because it does no
+        # clean-URL fallback.
+        #
+        # Both guards existed only inside the Render build command — that is,
+        # they ran after merge, at deploy time, against whatever had already
+        # landed on master. Running them here makes a regression a failed PR
+        # instead of a broken production front door.
+        env:
+          NODE_ENV: production
+          NEXT_OUTPUT: export
+        run: |
+          set -euo pipefail
+          npm run build
+          if grep -q "__next_error__" out/index.html; then
+            echo "::error::/ exported as a Next.js error document — the front door is broken"
+            exit 1
+          fi
+          test -f out/dashboard/index.html || {
+            echo "::error::out/dashboard/index.html missing — /dashboard would 404 on a host with no .html fallback"
+            exit 1
+          }
+          test -f out/admin/index.html || {
+            echo "::error::out/admin/index.html missing"; exit 1
+          }
+          echo "static export OK: real root document, directory indexes present"
+
   e2e:
     name: E2E — browser shell, axe-core, API over HTTP
     runs-on: ubuntu-latest

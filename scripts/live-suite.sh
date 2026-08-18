@@ -41,8 +41,9 @@ set -uo pipefail
 
 BASE_URL="${1:-}"
 if [[ -z "${BASE_URL}" ]]; then
-    echo "usage: $0 <deployed-base-url>" >&2
-    echo "  e.g. $0 https://evercoat.example.com" >&2
+    echo "usage: $0 <deployed-base-url> [profile]" >&2
+    echo "  e.g. $0 https://evercoat.example.com web" >&2
+    echo "  profile: web | api | full   (default: full)" >&2
     # The three-number report prints even here. "Three numbers, always"
     # has to mean ALWAYS, or a caller scraping this output for counts
     # gets nothing back and has to infer the outcome from an exit code --
@@ -51,6 +52,50 @@ if [[ -z "${BASE_URL}" ]]; then
     exit 2
 fi
 BASE_URL="${BASE_URL%/}"
+
+# ---------------------------------------------------------------------
+# WHICH SURFACES ARE ACTUALLY DEPLOYED.
+#
+# This script used to assume the API was there. Every probe it made --
+# /health/ready, /health/live, /docs -- is an API route, so against a
+# web-only deployment it waited the full 300s and reported
+# "passed=0 failed=0 skipped=0, the suite did not run". Honest, and
+# useless: the deployed thing was never tested at all.
+#
+# `render.yaml` deploys the WEB application only (ADR-009), so `web` is
+# the profile that matches production today. The API surface is then
+# counted as SKIPPED -- a coverage gap reported as a gap, never folded
+# into `passed`.
+#
+# When the API is deployed at Slice 3, run `full` and this becomes a real
+# assertion again rather than a skip.
+# ---------------------------------------------------------------------
+PROFILE="${2:-full}"
+case "${PROFILE}" in
+    web)
+        # /dashboard/, not /. The root is a client-side redirect page, and
+        # a redirect stub answering 200 proves the edge is up and nothing
+        # about whether the application mounted.
+        READY_PATH="/dashboard/"
+        MOUNT_PATHS=("/" "/dashboard/" "/admin/")
+        RUN_API_SUITE="no"
+        ;;
+    api)
+        READY_PATH="/health/ready"
+        MOUNT_PATHS=("/" "/health/live" "/docs")
+        RUN_API_SUITE="yes"
+        ;;
+    full)
+        READY_PATH="/health/ready"
+        MOUNT_PATHS=("/" "/health/live" "/docs" "/dashboard/")
+        RUN_API_SUITE="yes"
+        ;;
+    *)
+        echo "unknown profile '${PROFILE}' -- expected web, api or full" >&2
+        echo "REPORT: passed=0 failed=0 skipped=0 (bad profile; suite did not run)"
+        exit 2
+        ;;
+esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACTS="${REPO_ROOT}/tmp/live-suite"
@@ -70,12 +115,13 @@ echo "=================================================================="
 # distinguishing, because retrying a no-server is pointless.
 # ---------------------------------------------------------------------
 echo
-echo "--- waiting for ${BASE_URL}/health/ready ---"
+echo "--- profile: ${PROFILE} ---"
+echo "--- waiting for ${BASE_URL}${READY_PATH} ---"
 DEADLINE=$((SECONDS + 300))
 LIVE="no"
 while (( SECONDS < DEADLINE )); do
     CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
-            "${BASE_URL}/health/ready")" || CODE=""
+            "${BASE_URL}${READY_PATH}")" || CODE=""
     [[ -z "${CODE}" ]] && CODE="000"
 
     if [[ "${CODE}" == "200" ]]; then
@@ -105,7 +151,7 @@ fi
 echo
 echo "--- proving the application actually mounts ---"
 MOUNT_FAILURES=0
-for path in "/" "/health/live" "/docs"; do
+for path in "${MOUNT_PATHS[@]}"; do
     CODE="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 30 \
             "${BASE_URL}${path}")" || CODE=""
     [[ -z "${CODE}" ]] && CODE="000"
@@ -187,7 +233,17 @@ run_pytest() {
 }
 
 # Backend suites that can be pointed at a live instance.
-run_pytest "api-live" tests -m "live or not live"
+if [[ "${RUN_API_SUITE}" == "yes" ]]; then
+    run_pytest "api-live" tests -m "live or not live"
+else
+    echo
+    echo "--- api-live ---"
+    echo "  NOT RUN -- profile '${PROFILE}' declares no deployed API."
+    echo "  render.yaml deploys the web application only (ADR-009), so there"
+    echo "  is nothing at ${BASE_URL} for these tests to talk to. This is a"
+    echo "  COVERAGE GAP, counted as skipped. A skip is NOT a pass."
+    SKIPPED=$((SKIPPED + 1))
+fi
 
 # Playwright, if it is installed. Absence is reported as a GAP rather
 # than silently omitted -- a suite that quietly skips its only end-to-end
@@ -210,22 +266,56 @@ if [[ -d "${REPO_ROOT}/tests/e2e" ]] && command -v npx >/dev/null 2>&1; then
         # Read the machine-readable summary. Prints three integers, or
         # nothing at all if the JSON is absent or unparseable -- in which
         # case the rc reconciliation below takes over.
-        read -r E2E_P E2E_F E2E_S < <(python - "${ARTIFACTS}/e2e.json" <<'PY' || true
+        # `tr -d ''` is not decoration. Python on Windows terminates
+        # print() with CRLF, so the last field arrived as "0" and the
+        # arithmetic below died with "invalid arithmetic operator". The
+        # suite then reported passed=0 failed=0 skipped=1 while Playwright
+        # had actually run all 14 tests -- the counts were destroyed by the
+        # parser, not by the deployment.
+        # FOUR variables for FOUR fields. `read` assigns the trailing
+        # remainder of the line to the LAST name, so reading three names
+        # from a four-field line put "0 0" into E2E_S and every later
+        # $((...)) on it died with "syntax error in expression".
+        read -r E2E_P E2E_F E2E_S E2E_FLAKY < <(python - "${ARTIFACTS}/e2e.json" <<'PY' | tr -d '' || true
 import json, sys
 try:
     with open(sys.argv[1], encoding="utf-8") as fh:
         report = json.load(fh)
 except Exception:
     sys.exit(1)
+
+# Read Playwright's OWN `stats` block rather than re-deriving the counts.
+#
+# The previous version walked the suite tree and asked `test.get("ok")`.
+# That key does not exist on a test object -- `ok` lives on the SPEC --
+# so it was None for every test, every test fell to the else branch, and
+# a fully green run reported 0 passed / 14 failed. A hand-rolled parser
+# disagreeing with the tool that produced the file is the same
+# "two things that cannot be checked against each other" defect this
+# repository keeps hitting; `stats` is the tool's own answer.
+#
+# `expected`   = passed.  `unexpected` = failed.  `flaky` = passed only
+# after a retry, which is NOT a clean pass, so it is surfaced separately
+# by the caller rather than folded silently into either column.
+stats = report.get("stats")
+if isinstance(stats, dict) and "expected" in stats:
+    print(stats.get("expected", 0),
+          stats.get("unexpected", 0),
+          stats.get("skipped", 0),
+          stats.get("flaky", 0))
+    sys.exit(0)
+
+# Fallback for a report with no stats block: count statuses, using the
+# field that actually exists.
 passed = failed = skipped = 0
 def walk(suite):
     global passed, failed, skipped
     for spec in suite.get("specs", []):
         for test in spec.get("tests", []):
-            status = test.get("status") or test.get("expectedStatus")
+            status = test.get("status")
             if status == "skipped":
                 skipped += 1
-            elif test.get("ok"):
+            elif status == "expected":
                 passed += 1
             else:
                 failed += 1
@@ -233,11 +323,15 @@ def walk(suite):
         walk(child)
 for s in report.get("suites", []):
     walk(s)
-print(passed, failed, skipped)
+print(passed, failed, skipped, 0)
 PY
-        )
+        ) || true
     fi
     E2E_P="${E2E_P:-0}"; E2E_F="${E2E_F:-0}"; E2E_S="${E2E_S:-0}"
+    E2E_FLAKY="${E2E_FLAKY:-0}"
+    if [[ "${E2E_FLAKY}" != "0" ]]; then
+        echo "  NOTE: ${E2E_FLAKY} flaky (passed only on retry). Not a clean pass."
+    fi
 
     # Same reconciliation as the pytest runner: a non-zero exit with
     # nothing parsed must never read as success.

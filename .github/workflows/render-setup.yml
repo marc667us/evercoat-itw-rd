@@ -201,6 +201,14 @@ jobs:
           # ---------------------------------------------------------------
           rule("3. EVERCOAT SERVICE — does it exist?")
           st, svcs = api("GET", "/services?limit=100")
+          # api() returns the raw error STRING on a non-2xx, so an
+          # unchecked result gets iterated as characters and dies with an
+          # AttributeError three lines later. One transient 429 or 500
+          # would end the job in a traceback instead of a message. Raised
+          # by the Supervisor.
+          if st != 200 or not isinstance(svcs, list):
+              print(f"::error::could not list services ({st}): {svcs}")
+              sys.exit(1)
 
           # Inventory FIRST, before looking for our own service. When the free
           # web-service quota refused creation, the 400 said the allowance was
@@ -255,6 +263,17 @@ jobs:
           # out/index.html exists. The page is now a real client-side redirect,
           # and THIS assertion is what stops that silently reverting — it fails
           # the build rather than publishing an error document as the home page.
+          created_now = False
+
+          # Hoisted so the create payload and the reconcile PATCH cannot
+          # drift apart — one list, used twice.
+          ROUTES = [
+              {"type": "rewrite", "source": "/dashboard",
+               "destination": "/dashboard/index.html"},
+              {"type": "rewrite", "source": "/admin",
+               "destination": "/admin/index.html"},
+          ]
+
           BUILD_CMD = (
               "npm ci"
               " && NEXT_OUTPUT=export npm run build"
@@ -308,18 +327,20 @@ jobs:
                       # the condition under which Render applies a rule, so the
                       # rewrite fires deterministically instead of relying on
                       # the host to invent a directory redirect.
-                      "routes": [
-                          {"type": "rewrite", "source": "/dashboard",
-                           "destination": "/dashboard/index.html"},
-                          {"type": "rewrite", "source": "/admin",
-                           "destination": "/admin/index.html"},
-                      ],
+                      "routes": ROUTES,
                   },
                   "envVars": [
                       # Matches ci.yml's NODE_VERSION exactly. An unpinned Node
                       # means the build that passed CI is not the build Render
                       # runs, and the difference only shows at deploy time.
                       {"key": "NODE_VERSION", "value": "22"},
+                      # Set explicitly, as the Dockerfile, ci.yml and the
+                      # Cloudflare workflow all do. `next build` with
+                      # NODE_ENV=development ships the DEVELOPMENT React
+                      # runtime — a defect this platform has already shipped
+                      # once. Leaving it to the host's default made the
+                      # Render build the only path not pinning it.
+                      {"key": "NODE_ENV", "value": "production"},
                       {"key": "NEXT_TELEMETRY_DISABLED", "value": "1"},
                   ],
               }
@@ -334,7 +355,38 @@ jobs:
                       sys.exit(1)
                   svc = resp.get("service", resp)
                   existing = svc
+                  created_now = True
                   print(f"   created: {svc.get('id')}")
+
+          # RECONCILE an existing service instead of silently skipping it.
+          #
+          # This workflow used to be create-only: BUILD_CMD, routes,
+          # publishPath and the env vars were all built and then used ONLY
+          # inside `if not existing`. On every run after the first, nothing
+          # was applied and no deploy was triggered — yet the deploy poll
+          # below found the PREVIOUS deploy already `live`, passed on its
+          # first iteration, and the run reported "APPLIED … certificate
+          # valid" having changed absolutely nothing. Editing the build
+          # assertion or a rewrite rule here would have had no effect on the
+          # running service, with a green run each time. Raised by the
+          # Supervisor.
+          elif APPLY:
+              rule("3b. RECONCILE the existing service to this file")
+              patch = {
+                  "autoDeploy": "yes",
+                  "serviceDetails": {
+                      "buildCommand": BUILD_CMD,
+                      "publishPath": "out",
+                      "renderSubdomainPolicy": "enabled",
+                      "routes": ROUTES,
+                  },
+              }
+              st, resp = api("PATCH", f"/services/{existing['id']}", patch)
+              print(f"   PATCH /services/{existing['id']} -> {st}")
+              if st not in (200, 201):
+                  print(f"::error::could not reconcile the service: {resp}")
+                  sys.exit(1)
+              print("   build command, publish path and routes reapplied")
 
           # ---------------------------------------------------------------
           rule("4. ATTACH the domain to the Evercoat service")
@@ -417,13 +469,45 @@ jobs:
           if not (APPLY and ev_id):
               print("   (skipped — plan mode)")
           else:
+              # Identify EXACTLY which deploy we are waiting for.
+              #
+              # Polling "the most recent deploy" is how a run that changed
+              # nothing still passes: the previous deploy is already `live`,
+              # so the very first poll succeeds and the workflow reports a
+              # successful deployment of code it never deployed.
+              target = None
+              if created_now:
+                  # Creation triggers the first deploy itself.
+                  st, deps = api("GET", f"/services/{ev_id}/deploys?limit=1")
+                  if st == 200 and isinstance(deps, list) and deps:
+                      target = (deps[0].get("deploy", deps[0])).get("id")
+              else:
+                  st, resp = api("POST", f"/services/{ev_id}/deploys",
+                                 {"clearCache": "do_not_clear"})
+                  print(f"   POST /deploys -> {st}")
+                  if st not in (200, 201):
+                      print(f"::error::could not trigger a deploy: {resp}")
+                      sys.exit(1)
+                  target = (resp.get("deploy", resp) if isinstance(resp, dict) else {}).get("id")
+
+              if not target:
+                  print("::error::could not determine which deploy to wait for")
+                  sys.exit(1)
+              print(f"   waiting on deploy {target}")
+
               live = False
               last = None
               for attempt in range(60):          # 60 x 20s = up to 20 minutes
-                  st, deps = api("GET", f"/services/{ev_id}/deploys?limit=1")
-                  d = (deps[0].get("deploy", deps[0])) if deps else None
-                  last = (d or {}).get("status")
-                  print(f"   [{attempt + 1:02d}] deploy={(d or {}).get('id')} status={last}")
+                  st, d = api("GET", f"/services/{ev_id}/deploys/{target}")
+                  if st != 200 or not isinstance(d, dict):
+                      # A transient error is not a verdict. Log it and keep
+                      # polling rather than ending the job on one bad reply.
+                      print(f"   [{attempt + 1:02d}] deploy read failed ({st}) — retrying")
+                      time.sleep(20)
+                      continue
+                  d = d.get("deploy", d)
+                  last = d.get("status")
+                  print(f"   [{attempt + 1:02d}] deploy={target} status={last}")
                   if last == "live":
                       live = True
                       break
@@ -477,7 +561,20 @@ jobs:
               # The front door specifically. A green build published an error
               # document here once already; this is the assertion that would
               # have caught it from the outside.
-              code, body = probe(f"https://{EV_DOM}/")
+              #
+              # Wrapped, because urlopen RAISES on 4xx/5xx rather than
+              # returning the code — so the "did not return 200" branch below
+              # was unreachable for the exact case it was written for, and a
+              # 404 at the front door would have ended the job in a Python
+              # traceback. Raised by the Supervisor.
+              try:
+                  code, body = probe(f"https://{EV_DOM}/")
+              except urllib.error.HTTPError as e:
+                  print(f"::error::the root returned HTTP {e.code}"); sys.exit(1)
+              except Exception as e:                       # noqa: BLE001
+                  print(f"::error::the root could not be fetched: "
+                        f"{type(e).__name__}: {e}")
+                  sys.exit(1)
               print(f"   https://{EV_DOM}/ -> {code}")
               if code != 200:
                   print("::error::the root did not return 200"); sys.exit(1)

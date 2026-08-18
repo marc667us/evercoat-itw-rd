@@ -117,16 +117,30 @@ jobs:
           # `next build` exits 0 and prints a success table even when the
           # root page exported as an error document, so the build's own
           # result proves nothing here. Check the artefacts.
-          test -f out/dashboard.html || { echo "::error::out/dashboard.html missing"; exit 1; }
-          test -f out/admin.html     || { echo "::error::out/admin.html missing"; exit 1; }
+          # Directory indexes, not <route>.html. `next.config.mjs` sets
+          # `trailingSlash` for the export so that it writes
+          # out/dashboard/index.html — Render does no clean-URL fallback and
+          # would 404 on /dashboard otherwise. These assertions still named
+          # the old files, so every dispatch of this workflow failed here,
+          # before publishing. Raised by the Supervisor.
+          test -f out/dashboard/index.html || { echo "::error::out/dashboard/index.html missing"; exit 1; }
+          test -f out/admin/index.html     || { echo "::error::out/admin/index.html missing"; exit 1; }
           test -f out/_redirects     || { echo "::error::out/_redirects missing — / would serve the error page"; exit 1; }
           grep -q "/dashboard" out/_redirects || {
             echo "::error::_redirects does not send / to /dashboard"; exit 1; }
           # The root IS expected to be an error document under export.
           # Say so out loud, so a future reader does not "fix" the symptom
           # and delete the redirect rule that actually handles it.
+          # No longer expected, and now a hard failure.
+          # `app/page.tsx` used to be a server `redirect()`, which exported
+          # as an error document; this workflow tolerated that because
+          # /_redirects covered it at Cloudflare's edge. The page is now a
+          # real client-side redirect, so an error stub here means the fix
+          # regressed — and Render, where this actually ships, has no
+          # equivalent of /_redirects to hide it.
           if grep -q "__next_error__" out/index.html; then
-            echo "::notice::out/index.html is the expected export error stub; /_redirects answers / instead."
+            echo "::error::out/index.html is a Next.js ERROR DOCUMENT — the front door regressed."
+            exit 1
           fi
 
       - name: Publish
