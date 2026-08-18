@@ -31,3 +31,19 @@ test-results/
 playwright-report/
 blob-report/
 .playwright/
+
+# Build artefacts that were being tracked or left dirty after a session.
+#
+# `tsconfig.tsbuildinfo` is TypeScript's incremental-build cache. It was
+# committed, so every build left the working tree dirty with a file that
+# is machine-specific and carries no review value -- and a dirty tree is
+# how real changes get lost at session close.
+apps/web/tsconfig.tsbuildinfo
+
+# `wrangler pages dev` writes a local cache here. Local runtime state.
+.wrangler/
+
+# Scratch space for review diffs and one-off logs. Session artefacts, not
+# source -- `tmp/live_smoke_test_*.py`-style keepers should be moved to
+# scripts/ deliberately rather than swept in by `git add .`.
+tmp/
