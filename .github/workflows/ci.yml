@@ -50,9 +50,9 @@ jobs:
         ports: ["5432:5432"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, resolved 2026-08-18
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5, resolved 2026-08-18
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -175,8 +175,8 @@ jobs:
     name: Web — lint, type, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, resolved 2026-08-18
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4, resolved 2026-08-18
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -255,14 +255,14 @@ jobs:
         ports: ["5432:5432"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, resolved 2026-08-18
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5, resolved 2026-08-18
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4, resolved 2026-08-18
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -331,7 +331,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4, resolved 2026-08-18
         with:
           name: playwright-report
           path: |
@@ -343,14 +343,14 @@ jobs:
     name: Security scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, resolved 2026-08-18
         with:
           # gitleaks on `push` scans only the pushed commits; full history
           # needs the whole repo, so fetch it.
           fetch-depth: 0
 
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2, resolved 2026-08-18
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -362,7 +362,7 @@ jobs:
         # be. Pinned to a tag that exists (verified against the action's
         # releases) rather than a floating ref, so a supply-chain change
         # upstream cannot silently alter what runs here.
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0, resolved 2026-08-18
         with:
           scan-type: fs
           scan-ref: .

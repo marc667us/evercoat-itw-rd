@@ -140,21 +140,37 @@ def SessionLocal() -> Session:  # noqa: N802 - kept as a callable factory name
 
 
 def set_local(session: Session, guc: str, value: uuid.UUID) -> None:
-    """Issue ``SET LOCAL <guc> = '<uuid>'``.
+    """Set a transaction-local GUC, with the VALUE passed as a bind parameter.
 
-    PostgreSQL does **not** accept bind parameters in SET — a placeholder
-    there is a syntax error, not a slower query. So the value is
-    interpolated, and the ``uuid.UUID`` type is what makes that safe: a
-    UUID has no representation that can carry SQL. Passing a ``str`` here
-    would be an injection surface, which is why the signature refuses one.
+    The ``SET`` *statement* genuinely does not accept bind parameters — a
+    placeholder there is a syntax error. But ``set_config(name, value,
+    is_local)`` is an ordinary function, and it does. ``is_local=true``
+    makes it exactly equivalent to ``SET LOCAL``: scoped to the
+    transaction and discarded on COMMIT or ROLLBACK.
 
-    The GUC name is validated against an allow-list for the same reason.
+    That distinction matters. This function sets the GUCs every RLS policy
+    in the database reads, so it is the single most injection-sensitive
+    line in the application. It previously interpolated the value into the
+    SQL string and argued that a ``uuid.UUID`` cannot carry SQL — which is
+    true, and which depended entirely on the ``isinstance`` check below
+    never being removed or widened. Semgrep flagged it
+    (``avoid-sqlalchemy-text``) and it was right to: the safety was an
+    argument, not a mechanism.
+
+    Now the value never touches the statement text at all, so the type
+    check is defence in depth rather than the only defence.
+
+    The GUC NAME still cannot be a parameter — it is the first argument to
+    set_config and must be a literal — so it stays allow-listed.
     """
     if guc not in _ALLOWED_GUCS:
         raise ValueError(f"refusing to set unknown GUC {guc!r}")
     if not isinstance(value, uuid.UUID):
         raise TypeError("GUC values must be uuid.UUID, never str")
-    session.execute(text(f"SET LOCAL {guc} = '{value}'"))
+    session.execute(
+        text("SELECT set_config(:guc, :value, true)"),
+        {"guc": guc, "value": str(value)},
+    )
 
 
 _ALLOWED_GUCS = frozenset({"app.current_org", "app.current_user_id"})
