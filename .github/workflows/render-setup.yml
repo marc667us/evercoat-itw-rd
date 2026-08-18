@@ -274,11 +274,17 @@ jobs:
               # the build that passed CI is not the build Render runs, and the
               # difference only shows at deploy time.
               {"key": "NODE_VERSION", "value": "22"},
-              # Set explicitly, as the Dockerfile, ci.yml and the Cloudflare
-              # workflow all do. `next build` with NODE_ENV=development ships
-              # the DEVELOPMENT React runtime — a defect this platform has
-              # already shipped once.
-              {"key": "NODE_ENV", "value": "production"},
+              # NODE_ENV IS DELIBERATELY NOT HERE. It belongs to the BUILD
+              # step, not to the service.
+              #
+              # A service-level NODE_ENV=production applies to `npm ci` as
+              # well, and npm reads it as `omit=dev` — so typescript,
+              # tailwindcss, postcss and autoprefixer, all devDependencies,
+              # are never installed and the Next build dies. Measured:
+              # setting it here turned deploy dep-da24cre1egvs7399teqg into
+              # `build_failed`. This is exactly why ci.yml sets NODE_ENV on
+              # its build step and not on its install step. It is applied
+              # inline in BUILD_CMD instead.
               {"key": "NEXT_TELEMETRY_DISABLED", "value": "1"},
           ]
 
@@ -293,7 +299,11 @@ jobs:
 
           BUILD_CMD = (
               "npm ci"
-              " && NEXT_OUTPUT=export npm run build"
+              # NODE_ENV inline, on the BUILD only. It must NOT be set for
+              # `npm ci` above, which would read it as omit=dev and skip
+              # every devDependency the build needs. Building as development
+              # ships the DEVELOPMENT React runtime, so it must be set here.
+              " && NEXT_OUTPUT=export NODE_ENV=production npm run build"
               ' && if grep -q "__next_error__" out/index.html;'
               ' then echo "FATAL: / exported as a Next.js error document"; exit 1; fi'
               ' && test -f out/dashboard/index.html'

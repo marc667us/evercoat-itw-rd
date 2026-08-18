@@ -77,7 +77,7 @@ services:
     # redirect, and this assertion fails the build if that ever regresses.
     buildCommand: >-
       npm ci
-      && NEXT_OUTPUT=export npm run build
+      && NEXT_OUTPUT=export NODE_ENV=production npm run build
       && if grep -q "__next_error__" out/index.html; then
       echo "FATAL: / exported as a Next.js error document"; exit 1; fi
       && test -f out/dashboard/index.html
@@ -120,11 +120,11 @@ services:
       # ever shows at deploy time.
       - key: NODE_VERSION
         value: "22"
-      # Pinned, as the Dockerfile, ci.yml and the Cloudflare workflow all
-      # do. `next build` under NODE_ENV=development ships the DEVELOPMENT
-      # React runtime — already shipped once on this platform.
-      - key: NODE_ENV
-        value: production
+      # NODE_ENV IS NOT A SERVICE VARIABLE HERE — it is set inline on the
+      # build command above. As a service variable it also applies to
+      # `npm ci`, which npm reads as omit=dev, so typescript, tailwindcss
+      # and postcss are never installed and the build fails. Measured on
+      # deploy dep-da24cre1egvs7399teqg.
       - key: NEXT_TELEMETRY_DISABLED
         value: "1"
       # NOTE: NEXT_PUBLIC_* is inlined at BUILD time, not read at runtime.
