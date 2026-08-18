@@ -99,7 +99,12 @@ jobs:
       CONFIRM: ${{ inputs.confirm }}
       # Addressed by ID so no name lookup can drift onto a neighbour.
       AUTOWORKSHOP_WEB_ID: srv-d9ju49id0e5s7389fjlg
-      EVERCOAT_DOMAIN: itwevercoatrd.aiappinvent.com
+      # BOTH hostnames. `itwevercoatrd` is the one every project artifact
+      # references and the one already certificated; `itwevercoat` is the
+      # shorter name the operator asked for and created the CNAME for on
+      # 2026-08-18. Both CNAME to evercoat-itw-rd-web.onrender.com, so both
+      # are served by the same service and each gets its own certificate.
+      EVERCOAT_DOMAINS: itwevercoatrd.aiappinvent.com,itwevercoat.aiappinvent.com
       AUTOWORKSHOP_DOMAIN: autoworkshop.aiappinvent.com
       # 🔴 THE DNS DEPENDS ON THIS EXACT NAME. `itwevercoatrd.aiappinvent.com`
       # is a CNAME to `evercoat-itw-rd-web.onrender.com` in Namecheap. Rename
@@ -134,7 +139,10 @@ jobs:
           KEY     = os.environ["RENDER_API_KEY"]
           MODE    = os.environ["MODE"]
           AW_ID   = os.environ["AUTOWORKSHOP_WEB_ID"]
-          EV_DOM  = os.environ["EVERCOAT_DOMAIN"]
+          EV_DOMS = [d.strip() for d in os.environ["EVERCOAT_DOMAINS"].split(",") if d.strip()]
+          # The detach guard below concerns the ORIGINAL hostname only — that
+          # is the one that was once wrongly attached to AutoWorkshop.
+          EV_DOM  = EV_DOMS[0]
           AW_DOM  = os.environ["AUTOWORKSHOP_DOMAIN"]
           EV_NAME = os.environ["EVERCOAT_SERVICE_NAME"]
           REPO    = os.environ["REPO_URL"]
@@ -226,6 +234,27 @@ jobs:
                   f"suspended={s.get('suspended','?')}"
               )
           print(f"   ({len(svcs or [])} service(s) on this account)")
+
+          # CUSTOM-DOMAIN INVENTORY — read-only, printed in both modes.
+          #
+          # Render includes a number of custom domains per workspace plan and
+          # bills beyond it. The operator's rule is zero spend, so the count
+          # is MEASURED and printed before anything is attached, rather than
+          # assumed from documentation. If this total ever approaches the
+          # plan's included amount, attaching another is a decision for a
+          # human, not a side effect of a workflow run.
+          total_domains = 0
+          for row in (svcs or []):
+              sv = row.get("service", row)
+              dst, dl = api("GET", f"/services/{sv.get('id')}/custom-domains?limit=50")
+              if dst != 200 or not isinstance(dl, list):
+                  print(f"     {sv.get('name'):<28} (could not read domains: {dst})")
+                  continue
+              names = [(d.get("customDomain", d)).get("name") for d in dl]
+              total_domains += len(names)
+              if names:
+                  print(f"     {sv.get('name'):<28} {names}")
+          print(f"   TOTAL CUSTOM DOMAINS ON THIS WORKSPACE: {total_domains}")
 
           existing = None
           for row in (svcs or []):
@@ -433,24 +462,25 @@ jobs:
                       sys.exit(1)
 
           # ---------------------------------------------------------------
-          rule("4. ATTACH the domain to the Evercoat service")
+          rule("4. ATTACH every hostname to the Evercoat service")
           ev_id = existing["id"] if existing else None
-          dom_id = None
+          dom_ids = {}
           if not ev_id:
               print("   (no service yet — plan mode, or creation skipped)")
           else:
-              st, cur = api("GET", f"/services/{ev_id}/custom-domains?limit=50")
-              cur_rows = {(d.get("customDomain", d)).get("name"):
-                          (d.get("customDomain", d)).get("id")
-                          for d in (cur or [])}
-              if EV_DOM in cur_rows:
-                  dom_id = cur_rows[EV_DOM]
-                  print(f"   {EV_DOM} already attached to {ev_id}  [{dom_id}]")
+            st, cur = api("GET", f"/services/{ev_id}/custom-domains?limit=50")
+            cur_rows = {(d.get("customDomain", d)).get("name"):
+                        (d.get("customDomain", d)).get("id")
+                        for d in (cur or [])}
+            for dom in EV_DOMS:
+              if dom in cur_rows:
+                  dom_ids[dom] = cur_rows[dom]
+                  print(f"   {dom} already attached  [{cur_rows[dom]}]")
               elif not APPLY:
-                  print(f"   WOULD ATTACH {EV_DOM} to {ev_id}")
+                  print(f"   WOULD ATTACH {dom} to {ev_id}")
               else:
-                  st, resp = api("POST", f"/services/{ev_id}/custom-domains", {"name": EV_DOM})
-                  print(f"   POST custom-domain -> {st} {resp if st >= 400 else ''}")
+                  st, resp = api("POST", f"/services/{ev_id}/custom-domains", {"name": dom})
+                  print(f"   POST custom-domain {dom} -> {st} {resp if st >= 400 else ''}")
                   if st not in (200, 201):
                       print("::error::attach failed"); sys.exit(1)
                   # Re-LIST rather than trust the create response shape.
@@ -466,12 +496,12 @@ jobs:
                   st, back = api("GET", f"/services/{ev_id}/custom-domains?limit=50")
                   for item in (back or []):
                       cd = item.get("customDomain", item)
-                      if cd.get("name") == EV_DOM:
-                          dom_id = cd.get("id")
-                  if not dom_id:
-                      print(f"::error::attached {EV_DOM} but could not read its id back")
+                      if cd.get("name") == dom:
+                          dom_ids[dom] = cd.get("id")
+                  if dom not in dom_ids:
+                      print(f"::error::attached {dom} but could not read its id back")
                       sys.exit(1)
-                  print(f"   OK — {EV_DOM} attached to {ev_id}  [{dom_id}]")
+                  print(f"   OK — {dom} attached to {ev_id}  [{dom_ids[dom]}]")
 
           # ---------------------------------------------------------------
           # From here on, everything is PROOF rather than configuration.
@@ -481,13 +511,15 @@ jobs:
           # certificated — the operator's browser refused the site with a TLS
           # handshake failure while every recorded step had "succeeded".
           # ---------------------------------------------------------------
-          rule("5. DNS VERIFICATION for the custom domain")
-          if not (APPLY and ev_id and dom_id):
-              print("   (skipped — plan mode, or no domain id)")
+          rule("5. DNS VERIFICATION for every custom domain")
+          if not (APPLY and ev_id and dom_ids):
+              print("   (skipped — plan mode, or no domain ids)")
           else:
+            for dom, dom_id in dom_ids.items():
+              print(f"   --- {dom} ---")
               # Render verifies automatically on attach; this only forces a
-              # re-check, which matters here because the CNAME was created long
-              # before the service existed.
+              # re-check, which matters here because each CNAME was created
+              # before the domain was attached.
               st, _ = api("POST", f"/services/{ev_id}/custom-domains/{dom_id}/verify")
               print(f"   POST verify -> {st}")
               verified = False
@@ -583,54 +615,62 @@ jobs:
                   with urllib.request.urlopen(req, timeout=30) as r:
                       return r.status, r.read(4000).decode("utf-8", "replace")
 
-              ok = False
-              for attempt in range(30):          # 30 x 20s = up to 10 minutes
-                  try:
-                      code, _ = probe(f"https://{EV_DOM}/dashboard")
-                      print(f"   [{attempt + 1:02d}] https://{EV_DOM}/dashboard -> {code}")
-                      if code == 200:
-                          ok = True
-                          break
-                  except ssl.SSLError as e:
-                      print(f"   [{attempt + 1:02d}] TLS not ready yet: {e}")
-                  except Exception as e:                       # noqa: BLE001
-                      print(f"   [{attempt + 1:02d}] not ready: {type(e).__name__}: {e}")
-                  time.sleep(20)
+              # EVERY hostname is proved independently. Each custom domain gets
+              # its OWN certificate, so one of them working says nothing about
+              # the other — and a second hostname that quietly fails TLS is
+              # exactly the "not secure" browser error this whole exercise
+              # started with.
+              for dom in EV_DOMS:
+                print(f"   --- {dom} ---")
+                ok = False
+                for attempt in range(30):          # 30 x 20s = up to 10 minutes
+                    try:
+                        code, _ = probe(f"https://{dom}/dashboard")
+                        print(f"   [{attempt + 1:02d}] https://{dom}/dashboard -> {code}")
+                        if code == 200:
+                            ok = True
+                            break
+                    except ssl.SSLError as e:
+                        print(f"   [{attempt + 1:02d}] TLS not ready yet: {e}")
+                    except Exception as e:                       # noqa: BLE001
+                        print(f"   [{attempt + 1:02d}] not ready: {type(e).__name__}: {e}")
+                    time.sleep(20)
 
-              if not ok:
-                  print(f"::error::https://{EV_DOM}/dashboard never returned 200 — "
-                        "certificate not issued, or the site is not serving")
-                  sys.exit(1)
+                if not ok:
+                    print(f"::error::https://{dom}/dashboard never returned 200 — "
+                          "certificate not issued, or the site is not serving")
+                    sys.exit(1)
 
-              # The front door specifically. A green build published an error
-              # document here once already; this is the assertion that would
-              # have caught it from the outside.
-              #
-              # Wrapped, because urlopen RAISES on 4xx/5xx rather than
-              # returning the code — so the "did not return 200" branch below
-              # was unreachable for the exact case it was written for, and a
-              # 404 at the front door would have ended the job in a Python
-              # traceback. Raised by the Supervisor.
-              try:
-                  code, body = probe(f"https://{EV_DOM}/")
-              except urllib.error.HTTPError as e:
-                  print(f"::error::the root returned HTTP {e.code}"); sys.exit(1)
-              except Exception as e:                       # noqa: BLE001
-                  print(f"::error::the root could not be fetched: "
-                        f"{type(e).__name__}: {e}")
-                  sys.exit(1)
-              print(f"   https://{EV_DOM}/ -> {code}")
-              if code != 200:
-                  print("::error::the root did not return 200"); sys.exit(1)
-              if "__next_error__" in body:
-                  print("::error::the root is serving a Next.js ERROR DOCUMENT"); sys.exit(1)
-              print("   root is a real page (no __next_error__), certificate valid")
+                # The front door specifically. A green build published an error
+                # document here once already; this is the assertion that would
+                # have caught it from the outside.
+                #
+                # Wrapped, because urlopen RAISES on 4xx/5xx rather than
+                # returning the code — so the "did not return 200" branch below
+                # was unreachable for the exact case it was written for, and a
+                # 404 at the front door would have ended the job in a Python
+                # traceback. Raised by the Supervisor.
+                try:
+                    code, body = probe(f"https://{dom}/")
+                except urllib.error.HTTPError as e:
+                    print(f"::error::the root of {dom} returned HTTP {e.code}"); sys.exit(1)
+                except Exception as e:                       # noqa: BLE001
+                    print(f"::error::the root of {dom} could not be fetched: "
+                          f"{type(e).__name__}: {e}")
+                    sys.exit(1)
+                print(f"   https://{dom}/ -> {code}")
+                if code != 200:
+                    print(f"::error::the root of {dom} did not return 200"); sys.exit(1)
+                if "__next_error__" in body:
+                    print(f"::error::{dom} is serving a Next.js ERROR DOCUMENT"); sys.exit(1)
+                print(f"   {dom}: root is a real page, certificate valid")
 
           rule("SUMMARY")
           print(f"   mode      : {MODE}")
           print(f"   changes   : {'APPLIED' if APPLY else 'NONE (plan only)'}")
           print(f"   service   : {EV_NAME} [{ev_id or 'not created'}]")
-          print(f"   domain    : {EV_DOM}")
+          print(f"   domains   : {', '.join(EV_DOMS)}")
           if APPLY and ev_id:
-              print(f"   URL       : https://{EV_DOM}/")
+              for dom in EV_DOMS:
+                  print(f"   URL       : https://{dom}/")
           PY
