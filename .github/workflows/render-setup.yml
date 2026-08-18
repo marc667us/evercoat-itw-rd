@@ -6,13 +6,51 @@
 # history and out of this repository, and it means every change to the Render
 # account is recorded in a run log with a timestamp and an actor.
 #
-# 🔴 THIS WORKFLOW TOUCHES A SERVICE BELONGING TO ANOTHER PRODUCT.
+# ─────────────────────────────────────────────────────────────────────────
+# WHY THIS CREATES A STATIC SITE AND NOT A DOCKER WEB SERVICE
+# ─────────────────────────────────────────────────────────────────────────
 #
-# `itwevercoatrd.aiappinvent.com` was added to `autoworkshop-web` by mistake,
-# so Render routes that hostname to AutoWorkshop and issued its certificate
-# against that service. Detaching it is the correction. AutoWorkshop is under a
-# standing "do not break it" rule, so the detach step is written to be
-# incapable of touching anything else:
+# Creating a free web service is REFUSED by this account, measured twice, most
+# recently in run 32128287996 on 2026-08-18:
+#
+#     POST /services -> 400
+#     {"message":"free tier usage quota has been exhausted,
+#       new services are not allowed"}
+#
+# The account holds five services, ALL on `standard`, none free. The exhausted
+# allowance is the workspace's 750 free INSTANCE-hours per month.
+#
+# Render static sites have no instance, so they do not draw on that allowance
+# at all and remain deployable when it is gone
+# (https://render.com/docs/free). They are also free of charge, and Render
+# issues and renews a TLS certificate for every custom domain automatically,
+# at no cost (https://render.com/docs/static-sites). That is exactly what this
+# deployment needs, and it is zero-spend by construction.
+#
+# THE `plan` INPUT HAS BEEN REMOVED. A static site has no instance plan — the
+# Render API's staticSiteDetailsPOST schema has no `plan` field at all.
+# Removing the input removes the only control on this workflow that could ever
+# bill the account. There is now no dispatch of this workflow that costs money.
+#
+# This is honest for the app as it stands rather than a workaround: `apps/web`
+# makes no API calls — no fetch, no next-auth wiring — and has three pages.
+# There is no server-side behaviour to lose. That stops being true at Slice 3,
+# when the API is wired in; at that point a static host cannot serve the
+# product and this must become a web service again, which by then needs either
+# restored free instance-hours or a deliberate, operator-approved paid tier.
+# `render.yaml` records that target shape.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# 🔴 THIS WORKFLOW TOUCHES A SERVICE BELONGING TO ANOTHER PRODUCT.
+# ─────────────────────────────────────────────────────────────────────────
+#
+# `itwevercoatrd.aiappinvent.com` was once added to `autoworkshop-web` by
+# mistake, so Render routed that hostname to AutoWorkshop and issued its
+# certificate against that service. Detaching it was the correction and it is
+# already done — the step below is now a verified no-op, kept because a guard
+# that only ever runs once is a guard nobody can trust afterwards.
+# AutoWorkshop is under a standing "do not break it" rule, so the detach step
+# is written to be incapable of touching anything else:
 #
 #   · it addresses the service by ID, never by name search;
 #   · it deletes ONE custom domain, matched by exact hostname;
@@ -40,22 +78,6 @@ on:
         description: "Type APPLY to allow writes. Ignored when mode=plan."
         type: string
         default: ""
-      plan:
-        # An input, not a constant in the payload, because this is the one
-        # setting on this workflow that COSTS MONEY. `free` was refused with
-        # 400 "free tier usage quota has been exhausted" -- the account's
-        # five existing services are all `standard` and none are free.
-        #
-        # The operator directed on 2026-08-18 that Evercoat join the paid
-        # services. `starter` is the default because it is the cheapest paid
-        # tier and ADR-009 scopes Render to demo staging that must never hold
-        # R&D records; `standard` is offered to match the neighbours. Whoever
-        # dispatches this picks the tier deliberately, and the choice is
-        # recorded in the run.
-        description: "Instance plan for the Evercoat service. Anything but 'free' COSTS MONEY."
-        type: choice
-        options: [free, starter, standard]
-        default: free
 
 # One at a time. Two concurrent runs mutating the same Render account would
 # interleave in ways the logs could not explain afterwards.
@@ -66,15 +88,25 @@ concurrency:
 jobs:
   setup:
     runs-on: ubuntu-latest
+    # A first build, plus DNS verification, plus certificate issuance is
+    # minutes rather than seconds. The default 360-minute timeout would let a
+    # stuck poll burn an hour before anyone noticed; 45 is generous for the
+    # real thing and short enough to fail visibly.
+    timeout-minutes: 45
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       MODE: ${{ inputs.mode }}
       CONFIRM: ${{ inputs.confirm }}
-      PLAN: ${{ inputs.plan }}
       # Addressed by ID so no name lookup can drift onto a neighbour.
       AUTOWORKSHOP_WEB_ID: srv-d9ju49id0e5s7389fjlg
       EVERCOAT_DOMAIN: itwevercoatrd.aiappinvent.com
       AUTOWORKSHOP_DOMAIN: autoworkshop.aiappinvent.com
+      # 🔴 THE DNS DEPENDS ON THIS EXACT NAME. `itwevercoatrd.aiappinvent.com`
+      # is a CNAME to `evercoat-itw-rd-web.onrender.com` in Namecheap. Rename
+      # the service and the custom domain still resolves — to a hostname
+      # Render no longer serves — and the certificate silently stops renewing.
+      # Verified 2026-08-18 by direct DNS query against the authoritative
+      # Namecheap nameservers.
       EVERCOAT_SERVICE_NAME: evercoat-itw-rd-web
       REPO_URL: https://github.com/marc667us/evercoat-itw-rd
 
@@ -97,16 +129,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, sys, urllib.request, urllib.error, time
+          import json, os, ssl, sys, time, urllib.request, urllib.error
 
-          KEY  = os.environ["RENDER_API_KEY"]
-          MODE = os.environ["MODE"]
-          # Defaulted rather than required: a run dispatched before this
-          # input existed would otherwise KeyError after the destructive
-          # domain work had already happened. Defaults to `free` so the
-          # failure mode of a stale or careless dispatch is a 400, never a
-          # bill.
-          PLAN = os.environ.get("PLAN") or "free"
+          KEY     = os.environ["RENDER_API_KEY"]
+          MODE    = os.environ["MODE"]
           AW_ID   = os.environ["AUTOWORKSHOP_WEB_ID"]
           EV_DOM  = os.environ["EVERCOAT_DOMAIN"]
           AW_DOM  = os.environ["AUTOWORKSHOP_DOMAIN"]
@@ -129,7 +155,7 @@ jobs:
                   return e.code, e.read().decode()
 
           def rule(t):
-              print(f"\n{'='*74}\n{t}\n{'='*74}")
+              print(f"\n{'='*74}\n{t}\n{'='*74}", flush=True)
 
           # ---------------------------------------------------------------
           rule("1. AUTOWORKSHOP-WEB — current custom domains")
@@ -176,26 +202,19 @@ jobs:
           rule("3. EVERCOAT SERVICE — does it exist?")
           st, svcs = api("GET", "/services?limit=100")
 
-          # Inventory FIRST, before looking for our own service.
-          #
-          # Creating the service failed with
-          #   400 "free tier usage quota has been exhausted, new services
-          #        are not allowed"
-          # which is an account-wide condition, not a fault in this
-          # payload. Without a printed inventory that error is a dead end:
-          # it says the allowance is gone and nothing about what spent it,
-          # so the next person re-runs the same POST and gets the same 400.
-          #
-          # Read-only, and printed in BOTH modes — a plan run is exactly
-          # when someone needs to see this.
+          # Inventory FIRST, before looking for our own service. When the free
+          # web-service quota refused creation, the 400 said the allowance was
+          # gone and nothing about what spent it — so the next person re-ran
+          # the same POST and got the same 400. Read-only, and printed in BOTH
+          # modes: a plan run is exactly when someone needs to see this.
           print("   account inventory:")
           for row in (svcs or []):
               s = row.get("service", row)
               det = s.get("serviceDetails", {}) or {}
               print(
                   f"     {s.get('name'):<28} {s.get('type','?'):<12} "
-                  f"plan={det.get('plan','?'):<10} "
-                  f"env={det.get('env','?'):<8} "
+                  f"plan={det.get('plan','-'):<10} "
+                  f"env={det.get('env','-'):<8} "
                   f"suspended={s.get('suspended','?')}"
               )
           print(f"   ({len(svcs or [])} service(s) on this account)")
@@ -207,72 +226,270 @@ jobs:
                   existing = s
           print(f"   {EV_NAME}: {'EXISTS ' + existing['id'] if existing else 'does not exist'}")
 
-          if not existing:
-              # Stated loudly and before the call, so the run log records
-              # what was spent and on whose instruction. A paid tier chosen
-              # silently is the kind of thing nobody can reconstruct later.
-              if PLAN != "free":
-                  print(f"   ::PAID PLAN:: creating on '{PLAN}' — this BILLS the account.")
-                  print("   (operator instruction 2026-08-18: add Evercoat to the paid services)")
+          # Match on TYPE as well as name before reusing anything.
+          #
+          # Everything below this point assumes the service it found is the
+          # free static site this workflow creates. If some earlier attempt had
+          # left a `web_service` under the same name, reusing it would attach
+          # the production domain to a service on a BILLED instance plan and
+          # report success — the operator's zero-spend rule broken silently, by
+          # a workflow whose whole point is that it cannot spend. Render service
+          # types are immutable, so the only safe response is to stop and say
+          # so. Raised by Codex on review.
+          if existing and existing.get("type") != "static_site":
+              print(f"::error::{EV_NAME} exists but is type "
+                    f"'{existing.get('type')}', not 'static_site'. Refusing to "
+                    f"reuse it — attaching the domain to it could bill the "
+                    f"account. Render service types cannot be changed; delete "
+                    f"it deliberately or pick another name.")
+              sys.exit(1)
 
+          # The build command carries the front door's only guard.
+          #
+          # `app/page.tsx` used to be `redirect("/dashboard")`, which under
+          # `output: "export"` emitted `<html id="__next_error__">` as
+          # out/index.html while `next build` exited 0 and printed
+          # "✓ Exporting (2/2)". A Render route cannot rescue that: Render's
+          # own documentation states it "does not apply redirect or rewrite
+          # rules to a path if a resource exists at that path", and
+          # out/index.html exists. The page is now a real client-side redirect,
+          # and THIS assertion is what stops that silently reverting — it fails
+          # the build rather than publishing an error document as the home page.
+          BUILD_CMD = (
+              "npm ci"
+              " && NEXT_OUTPUT=export npm run build"
+              ' && if grep -q "__next_error__" out/index.html;'
+              ' then echo "FATAL: / exported as a Next.js error document"; exit 1; fi'
+              ' && test -f out/dashboard/index.html'
+              ' && test -f out/admin/index.html'
+          )
+
+          if not existing:
               st, owners = api("GET", "/owners?limit=10")
               owner_id = (owners[0].get("owner", owners[0])).get("id") if owners else None
               print(f"   ownerId: {owner_id}")
 
               payload = {
-                  "type": "web_service",
+                  "type": "static_site",
                   "name": EV_NAME,
                   "ownerId": owner_id,
                   "repo": REPO,
                   "branch": "master",
                   "autoDeploy": "yes",
-                  "rootDir": "",
+                  # The Next app is a sub-directory and carries its own
+                  # package-lock.json, so `npm ci` resolves against the right
+                  # tree. The repository root holds a SECOND lockfile for the
+                  # Playwright suite; building from the root installs that one
+                  # and never builds the web app at all.
+                  "rootDir": "apps/web",
                   "serviceDetails": {
-                      "env": "docker",
-                      "plan": PLAN,
-                      "region": "oregon",
-                      "healthCheckPath": "/dashboard",
-                      "envSpecificDetails": {
-                          "dockerfilePath": "./apps/web/Dockerfile",
-                          "dockerContext": "./apps/web",
-                      },
+                      "buildCommand": BUILD_CMD,
+                      # Relative to rootDir. `next build` with output:"export"
+                      # writes apps/web/out.
+                      "publishPath": "out",
+                      # Pinned ON rather than left to default.
+                      # `itwevercoatrd.aiappinvent.com` is a CNAME to
+                      # evercoat-itw-rd-web.onrender.com; disabling the Render
+                      # subdomain destroys the target of that CNAME and the
+                      # custom domain stops resolving.
+                      "renderSubdomainPolicy": "enabled",
+                      # Extension-less paths, made explicit rather than assumed.
+                      #
+                      # Render does NOT do clean-URL fallback — its docs say it
+                      # serves the resource at a path if one exists, and there
+                      # is no implicit ".html" lookup. The export now writes
+                      # directory indexes (out/dashboard/index.html), so every
+                      # link the app generates is "/dashboard/" and works
+                      # without any rule at all.
+                      #
+                      # These rules exist for the OTHER case: someone typing or
+                      # bookmarking "/dashboard" with no trailing slash. No
+                      # resource exists at exactly that path, which is precisely
+                      # the condition under which Render applies a rule, so the
+                      # rewrite fires deterministically instead of relying on
+                      # the host to invent a directory redirect.
+                      "routes": [
+                          {"type": "rewrite", "source": "/dashboard",
+                           "destination": "/dashboard/index.html"},
+                          {"type": "rewrite", "source": "/admin",
+                           "destination": "/admin/index.html"},
+                      ],
                   },
+                  "envVars": [
+                      # Matches ci.yml's NODE_VERSION exactly. An unpinned Node
+                      # means the build that passed CI is not the build Render
+                      # runs, and the difference only shows at deploy time.
+                      {"key": "NODE_VERSION", "value": "22"},
+                      {"key": "NEXT_TELEMETRY_DISABLED", "value": "1"},
+                  ],
               }
               if not APPLY:
-                  print("   WOULD CREATE:")
+                  print("   WOULD CREATE (static site — free, no instance plan):")
                   print(json.dumps(payload, indent=2))
               else:
                   st, resp = api("POST", "/services", payload)
                   print(f"   POST /services -> {st}")
                   if st not in (200, 201):
                       print(f"::error::create failed: {resp}")
-                      print("::notice::If this is a repo-access error, Render's GitHub App "
-                            "must be granted access to the PRIVATE repo marc667us/evercoat-itw-rd.")
                       sys.exit(1)
                   svc = resp.get("service", resp)
                   existing = svc
-                  print(f"   created: {svc.get('id')}  {svc.get('serviceDetails',{}).get('url')}")
+                  print(f"   created: {svc.get('id')}")
 
           # ---------------------------------------------------------------
           rule("4. ATTACH the domain to the Evercoat service")
-          if not existing:
+          ev_id = existing["id"] if existing else None
+          dom_id = None
+          if not ev_id:
               print("   (no service yet — plan mode, or creation skipped)")
           else:
-              ev_id = existing["id"]
               st, cur = api("GET", f"/services/{ev_id}/custom-domains?limit=50")
-              cur_names = {(d.get("customDomain", d)).get("name") for d in (cur or [])}
-              if EV_DOM in cur_names:
-                  print(f"   {EV_DOM} already attached to {ev_id}")
+              cur_rows = {(d.get("customDomain", d)).get("name"):
+                          (d.get("customDomain", d)).get("id")
+                          for d in (cur or [])}
+              if EV_DOM in cur_rows:
+                  dom_id = cur_rows[EV_DOM]
+                  print(f"   {EV_DOM} already attached to {ev_id}  [{dom_id}]")
               elif not APPLY:
                   print(f"   WOULD ATTACH {EV_DOM} to {ev_id}")
               else:
                   st, resp = api("POST", f"/services/{ev_id}/custom-domains", {"name": EV_DOM})
-                  print(f"   POST custom-domain -> {st} {resp if st>=400 else ''}")
+                  print(f"   POST custom-domain -> {st} {resp if st >= 400 else ''}")
                   if st not in (200, 201):
                       print("::error::attach failed"); sys.exit(1)
-                  print(f"   OK — {EV_DOM} attached to {ev_id}")
+                  # Re-LIST rather than trust the create response shape.
+                  #
+                  # POST /custom-domains returns an ARRAY of custom-domain
+                  # objects, not a single object. Reading it as a dict left
+                  # dom_id as None, and step 5 then skipped DNS verification
+                  # while printing nothing that looked wrong — a silent skip in
+                  # the one step that makes the certificate happen. Listing the
+                  # domains back reads the same field the same way as the
+                  # already-attached branch above, so there is one shape to get
+                  # right instead of two. Raised by Codex on review.
+                  st, back = api("GET", f"/services/{ev_id}/custom-domains?limit=50")
+                  for item in (back or []):
+                      cd = item.get("customDomain", item)
+                      if cd.get("name") == EV_DOM:
+                          dom_id = cd.get("id")
+                  if not dom_id:
+                      print(f"::error::attached {EV_DOM} but could not read its id back")
+                      sys.exit(1)
+                  print(f"   OK — {EV_DOM} attached to {ev_id}  [{dom_id}]")
+
+          # ---------------------------------------------------------------
+          # From here on, everything is PROOF rather than configuration.
+          #
+          # The previous version of this workflow stopped at "attached" and
+          # reported success. Attached is not served, and served is not
+          # certificated — the operator's browser refused the site with a TLS
+          # handshake failure while every recorded step had "succeeded".
+          # ---------------------------------------------------------------
+          rule("5. DNS VERIFICATION for the custom domain")
+          if not (APPLY and ev_id and dom_id):
+              print("   (skipped — plan mode, or no domain id)")
+          else:
+              # Render verifies automatically on attach; this only forces a
+              # re-check, which matters here because the CNAME was created long
+              # before the service existed.
+              st, _ = api("POST", f"/services/{ev_id}/custom-domains/{dom_id}/verify")
+              print(f"   POST verify -> {st}")
+              verified = False
+              for attempt in range(20):          # 20 x 15s = up to 5 minutes
+                  st, d = api("GET", f"/services/{ev_id}/custom-domains/{dom_id}")
+                  cd = d.get("customDomain", d) if isinstance(d, dict) else {}
+                  status = cd.get("verificationStatus")
+                  print(f"   [{attempt + 1:02d}] verificationStatus={status}")
+                  if status == "verified":
+                      verified = True
+                      break
+                  time.sleep(15)
+              if not verified:
+                  # Deliberately not fatal. Render can serve and certificate a
+                  # domain whose reported status lags, and the HTTPS probe in
+                  # step 7 is the real test. Failing here would hide that
+                  # answer behind a status field.
+                  print("::warning::domain not reported verified within 5 minutes — "
+                        "continuing to the HTTPS proof, which is the real test")
+
+          # ---------------------------------------------------------------
+          rule("6. WAIT for the deploy to go LIVE")
+          if not (APPLY and ev_id):
+              print("   (skipped — plan mode)")
+          else:
+              live = False
+              last = None
+              for attempt in range(60):          # 60 x 20s = up to 20 minutes
+                  st, deps = api("GET", f"/services/{ev_id}/deploys?limit=1")
+                  d = (deps[0].get("deploy", deps[0])) if deps else None
+                  last = (d or {}).get("status")
+                  print(f"   [{attempt + 1:02d}] deploy={(d or {}).get('id')} status={last}")
+                  if last == "live":
+                      live = True
+                      break
+                  # Terminal failures. Continuing to poll would burn 20 minutes
+                  # to report the same thing.
+                  if last in ("build_failed", "update_failed", "canceled",
+                              "pre_deploy_failed"):
+                      print(f"::error::deploy ended in {last} — read the Render build log")
+                      sys.exit(1)
+                  time.sleep(20)
+              if not live:
+                  print(f"::error::deploy did not reach live within 20 minutes (last={last})")
+                  sys.exit(1)
+              print("   deploy is LIVE")
+
+          # ---------------------------------------------------------------
+          rule("7. PROOF — certificate and HTTP response")
+          if not (APPLY and ev_id):
+              print("   (skipped — plan mode)")
+          else:
+              # urllib validates the certificate chain against the system trust
+              # store by default. A hostname whose certificate has not been
+              # issued raises SSLCertVerificationError here — which is exactly
+              # the failure the operator's browser reported as "not secure". So
+              # a 200 through this call IS the certificate proof, and nothing
+              # else in this workflow can stand in for it.
+              def probe(url):
+                  req = urllib.request.Request(url, headers={"User-Agent": "render-setup"})
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return r.status, r.read(4000).decode("utf-8", "replace")
+
+              ok = False
+              for attempt in range(30):          # 30 x 20s = up to 10 minutes
+                  try:
+                      code, _ = probe(f"https://{EV_DOM}/dashboard")
+                      print(f"   [{attempt + 1:02d}] https://{EV_DOM}/dashboard -> {code}")
+                      if code == 200:
+                          ok = True
+                          break
+                  except ssl.SSLError as e:
+                      print(f"   [{attempt + 1:02d}] TLS not ready yet: {e}")
+                  except Exception as e:                       # noqa: BLE001
+                      print(f"   [{attempt + 1:02d}] not ready: {type(e).__name__}: {e}")
+                  time.sleep(20)
+
+              if not ok:
+                  print(f"::error::https://{EV_DOM}/dashboard never returned 200 — "
+                        "certificate not issued, or the site is not serving")
+                  sys.exit(1)
+
+              # The front door specifically. A green build published an error
+              # document here once already; this is the assertion that would
+              # have caught it from the outside.
+              code, body = probe(f"https://{EV_DOM}/")
+              print(f"   https://{EV_DOM}/ -> {code}")
+              if code != 200:
+                  print("::error::the root did not return 200"); sys.exit(1)
+              if "__next_error__" in body:
+                  print("::error::the root is serving a Next.js ERROR DOCUMENT"); sys.exit(1)
+              print("   root is a real page (no __next_error__), certificate valid")
 
           rule("SUMMARY")
           print(f"   mode      : {MODE}")
           print(f"   changes   : {'APPLIED' if APPLY else 'NONE (plan only)'}")
+          print(f"   service   : {EV_NAME} [{ev_id or 'not created'}]")
+          print(f"   domain    : {EV_DOM}")
+          if APPLY and ev_id:
+              print(f"   URL       : https://{EV_DOM}/")
           PY

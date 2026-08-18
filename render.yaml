@@ -1,67 +1,128 @@
 # EvercoatITWRD APP — Render blueprint
 #
-# SCOPE, STATED PLAINLY. This deploys the WEB application only, and that
-# is a deliberate choice rather than an unfinished one:
+# WHAT THIS DESCRIBES, AND WHY IT IS A STATIC SITE.
 #
-#   * `apps/web` currently makes NO API calls. There is no `fetch`, no
-#     next-auth wiring and no sign-in flow anywhere in it. Deploying the
-#     API alongside would therefore change nothing a visitor could see,
-#     while adding a database that ADR-009 forbids holding real records.
+# This file describes the service that ACTUALLY EXISTS on Render, so that a
+# reader (or a future Blueprint sync) is not looking at a different shape from
+# the one running. It previously described a Docker web service that was never
+# created — the account refused it — and an artifact describing something that
+# does not exist is how the last three sessions each started from a wrong
+# premise.
 #
-#   * ADR-009: Render is OPTIONAL DEMO STAGING ONLY. It must never hold
-#     real R&D records — its free PostgreSQL expires after 30 days, and
-#     formulation data is the asset this whole product exists to protect.
-#     Docker Compose remains the deployment path for anything real.
+# The service is created and maintained by `.github/workflows/render-setup.yml`
+# against the Render API, because the API key is a GitHub Actions secret and
+# every change should land in a run log with a timestamp and an actor.
 #
-#   * Everything here is on Render's free tier. A free web service spins
-#     down after inactivity and takes roughly a minute to wake, which is
-#     acceptable for a demo URL and is not acceptable for anything else.
+# ─────────────────────────────────────────────────────────────────────────
+# WHY STATIC AND NOT A WEB SERVICE
+# ─────────────────────────────────────────────────────────────────────────
 #
-# WHEN THE API IS ADDED LATER it needs, at minimum: a Postgres instance,
-# `DATABASE_URL` on the non-superuser app role, a reachable Keycloak for
-# `KEYCLOAK_ISSUER`, and `alembic upgrade head` run as a role that owns
-# `alembic_version`. None of that is wired here, and half-wiring it would
-# produce a service that boots and then 503s on every request.
+#   * A free WEB SERVICE is refused by this account, measured 2026-08-18:
+#       POST /services -> 400
+#       {"message":"free tier usage quota has been exhausted,
+#         new services are not allowed"}
+#     All five existing services are `standard`; none are free. The exhausted
+#     allowance is the workspace's 750 free INSTANCE-hours per month.
+#
+#   * A STATIC SITE has no instance, so it does not draw on that allowance and
+#     stays deployable when it is gone. It is free of charge, it does not spin
+#     down after inactivity the way a free web service does, and Render issues
+#     and renews its TLS certificate automatically at no cost.
+#
+#   * `apps/web` makes NO API calls today — no fetch, no next-auth wiring — and
+#     has three pages. There is no server-side behaviour to lose by exporting
+#     it. This is honest for the app as it stands, not a compromise.
+#
+#   * ADR-009: Render is OPTIONAL DEMO STAGING ONLY. It must never hold real
+#     R&D records. A static site cannot hold records at all, which makes that
+#     constraint structural here rather than a rule someone must remember.
+#
+# WHEN THIS MUST CHANGE. At Slice 3 the API is wired in and a static host can
+# no longer serve the product. At that point this becomes a web service again
+# and needs, at minimum: a Postgres instance, `DATABASE_URL` on the
+# non-superuser app role, a reachable Keycloak for `KEYCLOAK_ISSUER`, and
+# `alembic upgrade head` run as a role that owns `alembic_version`. None of
+# that is wired here, and half-wiring it produces a service that boots and then
+# 503s on every request. The Docker path is preserved and still builds:
+# `apps/web/Dockerfile` is untouched and `next.config.mjs` selects the output
+# mode from NEXT_OUTPUT, so reverting is a config change, not a rewrite.
 
 services:
   - type: web
+    # `env: static` is what makes this a Static Site rather than an instance.
+    env: static
+    # 🔴 THE DNS DEPENDS ON THIS EXACT NAME. `itwevercoatrd.aiappinvent.com` is
+    # a CNAME in Namecheap to `evercoat-itw-rd-web.onrender.com`. Rename the
+    # service and the custom domain resolves to a hostname Render no longer
+    # serves; the site goes dark and the certificate stops renewing.
     name: evercoat-itw-rd-web
-    runtime: docker
-
-    # The build context is `apps/web`, matching the Dockerfile, which
-    # COPYs its own package.json and lockfile. Pointing the context at the
-    # repository root instead would send the entire tree — including the
-    # Python API and the migrations — to the builder and then fail on the
-    # first COPY.
-    dockerfilePath: ./apps/web/Dockerfile
-    dockerContext: ./apps/web
-
-    plan: free
-    region: oregon
     branch: master
 
-    # /dashboard, not /. The root route is a `redirect()` stub that
-    # answers 307, and a health check pointed at a redirect is how a
-    # perfectly healthy service gets marked unhealthy and never goes live
-    # — a failure already seen twice on this platform. /dashboard returns
-    # a real 200.
-    healthCheckPath: /dashboard
+    # The Next app is a sub-directory and carries its own package-lock.json.
+    # The repository ROOT holds a second lockfile, for the Playwright suite —
+    # building from the root installs that one and never builds the web app.
+    rootDir: apps/web
 
-    # Only rebuild when something the web image actually contains changes.
-    # Without this every API-only or migration-only commit triggers a full
-    # web rebuild.
+    # The trailing assertion is the front door's only guard.
+    #
+    # `app/page.tsx` was once `redirect("/dashboard")`. Under
+    # `output: "export"` there is no server to issue that redirect, so the root
+    # exported as `<html id="__next_error__">` — while `next build` exited 0
+    # and printed "✓ Exporting (2/2)". The site would have served an error
+    # document at `/` with every gate green.
+    #
+    # A Render redirect rule cannot rescue it: Render does not apply redirect
+    # or rewrite rules to a path when a resource already exists at that path,
+    # and out/index.html exists. So the page itself is now a real client-side
+    # redirect, and this assertion fails the build if that ever regresses.
+    buildCommand: >-
+      npm ci
+      && NEXT_OUTPUT=export npm run build
+      && if grep -q "__next_error__" out/index.html; then
+      echo "FATAL: / exported as a Next.js error document"; exit 1; fi
+      && test -f out/dashboard/index.html
+      && test -f out/admin/index.html
+
+    # Relative to rootDir. `next build` with output:"export" writes apps/web/out.
+    staticPublishPath: out
+
+    # Extension-less paths, made explicit rather than assumed.
+    #
+    # Render does NOT do clean-URL fallback: it serves the resource at a path
+    # when one exists, and there is no implicit ".html" lookup. `next.config.mjs`
+    # sets `trailingSlash` for the export, so the build writes directory indexes
+    # (out/dashboard/index.html) and every link the app generates is
+    # "/dashboard/", which needs no rule at all.
+    #
+    # These rules cover the OTHER case: someone typing or bookmarking
+    # "/dashboard" without the trailing slash. No resource exists at exactly
+    # that path — which is the documented condition for a rule to apply — so
+    # the rewrite fires deterministically rather than depending on the host to
+    # invent a directory redirect.
+    routes:
+      - type: rewrite
+        source: /dashboard
+        destination: /dashboard/index.html
+      - type: rewrite
+        source: /admin
+        destination: /admin/index.html
+
+    # Only rebuild when something the site actually contains changes. Without
+    # this, every API-only or migration-only commit triggers a full rebuild.
     buildFilter:
       paths:
         - apps/web/**
         - render.yaml
 
     envVars:
-      - key: NODE_ENV
-        value: production
+      # Matches ci.yml's NODE_VERSION exactly. An unpinned Node means the build
+      # that passed CI is not the build Render runs, and the difference only
+      # ever shows at deploy time.
+      - key: NODE_VERSION
+        value: "22"
       - key: NEXT_TELEMETRY_DISABLED
         value: "1"
       # NOTE: NEXT_PUBLIC_* is inlined at BUILD time, not read at runtime.
-      # Setting one here does nothing to the bundle — it has to be a
-      # Docker build ARG. Left unset deliberately: the app makes no API
-      # calls yet, so there is no URL for it to point at, and a plausible
-      # wrong value is worse than an absent one.
+      # Left unset deliberately: the app makes no API calls yet, so there is no
+      # URL for it to point at, and a plausible wrong value is worse than an
+      # absent one.

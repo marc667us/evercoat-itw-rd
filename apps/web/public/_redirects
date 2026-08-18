@@ -1,22 +1,25 @@
 # Cloudflare Pages redirect rules.
 #
-# WHY THIS FILE EXISTS
-# --------------------
-# `app/page.tsx` is a server component whose entire body is
-# `redirect("/dashboard")`. Under the standalone (Render) build the server
-# issues a real 307. Under `output: "export"` there is no server, and the
-# root page exports as `<html id="__next_error__">` — a Next.js error
-# document. The build still exits 0 and prints `✓ Exporting (2/2)`, so
-# nothing about the CI output would tell you the front door is broken.
+# ⚠️ NOT LOAD-BEARING ANY MORE, AND NOT USED BY THE LIVE DEPLOYMENT.
 #
-# That was measured on the generated `out/index.html`, not assumed. It is
-# the same class of defect this platform keeps hitting: a green build is
-# not a working feature.
+# The live site is a RENDER STATIC SITE (see render.yaml). Render does not read
+# this file — it is Cloudflare Pages syntax — and the operator has ruled out
+# Cloudflare. It is kept only because `.github/workflows/deploy-cloudflare-pages.yml`
+# still asserts its presence, and because the rule below is harmless and would
+# still be correct if that route were ever revisited.
 #
-# Cloudflare Pages applies these rules before serving a file, so `/` is
-# answered with a redirect and the error document is never reached.
+# WHAT IT USED TO BE FOR, AND WHY THAT NO LONGER APPLIES.
+# `app/page.tsx` was a server component whose entire body was
+# `redirect("/dashboard")`. Under `output: "export"` there is no server, so the
+# root exported as `<html id="__next_error__">` — a Next.js error document —
+# while the build exited 0 and printed "✓ Exporting (2/2)". This file answered
+# `/` at Cloudflare's edge so that document was never reached.
 #
-# Harmless to the Render build: `public/` is copied verbatim into the
-# image, where this is just an unused text file. Nothing needs undoing
-# when the deployment moves back to Render.
+# That is fixed at the source now: `app/page.tsx` is a real client-side
+# redirect page that exports as an actual HTML document in BOTH build modes, so
+# `/` is served correctly by any host. The fix had to move into the app because
+# the same trick does NOT work on Render: Render does not apply redirect or
+# rewrite rules to a path when a resource already exists at that path, and
+# out/index.html exists. The build now asserts the root is not an error
+# document, so this file is a belt beside braces rather than the only guard.
 /    /dashboard    302
