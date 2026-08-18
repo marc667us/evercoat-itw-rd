@@ -24,6 +24,7 @@ from app.api.admin_reference_data import router as admin_reference_data_router
 from app.api.admin_stage_gates import router as admin_stage_gates_router
 from app.api.formulations import router as formulations_router
 from app.api.health import router as health_router
+from app.api.laboratory import router as laboratory_router
 from app.api.materials import router as materials_router
 from app.api.materials import suppliers_router
 from app.api.opportunities import router as opportunities_router
@@ -177,6 +178,10 @@ def create_app() -> FastAPI:
     # id and RLS applies the project-membership predicate to every row, so
     # the prefix carries no project segment. See the module docstring.
     application.include_router(formulations_router, prefix="/api/formulations")
+    # Slice 4. Batches are project-scoped and addressed by their own id,
+    # like formulations: RLS applies the project-membership predicate to
+    # every row, so the prefix carries no project segment.
+    application.include_router(laboratory_router, prefix="/api/laboratory/batches")
 
     if settings.metrics_enabled:
 

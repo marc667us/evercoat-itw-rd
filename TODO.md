@@ -455,6 +455,47 @@ shipped pt3.
 
 ---
 
+## Slice 4 — Laboratory
+
+Shipped 2026-08-18 pt4. The third link in the owner's loop
+(Project -> Formula -> **Lab** -> Test -> Analysis -> Approval -> Failure
+-> Reformulation), built to the source's own workflow in sections 15-16.
+
+- [x] Migration 017 — batches, batch components (planned vs actual),
+      process parameters, deviations, samples. Composite three-column
+      tenant+project keys, RLS, immutability triggers.
+- [x] **The lot must be a lot of the line's material** — a three-column
+      foreign key, not an application comparison. Charging a resin lot
+      against the filler line is the most consequential mistake available
+      at a weigh-up bench, and the database now refuses it.
+- [x] `mass_deviation` in the calculation engine — signed, relative to
+      the PLAN and not the batch, with the tolerance as a band rather
+      than a ceiling. 8 tests including two Hypothesis properties.
+- [x] The guided flow: create (weigh-up sheet from `scale_to_batch`) ->
+      authorize -> start -> weigh -> capture process data -> sample ->
+      complete -> Chemist Review.
+- [x] Segregation of duties: the executor may not review their own batch,
+      enforced in the UPDATE's own predicate.
+- [x] 10 routes, permissions checked against migration 002 first — there
+      is deliberately no `batch.authorize`, because no such permission
+      exists and inventing one would repeat the `material.approve_production`
+      defect.
+
+- [ ] **The seed script does not seed laboratory data.** The CI seed gate
+      counts materials, suppliers, formulas, versions, components, SDS and
+      units — it does NOT cover `laboratory.*`, so those tables are
+      verified by tests and not by the seeder. Stated here rather than
+      left for someone to discover the gate is narrower than it looks.
+- [ ] No web UI. `/laboratory` does not exist as a page; the batch queue
+      and the weigh-up sheet are API-only.
+- [ ] `batch_deviations.resolution` has no writer — the columns exist and
+      nothing sets them. Same class as the tables-with-no-writer defects
+      found in Slice 3; closing it needs a resolve endpoint.
+- [ ] Sample status never moves off `available`. It becomes writable when
+      Slice 5's tests consume a sample.
+
+---
+
 ## Open decisions
 
 None blocking. ADR-002 (LangGraph) and ADR-024 (full depth, gate by gate)

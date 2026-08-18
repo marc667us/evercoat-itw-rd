@@ -18,10 +18,12 @@ from decimal import Decimal, InvalidOperation
 
 __all__ = [
     "Component",
+    "MassDeviation",
     "SubmissionBlock",
     "binder_to_filler_ratio",
     "cost_per_kg",
     "fraction_to_percent",
+    "mass_deviation",
     "normalize_to_100",
     "scale_to_batch",
     "solids_content",
@@ -100,6 +102,79 @@ def _require(components: list[Component]) -> None:
 
 
 # ---------------------------------------------------------------- totals
+
+
+@dataclass(frozen=True, slots=True)
+class MassDeviation:
+    """How far a weighed mass is from the one the sheet called for.
+
+    Three fields rather than a bool, because a technician needs all of
+    them: how much, how much proportionally, and whether that is
+    acceptable. A bare `within_tolerance` hides a 0.9% error sitting just
+    inside a 1% limit, which is exactly the reading a batch review exists
+    to notice.
+    """
+
+    planned_kg: Decimal
+    actual_kg: Decimal
+    delta_kg: Decimal
+    delta_percent: Decimal
+    within_tolerance: bool
+
+
+def mass_deviation(
+    planned_kg: Decimal | int | str,
+    actual_kg: Decimal | int | str,
+    *,
+    tolerance_percent: Decimal | int | str = Decimal("1.0"),
+) -> MassDeviation:
+    """Compare a weighed mass against the planned one.
+
+    The source lists "planned weight / actual weight" among the things a
+    technician records during manufacture, and the plan requires "planned
+    vs actual with tolerance flagging".
+
+    THE PERCENTAGE IS RELATIVE TO THE PLAN, NOT TO THE BATCH. A 5 g error
+    on a 10 g addition is a 50% error and matters enormously; the same
+    5 g on a 20 kg addition is noise. Dividing by the batch mass would
+    make every minor component look perfect and is the mistake this
+    signature exists to prevent.
+
+    SIGNED, DELIBERATELY. Over- and under-charging are different faults
+    with different consequences -- too much hardener and too little
+    hardener fail in opposite directions -- so the sign is preserved
+    rather than reported as a magnitude.
+
+    A planned mass of zero is refused rather than reported as an infinite
+    deviation: a component planned at zero is not a component, and a
+    weigh-up sheet should never have produced the line.
+    """
+    planned = _dec(planned_kg, "planned_kg")
+    actual = _dec(actual_kg, "actual_kg")
+    tolerance = _dec(tolerance_percent, "tolerance_percent")
+
+    if planned <= ZERO:
+        raise ValueError(
+            "a planned mass must be positive; a component planned at zero "
+            "should not appear on a weigh-up sheet at all"
+        )
+    if actual < ZERO:
+        raise ValueError("a weighed mass cannot be negative")
+    if tolerance < ZERO:
+        raise ValueError("a tolerance cannot be negative")
+
+    delta = actual - planned
+    percent = delta / planned * HUNDRED
+    return MassDeviation(
+        planned_kg=planned,
+        actual_kg=actual,
+        delta_kg=delta,
+        delta_percent=percent,
+        # `abs`, because the tolerance is a band around the plan and not a
+        # ceiling: under-charging by 3% is as far out as over-charging by
+        # 3%.
+        within_tolerance=abs(percent) <= tolerance,
+    )
 
 
 def fraction_to_percent(fraction: Decimal | int | str) -> Decimal:
