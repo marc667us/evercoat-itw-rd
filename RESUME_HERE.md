@@ -10,14 +10,20 @@ remote `origin`, branch `master`. Tip **`5c4973a`**, working tree clean.
 ## ✅ THE APP IS ONLINE
 
 # https://itwevercoatrd.aiappinvent.com
+# https://itwevercoat.aiappinvent.com
 
 Two sessions of "there is still no URL" are closed. Do not re-plan this.
+Both hostnames are attached to the same service and **each has its own
+certificate** — one working proves nothing about the other, which is why
+`render-setup.yml` proves every hostname independently.
 
 | | |
 |---|---|
 | Live suite, against the DEPLOYED site | **passed=14 · failed=0 · skipped=1** |
 | Certificate | Google Trust Services WE1 · 2026-08-18 → 2026-11-16 · TLS 1.3 · auto-renewing |
 | Render service | `evercoat-itw-rd-web` — `srv-da242g37uimc73dqnmg0`, type **`static_site`** |
+| Workspace | 6 services + 2 Postgres, **all belonging to Evercoat / AutoWorkshop / Solar — nothing is removable.** There is no App Factory on Render. Audit it with `render-audit.yml` (read-only). |
+| ⏰ **`autoworkshop-postgres` is FREE and EXPIRES 2026-09-01** | Render deletes expired free databases. Not this project's, but it is on this workspace. |
 | CI | **ALL FOUR JOBS GREEN** — API ✓ Web ✓ E2E ✓ **Security ✓** (Security had never passed before) |
 | Cost | **zero** |
 
