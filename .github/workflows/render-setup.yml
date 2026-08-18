@@ -265,6 +265,23 @@ jobs:
           # the build rather than publishing an error document as the home page.
           created_now = False
 
+          # One list, used by BOTH create and reconcile. Held here because
+          # the create payload having NODE_ENV while the reconcile PATCH
+          # did not is exactly how the RUNNING service ended up unpinned
+          # while this file claimed otherwise. Raised by Codex.
+          ENV_VARS = [
+              # Matches ci.yml's NODE_VERSION exactly. An unpinned Node means
+              # the build that passed CI is not the build Render runs, and the
+              # difference only shows at deploy time.
+              {"key": "NODE_VERSION", "value": "22"},
+              # Set explicitly, as the Dockerfile, ci.yml and the Cloudflare
+              # workflow all do. `next build` with NODE_ENV=development ships
+              # the DEVELOPMENT React runtime — a defect this platform has
+              # already shipped once.
+              {"key": "NODE_ENV", "value": "production"},
+              {"key": "NEXT_TELEMETRY_DISABLED", "value": "1"},
+          ]
+
           # Hoisted so the create payload and the reconcile PATCH cannot
           # drift apart — one list, used twice.
           ROUTES = [
@@ -329,20 +346,7 @@ jobs:
                       # the host to invent a directory redirect.
                       "routes": ROUTES,
                   },
-                  "envVars": [
-                      # Matches ci.yml's NODE_VERSION exactly. An unpinned Node
-                      # means the build that passed CI is not the build Render
-                      # runs, and the difference only shows at deploy time.
-                      {"key": "NODE_VERSION", "value": "22"},
-                      # Set explicitly, as the Dockerfile, ci.yml and the
-                      # Cloudflare workflow all do. `next build` with
-                      # NODE_ENV=development ships the DEVELOPMENT React
-                      # runtime — a defect this platform has already shipped
-                      # once. Leaving it to the host's default made the
-                      # Render build the only path not pinning it.
-                      {"key": "NODE_ENV", "value": "production"},
-                      {"key": "NEXT_TELEMETRY_DISABLED", "value": "1"},
-                  ],
+                  "envVars": ENV_VARS,
               }
               if not APPLY:
                   print("   WOULD CREATE (static site — free, no instance plan):")
@@ -387,6 +391,36 @@ jobs:
                   print(f"::error::could not reconcile the service: {resp}")
                   sys.exit(1)
               print("   build command, publish path and routes reapplied")
+
+              # Environment variables are a SEPARATE endpoint — PATCH
+              # /services does not carry them. The service was created
+              # before NODE_ENV was added to this file, so the running
+              # service was left unpinned while the file said it was
+              # pinned. Raised by Codex.
+              #
+              # This is a WHOLE-SET PUT: it replaces every variable on the
+              # service, so anything added by hand in the dashboard is
+              # deleted. That is acceptable here only because this service
+              # is created and owned entirely by this workflow and has
+              # never held a hand-entered value. The before/after is
+              # printed so a lost variable is visible in the run log rather
+              # than discovered later.
+              st, before = api("GET", f"/services/{existing['id']}/env-vars?limit=50")
+              if st == 200 and isinstance(before, list):
+                  print(f"   env before: {sorted((e.get('envVar', e) or {}).get('key','?') for e in before)}")
+              st, resp = api("PUT", f"/services/{existing['id']}/env-vars", ENV_VARS)
+              print(f"   PUT env-vars -> {st}")
+              if st not in (200, 201):
+                  print(f"::error::could not reconcile env vars: {resp}")
+                  sys.exit(1)
+              st, after = api("GET", f"/services/{existing['id']}/env-vars?limit=50")
+              if st == 200 and isinstance(after, list):
+                  keys = sorted((e.get("envVar", e) or {}).get("key", "?") for e in after)
+                  print(f"   env after : {keys}")
+                  missing = {v["key"] for v in ENV_VARS} - set(keys)
+                  if missing:
+                      print(f"::error::env vars missing after PUT: {sorted(missing)}")
+                      sys.exit(1)
 
           # ---------------------------------------------------------------
           rule("4. ATTACH the domain to the Evercoat service")

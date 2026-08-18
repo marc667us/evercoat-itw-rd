@@ -330,7 +330,17 @@ PY
     E2E_P="${E2E_P:-0}"; E2E_F="${E2E_F:-0}"; E2E_S="${E2E_S:-0}"
     E2E_FLAKY="${E2E_FLAKY:-0}"
     if [[ "${E2E_FLAKY}" != "0" ]]; then
-        echo "  NOTE: ${E2E_FLAKY} flaky (passed only on retry). Not a clean pass."
+        # COUNTED AS FAILED, not merely mentioned.
+        #
+        # Playwright exits ZERO when a retry eventually passes, and flaky
+        # was being added to none of the three columns -- so a run with
+        # flaky tests reported failed=0, exited 0, and its three numbers
+        # did not add up to the tests actually executed. A test that only
+        # passes on a second attempt against a LIVE site is exactly the
+        # signal this suite exists to surface. Raised by Codex.
+        echo "  ${E2E_FLAKY} FLAKY (passed only on retry) -- counted as FAILED."
+        echo "  A test that needs a retry against a live deployment is not a pass."
+        E2E_F=$((E2E_F + E2E_FLAKY))
     fi
 
     # Same reconciliation as the pytest runner: a non-zero exit with
