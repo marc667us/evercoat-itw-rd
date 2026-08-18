@@ -88,11 +88,21 @@ export function DataSourceBanner({
  *
  * `role="alert"` here and not on the banner: this IS an interruption. The
  * reader asked for data and did not get it.
+ *
+ * 🔴 AND IT CARRIES A TESTID, BECAUSE NEXT.JS PUTS ITS OWN `role="alert"`
+ * ON EVERY PAGE. `__next-route-announcer__` is an empty live region the
+ * router uses to announce navigations, so `getByRole("alert")` is
+ * AMBIGUOUS in this application by construction: it resolves to two
+ * elements and Playwright's strict mode refuses. CI found that rather
+ * than any amount of reading would have. The role stays, because
+ * assistive technology is the reason it exists; the testid is what tests
+ * target.
  */
 export function DataSourceError({ error }: { error: Error }): ReactNode {
   return (
     <div
       role="alert"
+      data-testid="data-source-error"
       className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900"
     >
       <p className="font-semibold">

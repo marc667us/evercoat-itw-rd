@@ -128,17 +128,39 @@ test.describe("the browser reaches the API", () => {
     // Worth its own test because a CORS refusal surfaces in application
     // code as a bare TypeError with no detail — indistinguishable from the
     // network being down. If this breaks, every other test in this file
-    // fails with a misleading message, so it is asserted directly.
+    // fails with a misleading message.
+    //
+    // 🔴 THE OBVIOUS ASSERTION IS IMPOSSIBLE, AND CI PROVED IT.
+    //
+    // The first version read `Access-Control-Allow-Origin` off the
+    // response and compared it to the web origin. It came back `null` —
+    // not because the header was missing, but because a browser exposes
+    // only the CORS-SAFELISTED response headers to script (Cache-Control,
+    // Content-Language, Content-Type, Expires, Last-Modified, Pragma).
+    // `Access-Control-Allow-Origin` is not one of them and never will be
+    // unless the server adds it to `Access-Control-Expose-Headers`.
+    //
+    // So the assertion was checking something the platform guarantees a
+    // script cannot see, against an API that was working correctly.
+    //
+    // What actually proves CORS permits this origin is that the request
+    // RESOLVES. A browser refuses a disallowed cross-origin response
+    // before script sees it, and `fetch` rejects with a bare TypeError.
+    // Reaching a status code at all is the permission.
     await page.goto("/dashboard/");
 
-    const allowed = await page.evaluate(async () => {
-      const response = await fetch("http://127.0.0.1:8100/health/ready", {
-        credentials: "omit",
-      });
-      return response.headers.get("access-control-allow-origin");
+    const result = await page.evaluate(async () => {
+      try {
+        const response = await fetch("http://127.0.0.1:8100/health/ready", {
+          credentials: "omit",
+        });
+        return { ok: true as const, status: response.status };
+      } catch (error) {
+        return { ok: false as const, message: String(error) };
+      }
     });
 
-    expect(allowed).toBe("http://127.0.0.1:3100");
+    expect(result).toMatchObject({ ok: true, status: 200 });
   });
 });
 
@@ -283,7 +305,10 @@ test.describe("the materials page", () => {
 
     await page.goto("/materials/");
 
-    await expect(page.getByRole("alert")).toContainText(
+    // `getByTestId`, not `getByRole("alert")`: Next.js renders its own
+    // empty `role="alert"` route announcer on every page, so the role is
+    // ambiguous here by construction.
+    await expect(page.getByTestId("data-source-error")).toContainText(
       /could not be loaded/i,
     );
     // The demonstration dataset's first material must NOT appear. Its
@@ -309,6 +334,6 @@ test.describe("the materials page", () => {
 
     await page.goto("/materials/");
 
-    await expect(page.getByRole("alert")).toContainText(/disagree/i);
+    await expect(page.getByTestId("data-source-error")).toContainText(/disagree/i);
   });
 });
