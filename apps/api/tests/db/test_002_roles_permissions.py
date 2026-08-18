@@ -29,6 +29,21 @@ already renders -- was a state no user could ever set. Migration 016
 closes that; `test_every_permission_has_at_least_one_holder` is what makes
 sure the next one cannot be introduced silently.
 
+WHAT THIS FILE DOES AND DOES NOT CHECK -- stated exactly, because an
+overclaim here is the very thing it was written to retire.
+
+Implemented: every permission has a holder; every permission the
+application CHECKS exists in the database; no role holds both development
+and QA test approval; six load-bearing absences; the ten seeded roles.
+
+**NOT implemented: the reverse direction** -- "every permission seeded here
+is referenced somewhere in source". It would fail today and correctly so:
+most of `batch.*`, `test.*`, `failure.*` and `product.release` belong to
+Slices 4-7 and nothing checks them yet. Adding it with a large allowlist
+would prove nothing, so it is named here as a gap rather than implemented
+as theatre. Migration 002's closing comment still claims it and has been
+amended to match.
+
 WHICH SESSION AND WHY
 ---------------------
 `owner_session`. These are assertions about the CONTENT of the RBAC
@@ -51,42 +66,71 @@ from sqlalchemy.orm import Session
 API_ROOT = Path(__file__).resolve().parents[2]
 APP_SOURCE = API_ROOT / "app"
 
-# A permission code as it appears in Python: 'material.approve_lab'.
-# Deliberately anchored on the quote characters, so a prose mention of a
-# permission in a docstring is not mistaken for a use of it -- the
-# distinction between "referenced in source" and "mentioned in a comment"
-# is the whole point of the check that was missing.
-_CODE_IN_SOURCE = re.compile(r"""["']([a-z_]+\.[a-z_]+)["']""")
-
-# Codes that look like permissions to the regex above but are not. Kept as
-# an explicit list rather than by loosening the pattern, so that adding
-# one is a decision somebody makes on purpose.
-_NOT_PERMISSIONS = frozenset(
-    {
-        # module paths, table names and content types
-        "app.core",
-        "app.calculations",
-        "app.domains",
-        "app.api",
-        "sqlalchemy.orm",
-        "pydantic.v1",
-        "application.json",
-        "text.plain",
-    }
-)
+# ONLY THE PLACES A PERMISSION IS ACTUALLY CHECKED.
+#
+# 🔴 THE OBVIOUS IMPLEMENTATION IS WRONG, AND WAS WRITTEN FIRST. Scanning
+# for every `'domain.thing'` string literal in `app/` looks equivalent and
+# is not: AUDIT ACTION NAMES HAVE THE SAME SHAPE. `material.created`,
+# `formula.created`, `admin.role_granted`, `opportunity.decided` and 22
+# others are audit actions, not permissions, and the naive scan reported
+# every one of them as "a permission the application checks that migration
+# 002 does not seed". Twenty-six false failures, in the test whose whole
+# purpose is to be trusted about the authorization model.
+#
+# So this matches the CALL SITES instead. A permission is a string handed
+# to `require_permission(...)` or to `.has(...)`; anything else with a dot
+# in it is some other kind of name.
+_CHECK_SITE = re.compile(r"(?:require_permission|\.has)\s*\(([^)]*)\)", re.DOTALL)
+_QUOTED = re.compile(r"""["']([a-z_]+\.[a-z_]+)["']""")
 
 
-def _permission_codes_in_source() -> set[str]:
-    """Every permission-shaped literal used in the application package."""
+def _permission_codes_checked_in_source() -> set[str]:
+    """Every permission code the application actually gates on.
+
+    Read from the source text rather than by importing and introspecting,
+    because a route's dependency is evaluated at import time and a typo in
+    a permission string is exactly the thing that must be caught without
+    running the application.
+    """
     found: set[str] = set()
     for path in APP_SOURCE.rglob("*.py"):
         if "__pycache__" in path.parts:
             continue
-        for match in _CODE_IN_SOURCE.finditer(path.read_text(encoding="utf-8")):
-            code = match.group(1)
-            if code not in _NOT_PERMISSIONS:
-                found.add(code)
+        text_content = path.read_text(encoding="utf-8")
+        for call in _CHECK_SITE.finditer(text_content):
+            found.update(_QUOTED.findall(call.group(1)))
+
+    # `POST /materials/{id}/status` resolves its permission from a table
+    # rather than naming it in the call, because the required authority
+    # depends on the requested status. The table is imported rather than
+    # pattern-matched: it IS the mapping, and a copy of it here would be
+    # the second list that drifts from the first.
+    from app.api.materials import STATUS_PERMISSION
+
+    found.update(STATUS_PERMISSION.values())
     return found
+
+
+# PERMISSIONS THAT DELIBERATELY HAVE NO HOLDER YET, and the slice that
+# will give them one. Found by this test on its first run -- two more
+# orphans beyond the one that prompted the file, both belonging to modules
+# nothing has built.
+#
+# An allowlist weakens a check, so it is written to fail in BOTH
+# directions: an entry that gains a holder must be removed, or the test
+# fails as loudly as a new orphan would. That is what stops it becoming
+# the place orphans go to be forgotten.
+ORPHANED_UNTIL_THEIR_SLICE: dict[str, str] = {
+    # Slice 5. Confirmation authority is the top of the test-approval
+    # ladder and deliberately not folded into `test.approve_lead` or
+    # `test.approve_qa`; which role holds it is a decision that belongs
+    # with the approval-route templates, not with a guess made now.
+    "test.confirm": "Slice 5 -- Testing, with the approval route templates",
+    # Slice 8. Nothing can ingest into the Knowledge Library because the
+    # Knowledge Library does not exist; `knowledge.promote` is granted
+    # because promotion is referenced from Slice 7's messaging.
+    "knowledge.ingest": "Slice 8 -- Knowledge Library and RAG",
+}
 
 
 @pytest.fixture(scope="module")
@@ -122,9 +166,19 @@ def test_every_permission_has_at_least_one_holder(owner_session: Session) -> Non
             )
         ).all()
     ]
-    assert orphans == [], (
+    unexpected = [code for code in orphans if code not in ORPHANED_UNTIL_THEIR_SLICE]
+    assert unexpected == [], (
         "these permissions are held by no role, so no user can ever exercise "
-        f"them: {', '.join(orphans)}"
+        f"them: {', '.join(unexpected)}"
+    )
+
+    # The allowlist must not outlive its entries. A permission that HAS
+    # been granted but is still listed here means the list is stale, and a
+    # stale allowlist is how a real orphan hides behind a resolved one.
+    stale = sorted(set(ORPHANED_UNTIL_THEIR_SLICE) - set(orphans))
+    assert stale == [], (
+        "ORPHANED_UNTIL_THEIR_SLICE lists permissions that now have holders; "
+        f"remove them: {', '.join(stale)}"
     )
 
 
@@ -137,11 +191,11 @@ def test_every_permission_checked_in_source_exists_in_the_database(
     with a typo denies every caller, and looks exactly like a correct
     authorization refusal in production.
     """
-    # Only codes whose prefix is a domain the RBAC model actually uses --
-    # otherwise every dotted string literal in the application would have
-    # to be listed as a non-permission.
+    # A final prefix filter, kept as a belt to the call-site braces: a
+    # literal reaching a `.has(...)` on some object that is not a Principal
+    # would otherwise be reported as a missing permission.
     domains = {code.split(".", 1)[0] for code in seeded_permissions}
-    checked = {c for c in _permission_codes_in_source() if c.split(".", 1)[0] in domains}
+    checked = {c for c in _permission_codes_checked_in_source() if c.split(".", 1)[0] in domains}
 
     unknown = sorted(checked - seeded_permissions)
     assert unknown == [], (

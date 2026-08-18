@@ -309,13 +309,35 @@ DROP FUNCTION core._grant(TEXT, TEXT[]);
 COMMIT;
 
 -- =====================================================================
--- Verified by tests/db/test_002_roles_permissions.py:
---   * every permission code referenced in application source exists here
---     (guards against a check for a permission nobody can hold)
---   * every permission here is referenced somewhere in source
---     (guards against inert controls that read as real in an audit)
+-- CORRECTED 2026-08-18. This block previously said "Verified by
+-- tests/db/test_002_roles_permissions.py" and listed six properties.
+-- THAT FILE DID NOT EXIST. Not one of the six was checked by anything,
+-- in the file that defines the entire authorization model -- which is the
+-- worst possible place for a safety net made of prose, because every
+-- other security claim in this product is downstream of these grants.
+--
+-- It is also how `material.approve_production` came to be defined here
+-- and granted to no role at all, leaving the material status `preferred`
+-- unreachable by any user. Migration 016 closes that.
+--
+-- The file now exists. What it ACTUALLY checks:
+--   * every permission here has at least one holder
+--     (the check that would have caught approve_production; two further
+--      orphans -- test.confirm and knowledge.ingest -- are allowlisted
+--      with the slice that will assign them, and the allowlist fails if
+--      an entry later gains a holder)
+--   * every permission the application CHECKS exists here
+--     (guards against a require_permission() typo that 403s forever)
 --   * no role holds both test.approve_development and test.approve_qa
---   * product_development_chemist does NOT hold product.release
---   * product_development_engineer does NOT hold formula.modify_draft
---   * administrator does NOT hold product.release or test.confirm
--- =====================================================================
+--   * six load-bearing absences, including: chemist has no
+--     product.release, engineer no formula.modify_draft, administrator
+--     neither product.release nor test.confirm, director no
+--     formula.create, procurement no material.approve_production
+--   * the ten canonical roles are all seeded
+--
+-- What it does NOT check, named rather than implied: the reverse
+-- direction, "every permission here is referenced somewhere in source".
+-- It would fail today and correctly so -- most of batch.*, test.*,
+-- failure.* and product.release belong to Slices 4-7 and nothing reads
+-- them yet. Implementing it with a large allowlist would prove nothing.
+-- ======================================================================

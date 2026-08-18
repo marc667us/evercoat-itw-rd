@@ -47,14 +47,54 @@ router = APIRouter()
 
 __all__ = ["router"]
 
-# The two tables this router administers, and the audit entity name for
-# each. A dict rather than two near-identical modules: the shape is
-# genuinely the same, and duplicating it would create the second list
-# that drifts from the first.
-_TABLES = {
-    "units": ("materials.units", "unit"),
-    "product-families": ("materials.product_families", "product_family"),
+# THE STATEMENT IS A LITERAL, NOT A TEMPLATE.
+#
+# An earlier version interpolated the table name into an f-string and
+# defended it with "the name comes from a closed dictionary, never from
+# the request" -- which was true, and which Semgrep flagged anyway
+# (`avoid-sqlalchemy-text`), and which was right to flag.
+#
+# That safety was an ARGUMENT, not a MECHANISM: it depended on the
+# dictionary lookup never being relaxed by a later edit, in a handler
+# whose table name arrives as a URL path segment. This repository has
+# already learned that exact lesson once, on the RLS GUC setter, which
+# defended interpolation in a docstring until it was parameterised.
+#
+# So there is no template. Two collections, two complete statements, and
+# nothing to build.
+_RETIRE_SQL = {
+    "units": text(
+        """
+        WITH prev AS (
+            SELECT id, is_active FROM materials.units
+            WHERE id = :id AND organization_id = :org
+            FOR UPDATE
+        )
+        UPDATE materials.units t
+        SET is_active = :active, updated_at = now()
+        FROM prev
+        WHERE t.id = prev.id
+        RETURNING t.id, t.code, t.is_active, prev.is_active AS previous_active
+        """
+    ),
+    "product-families": text(
+        """
+        WITH prev AS (
+            SELECT id, is_active FROM materials.product_families
+            WHERE id = :id AND organization_id = :org
+            FOR UPDATE
+        )
+        UPDATE materials.product_families t
+        SET is_active = :active, updated_at = now()
+        FROM prev
+        WHERE t.id = prev.id
+        RETURNING t.id, t.code, t.is_active, prev.is_active AS previous_active
+        """
+    ),
 }
+
+# The audit entity name for each collection.
+_ENTITY = {"units": "unit", "product-families": "product_family"}
 
 
 class UnitCreate(BaseModel):
@@ -230,32 +270,17 @@ def patch_active(
 ) -> dict[str, Any]:
     """Retire or restore one reference-data row.
 
-    The table name comes from a fixed dictionary, never from the path
-    segment itself. `collection` reaches an f-string, so an unvalidated
-    value would be SQL injection through a URL -- the lookup makes the set
-    of reachable tables closed by construction rather than by a check
-    somebody could later relax.
+    `collection` is a URL path segment and is used ONLY to select a
+    complete, pre-built statement. It never reaches SQL text. See
+    `_RETIRE_SQL` for why that is a mechanism rather than an argument.
     """
-    if collection not in _TABLES:
+    if collection not in _RETIRE_SQL:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such collection")
-    table, entity = _TABLES[collection]
+    entity = _ENTITY[collection]
 
     row = (
         session.execute(
-            text(
-                f"""
-                WITH prev AS (
-                    SELECT id, is_active FROM {table}
-                    WHERE id = :id AND organization_id = :org
-                    FOR UPDATE
-                )
-                UPDATE {table} t
-                SET is_active = :active, updated_at = now()
-                FROM prev
-                WHERE t.id = prev.id
-                RETURNING t.id, t.code, t.is_active, prev.is_active AS previous_active
-                """  # noqa: S608 - `table` comes from _TABLES, never from the request
-            ),
+            _RETIRE_SQL[collection],
             {"id": item_id, "org": principal.organization_id, "active": payload.is_active},
         )
         .mappings()

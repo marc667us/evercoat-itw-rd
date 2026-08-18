@@ -732,13 +732,34 @@ def test_at_most_one_primary_supplier_per_material(
 
 
 @pytest.fixture
-def committed_scope(owner_session: Session) -> Iterator[dict[str, uuid.UUID]]:
+def committed_scope(owner_session: Session, app_session: Session) -> Iterator[dict[str, uuid.UUID]]:
     """Two organizations and a restricted project, COMMITTED.
 
     Committed for the reason `seeded_projects` documents: `app_session` is
     a different connection, so uncommitted rows are invisible to it and
     the test would fail claiming RLS hid something that was never readable
     by anybody. That looks exactly like a policy bug and is not one.
+
+    🔴 IT ALSO TAKES `app_session`, AND ROLLS IT BACK BEFORE CLEANING UP.
+    THIS IS WHY CI HUNG.
+
+    pytest tears fixtures down in reverse order of setup, so this
+    fixture's teardown runs while `app_session` still holds its open
+    transaction. A test that successfully creates a formula leaves that
+    session holding a row lock on `projects.projects` (an FK reference
+    takes one), and the teardown's `DELETE FROM projects.projects` then
+    waits for a transaction that will not be rolled back until AFTER this
+    teardown finishes. Neither side can move.
+
+    The first CI run on this change sat in the Tests step until it was
+    cancelled -- not failing, not passing, just stopped, which is the
+    worst outcome a suite can produce because it reports nothing at all.
+
+    Two changes, and both are deliberate: the session is rolled back here
+    so the locks are gone before the deletes start, and a `lock_timeout`
+    is set so that if this ever happens again the suite FAILS IN FIVE
+    SECONDS with a lock error instead of hanging until the job's six-hour
+    ceiling.
     """
     suffix = uuid.uuid4().hex[:8]
     org_a = _org(owner_session, f"RA{suffix}")
@@ -773,7 +794,13 @@ def committed_scope(owner_session: Session) -> Iterator[dict[str, uuid.UUID]]:
         "normal_version": normal_version,
     }
 
+    # Release the runtime session's locks BEFORE deleting anything.
+    app_session.rollback()
+
     owner_session.begin()
+    # Fail fast rather than hang if a lock is still held: a suite
+    # that stops reports nothing, and nothing is worse than red.
+    owner_session.execute(text("SET LOCAL lock_timeout = '5s'"))
     for org in (org_a, org_b):
         owner_session.execute(
             text("DELETE FROM formulations.formula_versions WHERE organization_id = :o"),

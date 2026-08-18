@@ -28,10 +28,12 @@ from sqlalchemy.orm import Session
 from app.core.security import PermissionDenied, Principal, get_db, get_principal, require_permission
 from app.core.tenancy import CrossTenantReferenceError
 from app.domains.materials.service import (
+    DocumentInput,
     MaterialDuplicateError,
     MaterialInput,
     MaterialInvalidError,
     MaterialNotFoundError,
+    MaterialPermissionError,
     MaterialsError,
     SupplierDuplicateError,
     SupplierError,
@@ -42,9 +44,11 @@ from app.domains.materials.service import (
     create_supplier,
     get_material,
     link_supplier,
+    list_material_documents,
     list_materials,
     list_suppliers,
     material_usage,
+    register_document,
     set_material_status,
     set_supplier_status,
     update_material,
@@ -56,24 +60,19 @@ suppliers_router = APIRouter()
 __all__ = ["router", "suppliers_router"]
 
 
-# WHICH PERMISSION EACH STATUS REQUIRES.
+# THE PERMISSION FOR A STATUS CHANGE IS NOT DECIDED HERE ANY MORE.
 #
-# One table, consulted by the endpoint, rather than a chain of ifs. The
-# mapping is the authorization model for a material's lifecycle and it is
-# short enough to read in one glance -- which is the point, because a
-# reader must be able to check it against migration 002 without following
-# control flow.
+# This module used to hold a `STATUS_PERMISSION` table keyed by the
+# DESTINATION status. The Supervisor found the hole: `development` was
+# reachable with `material.edit`, so anyone who could fix a typo could
+# take a material QA had restricted for a safety finding and move it back
+# to `development` -- clearing the restriction reason and unblocking every
+# formula that used it.
 #
-# `development` is reachable with `material.edit` because returning a
-# material to evaluation is a correction, not a promotion. Every OTHER
-# transition needs an approval permission.
-STATUS_PERMISSION: dict[str, str] = {
-    "development": "material.edit",
-    "approved": "material.approve_lab",
-    "preferred": "material.approve_production",
-    "restricted": "material.restrict",
-    "obsolete": "material.restrict",
-}
+# The authority now belongs to the EDGE (`from -> to`), and the table
+# lives in the service beside the transition rules it qualifies, because
+# the two are one decision. The route's job is to hand over what the
+# caller holds and translate the refusal.
 
 
 class MaterialCreate(BaseModel):
@@ -119,6 +118,26 @@ class MaterialStatusChange(BaseModel):
     reason: str = Field(min_length=3, max_length=1000)
 
 
+class DocumentCreate(BaseModel):
+    """Register a TDS / SDS / CoA against a material.
+
+    Metadata and a storage key, never bytes -- SECURITY.md section 6.
+    """
+
+    document_type: str = Field(pattern="^(TDS|SDS|CoA|regulatory|other)$")
+    title: str = Field(min_length=1, max_length=200)
+    storage_key: str = Field(min_length=1, max_length=500)
+    content_type: str | None = Field(default=None, max_length=200)
+    byte_size: int | None = Field(default=None, ge=0)
+    checksum_sha256: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    issued_on: dt.date | None = None
+    expires_on: dt.date | None = None
+    supersedes_id: uuid.UUID | None = None
+
+    def to_input(self) -> DocumentInput:
+        return DocumentInput(**self.model_dump())
+
+
 class SupplierCreate(BaseModel):
     supplier_code: str = Field(min_length=2, max_length=50)
     name: str = Field(min_length=1, max_length=200)
@@ -140,7 +159,10 @@ class SupplierStatusChange(BaseModel):
 class SupplierLink(BaseModel):
     supplier_id: uuid.UUID
     supplier_part_code: str | None = Field(default=None, max_length=100)
-    is_primary: bool = False
+    # `None` means "leave the flag alone". A plain `bool` defaulting to
+    # False silently demoted the primary supplier whenever somebody edited
+    # a lead time -- this endpoint is an upsert. Raised by the Supervisor.
+    is_primary: bool | None = None
     lead_time_days: int | None = Field(default=None, ge=0)
     quoted_price_per_kg: Decimal | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, max_length=3)
@@ -260,30 +282,35 @@ def post_material_status(
 ) -> dict[str, Any]:
     """Move a material through its lifecycle.
 
-    The permission is resolved from the REQUESTED STATUS, which is why
-    this endpoint depends on `get_principal` rather than on a single
-    `require_permission(...)`. Guarding the endpoint with one code would
-    mean whoever may set any status may set every status -- and the whole
-    point of `material.approve_production` being a separate permission is
-    that promoting a material into commercial products is not the same
-    authority as promoting it into a laboratory.
-    """
-    required = STATUS_PERMISSION[payload.status]
-    if not principal.has(required):
-        raise PermissionDenied()
+    Depends on `get_principal` rather than on a single
+    `require_permission(...)` because the required authority depends on
+    BOTH ends of the move -- promoting to `preferred` needs
+    `material.approve_production`, while lifting a restriction needs
+    `material.restrict` no matter where it lands. A single permission on
+    the endpoint would mean whoever may make any status change may make
+    every status change.
 
+    The permission set is handed to the service, which resolves it against
+    the edge table inside the UPDATE's own WHERE clause. So authorization
+    and the write are the same statement, and there is no window between
+    "may they?" and the row moving.
+    """
     try:
         return set_material_status(
             session,
             material_id=material_id,
             organization_id=principal.organization_id,
             actor_id=principal.user_id,
+            held_permissions=principal.permissions,
             status=payload.status,
             restriction_reason=payload.restriction_reason,
             reason=payload.reason,
         )
     except MaterialNotFoundError as exc:
         raise _missing(exc) from exc
+    except MaterialPermissionError as exc:
+        # 403, not 422: the move is possible, this caller may not make it.
+        raise PermissionDenied(str(exc)) from exc
     except MaterialInvalidError as exc:
         raise _invalid(exc) from exc
 
@@ -291,7 +318,16 @@ def post_material_status(
 @router.get("/{material_id}/usage", tags=["materials"])
 def get_material_usage(
     material_id: uuid.UUID,
-    principal: Principal = Depends(require_permission("material.view", "formula.view")),
+    principal: Principal = Depends(
+        # BOTH, not either. `require_permission` defaults to ANY, and this
+        # endpoint returns formula codes, version codes and per-component
+        # percentages -- the composition data every other route in this
+        # module gates carefully. `procurement_specialist` and
+        # `administrator` hold `material.view` and NOT `formula.view`, so
+        # the default would have handed them formulations. Raised by the
+        # Supervisor.
+        require_permission("material.view", "formula.view", require_all=True)
+    ),
     session: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """Which formula versions use this material.
@@ -304,6 +340,52 @@ def get_material_usage(
     return material_usage(
         session, material_id=material_id, organization_id=principal.organization_id
     )
+
+
+@router.get("/{material_id}/documents", tags=["materials"])
+def get_material_documents(
+    material_id: uuid.UUID,
+    principal: Principal = Depends(require_permission("material.view")),
+    session: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """The document register: TDS, SDS, CoA, regulatory."""
+    return list_material_documents(
+        session, material_id=material_id, organization_id=principal.organization_id
+    )
+
+
+@router.post("/{material_id}/documents", status_code=status.HTTP_201_CREATED, tags=["materials"])
+def post_material_document(
+    material_id: uuid.UUID,
+    payload: DocumentCreate,
+    principal: Principal = Depends(require_permission("material.edit", "supplier.manage")),
+    session: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Register a controlled document against a material.
+
+    🔴 THE ROUTE WITHOUT WHICH NO FORMULA COULD EVER BE SUBMITTED.
+    `materials.material_documents` had no writer anywhere, while the
+    formulation safety check counts SDS rows and `requires_sds` defaults to
+    TRUE -- so every submission was blocked, permanently. See
+    `register_document`.
+
+    Either permission: the Chemist who owns the material's data and the
+    Procurement Specialist who owns its documentation are both legitimate
+    authors of this record.
+    """
+    try:
+        document_id = register_document(
+            session,
+            material_id=material_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            spec=payload.to_input(),
+        )
+    except MaterialNotFoundError as exc:
+        raise _missing(exc) from exc
+    except MaterialInvalidError as exc:
+        raise _invalid(exc) from exc
+    return {"id": str(document_id)}
 
 
 @router.post("/{material_id}/suppliers", status_code=status.HTTP_201_CREATED, tags=["materials"])

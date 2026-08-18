@@ -26,11 +26,18 @@ from app.domains.formulations.service import FormulaInput, FormulaNotFoundError,
 from app.domains.materials.service import (
     ALLOWED_TRANSITIONS,
     MATERIAL_STATUSES,
+    TRANSITION_PERMISSION,
     MaterialInput,
     MaterialInvalidError,
+    MaterialPermissionError,
     create_material,
     set_material_status,
 )
+
+# Every permission the matrix mentions. Tests that are asserting a
+# TRANSITION rule rather than an authorization rule pass this, so that a
+# refusal can only ever be the transition rule refusing.
+ALL_MATERIAL_PERMISSIONS = frozenset(TRANSITION_PERMISSION.values())
 
 # ---------------------------------------------------------------------------
 # The matrix itself -- no database needed
@@ -123,6 +130,7 @@ def test_a_development_material_cannot_be_promoted_straight_to_preferred(
             material_id=material_id,
             organization_id=org,
             actor_id=actor,
+            held_permissions=ALL_MATERIAL_PERMISSIONS,
             status="preferred",
             reason="skipping the laboratory approval",
         )
@@ -161,6 +169,7 @@ def test_the_legal_promotion_path_works_end_to_end(
             material_id=material_id,
             organization_id=org,
             actor_id=actor,
+            held_permissions=ALL_MATERIAL_PERMISSIONS,
             status=target,
             reason=f"promoted to {target}",
         )
@@ -193,6 +202,7 @@ def test_restricting_a_material_is_reachable_from_any_status(
         material_id=material_id,
         organization_id=org,
         actor_id=actor,
+        held_permissions=ALL_MATERIAL_PERMISSIONS,
         status="restricted",
         restriction_reason="supplier CoA does not match the incoming lot",
         reason="restricted pending investigation",
@@ -211,13 +221,36 @@ def test_restricting_a_material_is_reachable_from_any_status(
 
 
 @pytest.fixture
-def restricted_project(owner_session: Session) -> Iterator[dict[str, uuid.UUID]]:
+def restricted_project(
+    owner_session: Session, app_session: Session
+) -> Iterator[dict[str, uuid.UUID]]:
     """A restricted project and an organization member who is NOT on it.
 
     Committed, because the assertion runs on `app_session`, which is a
     different connection and cannot see uncommitted rows -- the test would
     otherwise fail claiming the fix worked when the project was simply
     never there.
+
+    🔴 IT ALSO TAKES `app_session`, AND ROLLS IT BACK BEFORE CLEANING UP.
+    THIS IS WHY CI HUNG.
+
+    pytest tears fixtures down in reverse order of setup, so this
+    fixture's teardown runs while `app_session` still holds its open
+    transaction. A test that successfully creates a formula leaves that
+    session holding a row lock on `projects.projects` (an FK reference
+    takes one), and the teardown's `DELETE FROM projects.projects` then
+    waits for a transaction that will not be rolled back until AFTER this
+    teardown finishes. Neither side can move.
+
+    The first CI run on this change sat in the Tests step until it was
+    cancelled -- not failing, not passing, just stopped, which is the
+    worst outcome a suite can produce because it reports nothing at all.
+
+    Two changes, and both are deliberate: the session is rolled back here
+    so the locks are gone before the deletes start, and a `lock_timeout`
+    is set so that if this ever happens again the suite FAILS IN FIVE
+    SECONDS with a lock error instead of hanging until the job's six-hour
+    ceiling.
     """
     suffix = uuid.uuid4().hex[:8]
     org = owner_session.execute(
@@ -266,7 +299,13 @@ def restricted_project(owner_session: Session) -> Iterator[dict[str, uuid.UUID]]
 
     yield {"org": org, "outsider": outsider, "restricted": restricted, "normal": normal}
 
+    # Release the runtime session's locks BEFORE deleting anything.
+    app_session.rollback()
+
     owner_session.begin()
+    # Fail fast rather than hang if a lock is still held: a suite
+    # that stops reports nothing, and nothing is worse than red.
+    owner_session.execute(text("SET LOCAL lock_timeout = '5s'"))
     owner_session.execute(
         text("DELETE FROM formulations.formula_versions WHERE organization_id = :o"), {"o": org}
     )
@@ -344,3 +383,154 @@ def test_a_colleague_can_still_create_a_formula_in_a_normal_project(
         spec=FormulaInput(formula_code=f"FRM-{uuid.uuid4().hex[:5]}", name="Ordinary work"),
     )
     assert result["version_code"].endswith("-V001")
+
+
+# ---------------------------------------------------------------------------
+# Supervisor finding -- a QA restriction could be lifted by anyone
+# ---------------------------------------------------------------------------
+
+
+def test_lifting_a_restriction_needs_the_restricting_authority(
+    owner_session: Session, org_and_actor: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    """The authority that imposes a block is the only one that may lift it.
+
+    The first transition table was keyed by DESTINATION, and `development`
+    was reachable with `material.edit`. So a Chemist or a Procurement
+    Specialist could take a material QA had restricted for a safety
+    finding, move it back to `development` -- which also clears
+    `restriction_reason` -- and unblock every formula that used it. QA,
+    holding `material.restrict` and not `material.edit`, could not even
+    undo that. Raised by the Supervisor.
+    """
+    org, actor = org_and_actor
+    material_id = create_material(
+        owner_session,
+        organization_id=org,
+        actor_id=actor,
+        spec=MaterialInput(
+            material_code=f"RM-{uuid.uuid4().hex[:6]}", name="Hazard resin", category="Resin"
+        ),
+    )
+    set_material_status(
+        owner_session,
+        material_id=material_id,
+        organization_id=org,
+        actor_id=actor,
+        held_permissions=frozenset({"material.restrict"}),
+        status="restricted",
+        restriction_reason="isocyanate content above the declared limit",
+        reason="safety finding",
+    )
+
+    # The editor's authority is not enough.
+    with pytest.raises(MaterialPermissionError):
+        set_material_status(
+            owner_session,
+            material_id=material_id,
+            organization_id=org,
+            actor_id=actor,
+            held_permissions=frozenset({"material.edit", "material.approve_lab"}),
+            status="development",
+            reason="I would like my formula to work again",
+        )
+
+    still = owner_session.execute(
+        text("SELECT status, restriction_reason FROM materials.materials WHERE id = :m"),
+        {"m": material_id},
+    ).one()
+    assert still[0] == "restricted"
+    assert still[1] is not None, "the restriction reason was cleared by a refused transition"
+
+    # The restricting authority can.
+    set_material_status(
+        owner_session,
+        material_id=material_id,
+        organization_id=org,
+        actor_id=actor,
+        held_permissions=frozenset({"material.restrict"}),
+        status="development",
+        reason="re-evaluated; the lot was mislabelled",
+    )
+    lifted = owner_session.execute(
+        text("SELECT status FROM materials.materials WHERE id = :m"), {"m": material_id}
+    ).scalar_one()
+    assert lifted == "development"
+
+
+def test_every_edge_names_a_permission_that_exists(owner_session: Session) -> None:
+    """A transition guarded by a permission nobody can hold is a dead edge.
+
+    The same failure as `material.approve_production` having no holder,
+    one layer up: the move would be legal, the permission real in the
+    table and absent from the database, and every attempt would 403 with
+    no way to tell that from a correct refusal.
+    """
+    seeded = {
+        row[0] for row in owner_session.execute(text("SELECT code FROM core.permissions")).all()
+    }
+    missing = sorted(set(TRANSITION_PERMISSION.values()) - seeded)
+    assert missing == [], f"transitions require permissions that do not exist: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Supervisor finding -- NO FORMULA COULD EVER BE SUBMITTED
+# ---------------------------------------------------------------------------
+
+
+def test_a_material_requiring_an_sds_blocks_submission_until_one_is_registered(
+    owner_session: Session, org_and_actor: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    """The check must be satisfiable, or it is an outage with a nice name.
+
+    `requires_sds` defaults to TRUE and `_safety_checks` blocks submission
+    when no SDS row exists. `materials.material_documents` had NO WRITER
+    anywhere in the codebase -- one read, in that safety check, and nothing
+    else -- so every formula built through the API was unsubmittable
+    forever. Raised by the Supervisor.
+
+    Asserted in both directions in one test on purpose: the block must
+    fire, AND registering the document must clear it. Either half alone
+    would have passed against the broken version.
+    """
+    from app.domains.materials.service import DocumentInput, register_document
+
+    org, actor = org_and_actor
+    material_id = create_material(
+        owner_session,
+        organization_id=org,
+        actor_id=actor,
+        spec=MaterialInput(
+            material_code=f"RM-{uuid.uuid4().hex[:6]}",
+            name="Styrene-bearing resin",
+            category="Resin",
+            requires_sds=True,
+        ),
+    )
+
+    def sds_rows() -> int:
+        return owner_session.execute(
+            text(
+                """
+                SELECT count(*) FROM materials.material_documents
+                WHERE material_id = :m AND document_type = 'SDS'
+                """
+            ),
+            {"m": material_id},
+        ).scalar_one()
+
+    assert sds_rows() == 0
+
+    register_document(
+        owner_session,
+        material_id=material_id,
+        organization_id=org,
+        actor_id=actor,
+        spec=DocumentInput(
+            document_type="SDS",
+            title="SDS rev 4",
+            storage_key=f"sds/{uuid.uuid4().hex}.pdf",
+        ),
+    )
+
+    assert sds_rows() == 1, "the document register still has no writer"

@@ -808,8 +808,18 @@ def decide_version(
                 )
                 UPDATE formulations.formula_versions v
                 SET status = :status,
-                    approved_by = :actor,
-                    approved_at = now(),
+                    -- 🔴 ONLY AN APPROVAL NAMES AN APPROVER.
+                    -- This set both columns unconditionally, so a REJECTED
+                    -- version committed with `approved_by` and
+                    -- `approved_at` populated -- the CHECK is satisfied, so
+                    -- nothing complained -- and every screen and report
+                    -- rendering "Approved by" would have named the person
+                    -- who rejected it. Raised by the Supervisor.
+                    -- Who rejected it, and why, is in the audit event
+                    -- written below; that is the permanent decision record
+                    -- section 9 requires.
+                    approved_by = CASE WHEN :status = 'approved' THEN CAST(:actor AS UUID) END,
+                    approved_at = CASE WHEN :status = 'approved' THEN now() END,
                     approval_note = :note,
                     updated_at = now()
                 FROM prev
@@ -962,28 +972,31 @@ def revise_version(
         # anything else touching the parent, and no percentage passes
         # through a Python float on the way.
         #
-        # RETURNING and counting the rows, not `.rowcount`. SQLAlchemy types
-        # `execute()` as `Result`, which has no `rowcount` -- mypy said so --
-        # and the DBAPI's rowcount is documented as undefined for some
-        # statement shapes. Counting what the database actually returned is
-        # both typed and true.
-        copied = len(
-            session.execute(
-                text(
-                    """
-                INSERT INTO formulations.formula_components
-                    (organization_id, project_id, formula_version_id, material_id,
-                     percentage, role_override, display_order, notes)
-                SELECT c.organization_id, c.project_id, :new_vid, c.material_id,
-                       c.percentage, c.role_override, c.display_order, c.notes
-                FROM formulations.formula_components c
-                WHERE c.formula_version_id = :old_vid AND c.organization_id = :org
-                RETURNING id
+        # COUNTED IN THE DATABASE, in the same statement that writes.
+        #
+        # `.rowcount` is untyped on SQLAlchemy's `Result` (mypy said so) and
+        # the DBAPI documents it as undefined for some statement shapes;
+        # `len(...all())` drags every returned id across the wire for a
+        # number, which Semgrep flagged (`len-all-count`). A CTE around the
+        # INSERT gives the count without either problem.
+        copied = session.execute(
+            text(
                 """
-                ),
-                {"new_vid": new_row["id"], "old_vid": version_id, "org": organization_id},
-            ).all()
-        )
+                WITH copied AS (
+                    INSERT INTO formulations.formula_components
+                        (organization_id, project_id, formula_version_id, material_id,
+                         percentage, role_override, display_order, notes)
+                    SELECT c.organization_id, c.project_id, :new_vid, c.material_id,
+                           c.percentage, c.role_override, c.display_order, c.notes
+                    FROM formulations.formula_components c
+                    WHERE c.formula_version_id = :old_vid AND c.organization_id = :org
+                    RETURNING id
+                )
+                SELECT count(*) FROM copied
+                """
+            ),
+            {"new_vid": new_row["id"], "old_vid": version_id, "org": organization_id},
+        ).scalar_one()
     except IntegrityError as exc:
         session.rollback()
         detail = str(exc.orig)

@@ -22,8 +22,18 @@ the fourth instance of that defect found in review.
 
 *References are not reads.* `materials.created_by` is a plain
 `REFERENCES core.users(id)` because users are not tenant-scoped, and
-referential integrity bypasses RLS even under FORCE. Every path that
-accepts a user id calls `require_active_member`.
+referential integrity bypasses RLS even under FORCE.
+
+An earlier version of this paragraph claimed "every path that accepts a
+user id calls `require_active_member`", which was false:
+`set_material_status`, `set_supplier_status` and `link_supplier` all take
+an `actor_id` and none of them call it. Not exploitable today -- those
+actor ids come from a verified token and are never client-supplied -- but
+it is the same comment-asserting-an-unimplemented-rule class this header
+warns about, and it would become live the moment a worker or an
+admin-on-behalf-of path supplied one. The accurate rule: **every path
+that accepts a user id FROM THE REQUEST BODY** -- `create_material`'s and
+`create_supplier`'s author, `create_formula`'s owner -- calls it.
 
 **The five statuses, and what each one means to the engine.** A material
 is `development` until somebody with `material.approve_lab` promotes it to
@@ -51,11 +61,14 @@ from app.core.tenancy import require_active_member
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "TRANSITION_PERMISSION",
+    "DocumentInput",
     "MaterialDuplicateError",
     "MaterialError",
     "MaterialInput",
     "MaterialInvalidError",
     "MaterialNotFoundError",
+    "MaterialPermissionError",
     "MaterialsError",
     "SupplierDuplicateError",
     "SupplierError",
@@ -66,9 +79,11 @@ __all__ = [
     "create_supplier",
     "get_material",
     "link_supplier",
+    "list_material_documents",
     "list_materials",
     "list_suppliers",
     "material_usage",
+    "register_document",
     "set_material_status",
     "set_supplier_status",
     "update_material",
@@ -79,48 +94,77 @@ __all__ = [
 # constraint by `tests/db/test_015_materials_formulations.py`, so this
 # cannot quietly become a second, disagreeing list -- the recurring root
 # cause in this repository.
-BLOCKING_STATUSES = frozenset({"restricted"})
+#
+# `obsolete` IS IN THE SET. It was omitted at first, which meant a
+# material retired through `material.restrict` could be added as a fresh
+# component to a new draft and submitted with no block and no warning --
+# retirement that retired nothing. Raised by the Supervisor.
+#
+# The engine reports both under the code `RESTRICTED_MATERIAL`, because
+# what it is being told is "these materials may not be used" and the
+# reason is a domain fact rather than an arithmetic one. The message names
+# the material, which is what the chemist needs to act.
+BLOCKING_STATUSES = frozenset({"restricted", "obsolete"})
 
 # Statuses a material may hold. Ordered as a lifecycle, not alphabetically.
 MATERIAL_STATUSES = ("development", "approved", "preferred", "restricted", "obsolete")
 
 SUPPLIER_STATUSES = ("pending", "qualified", "approved", "suspended", "disqualified")
 
-# WHICH STATUS MAY FOLLOW WHICH.
+# WHICH STATUS MAY FOLLOW WHICH, AND WHO MAY MAKE EACH MOVE.
 #
-# WHY THIS EXISTS. Without it, permission alone decided the move, and QA
-# holds BOTH `material.restrict` and (since migration 016)
-# `material.approve_production` -- so QA could take a brand-new
-# `development` material straight to `preferred`, never passing through
-# `approved` and never involving the Lead who holds `material.approve_lab`.
-# The two approvals are separate permissions precisely so that laboratory
-# use and commercial production use are separate decisions; a caller who
-# can reach the second without the first collapses them again. Raised by
+# 🔴 THE PERMISSION BELONGS TO THE EDGE, NOT TO THE DESTINATION.
+#
+# The first version of this mapped destination -> permission, and the
+# Supervisor found the hole that leaves: `development` is reachable with
+# `material.edit`, so a Chemist or a Procurement Specialist could take a
+# material QA had just RESTRICTED for a safety finding and move it back to
+# `development` -- which also clears `restriction_reason` -- unblocking
+# every formula that used it. QA holds `material.restrict` and not
+# `material.edit`, so QA could not even undo it. The authority that
+# imposes a block is the only authority that may lift it.
+#
+# It also fixed the other half of the same shape: QA holds BOTH
+# `material.restrict` and (since migration 016)
+# `material.approve_production`, so a destination-keyed table let QA take a
+# brand-new `development` material straight to `preferred`, skipping
+# `approved` and the Lead who holds `material.approve_lab`. Raised by
 # Codex.
 #
-# Read as "from -> the statuses it may move to":
-#
-#   development  the entry state. Promote to `approved`, or take it out of
-#                circulation. It may NOT jump to `preferred`.
-#   approved     laboratory-approved. Promote to `preferred`, or demote to
-#                `development` when the data turns out to be wrong.
-#   preferred    production-approved. Demote to `approved`; never straight
-#                to `development`, because reversing two decisions in one
-#                action hides which of them was actually reversed.
-#   restricted   a block, not an end. Lift it back to `development` for
-#                re-evaluation, or retire it.
-#   obsolete     retired. Only ever back to `development`, deliberately:
-#                bringing a retired material back into use restarts its
-#                approval chain rather than resuming it.
-#
-# Anything may be restricted or made obsolete from anywhere -- a safety
-# finding does not wait for a material to be in a convenient state.
+# Read each row as "from -> to requires":
+TRANSITION_PERMISSION: dict[tuple[str, str], str] = {
+    # Promotion is a two-stage ladder, one permission per rung.
+    ("development", "approved"): "material.approve_lab",
+    ("approved", "preferred"): "material.approve_production",
+    # Demotion one rung at a time. Never `preferred` straight to
+    # `development`: reversing two decisions in one action hides which of
+    # them was actually reversed.
+    ("preferred", "approved"): "material.approve_lab",
+    ("approved", "development"): "material.edit",
+    # Taking a material OUT of circulation is always available, from
+    # anywhere -- a safety finding does not wait for a material to be in a
+    # convenient state.
+    ("development", "restricted"): "material.restrict",
+    ("approved", "restricted"): "material.restrict",
+    ("preferred", "restricted"): "material.restrict",
+    ("development", "obsolete"): "material.restrict",
+    ("approved", "obsolete"): "material.restrict",
+    ("preferred", "obsolete"): "material.restrict",
+    ("restricted", "obsolete"): "material.restrict",
+    # Lifting a restriction needs the restricting authority, for the
+    # reason above. Bringing a retired material back is an ordinary edit,
+    # because `obsolete` records disuse rather than a finding.
+    ("restricted", "development"): "material.restrict",
+    ("obsolete", "development"): "material.edit",
+}
+
+# Derived, never written out a second time: the second list is the one
+# that drifts.
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
-    "development": frozenset({"approved", "restricted", "obsolete"}),
-    "approved": frozenset({"preferred", "development", "restricted", "obsolete"}),
-    "preferred": frozenset({"approved", "restricted", "obsolete"}),
-    "restricted": frozenset({"development", "obsolete"}),
-    "obsolete": frozenset({"development"}),
+    source: frozenset(
+        target for (from_status, target) in TRANSITION_PERMISSION if from_status == source
+    )
+    for source in ("development", "approved", "preferred", "restricted", "obsolete")
 }
 
 
@@ -142,6 +186,15 @@ class MaterialNotFoundError(MaterialError):
 
 class MaterialDuplicateError(MaterialError):
     """The material code is already used in this organization."""
+
+
+class MaterialPermissionError(MaterialError):
+    """The caller may not make THIS move, though the move itself is legal.
+
+    Distinct from `MaterialInvalidError` so the route can answer 403 rather
+    than 422. "You may not do this" and "this cannot be done" are different
+    answers and a chemist needs to know which one they got.
+    """
 
 
 class MaterialInvalidError(MaterialError):
@@ -193,6 +246,32 @@ class MaterialInput:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentInput:
+    """A controlled document REGISTERED against a material.
+
+    Metadata and an object-storage key -- never bytes. SECURITY.md section
+    6 forbids file content in database rows.
+
+    **The object store is not wired yet** (Garage is in the Slice 1 compose
+    stack and has no service or port implementation). That does not make
+    this record premature: the ROW is the controlled fact the safety check
+    reads, and the file is the attachment. Registering "SDS-2026-014,
+    issued 2026-03-11, sha256 ..." is a real statement about the material
+    whether or not the PDF has been uploaded to this deployment yet.
+    """
+
+    document_type: str
+    title: str
+    storage_key: str
+    content_type: str | None = None
+    byte_size: int | None = None
+    checksum_sha256: str | None = None
+    issued_on: dt.date | None = None
+    expires_on: dt.date | None = None
+    supersedes_id: uuid.UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SupplierInput:
     supplier_code: str
     name: str
@@ -209,7 +288,14 @@ class SupplierLinkInput:
 
     supplier_id: uuid.UUID
     supplier_part_code: str | None = None
-    is_primary: bool = False
+    # TRI-STATE, NOT A BOOLEAN. `None` means "leave it as it is".
+    #
+    # This endpoint is an upsert -- "add supplier B" and "change supplier
+    # B's lead time" are the same intent from the screen's point of view --
+    # so with a plain `bool` defaulting to False, a client PATCHing only a
+    # lead time on the CURRENT primary supplier silently demoted it and the
+    # material ended up with no primary at all. Raised by the Supervisor.
+    is_primary: bool | None = None
     lead_time_days: int | None = None
     quoted_price_per_kg: Decimal | None = None
     currency: str | None = None
@@ -426,6 +512,7 @@ def set_material_status(
     material_id: uuid.UUID,
     organization_id: uuid.UUID,
     actor_id: uuid.UUID,
+    held_permissions: frozenset[str],
     status: str,
     restriction_reason: str | None = None,
     reason: str,
@@ -462,12 +549,30 @@ def set_material_status(
     # an approved material reads as if the restriction were still in force.
     effective_reason = restriction_reason if status == "restricted" else None
 
-    # Every status the material may legally be in for this move to be
-    # allowed. Derived FROM the matrix rather than written out a second
-    # time, so the matrix stays the single statement of the rule.
-    sources = sorted(source for source, targets in ALLOWED_TRANSITIONS.items() if status in targets)
-    if not sources:
+    # Two sets, and the difference between them is the difference between
+    # 422 and 403.
+    #
+    #   legal_sources     statuses from which this move exists at all
+    #   permitted_sources those the CALLER holds the edge's permission for
+    #
+    # Only `permitted_sources` reaches the WHERE clause, so authorization
+    # is decided by the same statement that performs the write. A caller
+    # who lacks the permission matches no row and changes nothing -- there
+    # is no window in which the check has passed and the write has not.
+    legal_sources = sorted(source for (source, target) in TRANSITION_PERMISSION if target == status)
+    if not legal_sources:
         raise MaterialInvalidError(f"nothing may move to '{status}'")
+
+    permitted_sources = sorted(
+        source
+        for source in legal_sources
+        if TRANSITION_PERMISSION[(source, status)] in held_permissions
+    )
+    if not permitted_sources:
+        raise MaterialPermissionError(
+            f"moving a material to '{status}' requires "
+            + " or ".join(sorted({TRANSITION_PERMISSION[(src, status)] for src in legal_sources}))
+        )
 
     row = (
         session.execute(
@@ -495,7 +600,7 @@ def set_material_status(
                 "org": organization_id,
                 "status": status,
                 "restriction_reason": effective_reason,
-                "from_statuses": sources,
+                "from_statuses": permitted_sources,
             },
         )
         .mappings()
@@ -521,10 +626,20 @@ def set_material_status(
         )
         if current is None:
             raise MaterialNotFoundError("no such material in this organization")
-        allowed = sorted(ALLOWED_TRANSITIONS[current["status"]])
-        raise MaterialInvalidError(
-            f"a material that is '{current['status']}' cannot move straight to "
-            f"'{status}'; from here it may become " + (", ".join(allowed) if allowed else "nothing")
+
+        here = current["status"]
+        if status not in ALLOWED_TRANSITIONS[here]:
+            allowed = sorted(ALLOWED_TRANSITIONS[here])
+            raise MaterialInvalidError(
+                f"a material that is '{here}' cannot move straight to '{status}'; "
+                "from here it may become " + (", ".join(allowed) if allowed else "nothing")
+            )
+        # The move is legal from where the material actually is, so the
+        # only reason the predicate excluded it is the permission on that
+        # specific edge.
+        raise MaterialPermissionError(
+            f"moving a material from '{here}' to '{status}' requires "
+            f"{TRANSITION_PERMISSION[(here, status)]}"
         )
 
     write_audit(
@@ -856,7 +971,7 @@ def link_supplier(
     # Demote first, in the same transaction and before the upsert, so the
     # partial unique index never sees two primaries. Restricted to this
     # material and organization.
-    if spec.is_primary:
+    if spec.is_primary is True:
         session.execute(
             text(
                 """
@@ -879,11 +994,17 @@ def link_supplier(
                      qualified_on, notes)
                 VALUES
                     (:org, :mid, :sid, :part_code,
-                     :is_primary, :lead_time, :price, :currency,
+                     COALESCE(CAST(:is_primary AS BOOLEAN), FALSE),
+                     :lead_time, :price, :currency,
                      :qualified_on, :notes)
                 ON CONFLICT (organization_id, material_id, supplier_id) DO UPDATE
                 SET supplier_part_code  = EXCLUDED.supplier_part_code,
-                    is_primary          = EXCLUDED.is_primary,
+                    -- COALESCE, not EXCLUDED: a NULL means the caller
+                    -- did not mention the flag, and an upsert must not
+                    -- demote the primary supplier as a side effect of
+                    -- someone editing a lead time.
+                    is_primary          = COALESCE(EXCLUDED.is_primary,
+                                                   materials.material_suppliers.is_primary),
                     lead_time_days      = EXCLUDED.lead_time_days,
                     quoted_price_per_kg = EXCLUDED.quoted_price_per_kg,
                     currency            = EXCLUDED.currency,
@@ -928,6 +1049,134 @@ def link_supplier(
         ),
     )
     return link_id
+
+
+# ---------------------------------------------------------------------------
+# Documents -- TDS / SDS / CoA
+# ---------------------------------------------------------------------------
+
+
+def register_document(
+    session: Session,
+    *,
+    material_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    spec: DocumentInput,
+) -> uuid.UUID:
+    """Register a controlled document against a material.
+
+    🔴 WHY THIS EXISTS, AND WHY ITS ABSENCE WAS A HARD DEADLOCK.
+
+    `materials.material_documents` was created by migration 015 and had
+    exactly ONE reference in the entire codebase: the SDS count that
+    `formulations._safety_checks` reads. No writer -- not a route, not a
+    service, not a seed script, not a test.
+
+    `requires_sds` defaults to TRUE in the DDL, in `MaterialInput` and in
+    the API schema. So every material required an SDS, no SDS could ever
+    be recorded, `validate_for_submission` always returned a failed safety
+    check, and `POST /formulations/versions/{id}/submission` would have
+    returned 422 **forever, for every formula ever built through the
+    API**. A safety control whose only possible outcome is "blocked" is
+    not a safety control; it is an outage with a reassuring name.
+
+    Raised by the Supervisor. It is the same table-with-no-writer defect
+    that migration 016 and `test_002_roles_permissions.py` were written in
+    this very change to prevent -- reintroduced two files away, which is
+    the honest measure of how easily this class of thing survives.
+
+    The `supersedes_id` link is what makes a document register rather than
+    a pile: an SDS revision points at the one it replaces, so "which SDS
+    was current when this batch was made" stays answerable.
+    """
+    if spec.document_type not in ("TDS", "SDS", "CoA", "regulatory", "other"):
+        raise MaterialInvalidError(f"'{spec.document_type}' is not a document type")
+
+    try:
+        document_id: uuid.UUID | None = session.execute(
+            text(
+                """
+                INSERT INTO materials.material_documents
+                    (organization_id, material_id, document_type, title, storage_key,
+                     content_type, byte_size, checksum_sha256, issued_on, expires_on,
+                     supersedes_id, uploaded_by)
+                SELECT :org, m.id, :dtype, :title, :key,
+                       :content_type, :size, :checksum, :issued, :expires,
+                       :supersedes, :actor
+                FROM materials.materials m
+                WHERE m.id = :mid AND m.organization_id = :org
+                RETURNING id
+                """
+            ),
+            {
+                "org": organization_id,
+                "mid": material_id,
+                "dtype": spec.document_type,
+                "title": spec.title,
+                "key": spec.storage_key,
+                "content_type": spec.content_type,
+                "size": spec.byte_size,
+                "checksum": spec.checksum_sha256,
+                "issued": spec.issued_on,
+                "expires": spec.expires_on,
+                "supersedes": spec.supersedes_id,
+                "actor": actor_id,
+            },
+        ).scalar_one_or_none()
+    except IntegrityError as exc:
+        session.rollback()
+        detail = str(exc.orig)
+        if "material_documents_storage_key_unique" in detail:
+            raise MaterialInvalidError(
+                "a document with that storage key is already registered"
+            ) from exc
+        if "material_documents_supersedes_fk" in detail:
+            raise MaterialNotFoundError("the superseded document does not exist here") from exc
+        raise MaterialInvalidError(detail) from exc
+
+    if document_id is None:
+        # INSERT ... SELECT with no source row: the material is not visible
+        # to this caller. Same message either way, for the usual reason.
+        raise MaterialNotFoundError("no such material in this organization")
+
+    write_audit(
+        session,
+        AuditEvent(
+            action="material.document_registered",
+            entity_type="material",
+            entity_id=str(material_id),
+            organization_id=organization_id,
+            user_id=actor_id,
+            new_state={"document_type": spec.document_type, "title": spec.title},
+            reason="controlled document registered against a material",
+        ),
+    )
+    return document_id
+
+
+def list_material_documents(
+    session: Session, *, material_id: uuid.UUID, organization_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """The document register for one material, newest first.
+
+    `expires_on` comes back so a screen can show an SDS that has lapsed.
+    An expired safety data sheet is not the same as a missing one and the
+    two must not render alike.
+    """
+    rows = session.execute(
+        text(
+            """
+            SELECT id, document_type, title, storage_key, content_type, byte_size,
+                   checksum_sha256, issued_on, expires_on, supersedes_id, created_at
+            FROM materials.material_documents
+            WHERE material_id = :mid AND organization_id = :org
+            ORDER BY document_type, issued_on DESC NULLS LAST, created_at DESC
+            """
+        ),
+        {"mid": material_id, "org": organization_id},
+    ).mappings()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
