@@ -101,13 +101,21 @@ def _permission_codes_checked_in_source() -> set[str]:
             found.update(_QUOTED.findall(call.group(1)))
 
     # `POST /materials/{id}/status` resolves its permission from a table
-    # rather than naming it in the call, because the required authority
-    # depends on the requested status. The table is imported rather than
-    # pattern-matched: it IS the mapping, and a copy of it here would be
-    # the second list that drifts from the first.
-    from app.api.materials import STATUS_PERMISSION
+    # rather than naming it in a `require_permission(...)` call, because
+    # the required authority depends on BOTH ends of the move. The table is
+    # imported rather than pattern-matched: it IS the mapping, and a copy
+    # of it here would be the second list that drifts from the first.
+    #
+    # It lives in the SERVICE, beside the transition rules it qualifies.
+    # An earlier version imported `STATUS_PERMISSION` from the router --
+    # a table that no longer exists, because the Supervisor's finding moved
+    # the permission from the destination to the edge. CI caught the stale
+    # import, which is the argument for importing the real thing rather
+    # than duplicating it: a copy would still be here, still agreeing with
+    # nothing.
+    from app.domains.materials.service import TRANSITION_PERMISSION
 
-    found.update(STATUS_PERMISSION.values())
+    found.update(TRANSITION_PERMISSION.values())
     return found
 
 
