@@ -1,0 +1,22 @@
+# Cloudflare Pages redirect rules.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# `app/page.tsx` is a server component whose entire body is
+# `redirect("/dashboard")`. Under the standalone (Render) build the server
+# issues a real 307. Under `output: "export"` there is no server, and the
+# root page exports as `<html id="__next_error__">` — a Next.js error
+# document. The build still exits 0 and prints `✓ Exporting (2/2)`, so
+# nothing about the CI output would tell you the front door is broken.
+#
+# That was measured on the generated `out/index.html`, not assumed. It is
+# the same class of defect this platform keeps hitting: a green build is
+# not a working feature.
+#
+# Cloudflare Pages applies these rules before serving a file, so `/` is
+# answered with a redirect and the error document is never reached.
+#
+# Harmless to the Render build: `public/` is copied verbatim into the
+# image, where this is just an unused text file. Nothing needs undoing
+# when the deployment moves back to Render.
+/    /dashboard    302

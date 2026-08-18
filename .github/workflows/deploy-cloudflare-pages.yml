@@ -1,0 +1,172 @@
+# Deploy the web application to Cloudflare Pages.
+#
+# WHY CLOUDFLARE AND NOT RENDER — AND WHY THIS IS TEMPORARY
+# ---------------------------------------------------------
+# Render refused to create the service:
+#   400 "free tier usage quota has been exhausted, new services are not
+#        allowed"
+# The account's five existing services are all on the paid `standard`
+# plan and none are free, so this is a workspace-level allowance that
+# resets with the billing cycle, not a fault in the payload.
+#
+# The operator's standing rule is zero cost. Cloudflare Pages serves this
+# for $0 with no instance-hour quota and no spin-down, which is cheaper in
+# practice than Render's free tier.
+#
+# **THE INTENT IS TO MOVE BACK TO RENDER ONCE THE QUOTA RESETS.** Nothing
+# here replaces the Render path: `render.yaml`, `apps/web/Dockerfile` and
+# `.github/workflows/render-setup.yml` are untouched and still describe
+# the Render deployment. Reverting is: run render-setup.yml, repoint the
+# CNAME, and stop running this workflow.
+#
+# WHAT A STATIC EXPORT COSTS US TODAY — nothing, and that is measured.
+# `apps/web` makes no API calls at all: no fetch, no next-auth wiring, no
+# sign-in. Three pages exist. There is no server-side behaviour to lose.
+# That stops being true at Slice 3, when the API is wired in; at that
+# point a static host cannot serve the product and this workflow should be
+# retired rather than worked around.
+#
+# THE ONE THING THAT DOES NOT SURVIVE EXPORT
+# ------------------------------------------
+# `app/page.tsx` is `redirect("/dashboard")`. With `output: "export"` there
+# is no server to issue it, and the root exports as
+# `<html id="__next_error__">` while the build still exits 0 and prints
+# `✓ Exporting (2/2)`. `apps/web/public/_redirects` answers `/` at the
+# edge instead. The smoke test below asserts it, because a green build
+# that serves an error page at the front door is exactly the failure this
+# platform keeps repeating.
+
+name: Deploy — Cloudflare Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DEPLOY to publish."
+        type: string
+        default: ""
+
+concurrency:
+  group: deploy-cloudflare-pages
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  # Must match the Pages project name. The custom domain is attached to
+  # the PROJECT, so this string is what itwevercoatrd.aiappinvent.com
+  # ultimately resolves to.
+  PROJECT_NAME: evercoat-itw-rd
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard — credentials and confirmation
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          # Checked before anything is built, so a missing secret costs
+          # seconds rather than a full build that dies at the publish step.
+          missing=0
+          if [ -z "${CF_API_TOKEN}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set on this repository."
+            missing=1
+          fi
+          if [ -z "${CF_ACCOUNT_ID}" ]; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID is not set on this repository."
+            missing=1
+          fi
+          if [ "$missing" = "1" ]; then
+            echo "::notice::Create a token with the 'Cloudflare Pages: Edit' permission."
+            exit 1
+          fi
+          if [ "${CONFIRM}" != "DEPLOY" ]; then
+            echo "::error::confirm must be DEPLOY. Nothing was published."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install
+        working-directory: apps/web
+        run: npm ci || npm install
+
+      - name: Build static export
+        working-directory: apps/web
+        env:
+          # NODE_ENV=production explicitly: building as development ships
+          # the dev React runtime, which behaves differently from what was
+          # tested and is slower and larger.
+          NODE_ENV: production
+          NEXT_OUTPUT: export
+        run: npx next build
+
+      - name: Assert the export is not a broken front door
+        working-directory: apps/web
+        run: |
+          set -euo pipefail
+          # `next build` exits 0 and prints a success table even when the
+          # root page exported as an error document, so the build's own
+          # result proves nothing here. Check the artefacts.
+          test -f out/dashboard.html || { echo "::error::out/dashboard.html missing"; exit 1; }
+          test -f out/admin.html     || { echo "::error::out/admin.html missing"; exit 1; }
+          test -f out/_redirects     || { echo "::error::out/_redirects missing — / would serve the error page"; exit 1; }
+          grep -q "/dashboard" out/_redirects || {
+            echo "::error::_redirects does not send / to /dashboard"; exit 1; }
+          # The root IS expected to be an error document under export.
+          # Say so out loud, so a future reader does not "fix" the symptom
+          # and delete the redirect rule that actually handles it.
+          if grep -q "__next_error__" out/index.html; then
+            echo "::notice::out/index.html is the expected export error stub; /_redirects answers / instead."
+          fi
+
+      - name: Publish
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler@4 pages deploy out \
+            --project-name "${PROJECT_NAME}" \
+            --branch master \
+            --commit-dirty=true
+
+      - name: Smoke test the deployment
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -uo pipefail
+          # NOT `set -e`: a failing probe must produce a REPORT, not an
+          # aborted step. And never `x=$(curl ...) || echo 000` -- that
+          # prints AND exits non-zero, yielding "000000".
+          BASE="https://${PROJECT_NAME}.pages.dev"
+          echo "probing $BASE"
+          fail=0
+          for path in /dashboard /admin; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$BASE$path")" || code=""
+            echo "  $path -> ${code:-no-response}"
+            [ "$code" = "200" ] || fail=1
+          done
+          root="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$BASE/")" || root=""
+          echo "  / (no follow) -> ${root:-no-response}"
+          # 302 from _redirects, or 200 if Cloudflare served it directly.
+          case "$root" in 200|301|302|307|308) ;; *) fail=1 ;; esac
+          followed="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 30 "$BASE/")" || followed=""
+          echo "  / (followed)  -> ${followed:-no-response}"
+          [ "$followed" = "200" ] || fail=1
+          if [ "$fail" != "0" ]; then
+            echo "::error::deployment did not serve correctly"
+            exit 1
+          fi
+          echo "OK — $BASE serves the shell"
