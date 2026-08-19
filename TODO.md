@@ -601,6 +601,44 @@ the remaining work.
 
 ---
 
+## Slice 7 — Messaging, Notifications, MSD (the last MVP slice)
+
+Started 2026-08-18 pt4. Schema and the MSD authorization boundary are in;
+the rest is named below rather than implied.
+
+- [x] Migration 022 — channels (project / direct / technical thread),
+      messages, `#F008` links and mentions, one NotificationService
+      table, and `ai.msd_threads` / `msd_turns` / `msd_evidence`.
+- [x] **The MSD authorization boundary, as a mechanism.** §7 requires
+      retrieval filtered BEFORE the model sees anything.
+      `app/domains/msd/retrieval.py` runs every query on the CALLER'S
+      session, so RLS returns exactly what they could open — there is no
+      privileged reader and no `user_id` parameter that could
+      impersonate one. Proven on `app_session` against a restricted
+      project, in both directions.
+- [x] `ai.msd_evidence` makes that boundary AUDITABLE:
+      `verify_evidence_within_boundary` re-checks each cited record
+      against the caller's own view, so a leak leaves a trace.
+- [x] A thread's owner is immutable — it IS the authorization scope.
+- [x] Every assistant turn must carry the §7 disclaimer, by CHECK
+      constraint rather than by a template.
+
+- [ ] **No messaging service or routes.** The schema is in and has no
+      writer — the same shape named and closed for Slice 6, now open
+      again for Slice 7. Next session's first job.
+- [ ] **No MSD orchestration.** `retrieval.py` is the retrieval half and
+      deliberately calls no model; `app/agents/graphs/` does not exist.
+      Ollama is not installed and ADR-002's LangGraph is not wired.
+- [ ] **No dashboards.** Four role dashboards with drill-down are Slice
+      7's other half and are unbuilt.
+- [ ] **The golden E2E is still unwritten** — it needs sign-in, which
+      needs Keycloak, which is not deployed. This is MVP-1's acceptance
+      gate and remains the single largest outstanding item.
+- [ ] Notifications have no producer: nothing writes a notification when
+      an approval step opens or a failure is raised.
+
+---
+
 ## Open decisions
 
 None blocking. ADR-002 (LangGraph) and ADR-024 (full depth, gate by gate)
