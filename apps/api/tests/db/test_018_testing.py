@@ -244,13 +244,27 @@ def testable(owner_session: Session) -> dict[str, uuid.UUID]:
         ),
         {"o": org, "p": project, "c": f"FRM-T-{suffix}", "u": users["engineer"]},
     ).scalar_one()
+    # 🔴 DRAFT FIRST, COMPONENTS, THEN APPROVE. In that order, and not
+    # because it is tidier.
+    #
+    # Migration 015's trigger freezes the composition of any version that
+    # has left `draft`. The first draft of this fixture inserted the
+    # version as `approved` and then added its component, and CI refused
+    # all seventeen tests in this file with "the composition of version
+    # ... is frozen".
+    #
+    # THAT IS THE SECOND TIME TODAY. `scripts/seed.py` made the identical
+    # mistake this morning and was fixed the same way. The rule is not
+    # obscure -- it is the one §8 exists to state -- and I still wrote it
+    # backwards twice, which is the argument for the trigger being a
+    # trigger rather than a convention.
     version = owner_session.execute(
         text(
             """
             INSERT INTO formulations.formula_versions
                 (organization_id, project_id, formula_id, version_number, version_code,
-                 status, approved_by, approved_at, created_by)
-            VALUES (:o, :p, :f, 1, :vc, 'approved', :u, now(), :u) RETURNING id
+                 status, created_by)
+            VALUES (:o, :p, :f, 1, :vc, 'draft', :u) RETURNING id
             """
         ),
         {"o": org, "p": project, "f": formula, "vc": f"FRM-T-{suffix}-V1", "u": users["engineer"]},
@@ -264,6 +278,16 @@ def testable(owner_session: Session) -> dict[str, uuid.UUID]:
             """
         ),
         {"o": org, "p": project, "v": version, "m": material},
+    )
+    owner_session.execute(
+        text(
+            """
+            UPDATE formulations.formula_versions
+            SET status = 'approved', approved_by = :u, approved_at = now()
+            WHERE id = :v
+            """
+        ),
+        {"u": users["engineer"], "v": version},
     )
     batch = owner_session.execute(
         text(
