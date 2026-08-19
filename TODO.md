@@ -548,6 +548,52 @@ complete because a form exists to enter results.
 
 ---
 
+## Slice 6 — Approvals, Failures, Reformulation
+
+Shipped 2026-08-18 pt4. Schema for both halves; services and routes are
+the remaining work.
+
+- [x] Migration 020 — **one shared approval engine**, polymorphic over
+      `(entity_type, entity_id)` so Pilot, Validation, Stability, Quality
+      and Qualification add ZERO new approval infrastructure (§9).
+      **Route snapshotting**: template steps are COPIED when a route
+      opens, so editing a template cannot retroactively un-approve
+      finished work. `parallel_group` expresses sequential AND parallel
+      with one mechanism. `must_differ_from_group` carries ADR-019's
+      incompatible-duty rule as data, so it travels with the snapshot.
+      All five §9 templates seeded. A decided step is a signature and
+      cannot be changed or deleted.
+- [x] Migration 021 — failures, hypotheses, evidence, the many-to-many
+      bridge (§27), corrective actions (§28), and
+      `formula_version_drivers` (§29) which answers "why was F008
+      created?" and permits several reasons per version.
+- [x] **hypothesis ≠ root cause, enforced three ways**: `origin` is
+      immutable by trigger, an `accepted` hypothesis must name the human
+      who accepted it, and a partial unique index permits at most ONE
+      accepted root cause per failure.
+- [x] Evidence carries `relationship ∈ (supports, contradicts,
+      inconclusive)` — an investigation that could only record confirming
+      evidence cannot rule anything out.
+
+- [ ] **No services and no routes yet for either half.** The schema is in
+      and CI-verified; `approval_routes`, `failures` and everything under
+      them currently have NO WRITER. That is the tables-with-no-writer
+      shape this project keeps catching, and it is named here so the next
+      session closes it rather than rediscovers it.
+- [ ] Slice 5's `record_decision` still writes `testing.test_decisions`
+      directly instead of driving `workflow.approval_routes`. Two
+      approval records now exist; the Slice 5 one must become a view onto
+      the engine, or be retired.
+- [ ] **A RED confirmation result still does not auto-open a failure.**
+      §10 requires it and the tables now exist; the rule that connects
+      them does not.
+- [ ] No `formula_version_drivers` writer, so `revise_version` does not
+      yet record WHY a revision exists.
+- [ ] No web UI, and the CI seed gate does not cover `quality.*` or the
+      approval tables.
+
+---
+
 ## Open decisions
 
 None blocking. ADR-002 (LangGraph) and ADR-024 (full depth, gate by gate)
