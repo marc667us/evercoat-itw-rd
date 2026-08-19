@@ -31,6 +31,8 @@
  * See ADR-025 for why this is a browser-side PKCE flow and not next-auth.
  */
 
+import { NO_IDENTITY_PROVIDER } from "@/lib/api/session";
+
 /** Keycloak's origin, without a trailing slash, or `null` when absent. */
 export const KEYCLOAK_URL: string | null =
   process.env.NEXT_PUBLIC_KEYCLOAK_URL?.replace(/\/+$/, "") || null;
@@ -69,10 +71,18 @@ export const isAuthConfigured: boolean = KEYCLOAK_URL !== null;
  * Why there is no sign-in, in words that describe the DEPLOYMENT rather
  * than the code. A reader who sees this on screen should understand that
  * nothing is broken and nothing they can do will change it.
+ *
+ * 🔴 RE-EXPORTED, NOT RE-WORDED.
+ *
+ * This was briefly its own sentence, and it immediately broke the E2E
+ * assertion that the demonstration banner explains WHY there is no
+ * session. Two strings saying the same thing in two files is the defect
+ * this project keeps catching -- nav vs router, landing vs pack, the
+ * callback path in the realm vs the TypeScript. The wording lives in
+ * `lib/api/session.ts` beside the state it describes; this is a pointer
+ * to it.
  */
-export const AUTH_UNCONFIGURED_REASON =
-  "this build was compiled without an identity provider address, so there is " +
-  "no one to sign in as yet";
+export const AUTH_UNCONFIGURED_REASON = NO_IDENTITY_PROVIDER;
 
 /** The realm's OIDC endpoints. Throws when unconfigured, deliberately. */
 export function endpoints(): {

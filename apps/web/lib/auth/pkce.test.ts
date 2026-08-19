@@ -223,23 +223,66 @@ describe("unverifiedClaims", () => {
 });
 
 describe("safeReturnTo", () => {
-  it("keeps an in-application path", () => {
-    expect(safeReturnTo("/formulations?open=F100")).toBe("/formulations?open=F100");
+  const ORIGIN = "https://app.example";
+
+  it("keeps an in-application path, as an absolute URL on this origin", () => {
+    expect(safeReturnTo("/formulations?open=F100#tab", ORIGIN)).toBe(
+      "https://app.example/formulations?open=F100#tab",
+    );
   });
 
-  const hostile: readonly (readonly [string | null, string])[] = [
+  // 🔴 EVERY ONE OF THESE DEFEATED AN EARLIER VERSION OF THIS FUNCTION.
+  //
+  // Version one pattern-matched: reject a leading "//", reject a
+  // backslash, reject a scheme. The control-character rows walked
+  // straight through, because BROWSERS STRIP TAB, LF AND CR FROM A URL
+  // BEFORE PARSING -- so a slash, an LF and "/evil.example" reach the
+  // parser as "//evil.example", protocol-relative and off-origin.
+  //
+  // Version two resolved properly and then returned
+  // pathname + search + hash. "/..//evil.example" resolves on-origin
+  // with a pathname of "//evil.example", and handing THAT to
+  // location.replace is protocol-relative all over again.
+  //
+  // Both were found by attacking the function, not by reading it.
+  it.each([
+    ["/\n/evil.example", "LF, stripped by the URL parser"],
+    ["/\r/evil.example", "CR, likewise"],
+    ["/\t/evil.example", "TAB, likewise"],
+    ["/\n\t//evil.example", "both, before a protocol-relative host"],
+    ["//evil.example", "protocol-relative -- the one people remember"],
+    ["//\tevil.example", "protocol-relative with a stripped character"],
     ["https://evil.example/steal", "an absolute URL"],
-    ["//evil.example/steal", "protocol-relative — the one people forget"],
-    ["javascript:alert(1)", "a scheme that is not http at all"],
-    ["/\\evil.example", "a backslash some parsers treat as a slash"],
+    ["javascript:alert(1)", "a scheme whose origin parses as null"],
+    ["data:text/html,x", "data:, which z.string().url() accepts"],
+    ["http://app.example:99/x", "right host, wrong port"],
+    ["//app.example.evil.com", "a hostname that merely starts the same"],
     ["", "empty"],
     [null, "absent"],
-  ];
+  ] as readonly (readonly [string | null, string])[])(
+    "🔴 refuses %s (%s)",
+    (candidate) => {
+      // An open redirect immediately after sign-in is a phishing primitive:
+      // the link genuinely started on the real site, and nobody re-reads
+      // the address bar at that moment.
+      expect(safeReturnTo(candidate, ORIGIN)).toBe("https://app.example/");
+    },
+  );
 
-  it.each(hostile)("🔴 refuses %s (%s)", (candidate) => {
-    // An open redirect immediately after sign-in is a phishing primitive:
-    // the link genuinely started on the real site, and nobody re-reads
-    // the address bar at that moment.
-    expect(safeReturnTo(candidate)).toBe("/");
+  it("never returns a value that can be re-read as another origin", () => {
+    // The property, rather than a list. Whatever comes back must resolve
+    // to this origin when the CALLER uses it -- the step that broke
+    // version two.
+    const hostile = [
+      "/..//evil.example",
+      "/../../..//evil.example",
+      "/%0a/evil.example",
+      "/\\evil.example",
+      "/\u0000//evil.example",
+    ];
+    for (const candidate of hostile) {
+      const result = safeReturnTo(candidate, ORIGIN);
+      expect(new URL(result, ORIGIN).origin).toBe(ORIGIN);
+    }
   });
 });

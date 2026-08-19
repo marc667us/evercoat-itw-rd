@@ -120,7 +120,7 @@ export default function AuthCallbackPage() {
         // replace(), not assign(): the callback URL carries a spent
         // authorization code, and leaving it in history means Back
         // re-runs a flow that can only fail.
-        window.location.replace(safeReturnTo(flow.returnTo));
+        window.location.replace(safeReturnTo(flow.returnTo, window.location.origin));
       } catch (error) {
         fail(error instanceof Error ? error.message : "the token exchange failed");
       }

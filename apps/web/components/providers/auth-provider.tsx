@@ -37,7 +37,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { API_BASE_URL } from "@/lib/api/config";
-import { setSession, useSession, type SessionState } from "@/lib/api/session";
+import { readSession, setSession, useSession, type SessionState } from "@/lib/api/session";
 import {
   AUTH_UNCONFIGURED_REASON,
   CALLBACK_PATH,
@@ -237,9 +237,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [establish, scheduleRefresh]);
 
-  /** Tell the reader why there is no sign-in, rather than showing a dead button. */
+  /** Tell the reader why there is no sign-in, rather than showing a dead button.
+   *
+   * 🔴 IT MUST NOT CLOBBER A SESSION SOMEBODY ELSE ALREADY SET.
+   *
+   * The first version set the anonymous reason unconditionally on mount,
+   * and broke five end-to-end tests: the suite establishes a session
+   * through the compiled-out test seam, and this effect then overwrote
+   * it. `readSession()` rather than the `session` prop, so the check sees
+   * the store's current value and not a render-time snapshot.
+   */
   useEffect(() => {
-    if (!isAuthConfigured) {
+    if (!isAuthConfigured && readSession().status !== "authenticated") {
       setSession({ status: "anonymous", reason: AUTH_UNCONFIGURED_REASON });
     }
   }, []);
@@ -247,7 +256,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = useCallback(async () => {
     if (!isAuthConfigured) return;
     const challenge = await createChallenge();
-    const returnTo = safeReturnTo(window.location.pathname + window.location.search);
+    const returnTo = safeReturnTo(
+      window.location.pathname + window.location.search,
+      window.location.origin,
+    );
     saveFlow(challenge, returnTo, false);
     window.location.assign(
       authorizationUrl({

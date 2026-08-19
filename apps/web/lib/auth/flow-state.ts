@@ -108,22 +108,72 @@ export function takeFlow(): FlowState | null {
  *
  * 🔴 AN OPEN REDIRECT IS A PHISHING PRIMITIVE, AND `returnTo` IS EXACTLY
  * THE SHAPE THAT PRODUCES ONE. A path taken from the current URL and
- * later handed to `location.assign` will happily send the user to
+ * later handed to `location.replace` will happily send the user to
  * `https://evil.example` — from a link that genuinely started on the real
  * site, immediately after a genuine sign-in, which is when a person is
  * least likely to re-read the address bar.
  *
- * A related lesson is already recorded on this platform: `z.string().url()`
- * accepts `javascript:` and `data:text/html`. So this does not try to
- * recognise bad values. It accepts only a path beginning with a single
- * `/`, and rejects `//host` (protocol-relative) and anything containing a
- * scheme.
+ * 🔴 THE FIRST VERSION OF THIS FUNCTION WAS BYPASSED, BY ITS AUTHOR,
+ * WITHIN THE HOUR. It pattern-matched for bad values — reject a leading
+ * `//`, reject a backslash, reject a scheme — and it let this through:
+ *
+ *     "/\nevil" → safeReturnTo says fine → resolves to https://evil.example/
+ *
+ * because **browsers strip TAB (\t), LF (\n) and CR (\r) out of a URL
+ * before parsing it.** `"/" + "\n" + "/evil.example"` is delivered to the
+ * parser as `//evil.example`, which is protocol-relative and off-origin.
+ * `\r` and `\t` do the same. A blocklist did not know that; the URL
+ * parser does.
+ *
+ * So this no longer tries to recognise hostile values. It RESOLVES the
+ * candidate with the same parser the browser will use, and keeps it only
+ * if the result is on this origin. Anything else — another origin, a
+ * `javascript:` URL (whose origin parses as "null"), an unparseable
+ * string — collapses to `/`.
+ *
+ * The related lesson already recorded on this platform is the same shape:
+ * `z.string().url()` accepts `javascript:` and `data:text/html`. Validate
+ * by construction, not by exclusion.
+ *
+ * 🔴 AND THE SECOND VERSION WAS BYPASSED TOO, THE SAME WAY.
+ *
+ * It resolved correctly and then returned `pathname + search + hash` — a
+ * RELATIVE path. `"/..//evil.example"` resolves on-origin with a pathname
+ * of `"//evil.example"`, and handing *that* to `location.replace` is
+ * protocol-relative all over again. Verifying a value and then returning
+ * a different, re-interpretable one is not verification.
+ *
+ * So it returns an ABSOLUTE, same-origin URL. There is nothing left for a
+ * later resolution step to reinterpret, and the caller cannot reintroduce
+ * the bug by using the result in a slightly different way.
+ *
+ * @param origin The application's own origin, e.g. `window.location.origin`.
+ *   Required rather than read from `window` inside, so the function stays
+ *   pure and can be attacked directly by a test.
+ * @returns An absolute URL on `origin`. Never a relative path.
  */
-export function safeReturnTo(candidate: string | null | undefined): string {
-  if (typeof candidate !== "string" || candidate.length === 0) return "/";
-  if (!candidate.startsWith("/")) return "/";
-  if (candidate.startsWith("//")) return "/";
-  if (candidate.includes("\\")) return "/";
-  if (/^\/[^/]*:/.test(candidate)) return "/";
-  return candidate;
+export function safeReturnTo(candidate: string | null | undefined, origin: string): string {
+  const home = safeHome(origin);
+  if (typeof candidate !== "string" || candidate.length === 0) return home;
+  try {
+    const resolved = new URL(candidate, origin);
+    // `origin` comparison, not `hostname`: it also pins the scheme and
+    // port, so http://app:8080 cannot be talked into https://app:443.
+    if (resolved.origin !== new URL(origin).origin) return home;
+    return resolved.href;
+  } catch {
+    return home;
+  }
+}
+
+/** The application root on this origin, absolute. The safe fallback. */
+function safeHome(origin: string): string {
+  try {
+    return new URL("/", origin).href;
+  } catch {
+    // An unusable origin is not something to paper over with a relative
+    // path that might resolve anywhere. "/" is the only honest answer
+    // left, and it is same-document by definition.
+    return "/";
+  }
 }
