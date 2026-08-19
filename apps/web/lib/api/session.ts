@@ -1,13 +1,25 @@
 /**
  * Who the browser is, if anyone.
  *
- * 🔴 THERE IS NO SIGN-IN FLOW IN THIS APPLICATION, AND THIS FILE DOES NOT
- * PRETEND OTHERWISE.
+ * ✅ CORRECTED 2026-08-19 — THERE IS A SIGN-IN FLOW NOW.
  *
- * `next-auth` is a declared dependency that nothing imports. No Keycloak
- * is deployed — not on Render, not in CI, not on the development host.
- * So `useSession()` returns "no session" and names the reason, and every
- * authenticated call refuses before it is made.
+ * This header used to read "there is no sign-in flow in this application,
+ * and this file does not pretend otherwise", and said `next-auth` was a
+ * declared dependency that nothing imported. Both statements were true
+ * and are no longer. `next-auth` has been REMOVED (ADR-025: it needs
+ * server route handlers, and this application deploys as a static
+ * export), and `components/providers/auth-provider.tsx` implements the
+ * browser-side OIDC + PKCE flow that writes this store.
+ *
+ * The prediction three paragraphs down turned out to be exactly right and
+ * is left standing: the provider became the second writer of
+ * `setSession`, and no hook, page or request changed.
+ *
+ * What is still true: no Keycloak is DEPLOYED for the live site, because
+ * that needs a web service and that is the operator's decision. A build
+ * compiled without `NEXT_PUBLIC_KEYCLOAK_URL` therefore still reports
+ * anonymity and names the reason — but the blocker is now one
+ * configuration value rather than an absent flow.
  *
  * WHY THIS IS A SEAM AND NOT A STUB
  * ---------------------------------

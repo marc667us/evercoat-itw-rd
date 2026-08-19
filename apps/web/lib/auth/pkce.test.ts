@@ -170,10 +170,12 @@ describe("exchangeCode", () => {
   it("sends the verifier and the grant type", async () => {
     respond(200, { access_token: "at", expires_in: 60 });
     await exchangeCode(base);
-    const body = String((globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0][1] &&
-      ((globalThis.fetch as unknown as { mock: { calls: [string, { body: string }][] } }).mock
-        .calls[0][1].body));
+    const mock = globalThis.fetch as unknown as {
+      mock: { calls: [string, { body: string }][] };
+    };
+    const call = mock.mock.calls[0];
+    expect(call).toBeDefined();
+    const body = call?.[1].body ?? "";
     expect(body).toContain("code_verifier=the-verifier");
     expect(body).toContain("grant_type=authorization_code");
   });
@@ -225,17 +227,19 @@ describe("safeReturnTo", () => {
     expect(safeReturnTo("/formulations?open=F100")).toBe("/formulations?open=F100");
   });
 
-  it.each([
+  const hostile: readonly (readonly [string | null, string])[] = [
     ["https://evil.example/steal", "an absolute URL"],
     ["//evil.example/steal", "protocol-relative — the one people forget"],
     ["javascript:alert(1)", "a scheme that is not http at all"],
     ["/\\evil.example", "a backslash some parsers treat as a slash"],
     ["", "empty"],
     [null, "absent"],
-  ])("🔴 refuses %s (%s)", (candidate) => {
+  ];
+
+  it.each(hostile)("🔴 refuses %s (%s)", (candidate) => {
     // An open redirect immediately after sign-in is a phishing primitive:
     // the link genuinely started on the real site, and nobody re-reads
     // the address bar at that moment.
-    expect(safeReturnTo(candidate as string | null)).toBe("/");
+    expect(safeReturnTo(candidate)).toBe("/");
   });
 });

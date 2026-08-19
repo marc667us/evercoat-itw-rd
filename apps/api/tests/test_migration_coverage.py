@@ -103,7 +103,7 @@ def test_the_revision_chain_has_exactly_one_head() -> None:
     for path in VERSIONS_DIR.glob("*.py"):
         text = path.read_text(encoding="utf-8")
         rev = re.search(r'^revision:\s*str\s*=\s*["\']([^"\']+)["\']', text, re.M)
-        down = re.search(r'^down_revision:\s*str\s*\|\s*None\s*=\s*(.+)$', text, re.M)
+        down = re.search(r"^down_revision:\s*str\s*\|\s*None\s*=\s*(.+)$", text, re.M)
         if rev is None or down is None:
             continue
         raw_down = down.group(1).strip()

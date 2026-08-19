@@ -74,16 +74,18 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [
-        "http://localhost:3000/api/auth/callback/keycloak",
-        "http://localhost/api/auth/callback/keycloak"
+        "http://localhost:3000/auth/callback/",
+        "https://itwevercoatrd.aiappinvent.com/auth/callback/",
+        "https://itwevercoat.aiappinvent.com/auth/callback/"
       ],
       "webOrigins": [
         "http://localhost:3000",
-        "http://localhost"
+        "https://itwevercoatrd.aiappinvent.com",
+        "https://itwevercoat.aiappinvent.com"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:3000##http://localhost"
+        "post.logout.redirect.uris": "http://localhost:3000##https://itwevercoatrd.aiappinvent.com##https://itwevercoat.aiappinvent.com"
       },
       "protocolMappers": [
         {

@@ -16,6 +16,7 @@
 
 import { useState } from "react";
 
+import { AccountMenu } from "@/components/nav/account-menu";
 import { ApiStatus } from "@/components/nav/api-status";
 
 export function TopBar() {
@@ -23,16 +24,14 @@ export function TopBar() {
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4">
-      {/* Organization selector — Slice 1 renders a placeholder; the real
-          switcher arrives with authentication. */}
-      <button
-        type="button"
-        disabled
-        className="rounded border border-slate-200 px-2.5 py-1.5 text-sm text-slate-400"
-        title="Organization switching arrives with authentication"
-      >
-        ITW Evercoat (Demo)
-      </button>
+      {/* Organization selector and sign-in. Slice 1 rendered a disabled
+          placeholder here reading "ITW Evercoat (Demo)"; it is real now
+          that GET /api/me can tell the browser which tenants it may act
+          in. Switching still NAVIGATES rather than revalidating in
+          place -- an in-place swap leaves stale tenant data on screen
+          while the new context loads, which reads as a cross-tenant leak
+          even when the API behaved correctly. */}
+      <AccountMenu />
 
       {/* Global search covers projects, formulas, materials, suppliers,
           batches, samples, tests, failures, products and documents

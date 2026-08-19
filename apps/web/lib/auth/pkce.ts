@@ -258,9 +258,14 @@ async function requestToken(
  */
 export function unverifiedClaims(accessToken: string): Record<string, unknown> {
   const parts = accessToken.split(".");
-  if (parts.length !== 3) return {};
+  // `parts[1]` rather than a length check alone: `noUncheckedIndexedAccess`
+  // is on, and it is right to be — a JWT arriving from anywhere other than
+  // the token endpoint is exactly the input that should not be trusted to
+  // have three segments.
+  const segment = parts[1];
+  if (parts.length !== 3 || segment === undefined) return {};
   try {
-    const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = segment.replace(/-/g, "+").replace(/_/g, "/");
     const padded = payload.padEnd(payload.length + ((4 - (payload.length % 4)) % 4), "=");
     return JSON.parse(atob(padded)) as Record<string, unknown>;
   } catch {

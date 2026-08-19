@@ -14,6 +14,7 @@
 
 import type { Metadata } from "next";
 
+import { AuthProvider } from "@/components/providers/auth-provider";
 import { QueryProvider } from "@/components/providers/query-provider";
 import { Sidebar } from "@/components/nav/sidebar";
 import { TopBar } from "@/components/nav/top-bar";
@@ -73,6 +74,10 @@ export default function RootLayout({
             than each page so that a query started on one screen is still
             cached when the reader navigates back to it — and so that a
             page added later is wired by existing, not by remembering. */}
+        {/* AuthProvider outside QueryProvider: a query fired before
+            the session is known would run anonymously and cache the
+            refusal. */}
+        <AuthProvider>
         <QueryProvider>
         <div className="flex h-screen overflow-hidden">
           <Sidebar permissions={permissions} counts={counts} />
@@ -99,6 +104,7 @@ export default function RootLayout({
           </div>
         </div>
         </QueryProvider>
+        </AuthProvider>
       </body>
     </html>
   );

@@ -25,6 +25,7 @@ and they need no Keycloak and no database to run.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -155,4 +156,105 @@ def test_every_role_the_bootstrap_assigns_exists_in_the_realm(expected_role: str
     roles = {r["name"] for r in _realm()["roles"]["realm"]}
     assert expected_role in roles, (
         f"the bootstrap script grants '{expected_role}' and the realm does not define it"
+    )
+
+
+# ---------------------------------------------------------------------
+# The redirect URI is written down in two places and must agree
+# ---------------------------------------------------------------------
+#
+# 🔴 TWO LITERALS IN TWO FILES CANNOT BE TYPE-CHECKED INTO AGREEMENT.
+#
+# This project's most frequently repeated defect: nav vs router, landing
+# vs pack, five copies of an API path in one test file. Here it is the
+# OAuth callback, and the failure mode is worse than usual because
+# Keycloak refuses with `invalid_redirect_uri` BEFORE issuing anything --
+# so there is no code, no token, and no application log entry. It reads
+# as "sign-in is broken" with nothing to go on.
+#
+# The realm ships one spelling; `apps/web/lib/auth/config.ts` ships the
+# other. These tests read both files and compare them.
+
+WEB_AUTH_CONFIG = REALM_PATH.parents[2] / "apps" / "web" / "lib" / "auth" / "config.ts"
+
+
+def _callback_path_from_web() -> str:
+    source = WEB_AUTH_CONFIG.read_text(encoding="utf-8")
+    match = re.search(r'CALLBACK_PATH\s*=\s*["\']([^"\']+)["\']', source)
+    assert match, f"CALLBACK_PATH not found in {WEB_AUTH_CONFIG} -- was it renamed?"
+    return match.group(1)
+
+
+def _web_client() -> dict[str, Any]:
+    clients = _realm().get("clients", [])
+    for client in clients:
+        if client.get("clientId") == "evercoat-web":
+            return dict(client)
+    raise AssertionError("the realm has no evercoat-web client")
+
+
+def test_every_redirect_uri_uses_the_path_the_application_actually_serves() -> None:
+    """The realm's callback path must equal `CALLBACK_PATH` in the web app."""
+    expected = _callback_path_from_web()
+    redirect_uris = _web_client().get("redirectUris", [])
+    assert redirect_uris, "evercoat-web has no redirectUris, so sign-in cannot complete"
+
+    wrong = [uri for uri in redirect_uris if not uri.endswith(expected)]
+    assert not wrong, (
+        f"these redirect URIs do not end with the application's CALLBACK_PATH "
+        f"({expected!r}). Keycloak refuses a mismatch with invalid_redirect_uri "
+        f"before issuing a code, so there is nothing in any log to diagnose:\n  "
+        + "\n  ".join(wrong)
+    )
+
+
+def test_the_realm_no_longer_points_at_next_auth() -> None:
+    """ADR-025: next-auth cannot run in a static export and was removed.
+
+    A leftover `/api/auth/callback/keycloak` entry would be a redirect URI
+    the application can never serve -- and, being valid-looking, exactly
+    the kind of thing that gets copied forward.
+    """
+    redirect_uris = _web_client().get("redirectUris", [])
+    stale = [uri for uri in redirect_uris if "/api/auth/" in uri]
+    assert not stale, (
+        "these redirect URIs still point at next-auth route handlers, which a "
+        "static export does not have (ADR-025):\n  " + "\n  ".join(stale)
+    )
+
+
+def test_the_web_client_can_still_do_pkce() -> None:
+    """The three properties the browser flow depends on.
+
+    Each fails differently and none of them says so plainly:
+      * not public      -> the browser cannot authenticate at the token endpoint;
+      * no standard flow -> no authorization code is ever issued;
+      * no S256          -> the realm accepts `plain`, which sends the verifier
+                            in the authorization request and defeats PKCE while
+                            still being called PKCE.
+    """
+    client = _web_client()
+    assert client.get("publicClient") is True
+    assert client.get("standardFlowEnabled") is True
+    assert client.get("attributes", {}).get("pkce.code.challenge.method") == "S256"
+
+
+def test_the_web_client_still_carries_the_api_audience_mapper() -> None:
+    """Without it every genuine token is rejected as "invalid token".
+
+    A Keycloak access token's `aud` is `["account"]` unless a mapper adds
+    the API's client id -- and the API decodes with `verify_aud: True`.
+    This was one of the four defects found the first time authentication
+    ever ran.
+    """
+    mappers = _web_client().get("protocolMappers", []) or []
+    audiences = [
+        m.get("config", {}).get("included.client.audience")
+        for m in mappers
+        if m.get("protocolMapper") == "oidc-audience-mapper"
+    ]
+    assert "evercoat-api" in audiences, (
+        "evercoat-web has no mapper adding `evercoat-api` to the audience, so "
+        "every genuine token it issues will be refused with the same flat "
+        "'invalid token' a forged one gets"
     )
