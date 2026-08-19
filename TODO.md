@@ -575,11 +575,18 @@ the remaining work.
       inconclusive)` — an investigation that could only record confirming
       evidence cannot rule anything out.
 
-- [ ] **No services and no routes yet for either half.** The schema is in
-      and CI-verified; `approval_routes`, `failures` and everything under
-      them currently have NO WRITER. That is the tables-with-no-writer
-      shape this project keeps catching, and it is named here so the next
-      session closes it rather than rediscovers it.
+- [x] **Services and routes for both halves** — 15 routes. The
+      no-writer gap named in the previous commit is closed: every table
+      migrations 020 and 021 created now has a production write path.
+- [x] `open_failure_for_failed_test` — §10's "a RED confirmation result
+      automatically opens or links a Failure Investigation", idempotent
+      (returns the existing one rather than opening a second) and
+      **confirmation-only**, because a failed screening test is
+      information and not a verdict (plan X11: there is no single global
+      RED rule).
+- [ ] That function has no CALLER yet. `complete_execution` must invoke
+      it when it computes `fail` on a confirmation test — the rule
+      exists, the wiring does not.
 - [ ] Slice 5's `record_decision` still writes `testing.test_decisions`
       directly instead of driving `workflow.approval_routes`. Two
       approval records now exist; the Slice 5 one must become a view onto

@@ -22,6 +22,8 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from app.api.admin import router as admin_router
 from app.api.admin_reference_data import router as admin_reference_data_router
 from app.api.admin_stage_gates import router as admin_stage_gates_router
+from app.api.failures import approvals_router
+from app.api.failures import router as failures_router
 from app.api.formulations import router as formulations_router
 from app.api.health import router as health_router
 from app.api.laboratory import router as laboratory_router
@@ -187,6 +189,11 @@ def create_app() -> FastAPI:
     # was taken from, so RLS applies the membership predicate to every row
     # and the prefix carries no project segment.
     application.include_router(testing_router, prefix="/api/testing/tests")
+    # Slice 6. Failure investigation, and the ONE shared approval engine —
+    # polymorphic over (entity_type, entity_id) so Validation, Pilot,
+    # Qualification and Release add zero approval infrastructure (§9).
+    application.include_router(failures_router, prefix="/api/quality/failures")
+    application.include_router(approvals_router, prefix="/api/approvals")
 
     if settings.metrics_enabled:
 
