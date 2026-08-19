@@ -70,7 +70,43 @@ BASE_URL="${BASE_URL%/}"
 # When the API is deployed at Slice 3, run `full` and this becomes a real
 # assertion again rather than a skip.
 # ---------------------------------------------------------------------
-PROFILE="${2:-full}"
+# 🔴 THE DEFAULT PROFILE DID NOT MATCH WHAT IS DEPLOYED.
+#
+# The default was `full`, so the documented invocation in CLAUDE.md §13
+# -- `./scripts/live-suite.sh <deployed-url>` with no second argument --
+# waited 300 seconds on /health/ready, an API route, against a web-only
+# deployment, then reported "passed=0 failed=0 skipped=0, the suite did
+# not run". Honest and useless: the deployed thing went untested, and
+# the operator had to already know to pass `web` to get any coverage at
+# all. The comment above already said `web` is the profile that matches
+# production; the code did not.
+#
+# `auto` (the new default) MEASURES it instead of assuming either way.
+# Probing the status alone is not enough -- a 404 could be a cold start,
+# and free-tier cold starts run to ~2 minutes. The discriminator is the
+# CONTENT TYPE: an API health route answers JSON, while a static site
+# answers its own HTML 404 page. Measured on this deployment,
+# /health/ready returns `Content-Type: text/html` with a 16KB body --
+# that is the web application 404ing, not an API warming up.
+#
+# Pass `web`, `api` or `full` explicitly to override the detection.
+PROFILE="${2:-auto}"
+
+if [[ "${PROFILE}" == "auto" ]]; then
+    PROBE_HEADERS="$(curl -s -o /dev/null -D - --max-time 20 "${BASE_URL}/health/ready")" || PROBE_HEADERS=""
+    if printf '%s' "${PROBE_HEADERS}" | grep -qi '^content-type:[[:space:]]*text/html'; then
+        PROFILE="web"
+        echo "--- profile: auto -> web ---"
+        echo "    ${BASE_URL}/health/ready answered with text/html, so the"
+        echo "    web application is serving that path and no API is deployed"
+        echo "    at this origin. The API surface is counted as SKIPPED."
+    else
+        PROFILE="full"
+        echo "--- profile: auto -> full ---"
+        echo "    ${BASE_URL}/health/ready did not answer as HTML, so an API"
+        echo "    appears to be deployed here. Running the API suite too."
+    fi
+fi
 case "${PROFILE}" in
     web)
         # /dashboard/, not /. The root is a client-side redirect page, and
@@ -365,6 +401,24 @@ PY
     FAILED=$((FAILED + E2E_F))
     SKIPPED=$((SKIPPED + E2E_S))
     echo "  e2e: passed=${E2E_P} failed=${E2E_F} skipped=${E2E_S} (rc=${E2E_RC})"
+
+    # 🔴 THE EXCLUDED SPEC IS NAMED, NOT SILENTLY DROPPED.
+    #
+    # playwright.config.ts skips tests/e2e/shell/api-wiring.spec.ts in
+    # LIVE mode, because the API-wiring seam it asserts is compiled OUT
+    # of production builds -- the deployed page carries no `api-status`
+    # and no `data-source-error` element at all. Left in, it contributed
+    # 8 permanent failures that said nothing about the deployment, and a
+    # red that never goes away trains the reader to ignore the number
+    # that is meant to stop a bad deploy.
+    #
+    # It is counted here as ONE skip and named, because a coverage gap
+    # that is invisible is indistinguishable from coverage.
+    if [[ "${PROFILE}" == "web" ]]; then
+        echo "  e2e: api-wiring.spec.ts NOT RUN -- its seam is compiled out of"
+        echo "       production builds. COVERAGE GAP, counted as skipped."
+        SKIPPED=$((SKIPPED + 1))
+    fi
 else
     echo "  NOT RUN -- tests/e2e absent or npx unavailable."
     echo "  This is a COVERAGE GAP, counted as skipped, not as a pass."

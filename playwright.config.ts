@@ -126,6 +126,26 @@ export default defineConfig({
         {
           name: "shell",
           testDir: "tests/e2e/shell",
+          // 🔴 api-wiring.spec.ts CANNOT PASS AGAINST A DEPLOYED BUILD, AND
+          // ITS 8 FAILURES WERE A FALSE RED.
+          //
+          // Measured against https://itwevercoatrd.aiappinvent.com: the
+          // live suite reported 25 passed / 8 failed, and the 8 were the
+          // WHOLE of this file — accessibility 13/13 and navigation 12/12
+          // passed. The page carries no `api-status` element and no
+          // `data-source-error` element at all, because the API-wiring seam
+          // is compiled OUT of production builds (see apps/web
+          // lib/api/session.ts). The spec is therefore testing a seam that
+          // does not exist at this URL, not a defect in the deployment.
+          //
+          // Excluded here rather than left to fail, because a permanent red
+          // is worse than a skip: it trains the reader to ignore the number
+          // that is supposed to stop a bad deploy. live-suite.sh counts the
+          // exclusion as a SKIP and names it, so the gap stays visible.
+          //
+          // When the API is deployed, delete this line — the spec becomes a
+          // real assertion again.
+          testIgnore: ["**/api-wiring.spec.ts"],
           use: { ...devices["Desktop Chrome"], baseURL: LIVE_BASE_URL },
         },
       ]
