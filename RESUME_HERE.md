@@ -1,244 +1,163 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-**Session closed 2026-08-18 (part 4). Read this file, then `TODO.md`.**
+**Session 2026-08-19. Read this file, then `TODO.md`.**
 
 Repository: **https://github.com/marc667us/evercoat-itw-rd** (PUBLIC),
-branch `master`. Tip **`4287feb`**, working tree **clean**, **pushed**
-(`HEAD == origin/master`, verified).
-
-Session transcript archived at
-`../session-logs/session_2026-08-18_pt4_messaging_keycloak.jsonl`.
+branch `master`. Tip **`5cd6d92`**, working tree clean, pushed.
 
 ---
 
-## 🔴 FIRST THING TO DO NEXT SESSION
+## ✅ B1 IS CLOSED. CI IS GREEN, INCLUDING AUTH.
 
-**Read the `bash -x` trace in the Auth job. It was enabled for exactly this.**
+**`Auth — real Keycloak, real tokens`: passed=7 failed=0 skipped=0.**
 
-```bash
-gh run list --limit 3
-gh api repos/marc667us/evercoat-itw-rd/actions/jobs/<job_id>/logs > auth.log
-grep -n "looking up chem.demo" -B 40 auth.log
+Authentication has now been proven end-to-end against a real identity
+provider for the first time in this project's life. Nothing is skipped —
+the count is asserted, not inferred from an exit code.
+
+### What the `exit 6` actually was
+
+The `bash -x` trace answered in one line what reading the source had got
+wrong twice:
+
+```
++ status=204000
+##[error]Process completed with exit code 6.
 ```
 
-### Where CI actually stands (measured on run `32205073660`, commit `a51f89b`)
+`keycloak-bootstrap.sh` carried a **literal `\n`** where a line
+continuation was intended. Bash strips the backslash from an unquoted
+`\n`, leaving the bare word `n`, which **curl accepts as a second URL**.
+It fetched the real endpoint (204), failed to resolve `"n"` (**exit 6**),
+and `-w '%{http_code}'` **prints once per URL** — hence `204000`.
 
-| Job | Result |
-|---|---|
-| API — lint, type, test | ✅ **success** |
-| Web — lint, type, test | ✅ success |
-| E2E — browser shell, axe-core | ✅ success |
-| Security scan | ✅ success |
-| **Auth — real Keycloak** | ❌ **failure** |
+**Nothing to do with DNS.** Both candidate causes recorded in the last
+handover were wrong.
 
-**Four of five are green.** Auth is the only one left, and it has moved a
-long way: Keycloak now starts, **imports the shipped realm** (which it
-could never do before), creates the test client `HTTP 201` and the first
-user `HTTP 201`.
+### Four more defects were hiding behind that one symptom
 
-### The one open defect
+| # | Defect | Why it mattered |
+|---|---|---|
+| 1 | `expect_status` matched `case "$got" in 2*)`, so it **accepted `204000` as success** | Only curl's exit code stopped the run. Had the stray URL resolved, a failed role mapping would have passed the gate silently and surfaced four steps later as `invalid_grant` |
+| 2 | `api_status` had **no failure branch** | Why nothing printed. It now names the request and RETURNS the rc |
+| 3 | `api_status` called **`curl -s`**, which silences the error TEXT | The new diagnostic would have printed `curl said: ` and nothing else — **on the exact incident it was written for**. Measured: `-s` → empty stderr, `-sS` → the message |
+| 4 | The audience-mapper POST ended **`>/dev/null \|\| true`** | Swallowed 400/401/500 alongside the 409 it meant to tolerate, while the comment fifty lines above called that mapper NOT optional. A skipped mapper rejects every genuine token with the same flat "invalid token" a forged one gets |
 
-Immediately after `user chem.demo: HTTP 201`, the step dies with a bare
-`Process completed with exit code 6` — curl's *"could not resolve host"* —
-**for the same host that had just answered two requests successfully**,
-and **without the script's own failure branch printing anything**.
+Defect 3 was found by the **Supervisor** and missed by Codex. Defect 4
+was found by **Codex** and missed by the Supervisor. **Seventh session
+running in which neither reviewer alone was sufficient.**
 
-`api_body()` was added specifically to name the failing request, URL and
-curl error. It did not fire. **So the abort is not where the
-instrumentation assumed it was, and reasoning from the source has now
-been wrong twice.** Do not guess a third time — `bash -x` is enabled on
-that step; read the trace.
+### And the five "authentication failures" were one wrong URL
 
-Two candidate causes worth holding, neither confirmed:
-- something in the `users?username=...&exact=true` command substitution
-  at `scripts/keycloak-bootstrap.sh:293`;
-- an environment/DNS effect between the container and the runner that
-  only bites on the third request.
+With the bootstrap fixed, the auth job got further and reported 5 of 6
+tests failing with `404 != 401`, `404 != 400`, `404 != 403`. That reads
+as five authentication defects. It was **one typo repeated five times**:
+the tests called `/api/my-work/tasks`, and the route is `/api/my-work`
+(`main.py:175` prefix + `tasks.py:96` `@router.get("")`). The one test
+that passed is the one calling `/api/projects` — which is the proof that
+tokens, the audience mapper, the subject binding and the principal
+lookup all work.
 
-Note the admin-token expiry fix is already in (Keycloak's master token
-lives ~60 s, and ten users at several requests each runs past it) — that
-was a real latent bug but is **not** this failure, since this dies on the
-first user.
-
-## ✅ LIVE, AND VERIFIED PUBLIC THIS SESSION
-
-# https://itwevercoatrd.aiappinvent.com
-# https://itwevercoat.aiappinvent.com
-
-Both certificated (expire **2026-11-16**). Render static site, free.
-
-**The operator reported the app unreachable from a second computer, a
-phone, and a client in another state. It was measured from outside this
-machine's browser cache and it is genuinely up:**
-
-| Check | Result |
-|---|---|
-| DNS via Cloudflare **and** Google public resolvers | ✅ both hosts → `evercoat-itw-rd-web.onrender.com` → `216.24.57.7 / .15` |
-| TLS, both hosts × both edge IPs, SNI set | ✅ valid, 89 days left |
-| `http://` → `https://` | ✅ 200 |
-| Root, iPhone UA, cache-bypass headers | ✅ 200, `<title>EvercoatITWRD APP</title>` |
-| `/dashboard` `/projects` `/formulations` | ✅ 200 / 200 / 200 |
-| All 9 JS+CSS assets | ✅ **0 broken of 9** |
-| `www.` variant | ❌ 000 — no `www` record exists |
-| IPv6 (AAAA) | none — *including on Render's own hostname*, so this is Render's design, not a misconfiguration |
-
-**Then this host lost its uplink entirely**, which is a live candidate
-explanation for the operator's report: an intermittent router/ISP outage
-takes every device on that LAN off the app at once while a device holding
-a cached page still shows it.
-
-**Unresolved for the next session:** the client in another state. That
-cannot be this router. Two things to establish before touching code —
-(1) exactly which URL they were sent (the `www.` form fails), and (2)
-whether it fails for them *now*, since the domain genuinely did not
-resolve earlier on 08-18 and a device that tried then cached the
-NXDOMAIN for ~1 hour. **Do not "fix" the deployment before proving it is
-broken for them** — every server-side check above passed.
+The path is now **one constant**, and a guard runs first that says which
+of the two things went wrong.
 
 ---
 
-## What `93bdb57` and `86fd34b` delivered
+## ✅ THE LIVE SUITE HAS RUN AGAINST THE DEPLOYED SITE
 
-### Messaging — the schema finally has a writer
+```
+LIVE SUITE — https://itwevercoatrd.aiappinvent.com
+   passed  : 25
+   failed  : 0
+   skipped : 2
+```
 
-`app/domains/messaging/service.py` + `app/api/messaging.py`, **6 routes**
-(103 total). Channels, technical threads per record, messages,
-`#CODE` reference resolution, `@mention` resolution, notifications,
-and promotion.
+Both skips are **named**: the API surface (not deployed) and
+`api-wiring.spec.ts`.
 
-- **Links resolve at WRITE time**, into `messaging.message_links`. A
-  message must say what it said when it was written, not re-render after
-  a record is renamed.
-- **`promote_message` is the only path from chat to a controlled record**
-  (§7). It requires `project.edit` and produces a **task**, not a
-  conclusion — somebody still has to do the work and sign for it.
-- **No `message.*` permissions were invented.** There are none in the
-  catalogue and inventing them would repeat the defect this project has
-  caught six times: a permission nobody holds, gating a feature nobody
-  can then use. Messaging is governed by RLS and project membership.
+Two defects were found by running it rather than by trusting CI:
 
-### 🔴 Authentication has now run for the first time — and the realm was broken
+1. **The documented invocation tested nothing.** `./scripts/live-suite.sh <url>`
+   with no second argument defaulted to profile `full`, waited 300s on
+   `/health/ready` (an API route) against a web-only deployment, and
+   reported `passed=0 failed=0 skipped=0, the suite did not run`. The
+   script's own comment already said `web` matches production; the code
+   did not. The default is now **`auto`**, which measures it: an API
+   health route answers JSON, a static site answers its own HTML 404.
+   Measured here — `/health/ready` returns `Content-Type: text/html`,
+   16KB body.
 
-The API has verified tokens correctly since Slice 1 and **had never once
-verified a real one**, because no Keycloak had ever run anywhere. Running
-it in CI immediately found four things, each of which presents to an
-operator as an unexplained "sign-in is broken":
-
-1. **The shipped realm could not be imported — since Slice 1.** It
-   carried **seven** `_comment` keys (three top-level, **four nested
-   inside clients**). Keycloak's importer *aborts* on an unrecognised
-   field — it does not warn and skip — and then fails to start. So every
-   `docker compose up` since Slice 1 produced a dead Keycloak or one with
-   no `evercoat` realm. Nobody noticed because nothing had ever asked it
-   for a token.
-2. **The realm has zero users.** A realm with no users has no sign-in
-   path — the same shape as the five-roles-with-no-write-path finding.
-3. **`seed.py` writes `keycloak_sub = 'demo-chem.demo'`** while a real
-   token carries a UUID. A perfectly valid token then resolves to no
-   principal: the API answers **403, not 401**. That distinction is the
-   single most useful diagnostic in the whole auth path.
-4. **A Keycloak access token's `aud` is `["account"]`** unless a mapper
-   adds `evercoat-api`. `evercoat-web` *does* carry that mapper — so
-   production sign-in is sound — but any client that talks to the API
-   needs it, or every genuine token is rejected with the same flat
-   "invalid token" a forged one gets.
-
-Now in place:
-
-| File | Role |
-|---|---|
-| `scripts/keycloak-bootstrap.sh` | Creates the ten users + role mappings. `--with-test-client` adds a direct-grant client **that is deliberately NOT in the shipped realm**. |
-| `scripts/keycloak-bind-subs.py` | Rebinds `core.users.keycloak_sub` to real subjects, matched on email. One transaction — all ten or none. |
-| `apps/api/tests/integration/test_auth_end_to_end.py` | 6 tests against a real token: valid, absent, forged, no org header, foreign org, and permissions read from the DB rather than the token. |
-| `.github/workflows/ci.yml` job **`auth`** | Runs Keycloak 26 with the shipped realm. **Costs nothing, needs no deploy.** |
-| `apps/api/tests/test_keycloak_realm.py` | 14 tests, no DB, no Keycloak. Recursive check for unimportable keys **at any depth** — it is what found the four nested ones. |
-| `scripts/assert-suite-ran.py` | passed / failed / **skipped** as three numbers. A fully skipped pytest run exits 0 and would read as proof. |
-| `services/keycloak/realm/README.md` | Where the realm's commentary lives now, since the JSON cannot carry it. |
-
-### What `93bdb57` fixes (the three failed jobs on `86fd34b`)
-
-- **API** — `projects.projects` has **no `project_type` and no
-  `created_by`**, and `workflow.tasks` has **no `created_by`**.
-  `promote_message` would have failed at runtime. Schema read, not
-  assumed.
-- **Auth** — the realm import failure above.
-- **Security** — Semgrep `use-defused-xml-parse` on the new script.
-  Switched to `defusedxml` rather than carrying an exception for
-  "trusted" input.
-
-### Codex findings — all four real, all fixed
-
-- `POST /users` answers **409** and curl exits **0**, so a rerun left the
-  old account untouched (possibly disabled, possibly a different
-  password) while still writing a valid-looking subject map. Now:
-  create, then **unconditionally** enable + reset password + clear the
-  brute-force lockout, for new and existing users alike.
-- An existing `evercoat-test` client was accepted without checking it was
-  enabled, had direct grants, or carried the mapper. Re-asserted on 409.
-- Added `api_status` / `expect_status`; **every** call now checks its
-  HTTP status. A failed role mapping used to pass silently.
-- `keycloak-bind-subs.py` committed as it went, leaving the DB
-  half-rebound on failure. Now atomic.
-
-### A leak I found in my own code
-
-`_resolve_mentions` first reused `list_channels`' predicate — which
-evaluates in the **author's** session. The author can always see the
-channel they just posted in, so **a restricted project's channel read as
-reachable for everyone**, and the mention notification would have named
-that project to somebody with no access to it. The channel's RLS protects
-the *messages* and cannot stop a notification row addressed to an
-outsider. Recipient access is now evaluated explicitly against
-confidentiality + membership, and
-`tests/db/test_023_messaging.py` asserts it in both directions.
+2. **8 permanent false reds.** The first real run reported 25 passed /
+   8 failed, and the 8 were the whole of `api-wiring.spec.ts` —
+   accessibility 13/13 and navigation 12/12 passed. The deployed page
+   carries **no `api-status` element and no `data-source-error` element
+   at all**, because that seam is compiled OUT of production builds. The
+   spec was asserting against something that does not exist at that URL.
+   It is now excluded in LIVE mode and counted as a **named skip**.
 
 ---
 
-## Where the build actually stands
+## ⚠️ THE DEMONSTRATION DATA IS SHOWING ON THE LIVE SITE
 
-| | |
-|---|---|
-| Migrations | **23** (023 = `deny_mutation` names its own table) |
-| API routes | **103** |
-| Python test functions | **307** |
-| Playwright spec files | 4 |
-| CI jobs | 5 — api, web, e2e, security, **auth** |
-| Slices 1–3 | shipped **and deployed** |
-| Slices 4–7 | **backend built, not deployed, no UI** |
+Confirmed by measurement on 2026-08-19, on `/dashboard`, `/projects`,
+`/formulations`, `/materials` and `/my-work` — an amber banner, visible
+text, outside any `<script>`:
 
-### 🔴 The honest MVP position
+> ⚠ **Demonstration data** — every project, requirement, measurement and
+> person shown here is synthetic. Nothing on this site is a real R&D
+> record.
 
-**By backend hours the MVP is far along. By "a user can drive the golden
-scenario in a browser" it is near zero, and that is the acceptance gate.**
+This is **by design today** (11 of 12 screens render `demo-data.json`;
+`CLAUDE.md` §15 records it), not a regression. It goes away when the
+screens are wired to the real API — S2 — which is blocked behind S1.
+**The operator has flagged it. Treat removing it as a goal, not a
+detail.**
 
-- **11 of the 12 web screens still render `demo-data.json`.** Only the
-  API-wiring seam is real (`tests/e2e/shell/api-wiring.spec.ts`).
-- **There is no sign-in flow.** `next-auth` is installed and imported by
-  nothing.
-- **The golden E2E does not exist.** It is MVP-1's acceptance gate
-  (`IMPLEMENTATION_PLAN.md` §Golden scenario).
-- **No dashboards.** Four role dashboards with drill-down are Slice 7.
-- **No MSD orchestration.** `app/agents/graphs/` does not exist; Ollama
-  is not installed. The retrieval half and its boundary test *are* built
-  and are provable without a model.
+---
+
+## 🔴 FIRST THING TO DO NEXT SESSION — S1 HAS AN ARCHITECTURAL BLOCKER
+
+`TODO.md` S1 says "next-auth Keycloak provider in `apps/web`".
+**next-auth cannot run on the deployed artifact.**
+
+- `render.yaml:80` builds with **`NEXT_OUTPUT=export`** and publishes
+  **`staticPublishPath: out`** — a Render **static site**, free tier.
+- A static export has **no server** and **no route handlers**. There is
+  no `apps/web/app/api/` directory at all.
+- **NextAuth v5 requires server route handlers** (`app/api/auth/[...nextauth]/route.ts`).
+- `next-auth@5.0.0-beta.25` is in `package.json` and **imported by
+  nothing** — confirmed again this session.
+
+So S1 as written would work locally and in CI and **would still leave
+the deployed site with no sign-in**, which is S1's own exit condition.
+
+**The zero-cost option that fits the deployment:** a browser-side
+**OIDC Authorization Code flow with PKCE** against Keycloak's existing
+public `evercoat-web` client. That works in a static export, needs no
+server, costs nothing, and is architecturally sound here because
+`CLAUDE.md` §6 already states frontend checks are cosmetic and the API
+re-enforces every decision server-side.
+
+**The alternative is a Render web service, which is spend, which is the
+operator's decision and must never be proposed.**
+
+This needs an ADR and an operator decision before S1 starts. Do not
+silently build next-auth against a static export.
 
 ---
 
 ## Constraints that must not be forgotten
 
 - 🔴 **NEVER propose spending.** The API + Keycloak deploy is blocked on
-  Render's free web-service quota. That is the operator's decision, not
-  the build's. The CI `auth` job exists precisely so the work is not
-  blocked on it.
-- 🔴 **Do not touch any `aw-*` container.** Operator's words: *"if i find
-  the autoworkshop in issues you will be responsible for breaking it."*
-  This project's DB is `evercoat-postgres` on port **55432**.
-- 🔴 **`RENDER_API_KEY` is still unrotated** since it was pasted into
-  chat on 2026-08-17. Dashboard-only; operator action.
+  Render's free web-service quota. The CI `auth` job exists precisely so
+  the work is not blocked on it — and it now passes.
+- 🔴 **Do not touch any `aw-*` container.** This project's DB is
+  `evercoat-postgres` on port **55432**.
+- 🔴 **`RENDER_API_KEY` is still unrotated** since 2026-08-17.
+  Dashboard-only; operator action.
 - ⚠️ **`autoworkshop-postgres` is FREE tier and EXPIRES 2026-09-01.**
-- ⚠️ **Docker on this host is wedged** — engine 500s, container won't
-  kill, port 55432 accepts then never answers. The operator declined
-  restarting Docker Desktop (it would restart the `aw-*` stack).
-  **CI is the verification path.** For fast local skips point
-  `TEST_DB_PORT` at a dead port — psycopg's default connect timeout is
-  infinite, so `pytest` otherwise hangs forever.
+- ⚠️ **Docker on this host is wedged.** CI is the verification path. For
+  fast local skips point `TEST_DB_PORT` at a dead port — psycopg's
+  default connect timeout is infinite, so `pytest` otherwise hangs.
+- ⚠️ **CI has a one-run-per-ref concurrency group.** Pushing evicts an
+  in-progress run; do not push while waiting on a result you need.

@@ -1,6 +1,6 @@
 # TODO — EvercoatITWRD APP
 
-**Updated 2026-08-18 (part 4), tip `4287feb`.** Read `RESUME_HERE.md` first.
+**Updated 2026-08-19, tip `5cd6d92`. CI is 5 of 5 GREEN.** Read `RESUME_HERE.md` first.
 
 ---
 
@@ -8,8 +8,11 @@
 
 | # | Task | Why it blocks |
 |---|---|---|
-| **B1** | **Read the `bash -x` trace in the Auth job.** | CI is now **4 of 5 green** — API, Web, E2E and Security all pass. Auth dies with a bare `exit code 6` right after `user chem.demo: HTTP 201`, and the script's own failure branch does not print. Tracing is enabled on that step for exactly this. Reasoning from the source has been wrong twice; read the trace. |
-| **B2** | **Establish whether the out-of-state client can reach the site *now*, and which URL they were given.** | Every server-side check passed (DNS on two public resolvers, TLS on both edge IPs, root + 3 routes + all 9 assets). `www.` fails — no record. Do not change the deployment before proving it is broken for them. |
+| ~~B1~~ | ~~Read the `bash -x` trace in the Auth job.~~ | ✅ **CLOSED 2026-08-19.** A literal `\n` became a bare word `n`, which curl read as a second URL — exit 6, status `204000`. Four more defects sat behind it. **Auth is now green: passed=7 failed=0 skipped=0.** |
+| **B0** | **Decide S1's auth architecture. It cannot be next-auth.** | `render.yaml:80` builds `NEXT_OUTPUT=export` to a Render **static site** — no server, no route handlers, no `app/api/` directory. **NextAuth v5 requires server route handlers.** Building it would leave the deployed site with no sign-in, which is S1's own exit condition. Zero-cost option that fits: browser-side **OIDC Authorization Code + PKCE** against the existing public `evercoat-web` client. The alternative is a Render web service = spend = the operator's decision, never proposed. **Needs an ADR before S1 starts.** |
+| **B2** | **Establish whether the out-of-state client can reach the site *now*, and which URL they were given.** | Every server-side check passed again 2026-08-19: live suite **25/0/2** against the deployed URL; root, `/dashboard/` and `/admin/` all 200. `www.` fails — no record. Do not change the deployment before proving it is broken for them. |
+| **B3** | **The demonstration-data banner is on every live screen.** | Confirmed by measurement — visible text on `/dashboard`, `/projects`, `/formulations`, `/materials`, `/my-work`. By design today (I2) and the operator has flagged it. It clears when S2 wires the screens, which is blocked behind S1, which is blocked behind B0. |
+
 
 ---
 
@@ -19,7 +22,7 @@
 
 | # | Issue | Detail |
 |---|---|---|
-| **I1** | **No sign-in flow.** | `next-auth` is installed and imported by nothing. Keycloak now runs in CI, so this is finally buildable. Without it no authenticated browser call can succeed and the golden E2E cannot start. |
+| **I1** | **No sign-in flow.** 🔴 **See B0 — it cannot be next-auth.** | `next-auth` is installed and **imported by nothing**, re-confirmed 2026-08-19. Keycloak now runs in CI, so this is finally buildable. Without it no authenticated browser call can succeed and the golden E2E cannot start. |
 | **I2** | **11 of 12 web screens render `demo-data.json`.** | Only `tests/e2e/shell/api-wiring.spec.ts` proves a real request. A backend with no UI cannot demonstrate the digital thread. |
 | **I3** | **The golden Playwright E2E does not exist.** | It *is* MVP-1's acceptance gate. 15 arrows, every one asserted in UI **and** database state. The YELLOW→GREEN transition is the single most important assertion. |
 | **I4** | **No dashboards.** | Chemist, Engineer, Lead, Director — four role dashboards with drill-down to real source records. Slice 7 scope. |
