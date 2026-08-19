@@ -73,6 +73,15 @@ class RetrievedRecord:
     excerpt: str
 
 
+# 🔴 `CAST(:project AS uuid)`, NOT a bare `:project`.
+#
+# `project_id` is optional, so the parameter is often NULL — and psycopg
+# sends an untyped NULL, which leaves PostgreSQL unable to resolve
+# `$n IS NULL` against any operator. It fails at PARSE time with
+# "could not determine data type of parameter", so the query never runs
+# at all rather than running wrongly. The cast is load-bearing; removing
+# it breaks every unfiltered retrieval.
+#
 # The searchable surface, as (entity_type, SQL). Each query selects a
 # short human-readable label and an excerpt, and NONE of them carries a
 # privilege escalation: they are ordinary reads that RLS filters.
@@ -92,7 +101,7 @@ _SOURCES: dict[str, str] = {
         JOIN formulations.formulas f
           ON f.id = v.formula_id AND f.organization_id = v.organization_id
         WHERE v.organization_id = :org
-          AND (:project IS NULL OR v.project_id = :project)
+          AND (CAST(:project AS uuid) IS NULL OR v.project_id = CAST(:project AS uuid))
           AND (
                 f.formula_code ILIKE :q OR f.name ILIKE :q
                 OR v.version_code ILIKE :q
@@ -124,7 +133,7 @@ _SOURCES: dict[str, str] = {
                coalesce(t.notes, '') AS excerpt
         FROM testing.tests t
         WHERE t.organization_id = :org
-          AND (:project IS NULL OR t.project_id = :project)
+          AND (CAST(:project AS uuid) IS NULL OR t.project_id = CAST(:project AS uuid))
           AND (t.test_number ILIKE :q OR coalesce(t.notes, '') ILIKE :q)
         ORDER BY t.created_at DESC
         LIMIT :limit
@@ -136,7 +145,7 @@ _SOURCES: dict[str, str] = {
                    AS excerpt
         FROM quality.failures f
         WHERE f.organization_id = :org
-          AND (:project IS NULL OR f.project_id = :project)
+          AND (CAST(:project AS uuid) IS NULL OR f.project_id = CAST(:project AS uuid))
           AND (
                 f.failure_code ILIKE :q OR f.title ILIKE :q
                 OR coalesce(f.description, '') ILIKE :q
@@ -150,7 +159,7 @@ _SOURCES: dict[str, str] = {
                coalesce(b.purpose, '') || ' ' || coalesce(b.notes, '') AS excerpt
         FROM laboratory.batches b
         WHERE b.organization_id = :org
-          AND (:project IS NULL OR b.project_id = :project)
+          AND (CAST(:project AS uuid) IS NULL OR b.project_id = CAST(:project AS uuid))
           AND (b.batch_number ILIKE :q OR coalesce(b.purpose, '') ILIKE :q)
         ORDER BY b.created_at DESC
         LIMIT :limit

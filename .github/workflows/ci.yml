@@ -462,3 +462,165 @@ jobs:
         run: |
           pip install semgrep
           semgrep --config auto --error --skip-unknown-extensions .
+
+  auth:
+    name: Auth — real Keycloak, real tokens
+    runs-on: ubuntu-latest
+
+    # 🔴 THE FIRST TIME AUTHENTICATION HAS EVER RUN.
+    #
+    # The API has verified tokens correctly since Slice 1 and had never
+    # once verified a real one, because no Keycloak had ever run anywhere:
+    # not on Render, not in CI, not on the development host. Every auth
+    # test until now fabricated its own JWT or mocked the verifier, so the
+    # four defects this job exists to catch were all invisible — the realm
+    # ships with zero users, the seeder writes placeholder subjects, a
+    # Keycloak token's audience is `account` unless a mapper says
+    # otherwise, and nothing had ever sent `X-Organization-Id`.
+    #
+    # This job needs no deployment and costs nothing, which matters:
+    # deploying the API and Keycloak is blocked on Render's free
+    # web-service quota, and that is the operator's decision, not CI's.
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: evercoat_itw_rd
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres -d evercoat_itw_rd"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+        ports: ["5432:5432"]
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, resolved 2026-08-18
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5, resolved 2026-08-18
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install API
+        working-directory: apps/api
+        run: pip install -e ".[dev]"
+
+      # Generated, never written down. A hardcoded password in a workflow
+      # file is a gitleaks finding whatever the comment beside it says, and
+      # the realm's policy (12 chars, mixed case, digit, special) would push
+      # anyone writing one by hand toward something they had used before.
+      - name: Mint throwaway credentials
+        run: |
+          set -euo pipefail
+          admin="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9')Aa1!"
+          user="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9')Bb2!"
+          echo "::add-mask::$admin"
+          echo "::add-mask::$user"
+          echo "KC_ADMIN_PASSWORD=$admin" >> "$GITHUB_ENV"
+          echo "KC_USER_PASSWORD=$user" >> "$GITHUB_ENV"
+
+      - name: Start Keycloak with the shipped realm
+        run: |
+          set -euo pipefail
+          # `docker run`, not a `services:` block: a service container takes
+          # only an image and env, and Keycloak needs BOTH a command
+          # (`start-dev --import-realm`) and the realm mounted. A service
+          # container would start a Keycloak with no realm at all — which
+          # would pass a health check and fail every token request.
+          docker run -d --name evercoat-keycloak-ci \
+            -p 8080:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+            -e KC_BOOTSTRAP_ADMIN_PASSWORD="$KC_ADMIN_PASSWORD" \
+            -e KC_HEALTH_ENABLED=true \
+            -e KC_HTTP_ENABLED=true \
+            -v "$PWD/services/keycloak/realm:/opt/keycloak/data/import:ro" \
+            quay.io/keycloak/keycloak:26.0 \
+            start-dev --import-realm
+
+      - name: Apply migrations
+        working-directory: apps/api
+        env:
+          MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
+          DATABASE_URL: postgresql+psycopg://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
+          KEYCLOAK_ISSUER: http://localhost:8080/realms/evercoat
+        run: alembic upgrade head
+
+      - name: Grant the application role a login
+        env:
+          PGPASSWORD: ci-postgres
+        run: |
+          set -euo pipefail
+          psql -h localhost -U postgres -d evercoat_itw_rd -v ON_ERROR_STOP=1 <<'SQL'
+          ALTER ROLE evercoat_app LOGIN PASSWORD 'ci-app';
+          GRANT CONNECT ON DATABASE evercoat_itw_rd TO evercoat_app;
+          SQL
+
+      - name: Seed, and capture the organization the tokens will name
+        env:
+          SEED_DATABASE_URL: postgresql://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
+        run: |
+          set -euo pipefail
+          python scripts/seed.py | tee seed.log
+          org="$(grep -oE 'organization: [0-9a-f-]{36}' seed.log | head -1 | awk '{print $2}')" || org=""
+          if [ -z "$org" ]; then
+            echo "FAIL: the seeder printed no organization id; every request would 400" >&2
+            exit 1
+          fi
+          echo "TEST_ORGANIZATION_ID=$org" >> "$GITHUB_ENV"
+
+      - name: Create the realm's users and bind their subjects
+        env:
+          KC_URL: http://localhost:8080
+          KC_SUBS_OUT: keycloak-subs.json
+          SEED_DATABASE_URL: postgresql://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
+        run: |
+          set -euo pipefail
+          bash scripts/keycloak-bootstrap.sh --with-test-client
+          python scripts/keycloak-bind-subs.py keycloak-subs.json
+
+      - name: Start the API
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
+          KEYCLOAK_ISSUER: http://localhost:8080/realms/evercoat
+          KEYCLOAK_AUDIENCE: evercoat-api
+        run: |
+          set -euo pipefail
+          nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 > "$GITHUB_WORKSPACE/api.log" 2>&1 &
+          deadline=$(( SECONDS + 90 ))
+          until code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health/live)" \
+                && [ "$code" = "200" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: the API never became live. Its log:" >&2
+              cat "$GITHUB_WORKSPACE/api.log" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+      # 🔴 THE COUNTS, AND THE THIRD STATE.
+      #
+      # These tests skip themselves when no Keycloak is configured, which
+      # is right on a laptop and catastrophic here: a fully skipped run
+      # exits 0 and reads as proof. The assertion below is on the number
+      # that PASSED and on skipped being zero — never on the exit code.
+      - name: Prove authentication end to end
+        working-directory: apps/api
+        env:
+          TEST_KEYCLOAK_URL: http://localhost:8080
+          TEST_API_URL: http://127.0.0.1:8000
+          TEST_KEYCLOAK_REALM: evercoat
+          TEST_KEYCLOAK_CLIENT: evercoat-test
+          TEST_KEYCLOAK_PASSWORD: ${{ env.KC_USER_PASSWORD }}
+          TEST_ORGANIZATION_ID: ${{ env.TEST_ORGANIZATION_ID }}
+        run: |
+          set -euo pipefail
+          pytest tests/integration/test_auth_end_to_end.py -v --junitxml=auth-results.xml || true
+          python "$GITHUB_WORKSPACE/scripts/assert-suite-ran.py" auth-results.xml
+
+      - name: Keycloak and API logs on failure
+        if: failure()
+        run: |
+          echo "=== keycloak ==="; docker logs evercoat-keycloak-ci 2>&1 | tail -80
+          echo "=== api ==="; tail -80 "$GITHUB_WORKSPACE/api.log" || true

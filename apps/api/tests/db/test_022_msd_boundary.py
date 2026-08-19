@@ -136,16 +136,39 @@ def two_projects(owner_session: Session, app_session: Session) -> Iterator[dict[
 
     app_session.rollback()
     owner_session.begin()
+
+    # MSD turns and evidence are append-only IN THE DATABASE -- 022 puts
+    # `audit.deny_mutation()` on both, which is the whole point: an
+    # answer's cited sources cannot be quietly removed after the fact.
+    # That guard applies to this teardown too, so the triggers are
+    # disabled around the delete and re-enabled immediately. Disabling
+    # them is itself proof the mechanism is real; a fixture that could
+    # just delete would mean the guard was decorative.
+    owner_session.execute(
+        text("ALTER TABLE ai.msd_evidence DISABLE TRIGGER msd_evidence_append_only")
+    )
+    owner_session.execute(text("ALTER TABLE ai.msd_turns DISABLE TRIGGER msd_turns_append_only"))
     owner_session.execute(
         text("DELETE FROM ai.msd_evidence WHERE organization_id = :o"), {"o": org}
     )
     owner_session.execute(text("DELETE FROM ai.msd_turns WHERE organization_id = :o"), {"o": org})
+    owner_session.execute(text("ALTER TABLE ai.msd_turns ENABLE TRIGGER msd_turns_append_only"))
+    owner_session.execute(
+        text("ALTER TABLE ai.msd_evidence ENABLE TRIGGER msd_evidence_append_only")
+    )
     owner_session.execute(text("DELETE FROM ai.msd_threads WHERE organization_id = :o"), {"o": org})
     owner_session.execute(
         text("DELETE FROM formulations.formula_versions WHERE organization_id = :o"), {"o": org}
     )
     owner_session.execute(
         text("DELETE FROM formulations.formulas WHERE organization_id = :o"), {"o": org}
+    )
+    # Memberships before projects. One test adds the outsider to the
+    # restricted project to prove the boundary opens both ways, and
+    # `project_members_project_fk` is RESTRICT by design (§5: never
+    # cascade-delete R&D history) -- so the parent cannot go first.
+    owner_session.execute(
+        text("DELETE FROM projects.project_members WHERE organization_id = :o"), {"o": org}
     )
     owner_session.execute(
         text("DELETE FROM projects.projects WHERE organization_id = :o"), {"o": org}

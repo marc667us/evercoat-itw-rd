@@ -29,6 +29,7 @@ from app.api.health import router as health_router
 from app.api.laboratory import router as laboratory_router
 from app.api.materials import router as materials_router
 from app.api.materials import suppliers_router
+from app.api.messaging import router as messaging_router
 from app.api.opportunities import router as opportunities_router
 from app.api.projects import router as projects_router
 from app.api.tasks import router as tasks_router
@@ -194,6 +195,10 @@ def create_app() -> FastAPI:
     # Qualification and Release add zero approval infrastructure (§9).
     application.include_router(failures_router, prefix="/api/quality/failures")
     application.include_router(approvals_router, prefix="/api/approvals")
+    # Messaging is mounted last because it is the layer every other
+    # domain links INTO -- a thread hangs off a formula, a batch, a
+    # failure -- and nothing in it is a prerequisite for them.
+    application.include_router(messaging_router, prefix="/api/messaging", tags=["messaging"])
 
     if settings.metrics_enabled:
 
