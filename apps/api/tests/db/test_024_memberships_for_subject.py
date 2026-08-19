@@ -52,7 +52,11 @@ def test_it_takes_no_organization_argument(owner_session) -> None:
         .all()
     )
 
-    assert signatures == ["text"], (
+    # `pg_get_function_identity_arguments` includes the parameter NAME, so
+    # the expected value is "p_sub text" and not "text". Asserted as the
+    # full string rather than a substring: an added second parameter would
+    # still contain "p_sub text".
+    assert signatures == ["p_sub text"], (
         f"expected exactly one signature taking only the subject, found {signatures}"
     )
 

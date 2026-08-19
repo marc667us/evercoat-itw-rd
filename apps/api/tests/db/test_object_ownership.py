@@ -68,7 +68,7 @@ APP_SCHEMAS = (
 )
 
 
-# TWO definer functions are meant to belong to evercoat_owner, each for
+# A SHORT LIST of definer functions is meant to belong to evercoat_owner, each for
 # the same reason and each named here with the migration that decided
 # it. A definer function runs with ITS OWNER's privileges, so this list
 # is a security decision and grows only on purpose.
@@ -80,6 +80,21 @@ DEFINER_OWNED_BY_DESIGN = {
     # Migration 013. The audit trigger must read its own chain tail
     # regardless of who is writing, or the chain forks per RLS view.
     "audit.chain_row",
+    # Migration 024. Same shape as chain_row: it must answer BEFORE an
+    # organization has been chosen, so there is no RLS GUC set and an
+    # invoker-rights read would return nothing. `GET /api/me` is the only
+    # caller, and it is what tells a freshly signed-in browser which
+    # tenant it may ask for -- without it, authentication completes and
+    # every subsequent request 400s for want of a header whose value
+    # nothing supplies.
+    #
+    # This test caught the addition, which is exactly what it is for. The
+    # entry is the deliberate acknowledgement. Note the limit of what it
+    # buys: `evercoat_owner` is exempt from these policies only while RLS
+    # is ENABLED and not FORCED. See
+    # tests/db/test_024_memberships_for_subject.py, which fails the moment
+    # the cutover lands.
+    "core.memberships_for_subject",
     # Migration 015. The trigger that freezes the composition of a
     # non-draft formula version looks that version up before deciding.
     # As SECURITY INVOKER, a session whose RLS view of
