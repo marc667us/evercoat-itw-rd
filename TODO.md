@@ -1,652 +1,94 @@
 # TODO — EvercoatITWRD APP
 
-> **▶ Read `RESUME_HERE.md` first.** It carries the session pointer, the
-> environment commands, and the standing AutoWorkshop constraint.
-
-
-Ordered by what blocks what. Anything marked **GATE** must pass before
-the slice it belongs to can be called complete.
+**Updated 2026-08-18 (part 4), tip `93bdb57`.** Read `RESUME_HERE.md` first.
 
 ---
 
-## 🔴 CARRIED FORWARD — Slice 1's acceptance gate is NOT met
+## 0. Blocking — do these before anything else
 
-**Slice 1 is code-complete and gate-incomplete. Those are different, and
-this file exists so the difference is not quietly forgotten.**
+| # | Task | Why it blocks |
+|---|---|---|
+| **B1** | **Read CI for `93bdb57`.** `gh run list --limit 3` | The network died mid-session. The final commit's CI state is **UNKNOWN**, not green. Three jobs failed on the previous commit and all three fixes are unverified. |
+| **B2** | **Establish whether the out-of-state client can reach the site *now*, and which URL they were given.** | Every server-side check passed (DNS on two public resolvers, TLS on both edge IPs, root + 3 routes + all 9 assets). `www.` fails — no record. Do not change the deployment before proving it is broken for them. |
 
-Everything in Slice 1 is written, committed and unit-verified — 63 tests
-passing, migrations applied against real PostgreSQL, the API served over
-HTTP, the web app built and served. What has **never happened** is the
-whole stack running at once with a browser driving it.
+---
 
-### GATE-1 — Golden end-to-end scenario · **DEFERRED by the operator, 2026-08-16**
+## 1. Issues — open defects and gaps, ranked
 
-Mandated by the master prompt §44. Deferred with agreement, to be
-completed in a later session — not cancelled.
+### 🔴 P1 — gates the MVP acceptance criterion
 
-```
-Director creates/approves project
-  → Lead assigns team
-  → Chemist creates formula
-  → Lead approves lab
-  → Lab creates batch + sample
-  → Engineer creates confirmation test
-  → raw results entered
-  → app analyzes
-  → RED
-  → failure investigation opens
-  → Chemist creates revised formula
-  → new batch
-  → retest passes technically
-  → YELLOW pending approvals
-  → Engineer/Chemist/Lead approve
-  → GREEN
-  → formula becomes validation candidate
-  → dashboards update
-```
+| # | Issue | Detail |
+|---|---|---|
+| **I1** | **No sign-in flow.** | `next-auth` is installed and imported by nothing. Keycloak now runs in CI, so this is finally buildable. Without it no authenticated browser call can succeed and the golden E2E cannot start. |
+| **I2** | **11 of 12 web screens render `demo-data.json`.** | Only `tests/e2e/shell/api-wiring.spec.ts` proves a real request. A backend with no UI cannot demonstrate the digital thread. |
+| **I3** | **The golden Playwright E2E does not exist.** | It *is* MVP-1's acceptance gate. 15 arrows, every one asserted in UI **and** database state. The YELLOW→GREEN transition is the single most important assertion. |
+| **I4** | **No dashboards.** | Chemist, Engineer, Lead, Director — four role dashboards with drill-down to real source records. Slice 7 scope. |
 
-Every arrow asserted in **UI and database state**. The YELLOW→GREEN
-transition is the single most important assertion in the suite: it is the
-only thing that proves rule 6 — a technically passing test stays YELLOW
-until mandatory approvals complete — actually works end to end rather
-than in isolation.
+### 🟠 P2 — real defects in shipped code
 
-### 🔴 CORRECTED 2026-08-17 — GATE-1's STATED BLOCKER WAS WRONG
+| # | Issue | Detail |
+|---|---|---|
+| **I5** | **`record_decision` writes `testing.test_decisions` directly** instead of driving `workflow.approval_routes`. | Two approval records now exist for the same event. §9 says one shared approval engine, never re-implemented per module. |
+| **I6** | **`open_failure_for_failed_test` has no caller.** | `complete_execution` must invoke it. §10: "A RED confirmation result automatically opens or links a Failure Investigation." Today nothing does. |
+| **I7** | **`revise_version` never writes `formula_version_drivers`.** | So "which failure caused this revision?" has no answer — a hole straight through the digital thread. |
+| **I8** | **Notifications have no producer outside mentions.** | `notify()` is the single writer and only `_resolve_mentions` calls it. Approvals, failures and task assignment should all notify. §11 sidebar counts are actionable-item counts and will read zero. |
+| **I9** | **CI seed gate does not cover `laboratory.*`, `testing.*`, `quality.*`, approval or messaging tables.** | The gate counts what the seeder wrote for Slices 1–3 only, so a seeder that silently stopped writing Slice 4–7 data would still pass. |
 
-**This file previously said GATE-1 was blocked by Docker VM memory, and
-that stopping the `aw-*` stack would unblock it. Both are false, and
-acting on them would have burnt a session — and pushed at the one thing
-the operator forbade touching.**
+### 🟡 P3 — worth doing, not blocking
 
-The scenario cannot be executed at any amount of memory, because eleven
-of its fifteen arrows have nothing to drive. Verified against the
-filesystem and independently confirmed by Codex:
+| # | Issue | Detail |
+|---|---|---|
+| **I10** | Realm JSON has mojibake (`�`) where em-dashes and `§` were. | Cosmetic in the file; the `_comment` keys carrying it are gone, but check `displayName` and any description strings. |
+| **I11** | `promote_message` cannot target a decision/experiment/failure. | It creates a task only. §7 lists six promotion targets. Task first was deliberate; the rest is real scope. |
+| **I12** | No `/api/messaging` UI. | The routes exist; `DiscussionPanel` is in the §12 reuse list and is unbuilt. |
+| **I13** | Deploy of API + Keycloak. | Blocked on Render free web-service quota. **Operator decision — never propose spending.** The CI `auth` job deliberately removes this from the critical path. |
 
-| Golden-scenario noun | Table | Route | Service | Web page |
+---
+
+## 2. Schedule to complete MVP-1
+
+**Basis:** the owner's own budget — `ITWRD App.txt` L22,665 — 3 sessions/day
+× 5 hours = **15 dev hours/day**, MVP-1 = 3 days = **9 sessions = 45 hours**.
+
+Slices 1–7 backend is built. What remains is almost entirely the **browser
+half**, which is what the acceptance gate actually measures.
+
+| # | Session | Work | Hours | Exit condition |
 |---|---|---|---|---|
-| Formula / formula version | ✗ | ✗ | ✗ | ✗ |
-| Lab batch | ✗ | ✗ | ✗ | ✗ |
-| Sample | ✗ | ✗ | ✗ | ✗ |
-| Test / raw measurement | ✗ | ✗ | ✗ | ✗ |
-| Failure investigation | ✗ | ✗ | ✗ | ✗ |
-| Approval engine | ✗ | partial¹ | partial¹ | ✗ |
+| **S1** | Auth, end to end | Read CI for `93bdb57` and green it. `next-auth` Keycloak provider in `apps/web`; sign-in page; token attached to every API call; `X-Organization-Id` from the session. | 5 | A human signs in on the deployed shell and `/api/my-work/tasks` returns their real tasks. |
+| **S2** | Wire the read screens | Projects, Requirements, Materials, Formulations, Batches, Tests — swap `demo-data.json` for TanStack Query against the real routes. Keep the demo banner only where no route exists yet. | 5 | Six screens render database rows. `demo-data.json` referenced by ≤ 6 files. |
+| **S3** | Wire the write paths | Create project → create formula → submit → approve lab. Forms with React Hook Form + Zod against the existing routes. | 5 | The first four golden-scenario arrows are drivable by hand in a browser. |
+| **S4** | Lab + Test entry | Batch creation, sample, test creation, **raw per-replicate entry**. Derived status displayed as two separate fields (automatic evaluation *beside* final disposition). | 5 | A RED result can be produced through the UI. |
+| **S5** | Approvals + failure UI | `ApprovalTimeline`, the 7 decision types, failure investigation screen, hypothesis states. **Fix I5, I6, I7 here** — the UI is what makes those holes visible. | 5 | YELLOW→GREEN happens by human approval, and a RED opens a failure. |
+| **S6** | Dashboards (I4) | Four role dashboards, KPI cards, drill-down to real source records. **Fix I8** so counts are actionable items, not totals. | 5 | Every KPI drills to a real record. No panel can only ever show zero. |
+| **S7** | Golden E2E (I3) | The 15-arrow scenario, asserted in UI **and** DB. Plus RBAC E2E and the MSD boundary suite. | 5 | Golden suite green in CI against a real Keycloak. |
+| **S8** | Deploy + live suite | Deploy web (already static). API + Keycloak **only if the operator authorises the spend** — otherwise ship the browser-provable half and say so plainly. Run the full suite against the deployed site. | 5 | **passed / failed / skipped reported as three numbers** against the deployed URL. |
+| **S9** | Governance + hardening | Codex 5-pass, Supervisor, `MEMORY.md` / `BRAIN.md` / `CHANGELOG.md` / `CONTEXT.md`, a11y sweep with axe on every new screen, `docs/REUSABILITY.md`. | 5 | Four gates pass. MVP-1 declared with evidence, not assertion. |
 
-¹ Requirement approval and opportunity decision only. There is no shared
-approval engine, and none of the five templates in `CLAUDE.md` §9 exist.
+**Total: 45 hours = 9 sessions = 3 days at the owner's stated rate.**
 
-**Playwright has never been configured.** `@playwright/test` and
-`@axe-core/playwright` are devDependencies in `apps/web/package.json` and
-there is an `npm run e2e` script, but there is **no `playwright.config.*`
-and no `.spec.ts` anywhere in the repository.** The golden E2E was never
-written. `npm run e2e` today fails for want of a config, not for want of
-memory.
+### Two risks that would blow this schedule
 
-**Also measured:** only three web pages exist — `/`, `/dashboard`,
-`/admin`. Every Slice 2 API surface (opportunities, pipeline,
-requirements, My Work, projects) has **no user-reachable page**, and
-`CURRENT_SLICE = 1` in `apps/web/lib/navigation.ts` renders the rest of
-the sidebar disabled.
-
-**Where GATE-1 actually belongs.** `IMPLEMENTATION_PLAN.md:436` schedules
-the golden Playwright E2E in **Slice 7**, alongside messaging, MSD and
-the dashboards — which is correct, because the scenario needs Slices 3–6
-to exist first. GATE-1 is not a deferred *run*. It is unbuilt *work*,
-misfiled as a blocked run.
-
-**What must NOT happen:** a future session trying to "just run GATE-1",
-or stopping the `aw-*` containers to make room for it. Neither helps.
-
-**What must happen instead:** GATE-1 moves to Slice 7 and is re-scoped.
-
-### ✅ 2026-08-17 — Playwright now exists, and the interim scope was corrected again
-
-`playwright.config.ts` and `tests/e2e/` are in place and **28 E2E tests
-pass**. The browsers were already cached; no download was needed.
-
-**The interim scope proposed above turned out to be wrong too, for a
-second reason nobody had recorded.** The plan was an E2E over the arrows
-that DO exist — opportunity → project → stage gate → requirement → task.
-That is also impossible in a browser: **`apps/web` makes no API calls at
-all.** There is no `fetch`, no `next-auth` wiring and no sign-in flow
-anywhere in the application. `next-auth` is a declared dependency that
-nothing imports. So the browser has no means of driving *any* domain
-operation, built or not.
-
-What was built instead, and what each part actually proves:
-
-- **`tests/e2e/shell/`** — the application rendered in real Chromium for
-  the first time. Root redirect, landmarks, product identity, the
-  navigation gating (an unbuilt destination must be inert, never a dead
-  link), sidebar collapse keeping labels in the accessibility tree, and
-  `/my-work` correctly 404ing rather than serving an empty shell.
-- **`tests/e2e/shell/accessibility.spec.ts`** — **axe-core against WCAG
-  2.1 AA**, which `CLAUDE.md` §11 has required since Slice 1 and which
-  had never executed. It failed on its first run, with real defects (see
-  below).
-- **`tests/e2e/api/`** — the API under **uvicorn over real HTTP**, not
-  Starlette's `TestClient`. Every registered GET is probed anonymously
-  and must refuse; the OpenAPI surface is checked to still carry the
-  Slice 2 write paths.
-
-Both servers are started by Playwright itself and the Next app is
-**rebuilt every run**, so a pass cannot come from a stale `.next` or from
-something a developer left running.
-
-**Verified the suite can actually fail**, rather than assuming: bumping
-`CURRENT_SLICE` to 2 makes the gating test fail (My Work becomes a link
-to a route that 404s), and it passes again when restored.
-
-### 🔴 The first axe-core run found real WCAG AA failures
-
-Present since Slice 1, on every page, and invisible to 26 passing web
-unit tests:
-
-- **Sidebar group headings** (`WORK`, `GOVERNANCE`) were `text-slate-400`
-  on white — about **2.9:1** against a required **4.5:1** for normal
-  text at 11px.
-- **`EntityHeader` and `StatusBadge` `<dt>` labels** — same class, same
-  failure. These appear on every entity screen from Slice 2 onward, so
-  the defect was about to be inherited by every future page.
-- **The `<code>` chip on `/admin`** — `slate-500` on a `slate-100`
-  background is ≈4.35:1, just under the line.
-
-All fixed. Disabled controls in `top-bar.tsx` deliberately keep
-`text-slate-400`: WCAG 1.4.3 exempts inactive components, and axe agreed
-— it did not flag them.
-
-**Still not covered, and named so it is not mistaken for done:** the rule
-this domain cares most about — that status is never conveyed by colour
-alone — cannot be scanned yet, because `StatusBadge` is not rendered on
-any page. Pass-green against fail-red is ΔE 4.2 under deuteranopia. When
-the Slice 2 screens land, the colour+icon+text assertion belongs in
-`accessibility.spec.ts`.
-
-**Still true and still outstanding:** the full stack has never been up at
-once. That remains the largest unproven assumption in the build.
-
-### GATE-2 — Full live suite against a deployed instance
-
-Platform-wide hard rule: a deploy is finished when the full suite has run
-against the **deployed** site and the counts are reported as three
-numbers — passed / failed / **skipped** — never an exit code. No deploy
-has happened yet, so this has never run.
+1. **S8 is not fully in our control.** The API and Keycloak need an
+   instance; Render's free web quota is exhausted. If the operator does
+   not authorise spend, the deployed artefact stays the static site and
+   the *full* golden scenario is provable only in CI. **Say that plainly
+   rather than reporting a green that means something narrower.**
+2. **Docker on this host is wedged.** Everything is verified through CI,
+   which is slower per iteration. Restarting Docker Desktop would fix it
+   but restarts the `aw-*` stack — **which the operator has forbidden.**
 
 ---
 
-## Slice 1 — remaining work items
+## 3. Done this session — do not re-plan
 
-- [ ] **Administration tables wired to live endpoints.** The seven
-      `/api/admin/*` routes exist and are tested; the screen renders the
-      structure but shows no rows, because nothing can authenticate
-      without a running Keycloak. Blocked with GATE-1.
-- [ ] **Visual review of the sidebar.** `layout.tsx` passes an empty
-      permission set deliberately, so most navigation does not render.
-      The filter is proven in both directions by 17 tests, but no human
-      has yet *seen* the full sidebar. Blocked with GATE-1.
-- [x] **`scripts/seed.sh`** + `scripts/seed.py` — exist and are
-      idempotent; all 10 roles have holders.
-- [x] **`scripts/live-suite.sh`** — written 2026-08-16. Reports
-      passed/failed/skipped as three numbers, never an exit code.
-      Reconciles a non-zero exit against parsed counts, so a collection
-      error or "no tests ran" is force-counted as FAILED rather than
-      reading as a clean pass. **Syntax-checked and its dead-site path
-      exercised; NEVER RUN AGAINST A REAL DEPLOYMENT** (nothing is
-      deployed) — that is GATE-2.
-- [x] **`scripts/backup.sh` + restore drill** — implemented and
-      VERIFIED: 276 rows dumped and restored identically. *An untested
-      backup is not a backup* — this one was tested.
-- [x] **Container memory measurement** — done 2026-08-16, as numbers:
-      **~1094 MiB of 3.782 GiB in use, ~2.71 GiB free.** Breakdown in
-      `RESUME_HERE.md`.
-
-      🔴 **CORRECTION:** the "178% CPU" recorded above for `aw-keycloak`
-      is STALE. Measured at **0.16%**. That spike was transient, so
-      GATE-1's stated blocker is weaker than this file claims — the real
-      constraint is the ~2.71 GiB ceiling, which is what matters when
-      Slice 7 picks an Ollama model size.
-
----
-
-## ✅ RESOLVED 2026-08-17 — the audit chain (and the diagnosis was wrong)
-
-**Closed by migration 011.** Recorded here in full because the previous
-entry named the wrong CAUSE, and the fix that follows from a wrong cause
-is the wrong fix.
-
-**What this file used to say:** `audit.events` is a single GLOBAL chain
-that "forks under concurrency", because two transactions each read the
-tail before either commits and both write `prev_hash = 'GENESIS'`.
-
-**Why that was wrong.** `audit.chain_row()` takes
-`pg_advisory_xact_lock()`, which is held until COMMIT. A second writer
-blocks until the first finishes and then, under READ COMMITTED, takes a
-fresh snapshot that includes the row just committed. Concurrency alone
-never forked this chain.
-
-**The real mechanism — measured, not reasoned.** The trigger was SECURITY
-INVOKER, so its tail read was filtered by the `audit_org_isolation` RLS
-policy. Every writer chained onto **its own organization's** tail. Six
-interleaved inserts on a live database:
-
-```
-label     id    org        prev_hash points at
-A1       681   org A       GENESIS
-B1       682   org B       GENESIS      <- org B starts its own chain
-A2       683   org A       A1           <- skips B1 entirely
-B2       684   org B       B1
-UNSCOPED 685   NULL        B2           <- splices across chains
-A3       686   org A       A2
-```
-
-The chain was **already per-organization**, as an accident of RLS rather
-than a decision. The observed symptom (two rows at GENESIS) was reported
-correctly; it was never a race.
-
-**The actual defect** was row 685: a writer with no `app.current_org` —
-a migration, a backfill, a maintenance script — fell through to the
-permissive branch, saw every row, and spliced one tenant's chain onto
-another's, non-deterministically depending on who wrote last.
-
-**Second defect found on the way:** the insert policy was
-`WITH CHECK (true)`. Any session could write audit rows attributed to any
-organization — forging entries in another tenant's tamper-evident log.
-
-- [x] Migration 011: chain per `organization_id`, explicitly, in the
-      trigger's own predicate rather than as a side effect of RLS
-- [x] `chain_row()` is SECURITY DEFINER with a pinned `search_path`, so
-      chain shape no longer depends on who is writing
-- [x] Per-organization advisory lock (tenants no longer serialise against
-      each other)
-- [x] Insert policy refuses a scoped session writing another org's rows
-- [x] `verify_chain` now REQUIRES an `organization_id` (`None` = the
-      system chain); the Celery task passes it explicitly
-- [x] Discontinuity recorded as an audit row of its own, so a break at a
-      pre-011 row reads as a known regime change rather than as an attack
-- [x] Regression tests: `tests/db/test_011_audit_chain_scope.py`
-
-**One known future risk, with a failing tripwire rather than a comment.**
-`chain_row()`'s tail read is immune today because `audit.events` has RLS
-ENABLED but not FORCED, and an owner is exempt from a non-forced policy.
-The planned cutover (`core.rls_permissive()` → FALSE, FORCE on) removes
-that exemption and reintroduces the same class of defect for system and
-unscoped writes. `test_the_force_rls_cutover_must_revisit_the_chain_trigger`
-fails the moment the cutover lands and explains what to do.
-
----
-
-## 🔴 E2E suite — Codex findings still OPEN (2026-08-17)
-
-Codex reviewed the new Playwright suite specifically for "tests that
-cannot fail". It found twelve; **five are fixed, seven remain**. Listed
-here rather than left in a review log, because a suite that is weaker
-than it looks is the thing it was built to prevent.
-
-Fixed: `reuseExistingServer` (it silently disabled the rebuild locally),
-the leak test now compares bodies rather than only status codes, the
-organization-header test no longer claims to cover the authenticated
-case, write operations are now checked for declared authentication, and
-the `not-started` marker contrast (`text-slate-300`, ≈1.5:1) — which
-**axe-core cannot catch**, because the marks are `aria-hidden` and axe
-skips hidden nodes for contrast.
-
-Still open:
-
-- [ ] **HIGH — the E2E suite does not run in CI.** `.github/workflows/ci.yml`
-      never installs the root package, never installs browsers, never
-      invokes it. Every PR can be green without Playwright or axe-core
-      having executed. This is the same shape as axe-core being "required
-      in CI" for months while never running.
-- [ ] **MEDIUM — the Administration submenu links to pages that do not
-      exist.** `EntityHeader` renders every `not-started` submenu entry as
-      a live link, and `app/admin/page.tsx` declares entries for absent
-      pages. The sidebar carefully renders unbuilt destinations inert; the
-      submenu does not, so the guarantee is only half-applied.
-- [ ] **MEDIUM — a structurally invalid token triggers an outbound JWKS
-      fetch.** `security.py` fetches keys before parsing the token at all,
-      so arbitrary garbage causes a 5-second outbound request and a 503 —
-      an avoidable availability vector. It should parse first and 401
-      immediately.
-- [ ] **MEDIUM — the navigation property test cannot tell "built" from
-      "linked".** It accepts every anchor as built. An item that lost its
-      `slice` and now points at a 404 would pass.
-- [ ] **MEDIUM — the write-paths test checks path keys, not methods.**
-      Removing POST from milestones/risks/members would leave the GET and
-      keep it green.
-- [ ] **MEDIUM — readiness accepts 503 unconditionally**, so a wrong
-      database URL leaves the run green. Where CI supplies a database it
-      should require 200.
-- [ ] **LOW — the keyboard test presses Tab once on one page**, and CI
-      `retries: 1` would let an intermittent failure pass as green.
-
----
-
-## Deployment prerequisites — found by review, not yet needed
-
-Neither of these affects this host, and nothing is deployed. Both would
-bite on the FIRST real deployment, so they are recorded now rather than
-discovered then.
-
-- [ ] **Migration 011 needs an owner-capable migration role.** It calls
-      `CREATE OR REPLACE FUNCTION audit.chain_row()` *before*
-      `ALTER FUNCTION ... OWNER TO evercoat_owner`. Replacing a function
-      requires ownership or membership in the owning role. Migrations run
-      as `postgres` here, so it works; a non-superuser deployment role
-      needs membership in the role that currently owns the function, or
-      an out-of-band ownership transfer first.
-- [ ] **Migration 012's CHECK constraints validate immediately.**
-      `milestones_actual_date_matches_status` and
-      `risks_mitigating_states_the_mitigation` are added and validated in
-      one step. Both tables were empty here so it was safe. On a database
-      carrying real rows, add them `NOT VALID`, remediate the violating
-      rows explicitly, then `VALIDATE CONSTRAINT` — silently "fixing" R&D
-      rows to satisfy a constraint is not acceptable.
-- [ ] **The FORCE RLS cutover must revisit `audit.chain_row()`.**
-      SECURITY DEFINER makes its tail read caller-independent only while
-      RLS is ENABLED but not FORCED, because an owner is exempt from a
-      non-forced policy. Covered by a test that fails when the cutover
-      lands: `tests/db/test_011_audit_chain_scope.py::test_the_force_rls_cutover_must_revisit_the_chain_trigger`.
-
----
-
-## Documentation debt
-
-`CONTEXT.md` lists these as forward declarations. They are referenced by
-other files and do not yet exist:
-
-- [ ] `REQUIREMENTS.md` · `ARCHITECTURE.md` · `DATA_MODEL.md`
-- [ ] `DATABASE_RELATIONSHIPS.md` · `WORKFLOWS.md` · `UI_UX.md`
-- [ ] `NAVIGATION.md` · `API_CONTRACTS.md` · `AI_ARCHITECTURE.md`
-- [ ] `TESTING_STRATEGY.md` · `DEPLOYMENT.md` · `ACCEPTANCE_CRITERIA.md`
-- [ ] `docs/REUSABILITY.md` — required by root §0.3
-
-`DATA_MODEL.md` is the urgent one: `CLAUDE.md` §10 and `DECISIONS.md`
-ADR-007 both promise it holds the test-status state dictionary and
-transition table, and Slice 5 cannot be built correctly without it.
-
----
-
-## Slice 2 — Projects, Pipeline, Requirements, My Work
-
-> **Started 2026-08-16 with GATE-1 outstanding.** The operator chose to
-> proceed. Recorded here rather than left implicit, because this file
-> asked for exactly that.
->
-> What it means in practice: everything Slice 2 builds sits on a Slice 1
-> foundation that is unit-verified but never exercised end to end. If
-> GATE-1 later fails, the fault will be in Slice 1 and the fix may reach
-> up into Slice 2. Slice 2 work is therefore written to be independently
-> testable — migrations verified against a real database, services tested
-> through the API — so a Slice 1 defect surfaces as a specific failing
-> test rather than a vague "nothing works".
-
-- [x] Opportunities → projects (funnel, gate decision, conversion that
-      keeps the thread link and enrols the lead)
-- [x] 8 seeded pipeline stages as **configuration rows**, not an enum
-- [x] **Stage history preserved** — new `project_stages` row per visit +
-      append-only `stage_transitions`
-- [x] Structured requirements: target / min / max / unit / criticality /
-      verification method
-- [x] Requirements Verification Matrix
-- [x] Tasks + My Work inbox (list, counts, claim, complete, reassign,
-      per-project view)
-- [x] Project dashboard + context bar — shaped to CLAUDE.md §11's five
-      questions, one key each
-- [x] **Administration §2** — stage-gate configuration: list, create,
-      edit, retire/restore, reorder (ADR-021 satisfied)
-- [x] **Milestones and risks write endpoints** — done 2026-08-17,
-      migration 012 + `app/domains/projects/planning.py`. The permissions
-      did not merely lack grants, they **did not exist**: migration 002
-      seeded codes for every future domain and none for milestone or
-      risk. Added `milestone.manage`, `risk.create`, `risk.manage`, with
-      create/manage split for risks mirroring `failure.create` vs
-      `failure.close` — a Chemist who spots a single-sourced resin must
-      be able to raise it; deciding it is closed is the Lead's call.
-      Two invariants enforced in the database, not just the service:
-      a milestone that is met/missed records WHEN, and a risk marked
-      `mitigating` must state the mitigation.
-      Tests assert the **dashboard counter actually moves** — a 201 with
-      a tile still reading zero is the state this was fixing.
-- [x] **Project members: assign/remove** — done 2026-08-17,
-      `app/domains/projects/members.py`. Membership IS the RLS predicate,
-      so this is the access grant, and the test asserts it from the
-      colleague's own token rather than from the members list. Removal
-      deactivates rather than deletes. The project's own lead cannot be
-      removed: migration 006 rescues their view of the project ROW only,
-      and every child policy tests `core.is_project_member` and nothing
-      else — so removing the lead of a restricted project leaves them the
-      header and none of its contents, which presents as "the project is
-      empty" rather than as a permission error.
-
----
-
-## Slice 3 — Materials, Suppliers, Formulations
-
-Front half shipped 2026-08-18 pt1 (engine + three demo pages). Back half
-shipped pt3.
-
-- [x] Migration 015 — `materials` (library, documents, lots, suppliers,
-      the M:M) and `formulations` (formulas, versions, components), with
-      composite three-column tenant+project keys, RLS, and immutability
-      triggers. **Applied by CI only — Docker was wedged on the dev host.**
-- [x] Migration 016 — `material.approve_production` had **no holder**, so
-      the material status `preferred` was unreachable by any user. Granted
-      to `qa_compliance_officer`.
-- [x] `tests/db/test_002_roles_permissions.py` — the file migration 002 has
-      claimed exists since Slice 1 and which **did not exist**. Five
-      claimed properties plus a sixth: every permission must have a holder.
-- [x] Domain services for materials and formulations; `evaluate_version`
-      is the engine's first runtime caller.
-- [x] 17 routes; Administration section 3 (units, product families) with a
-      real write path, in the same change that creates the tables.
-- [x] Codex findings 1–3 fixed and each covered by a test
-      (`tests/db/test_015_service_rules.py`).
-
-- [ ] **Wire a screen to one of these endpoints.** Nothing in `apps/web`
-      calls the API at all — see `RESUME_HERE.md` item 4b. Until one does,
-      Slice 3 is a back end nobody can reach and the demo figures stay
-      baked at build time.
-- [ ] Seed `materials.units` and `materials.product_families` for the demo
-      organization; the tables and their write path exist, the rows do not.
-- [ ] `materials.material_documents` has no upload path — object storage
-      (Garage) is in the Slice 1 compose stack but has no service or route.
-      Until it does, `requires_sds` can only ever fail its safety check.
-- [ ] Material usage/performance history on the material detail screen
-      (the API returns it; no page consumes it).
-
----
-
-## Slice 4 — Laboratory
-
-Shipped 2026-08-18 pt4. The third link in the owner's loop
-(Project -> Formula -> **Lab** -> Test -> Analysis -> Approval -> Failure
--> Reformulation), built to the source's own workflow in sections 15-16.
-
-- [x] Migration 017 — batches, batch components (planned vs actual),
-      process parameters, deviations, samples. Composite three-column
-      tenant+project keys, RLS, immutability triggers.
-- [x] **The lot must be a lot of the line's material** — a three-column
-      foreign key, not an application comparison. Charging a resin lot
-      against the filler line is the most consequential mistake available
-      at a weigh-up bench, and the database now refuses it.
-- [x] `mass_deviation` in the calculation engine — signed, relative to
-      the PLAN and not the batch, with the tolerance as a band rather
-      than a ceiling. 8 tests including two Hypothesis properties.
-- [x] The guided flow: create (weigh-up sheet from `scale_to_batch`) ->
-      authorize -> start -> weigh -> capture process data -> sample ->
-      complete -> Chemist Review.
-- [x] Segregation of duties: the executor may not review their own batch,
-      enforced in the UPDATE's own predicate.
-- [x] 10 routes, permissions checked against migration 002 first — there
-      is deliberately no `batch.authorize`, because no such permission
-      exists and inventing one would repeat the `material.approve_production`
-      defect.
-
-- [ ] **The seed script does not seed laboratory data.** The CI seed gate
-      counts materials, suppliers, formulas, versions, components, SDS and
-      units — it does NOT cover `laboratory.*`, so those tables are
-      verified by tests and not by the seeder. Stated here rather than
-      left for someone to discover the gate is narrower than it looks.
-- [ ] No web UI. `/laboratory` does not exist as a page; the batch queue
-      and the weigh-up sheet are API-only.
-- [ ] `batch_deviations.resolution` has no writer — the columns exist and
-      nothing sets them. Same class as the tables-with-no-writer defects
-      found in Slice 3; closing it needs a resolve endpoint.
-- [ ] Sample status never moves off `available`. It becomes writable when
-      Slice 5's tests consume a sample.
-
----
-
-## Slice 5 — Testing
-
-Shipped 2026-08-18 pt4. The plan calls this "maximum depth,
-non-deferrable"; the source says depth means the Test Module is not
-complete because a form exists to enter results.
-
-- [x] `app/calculations/testing.py` — the **fourteen-rule ordered
-      derivation**, pure and no I/O. Returns the rule number that fired,
-      so the ORDER is assertable rather than only the outcome. 29 tests.
-- [x] Migration 018 — methods, method versions, equipment, calibration
-      (Administration §5), tests with the **five stored axes**, RAW
-      MEASUREMENTS PER REPLICATE, and append-only decisions.
-- [x] Migration 019 — `test.confirm` had **no holder**; granted to Lead,
-      QA and Director per DATA_MODEL.md §3.5. Its allowlist entry in
-      `test_002_roles_permissions.py` is retired in the same change,
-      because that allowlist fails in both directions.
-- [x] `calculated_result` is **computed and accepted from nobody** — no
-      route exposes it, asserted by reading the whole OpenAPI schema.
-- [x] `display_color` and `final_status` are **not columns**. Derived on
-      every read; a stored copy would be a second implementation of the
-      algorithm that nothing could check against the first.
-- [x] Segregation of duties **against the decision record**, not role
-      names: reviewer ≠ executor, and ADR-019's independent approver ≠
-      anyone who supplied a development-side approval on the same test.
-- [x] Raw measurements cannot be edited or deleted — excluded with a
-      stated reason, and they stay on the record.
-- [x] Confirmation only from `approved`, never `conditionally_approved`
-      — service guard AND CHECK constraint.
-
-- [ ] **The approval ROUTING engine is Slice 6**, as the plan schedules
-      it. What exists here is the decision RECORD every template will
-      write into, plus a single-step approval. The five templates
-      (SCREENING_SIMPLE … RELEASE_CRITICAL), sequential vs parallel
-      routing, and `next_approver_role` being *derived from a template*
-      rather than stored are all Slice 6. Today `next_approver_role` has
-      no writer — rule 12 falls back to "the next approver".
-- [ ] **A RED confirmation result does not yet open a Failure
-      Investigation.** §10 requires it; `failure.*` tables are Slice 6.
-- [ ] Rule 10 (`trend_alert`) has no writer. The column and the rule
-      exist; the analytics that would set it are Slice 7. It is FALSE
-      for every test today, so rule 10 never fires — named here rather
-      than left to look like a working control.
-- [ ] `validity_status` has no route. Recording a deviation or
-      invalidating a test on a calibration breach is specified
-      (DATA_MODEL.md §3.5) and unbuilt; `calibration_breach_policy` is
-      therefore configuration nothing reads yet.
-- [ ] No Administration screens for methods/equipment, and no web UI for
-      the test module at all.
-- [ ] The CI seed gate does not cover `testing.*`.
-
----
-
-## Slice 6 — Approvals, Failures, Reformulation
-
-Shipped 2026-08-18 pt4. Schema for both halves; services and routes are
-the remaining work.
-
-- [x] Migration 020 — **one shared approval engine**, polymorphic over
-      `(entity_type, entity_id)` so Pilot, Validation, Stability, Quality
-      and Qualification add ZERO new approval infrastructure (§9).
-      **Route snapshotting**: template steps are COPIED when a route
-      opens, so editing a template cannot retroactively un-approve
-      finished work. `parallel_group` expresses sequential AND parallel
-      with one mechanism. `must_differ_from_group` carries ADR-019's
-      incompatible-duty rule as data, so it travels with the snapshot.
-      All five §9 templates seeded. A decided step is a signature and
-      cannot be changed or deleted.
-- [x] Migration 021 — failures, hypotheses, evidence, the many-to-many
-      bridge (§27), corrective actions (§28), and
-      `formula_version_drivers` (§29) which answers "why was F008
-      created?" and permits several reasons per version.
-- [x] **hypothesis ≠ root cause, enforced three ways**: `origin` is
-      immutable by trigger, an `accepted` hypothesis must name the human
-      who accepted it, and a partial unique index permits at most ONE
-      accepted root cause per failure.
-- [x] Evidence carries `relationship ∈ (supports, contradicts,
-      inconclusive)` — an investigation that could only record confirming
-      evidence cannot rule anything out.
-
-- [x] **Services and routes for both halves** — 15 routes. The
-      no-writer gap named in the previous commit is closed: every table
-      migrations 020 and 021 created now has a production write path.
-- [x] `open_failure_for_failed_test` — §10's "a RED confirmation result
-      automatically opens or links a Failure Investigation", idempotent
-      (returns the existing one rather than opening a second) and
-      **confirmation-only**, because a failed screening test is
-      information and not a verdict (plan X11: there is no single global
-      RED rule).
-- [ ] That function has no CALLER yet. `complete_execution` must invoke
-      it when it computes `fail` on a confirmation test — the rule
-      exists, the wiring does not.
-- [ ] Slice 5's `record_decision` still writes `testing.test_decisions`
-      directly instead of driving `workflow.approval_routes`. Two
-      approval records now exist; the Slice 5 one must become a view onto
-      the engine, or be retired.
-- [ ] **A RED confirmation result still does not auto-open a failure.**
-      §10 requires it and the tables now exist; the rule that connects
-      them does not.
-- [ ] No `formula_version_drivers` writer, so `revise_version` does not
-      yet record WHY a revision exists.
-- [ ] No web UI, and the CI seed gate does not cover `quality.*` or the
-      approval tables.
-
----
-
-## Slice 7 — Messaging, Notifications, MSD (the last MVP slice)
-
-Started 2026-08-18 pt4. Schema and the MSD authorization boundary are in;
-the rest is named below rather than implied.
-
-- [x] Migration 022 — channels (project / direct / technical thread),
-      messages, `#F008` links and mentions, one NotificationService
-      table, and `ai.msd_threads` / `msd_turns` / `msd_evidence`.
-- [x] **The MSD authorization boundary, as a mechanism.** §7 requires
-      retrieval filtered BEFORE the model sees anything.
-      `app/domains/msd/retrieval.py` runs every query on the CALLER'S
-      session, so RLS returns exactly what they could open — there is no
-      privileged reader and no `user_id` parameter that could
-      impersonate one. Proven on `app_session` against a restricted
-      project, in both directions.
-- [x] `ai.msd_evidence` makes that boundary AUDITABLE:
-      `verify_evidence_within_boundary` re-checks each cited record
-      against the caller's own view, so a leak leaves a trace.
-- [x] A thread's owner is immutable — it IS the authorization scope.
-- [x] Every assistant turn must carry the §7 disclaimer, by CHECK
-      constraint rather than by a template.
-
-- [ ] **No messaging service or routes.** The schema is in and has no
-      writer — the same shape named and closed for Slice 6, now open
-      again for Slice 7. Next session's first job.
-- [ ] **No MSD orchestration.** `retrieval.py` is the retrieval half and
-      deliberately calls no model; `app/agents/graphs/` does not exist.
-      Ollama is not installed and ADR-002's LangGraph is not wired.
-- [ ] **No dashboards.** Four role dashboards with drill-down are Slice
-      7's other half and are unbuilt.
-- [ ] **The golden E2E is still unwritten** — it needs sign-in, which
-      needs Keycloak, which is not deployed. This is MVP-1's acceptance
-      gate and remains the single largest outstanding item.
-- [ ] Notifications have no producer: nothing writes a notification when
-      an approval step opens or a failure is raised.
-
----
-
-## Open decisions
-
-None blocking. ADR-002 (LangGraph) and ADR-024 (full depth, gate by gate)
-were both settled by the operator on 2026-08-16.
-
-Still unanswered, non-blocking:
-
-- [ ] Git remote — the repository is local only, no remote configured.
-- [ ] Repository hosting policy — GitHub Actions assumed; CI logic lives
-      in the workflow file and should move to `scripts/*.sh` so the
-      runner stays swappable (ADR-010).
+- Messaging service + 6 routes (103 total). Schema 022 finally has a writer.
+- Migration **023** — `audit.deny_mutation()` named the wrong table.
+- **Keycloak runs, for the first time**, in CI: bootstrap script, subject
+  binding, 6 auth integration tests, 14 realm invariant tests.
+- **The shipped realm was unimportable since Slice 1** — seven `_comment`
+  keys, four of them nested. Fixed; commentary moved to
+  `services/keycloak/realm/README.md`.
+- Mention-notification leak fixed (author's session vs recipient's access).
+- All four Codex findings fixed.
+- `scripts/assert-suite-ran.py` — three numbers, never an exit code.
