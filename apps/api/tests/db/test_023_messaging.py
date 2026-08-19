@@ -117,10 +117,25 @@ def channel_fixture(owner_session: Session, app_session: Session) -> Iterator[di
 
     app_session.rollback()
     owner_session.begin()
+    # 🔴 CHILDREN BEFORE PARENTS, AND MESSAGES ARE A CHILD OF CHANNELS.
+    #
+    # The first version deleted channels first and messages last, because
+    # messages need the append-only trigger disabled and that felt like a
+    # special case to handle at the end. `messages_channel_fk` is
+    # RESTRICT by design (§5: never cascade-delete R&D history), so the
+    # parent cannot go first no matter how the special case is arranged.
+    #
+    # Messages carry `deny_message_rewrite`. Disabling it to clean up is
+    # itself proof the mechanism is real -- a fixture that could simply
+    # delete would mean the guard was decorative.
+    owner_session.execute(
+        text("ALTER TABLE messaging.messages DISABLE TRIGGER messages_are_a_record")
+    )
     for statement in (
         "DELETE FROM messaging.notifications WHERE organization_id = :o",
         "DELETE FROM messaging.message_links WHERE organization_id = :o",
         "DELETE FROM workflow.tasks WHERE organization_id = :o",
+        "DELETE FROM messaging.messages WHERE organization_id = :o",
         "DELETE FROM messaging.channel_members WHERE organization_id = :o",
         "DELETE FROM messaging.channels WHERE organization_id = :o",
         "DELETE FROM projects.project_members WHERE organization_id = :o",
@@ -128,15 +143,6 @@ def channel_fixture(owner_session: Session, app_session: Session) -> Iterator[di
         "DELETE FROM core.organization_members WHERE organization_id = :o",
     ):
         owner_session.execute(text(statement), {"o": org})
-    # Messages carry a `deny_message_rewrite` trigger. Disabled here for
-    # the same reason the MSD fixture disables its append-only guards:
-    # having to do so is proof the mechanism is real.
-    owner_session.execute(
-        text("ALTER TABLE messaging.messages DISABLE TRIGGER messages_are_a_record")
-    )
-    owner_session.execute(
-        text("DELETE FROM messaging.messages WHERE organization_id = :o"), {"o": org}
-    )
     owner_session.execute(
         text("ALTER TABLE messaging.messages ENABLE TRIGGER messages_are_a_record")
     )

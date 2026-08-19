@@ -127,6 +127,29 @@ api_status() {
   curl -s -o /dev/null -w '%{http_code}' -X "$method" "${KC_URL}/admin/realms${path}"     -H "Authorization: Bearer ${TOKEN}"     -H "Content-Type: application/json" "$@"
 }
 
+# 🔴 A BARE "exit 6" IS NOT A DIAGNOSIS.
+#
+# `set -e` + `pipefail` abort the script the instant a curl inside $( )
+# fails, printing nothing but a number. CI showed `Process completed with
+# exit code 6` after a successful user creation, and the log said nothing
+# about which request, which URL, or which curl error. That is the same
+# class of defect as a report of zero being indistinguishable from a
+# broken deploy.
+#
+# api_body captures body and exit code separately and names the request.
+api_body() {
+  local method="$1" path="$2" what="$3"
+  shift 3
+  local out="" rc=0
+  out="$(curl -sS -X "$method" "${KC_URL}/admin/realms${path}"     -H "Authorization: Bearer ${TOKEN}"     -H "Content-Type: application/json" "$@" 2>/tmp/kc-curl-err)" || rc=$?
+  if [ "$rc" != "0" ]; then
+    echo "FAIL: ${what} -- curl exited ${rc} for ${KC_URL}/admin/realms${path}" >&2
+    echo "      curl said: $(cat /tmp/kc-curl-err 2>/dev/null)" >&2
+    exit 1
+  fi
+  printf '%s' "$out"
+}
+
 # Fails loudly unless the status is 2xx or one the caller tolerates.
 expect_status() {
   local got="$1" what="$2"
@@ -187,7 +210,8 @@ if [ "$WITH_TEST_CLIENT" = "1" ]; then
   # in the wrong shape issues tokens the API rejects, so the settings are
   # re-asserted rather than assumed.
   if [ "$client_status" = "409" ]; then
-    cid="$(api GET "/${KC_REALM}/clients?clientId=evercoat-test" | python -c 'import json,sys
+    clients_json="$(api_body GET "/${KC_REALM}/clients?clientId=evercoat-test"       "looking up the evercoat-test client")"
+    cid="$(printf '%s' "$clients_json" | python -c 'import json,sys
 try:
     cs = json.load(sys.stdin)
     print(cs[0]["id"] if cs else "")
@@ -236,6 +260,19 @@ for entry in "${USERS[@]}"; do
   username="${entry%%:*}"
   role="${entry##*:}"
 
+  # 🔴 KEYCLOAK'S MASTER ACCESS TOKEN LIVES ~60 SECONDS.
+  #
+  # Ten users, several requests each, is comfortably longer than that. An
+  # expired admin token answers 401 on a request that was correct in every
+  # other respect -- and the run would fail somewhere in the middle of the
+  # loop, differently each time, which reads as flakiness rather than as
+  # an expiry. Re-minting per user costs one request and removes the class.
+  TOKEN="$(admin_token)"
+  if [ -z "$TOKEN" ]; then
+    echo "FAIL: could not refresh the admin token before ${username}" >&2
+    exit 1
+  fi
+
   # CREATE, then REPAIR. `POST /users` answers 409 when the user already
   # exists, and curl exits 0 on a 409 -- so a rerun used to leave the old
   # account untouched: possibly disabled, possibly with a different
@@ -253,7 +290,8 @@ for entry in "${USERS[@]}"; do
   expect_status "$status" "creating ${username}" 409
   echo "user ${username}: HTTP ${status}"
 
-  sub="$(api GET "/${KC_REALM}/users?username=${username}&exact=true"     | python -c 'import json,sys
+  users_json="$(api_body GET "/${KC_REALM}/users?username=${username}&exact=true"     "looking up ${username}")"
+  sub="$(printf '%s' "$users_json" | python -c 'import json,sys
 try:
     users = json.load(sys.stdin)
     print(users[0]["id"] if users else "")
@@ -291,7 +329,7 @@ except Exception:
   # report a wrong password.
   api_status PUT "/${KC_REALM}/attack-detection/brute-force/users/${sub}" >/dev/null || true
 
-  role_json="$(api GET "/${KC_REALM}/roles/${role}")"
+  role_json="$(api_body GET "/${KC_REALM}/roles/${role}" "reading realm role ${role}")"
   role_ok="$(printf '%s' "$role_json" | python -c 'import json,sys
 try:
     r = json.load(sys.stdin)
