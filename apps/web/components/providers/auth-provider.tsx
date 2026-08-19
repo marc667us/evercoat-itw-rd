@@ -13,10 +13,18 @@
  * That is a decision, not an omission. `session.ts` recorded the rule
  * first: an access token in browser storage is readable by any script on
  * the origin, so one XSS becomes a stolen session that outlives the page.
- * The cost is that a refresh ends the session. The recovery is a redirect
- * to Keycloak which, if its own SSO cookie is still alive, returns
- * without asking for a password — so the user experiences a flicker, not
- * a login form.
+ *
+ * The cost is real and is stated plainly: after a reload the user is
+ * ANONYMOUS and must press Sign in. Nothing happens automatically. What
+ * makes that acceptable rather than merely tolerable is that the redirect
+ * usually returns without a password prompt, because Keycloak's own SSO
+ * cookie is still valid — so it costs a round trip, not a login.
+ *
+ * (An earlier version of this paragraph described that as "silent" and as
+ * "a flicker, not a login form". Codex pointed out that no code performed
+ * any silent check — the `prompt=none` path was never wired up — so the
+ * comment promised behaviour the file did not have. Corrected rather than
+ * implemented, because the silent path is deliberately declined below.)
  *
  * 🔴 WHY THERE IS NO HIDDEN-IFRAME SILENT RENEW.
  *
@@ -67,6 +75,9 @@ export interface OrganizationChoice {
   readonly code: string;
   readonly roles: readonly string[];
 }
+
+/** The ordinary signed-out state of a build that CAN sign in. */
+export const NOT_SIGNED_IN = "you are not signed in";
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -146,7 +157,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * fails there is no usable session, and saying so is better than an
    * application that renders empty.
    */
-  const establish = useCallback(async (accessToken: string): Promise<void> => {
+  /**
+   * @returns true when a usable session was established.
+   *
+   * 🔴 IT USED TO RETURN void AND "SUCCEED" ON EVERY FAILURE.
+   *
+   * A 401, 404 or 500 from `/api/me` set an anonymous session and then
+   * resolved normally, so the caller went on to schedule another refresh.
+   * A deprovisioned user was therefore left holding live tokens that the
+   * application kept refreshing indefinitely, while the UI insisted there
+   * was no session. Codex found it. The caller now stops, and drops the
+   * tokens.
+   */
+  const establish = useCallback(async (accessToken: string): Promise<boolean> => {
     if (API_BASE_URL === null) {
       setSession({
         status: "anonymous",
@@ -154,7 +177,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           "signed in, but this build was compiled without an API address, so " +
           "there is nothing to sign in to",
       });
-      return;
+      return false;
     }
 
     const response = await fetch(`${API_BASE_URL}/api/me`, {
@@ -173,7 +196,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           "you signed in successfully, but this application has no account for " +
           "you yet — your identity is valid and your access is not provisioned",
       });
-      return;
+      return false;
     }
 
     if (!response.ok) {
@@ -181,7 +204,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         status: "anonymous",
         reason: `the API refused to identify you (HTTP ${response.status})`,
       });
-      return;
+      return false;
     }
 
     const body = (await response.json()) as {
@@ -208,7 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         status: "anonymous",
         reason: "you are signed in but belong to no organization, so there is nothing to show",
       });
-      return;
+      return false;
     }
 
     // 🔴 A TOKEN REFRESH MUST NOT SILENTLY MOVE THE USER TO ANOTHER TENANT.
@@ -234,6 +257,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       status: "authenticated",
       credentials: { token: accessToken, organizationId: chosen.organizationId },
     });
+    return true;
   }, []);
 
   /** Keep the access token fresh while the tab is open. */
@@ -256,8 +280,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             });
             if (!mounted.current) return;
             tokens.current = next;
-            await establish(next.accessToken);
+            // 🔴 SEPARATED FROM THE REFRESH FAILURE ON PURPOSE.
+            //
+            // `establish()` reaches the API, and a thrown fetch -- API
+            // host down, DNS, a refused CORS preflight -- used to
+            // propagate into the catch below and report "your session
+            // expired", nulling a refresh token that was perfectly
+            // valid. The user was signed out and told the wrong reason.
+            // The Supervisor found it.
+            let usable = false;
+            try {
+              usable = await establish(next.accessToken);
+            } catch {
+              if (!mounted.current) return;
+              setSession({
+                status: "anonymous",
+                reason:
+                  "you are signed in, but the application cannot be reached right " +
+                  "now. Your session is intact -- retry in a moment.",
+              });
+              // Tokens are KEPT and the timer is rescheduled: the
+              // credential is fine, the network is not.
+              scheduleRefresh(next);
+              return;
+            }
             if (!mounted.current) return;
+            if (!usable) {
+              // The token still refreshes, but it buys nothing: the API
+              // will not identify this subject. Holding and re-refreshing
+              // a credential for a session that does not exist is the
+              // defect Codex named. Stop, and drop it.
+              tokens.current = null;
+              return;
+            }
             scheduleRefresh(next);
           } catch {
             // The refresh token has expired or been revoked. Signing the
@@ -287,7 +342,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const adopt = async (live: LiveTokens) => {
       tokens.current = live;
-      await establish(live.accessToken);
+      const usable = await establish(live.accessToken);
+      if (!usable) {
+        tokens.current = null;
+        return;
+      }
       scheduleRefresh(live);
     };
     mounted.current = true;
@@ -310,9 +369,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * the store's current value and not a render-time snapshot.
    */
   useEffect(() => {
-    if (!isAuthConfigured && readSession().status !== "authenticated") {
-      setSession({ status: "anonymous", reason: AUTH_UNCONFIGURED_REASON });
-    }
+    if (readSession().status === "authenticated") return;
+    // 🔴 THE DEFAULT REASON LIED IN A CONFIGURED BUILD.
+    //
+    // `session.ts` seeds the store with NO_IDENTITY_PROVIDER ("no
+    // identity provider is deployed for this environment"), and this
+    // effect only overwrote it when the build was UNconfigured. So a
+    // build that HAD a Keycloak showed that sentence beside a working
+    // Sign in button, telling the reader the deployment has no identity
+    // provider while they look at the control that uses it. The
+    // Supervisor found it. Both branches are now stated.
+    setSession({
+      status: "anonymous",
+      reason: isAuthConfigured ? NOT_SIGNED_IN : AUTH_UNCONFIGURED_REASON,
+    });
   }, []);
 
   const signIn = useCallback(async () => {
@@ -322,7 +392,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       window.location.pathname + window.location.search,
       window.location.origin,
     );
-    saveFlow(challenge, returnTo, false);
+
+    // 🔴 DO NOT REDIRECT IF THE FLOW COULD NOT BE STORED.
+    //
+    // Without the verifier the callback cannot complete, so redirecting
+    // would send the user to Keycloak, have them authenticate for real,
+    // and then fail with "no sign-in was in progress" — every time, with
+    // no way forward. Storage is genuinely unavailable in Safari private
+    // mode and under some enterprise policies. Codex found it.
+    if (!saveFlow(challenge, returnTo)) {
+      setSession({
+        status: "anonymous",
+        reason:
+          "this browser is blocking session storage, which sign-in needs to " +
+          "complete securely. Try a normal window, or allow storage for this site.",
+      });
+      return;
+    }
+
     window.location.assign(
       authorizationUrl({
         authorizeEndpoint: endpoints().authorize,
@@ -338,12 +425,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // browser must not be left holding a live token while believing it
     // has signed out.
     if (refreshTimer.current !== null) clearTimeout(refreshTimer.current);
-    const refreshToken = tokens.current?.refreshToken ?? null;
     tokens.current = null;
     setOrganizations([]);
     setSession({ status: "anonymous", reason: "you have signed out" });
 
-    if (!isAuthConfigured || refreshToken === null) return;
+    // 🔴 GATED ON CONFIGURATION ONLY.
+    //
+    // It used to also require `refreshToken !== null` -- a condition with
+    // nothing to do with logging out, since the request below sends only
+    // `client_id` and `post_logout_redirect_uri`. If Keycloak's response
+    // had omitted a refresh token, Sign out cleared local state and left
+    // the realm's SSO cookie alive, so the next Sign in silently returned
+    // the previous user. On the shared machine the comment below names,
+    // that is the wrong person. The Supervisor found it.
+    if (!isAuthConfigured) return;
     // Ends the session at Keycloak too. Without this the SSO cookie
     // survives and the next "Sign in" silently returns the same user —
     // which on a shared machine is the wrong person.

@@ -80,12 +80,11 @@ describe("sha256Challenge", () => {
 });
 
 describe("createChallenge", () => {
-  it("gives every attempt its own verifier, state and nonce", async () => {
+  it("gives every attempt its own verifier and state", async () => {
     const a = await createChallenge();
     const b = await createChallenge();
     expect(a.verifier).not.toBe(b.verifier);
     expect(a.state).not.toBe(b.state);
-    expect(a.nonce).not.toBe(b.nonce);
   });
 
   it("sends the hash, never the verifier", async () => {
@@ -100,17 +99,15 @@ describe("authorizationUrl", () => {
     verifier: "the-secret-that-must-not-travel",
     challenge: "the-hash",
     state: "state-value",
-    nonce: "nonce-value",
   };
 
-  const url = (prompt?: "none") =>
+  const url = () =>
     new URL(
       authorizationUrl({
         authorizeEndpoint: "https://kc.example/realms/evercoat/protocol/openid-connect/auth",
         clientId: "evercoat-web",
         redirectUri: "https://app.example/auth/callback/",
         challenge,
-        prompt,
       }),
     );
 
@@ -125,14 +122,26 @@ describe("authorizationUrl", () => {
     expect(url().searchParams.get("code_challenge")).toBe("the-hash");
   });
 
-  it("carries state and nonce", () => {
+  it("carries state", () => {
     expect(url().searchParams.get("state")).toBe("state-value");
-    expect(url().searchParams.get("nonce")).toBe("nonce-value");
   });
 
-  it("omits prompt unless a silent check was asked for", () => {
+  it("does NOT send a nonce", () => {
+    // 🔴 One was sent and never verified. A nonce binds an ID TOKEN to a
+    // request, and this flow never requests or parses one -- so it
+    // protected nothing while reading as an implemented defence. Removed
+    // rather than left in place. Reinstate it only together with ID-token
+    // validation.
+    expect(url().searchParams.get("nonce")).toBeNull();
+  });
+
+  it("never requests prompt=none", () => {
+    // 🔴 This asserted a feature that did not exist. The old version
+    // passed `prompt: "none"` itself and checked it came back — a test
+    // exercising a synthetic argument no production caller could produce.
+    // ADR-025 declines silent renew outright, so the assertion is now
+    // that the parameter is ABSENT.
     expect(url().searchParams.get("prompt")).toBeNull();
-    expect(url("none").searchParams.get("prompt")).toBe("none");
   });
 });
 
@@ -225,10 +234,22 @@ describe("unverifiedClaims", () => {
 describe("safeReturnTo", () => {
   const ORIGIN = "https://app.example";
 
-  it("keeps an in-application path, as an absolute URL on this origin", () => {
+  it("keeps an in-application path, as a router-safe internal path", () => {
+    // 🔴 A PATH, not an absolute URL. The caller hands this to the Next
+    // router for a CLIENT-SIDE navigation -- a full document navigation
+    // would destroy the in-memory token the callback had just obtained.
     expect(safeReturnTo("/formulations?open=F100#tab", ORIGIN)).toBe(
-      "https://app.example/formulations?open=F100#tab",
+      "/formulations?open=F100#tab",
     );
+  });
+
+  it("returns exactly one leading slash, so it can never be protocol-relative", () => {
+    // "/..//evil.example" resolves ON-origin with a pathname of
+    // "//evil.example". Returned as-is that is protocol-relative the
+    // moment anything resolves it again -- which is how version two was
+    // bypassed.
+    expect(safeReturnTo("/..//evil.example", ORIGIN)).toBe("/evil.example");
+    expect(safeReturnTo("/../../..//evil.example", ORIGIN)).toBe("/evil.example");
   });
 
   // 🔴 EVERY ONE OF THESE DEFEATED AN EARLIER VERSION OF THIS FUNCTION.
@@ -265,7 +286,7 @@ describe("safeReturnTo", () => {
       // An open redirect immediately after sign-in is a phishing primitive:
       // the link genuinely started on the real site, and nobody re-reads
       // the address bar at that moment.
-      expect(safeReturnTo(candidate, ORIGIN)).toBe("https://app.example/");
+      expect(safeReturnTo(candidate, ORIGIN)).toBe("/");
     },
   );
 
@@ -274,8 +295,6 @@ describe("safeReturnTo", () => {
     // to this origin when the CALLER uses it -- the step that broke
     // version two.
     const hostile = [
-      "/..//evil.example",
-      "/../../..//evil.example",
       "/%0a/evil.example",
       "/\\evil.example",
       "/\u0000//evil.example",

@@ -35,11 +35,8 @@ const KEY = "evercoat.auth.flow";
 export interface FlowState {
   readonly verifier: string;
   readonly state: string;
-  readonly nonce: string;
   /** Where the user was, so they land back there and not on a dashboard. */
   readonly returnTo: string;
-  /** True when this was a background `prompt=none` check. */
-  readonly silent: boolean;
 }
 
 /** True when this code is running somewhere with a DOM. */
@@ -55,17 +52,35 @@ function storage(): Storage | null {
   }
 }
 
-export function saveFlow(challenge: PkceChallenge, returnTo: string, silent: boolean): void {
+/**
+ * Put the flow aside for the duration of one redirect.
+ *
+ * 🔴 RETURNS WHETHER IT WORKED, AND THE CALLER MUST NOT REDIRECT IF IT
+ * DID NOT.
+ *
+ * The first version returned `void` and gave up silently when storage was
+ * unavailable — Safari in private mode, a locked-down profile, storage
+ * disabled by policy. `signIn()` then redirected to Keycloak anyway, the
+ * user authenticated for real, and the callback failed with "no sign-in
+ * was in progress", forever, with no way to make progress. Codex found
+ * it. Failing BEFORE the redirect costs the user nothing; failing after
+ * it costs them their password and their patience.
+ */
+export function saveFlow(challenge: PkceChallenge, returnTo: string): boolean {
   const store = storage();
-  if (store === null) return;
+  if (store === null) return false;
   const value: FlowState = {
     verifier: challenge.verifier,
     state: challenge.state,
-    nonce: challenge.nonce,
     returnTo,
-    silent,
   };
-  store.setItem(KEY, JSON.stringify(value));
+  try {
+    store.setItem(KEY, JSON.stringify(value));
+    return true;
+  } catch {
+    // Quota exceeded, or storage denied between the probe and the write.
+    return false;
+  }
 }
 
 /**
@@ -79,24 +94,43 @@ export function saveFlow(challenge: PkceChallenge, returnTo: string, silent: boo
 export function takeFlow(): FlowState | null {
   const store = storage();
   if (store === null) return null;
-  const raw = store.getItem(KEY);
-  store.removeItem(KEY);
+
+  // 🔴 THE READ AND THE CLEAR ARE BOTH INSIDE THE try.
+  //
+  // They used to sit outside it. A SecurityError from removeItem — which
+  // browsers do raise when storage access is revoked mid-session — left
+  // the verifier stored AND threw out of the callback as an unhandled
+  // rejection, so the page never reached the state check or its failure
+  // message. Take-once has to survive the storage layer misbehaving, or
+  // it is take-once only on the happy path. Codex found it.
+  let raw: string | null = null;
+  try {
+    raw = store.getItem(KEY);
+  } catch {
+    return null;
+  } finally {
+    try {
+      store.removeItem(KEY);
+    } catch {
+      // Nothing further to do: the value is single-use and worthless
+      // without the matching authorization code. Throwing here would
+      // lose the flow we just read.
+    }
+  }
+
   if (raw === null) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<FlowState>;
     if (
       typeof parsed.verifier !== "string" ||
-      typeof parsed.state !== "string" ||
-      typeof parsed.nonce !== "string"
+      typeof parsed.state !== "string"
     ) {
       return null;
     }
     return {
       verifier: parsed.verifier,
       state: parsed.state,
-      nonce: parsed.nonce,
       returnTo: typeof parsed.returnTo === "string" ? parsed.returnTo : "/",
-      silent: parsed.silent === true,
     };
   } catch {
     return null;
@@ -150,7 +184,8 @@ export function takeFlow(): FlowState | null {
  * @param origin The application's own origin, e.g. `window.location.origin`.
  *   Required rather than read from `window` inside, so the function stays
  *   pure and can be attacked directly by a test.
- * @returns An absolute URL on `origin`. Never a relative path.
+ * @returns An internal path beginning with exactly one `/`. Safe to hand
+ *   to the Next router or to `location.assign`; never off-origin.
  */
 export function safeReturnTo(candidate: string | null | undefined, origin: string): string {
   const home = safeHome(origin);
@@ -160,20 +195,26 @@ export function safeReturnTo(candidate: string | null | undefined, origin: strin
     // `origin` comparison, not `hostname`: it also pins the scheme and
     // port, so http://app:8080 cannot be talked into https://app:443.
     if (resolved.origin !== new URL(origin).origin) return home;
-    return resolved.href;
+
+    // 🔴 THE LEADING SLASHES ARE COLLAPSED, AND THAT IS THE WHOLE POINT.
+    //
+    // Version two returned `pathname` as-is, and "/..//evil.example"
+    // resolves on-origin with a pathname of "//evil.example" -- which is
+    // protocol-relative the moment anything resolves it again. Exactly
+    // one leading slash cannot be.
+    //
+    // A PATH rather than an absolute URL because the caller hands this to
+    // the Next router for a CLIENT-SIDE navigation. See the callback
+    // page: a full document navigation would destroy the in-memory token
+    // it had just obtained.
+    const path = resolved.pathname.replace(/^\/+/, "/");
+    return `${path}${resolved.search}${resolved.hash}`;
   } catch {
     return home;
   }
 }
 
-/** The application root on this origin, absolute. The safe fallback. */
-function safeHome(origin: string): string {
-  try {
-    return new URL("/", origin).href;
-  } catch {
-    // An unusable origin is not something to paper over with a relative
-    // path that might resolve anywhere. "/" is the only honest answer
-    // left, and it is same-document by definition.
-    return "/";
-  }
+/** The application root. The safe fallback, and a valid internal path. */
+function safeHome(_origin: string): string {
+  return "/";
 }

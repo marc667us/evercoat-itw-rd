@@ -43,8 +43,18 @@ export interface PkceChallenge {
   readonly challenge: string;
   /** Ties the callback to this page's request. */
   readonly state: string;
-  /** Binds the ID token to this request, if one is returned. */
-  readonly nonce: string;
+  // 🔴 THERE IS DELIBERATELY NO `nonce`.
+  //
+  // One was generated, sent on the wire and carried across the redirect
+  // -- and never read back, because this flow never requests or parses an
+  // id_token. A nonce binds an ID TOKEN to a request; with no ID token it
+  // protects exactly nothing while reading, to the next person, as an
+  // implemented defence. The Supervisor found it, and it is the same
+  // defect as the `prompt=none` path removed above: machinery that
+  // implies a feature nobody built.
+  //
+  // If an ID token is ever consumed here, reinstate the nonce AND
+  // validate it. Do not reinstate one without the other.
 }
 
 /**
@@ -90,7 +100,6 @@ export async function createChallenge(): Promise<PkceChallenge> {
     verifier,
     challenge: await sha256Challenge(verifier),
     state: randomToken(16),
-    nonce: randomToken(16),
   };
 }
 
@@ -109,8 +118,15 @@ export function authorizationUrl(input: {
   readonly redirectUri: string;
   readonly challenge: PkceChallenge;
   readonly scope?: string;
-  /** `none` performs a SILENT check against Keycloak's SSO cookie. */
-  readonly prompt?: "none";
+  // 🔴 THERE IS DELIBERATELY NO `prompt` PARAMETER.
+  //
+  // It was here, typed `"none"`, for a silent SSO check — and nothing
+  // ever passed it. Codex flagged the whole path as unreachable: the only
+  // production caller omitted it, `flow.silent` was never read, and a
+  // test exercised an argument no application branch could produce. Dead
+  // code that implies a feature is worse than an absent feature, because
+  // the next reader budgets for behaviour that does not exist. ADR-025
+  // explains why silent renew is not attempted at all.
 }): string {
   const params = new URLSearchParams({
     client_id: input.clientId,
@@ -118,11 +134,9 @@ export function authorizationUrl(input: {
     response_type: "code",
     scope: input.scope ?? "openid profile email",
     state: input.challenge.state,
-    nonce: input.challenge.nonce,
     code_challenge: input.challenge.challenge,
     code_challenge_method: "S256",
   });
-  if (input.prompt) params.set("prompt", input.prompt);
   return `${input.authorizeEndpoint}?${params.toString()}`;
 }
 
