@@ -50,6 +50,35 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+# 🔴 ONE LITERAL, NOT FIVE.
+#
+# These tests spent a CI run reporting `404 != 401`, `404 != 400` and
+# `404 != 403` -- five failures that read as "authentication is broken"
+# when the truth was that the URL had never existed. The route is
+# `/api/my-work` (router prefix + `@router.get("")`); the tests asked for
+# `/api/my-work/tasks`. Five copies of a path in one file is the same
+# defect this project has hit repeatedly with nav-vs-router and
+# landing-vs-pack literals: two spellings cannot be type-checked into
+# agreement, so keep exactly one.
+PROTECTED_ENDPOINT = "/api/my-work"
+
+
+def test_the_endpoint_under_test_actually_exists() -> None:
+    """A 404 means the route moved. It does NOT mean auth is broken.
+
+    Without this, a renamed or re-prefixed route makes every other test in
+    this file fail with a confusing status mismatch, and the reader spends
+    the session debugging authentication that was working the whole time.
+    Run first, and say so plainly.
+    """
+    response = httpx.get(f"{API_URL}{PROTECTED_ENDPOINT}", timeout=30.0)
+    assert response.status_code != 404, (
+        f"{PROTECTED_ENDPOINT} does not exist on the running API -- so every "
+        "other test in this file is measuring a missing route, not "
+        f"authentication. Check the router prefix in app/main.py. Body: {response.text}"
+    )
+
+
 def _token(username: str) -> str:
     """A real access token, from a real identity provider."""
     response = httpx.post(
@@ -89,7 +118,7 @@ def test_a_real_token_resolves_to_a_principal() -> None:
     nobody. That distinction is the single most useful thing this test
     reports.
     """
-    response = httpx.get(f"{API_URL}/api/my-work/tasks", headers=_auth("lead.demo"), timeout=30.0)
+    response = httpx.get(f"{API_URL}{PROTECTED_ENDPOINT}", headers=_auth("lead.demo"), timeout=30.0)
 
     assert response.status_code != 401, (
         "a token minted by Keycloak itself was rejected as invalid. Check the "
@@ -106,7 +135,7 @@ def test_a_real_token_resolves_to_a_principal() -> None:
 def test_no_token_is_refused() -> None:
     """The negative half. A suite that only ever sends valid tokens
     cannot tell an enforced route from an unprotected one."""
-    response = httpx.get(f"{API_URL}/api/my-work/tasks", timeout=30.0)
+    response = httpx.get(f"{API_URL}{PROTECTED_ENDPOINT}", timeout=30.0)
     assert response.status_code == 401, response.text
 
 
@@ -123,7 +152,7 @@ def test_a_forged_token_is_refused() -> None:
         "bm90LWEtcmVhbC1zaWduYXR1cmU"
     )
     response = httpx.get(
-        f"{API_URL}/api/my-work/tasks",
+        f"{API_URL}{PROTECTED_ENDPOINT}",
         headers={"Authorization": f"Bearer {forged}", "X-Organization-Id": ORG_ID},
         timeout=30.0,
     )
@@ -138,7 +167,7 @@ def test_the_organization_header_is_required() -> None:
     records into whichever tenant happened to sort first.
     """
     response = httpx.get(
-        f"{API_URL}/api/my-work/tasks",
+        f"{API_URL}{PROTECTED_ENDPOINT}",
         headers={"Authorization": f"Bearer {_token('lead.demo')}"},
         timeout=30.0,
     )
@@ -152,7 +181,7 @@ def test_a_foreign_organization_is_refused() -> None:
     the membership lookup, not honoured because the token was valid.
     """
     response = httpx.get(
-        f"{API_URL}/api/my-work/tasks",
+        f"{API_URL}{PROTECTED_ENDPOINT}",
         headers={
             "Authorization": f"Bearer {_token('lead.demo')}",
             # A syntactically valid UUID that is nobody's organization.
