@@ -3,7 +3,7 @@
 **Session closed 2026-08-18 (part 4). Read this file, then `TODO.md`.**
 
 Repository: **https://github.com/marc667us/evercoat-itw-rd** (PUBLIC),
-branch `master`. Tip **`93bdb57`**, working tree **clean**, **pushed**
+branch `master`. Tip **`4287feb`**, working tree **clean**, **pushed**
 (`HEAD == origin/master`, verified).
 
 Session transcript archived at
@@ -21,7 +21,7 @@ gh api repos/marc667us/evercoat-itw-rd/actions/jobs/<job_id>/logs > auth.log
 grep -n "looking up chem.demo" -B 40 auth.log
 ```
 
-### Where CI actually stands (tip `9a4ef1a`, run on `a51f89b`)
+### Where CI actually stands (measured on run `32205073660`, commit `a51f89b`)
 
 | Job | Result |
 |---|---|
