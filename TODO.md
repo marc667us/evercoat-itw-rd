@@ -8,7 +8,7 @@
 
 | # | Task | Why it blocks |
 |---|---|---|
-| **B1** | **Read CI for `93bdb57`.** `gh run list --limit 3` | The network died mid-session. The final commit's CI state is **UNKNOWN**, not green. Three jobs failed on the previous commit and all three fixes are unverified. |
+| **B1** | **Read the `bash -x` trace in the Auth job.** | CI is now **4 of 5 green** — API, Web, E2E and Security all pass. Auth dies with a bare `exit code 6` right after `user chem.demo: HTTP 201`, and the script's own failure branch does not print. Tracing is enabled on that step for exactly this. Reasoning from the source has been wrong twice; read the trace. |
 | **B2** | **Establish whether the out-of-state client can reach the site *now*, and which URL they were given.** | Every server-side check passed (DNS on two public resolvers, TLS on both edge IPs, root + 3 routes + all 9 assets). `www.` fails — no record. Do not change the deployment before proving it is broken for them. |
 
 ---

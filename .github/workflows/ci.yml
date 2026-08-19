@@ -576,7 +576,21 @@ jobs:
           SEED_DATABASE_URL: postgresql://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
         run: |
           set -euo pipefail
-          bash scripts/keycloak-bootstrap.sh --with-test-client
+          # 🔴 `bash -x` DELIBERATELY, until this is understood.
+          #
+          # Two runs have now died here with a bare `exit code 6` -- curl's
+          # "could not resolve host" -- immediately after a SUCCESSFUL
+          # request to the same host, and WITHOUT the script's own failure
+          # branch printing anything. So the abort is not where the
+          # instrumentation assumed it was, and reasoning about it from the
+          # source has been wrong twice.
+          #
+          # A trace answers in one run what inspection has not answered in
+          # two. Passwords reach the script through the environment and are
+          # masked by the runner, and `admin_token` is the only place a
+          # secret appears in an argument -- check the trace before making
+          # this permanent.
+          bash -x scripts/keycloak-bootstrap.sh --with-test-client
           python scripts/keycloak-bind-subs.py keycloak-subs.json
 
       - name: Start the API

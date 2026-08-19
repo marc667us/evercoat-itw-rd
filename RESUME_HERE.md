@@ -13,23 +13,52 @@ Session transcript archived at
 
 ## 🔴 FIRST THING TO DO NEXT SESSION
 
-**Read the CI result for `93bdb57`. I could not.**
+**Read the `bash -x` trace in the Auth job. It was enabled for exactly this.**
 
 ```bash
 gh run list --limit 3
-gh run view <id> --json jobs -q '.jobs[]|"\(.name): \(.conclusion)"'
+gh api repos/marc667us/evercoat-itw-rd/actions/jobs/<job_id>/logs > auth.log
+grep -n "looking up chem.demo" -B 40 auth.log
 ```
 
-The network on this host went down mid-session — gateway pings, DNS dead,
-no outbound traffic, measured across four probes over two minutes — and it
-had not recovered by session close. So **the final commit's CI state is
-UNKNOWN**, not green. Do not assume it passed.
+### Where CI actually stands (tip `9a4ef1a`, run on `a51f89b`)
 
-What is known: the run *before* it (`86fd34b`) failed three jobs, and
-every one of those failures is fixed in `93bdb57`. See "What `93bdb57`
-fixes" below.
+| Job | Result |
+|---|---|
+| API — lint, type, test | ✅ **success** |
+| Web — lint, type, test | ✅ success |
+| E2E — browser shell, axe-core | ✅ success |
+| Security scan | ✅ success |
+| **Auth — real Keycloak** | ❌ **failure** |
 
----
+**Four of five are green.** Auth is the only one left, and it has moved a
+long way: Keycloak now starts, **imports the shipped realm** (which it
+could never do before), creates the test client `HTTP 201` and the first
+user `HTTP 201`.
+
+### The one open defect
+
+Immediately after `user chem.demo: HTTP 201`, the step dies with a bare
+`Process completed with exit code 6` — curl's *"could not resolve host"* —
+**for the same host that had just answered two requests successfully**,
+and **without the script's own failure branch printing anything**.
+
+`api_body()` was added specifically to name the failing request, URL and
+curl error. It did not fire. **So the abort is not where the
+instrumentation assumed it was, and reasoning from the source has now
+been wrong twice.** Do not guess a third time — `bash -x` is enabled on
+that step; read the trace.
+
+Two candidate causes worth holding, neither confirmed:
+- something in the `users?username=...&exact=true` command substitution
+  at `scripts/keycloak-bootstrap.sh:293`;
+- an environment/DNS effect between the container and the runner that
+  only bites on the third request.
+
+Note the admin-token expiry fix is already in (Keycloak's master token
+lives ~60 s, and ten users at several requests each runs past it) — that
+was a real latent bug but is **not** this failure, since this dies on the
+first user.
 
 ## ✅ LIVE, AND VERIFIED PUBLIC THIS SESSION
 
