@@ -29,6 +29,7 @@ from app.api.health import router as health_router
 from app.api.laboratory import router as laboratory_router
 from app.api.materials import router as materials_router
 from app.api.materials import suppliers_router
+from app.api.me import router as me_router
 from app.api.messaging import router as messaging_router
 from app.api.opportunities import router as opportunities_router
 from app.api.projects import router as projects_router
@@ -168,6 +169,14 @@ def create_app() -> FastAPI:
     # this is their write path, so they do not join the list of tables
     # nothing can write.
     application.include_router(admin_reference_data_router, prefix="/api/admin")
+    # Identity, BEFORE a tenant has been chosen.
+    #
+    # 🔴 The only authenticated route that does not require
+    # X-Organization-Id. Everything else depends on get_principal, which
+    # demands it -- so without this a browser that had just signed in had
+    # a valid token and no way to discover a tenant to ask for. See
+    # app/api/me.py and migration 024.
+    application.include_router(me_router, prefix="/api/me")
     application.include_router(projects_router, prefix="/api/projects")
     application.include_router(opportunities_router, prefix="/api/opportunities")
     # My Work. Mounted at its own prefix rather than under /api/projects

@@ -192,6 +192,45 @@ _PRINCIPAL_SQL = text(
 )
 
 
+async def get_verified_subject(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> str:
+    """The token's subject, with no organization required.
+
+    🔴 THIS IS THE ONLY AUTHENTICATED ENTRY POINT THAT DOES NOT DEMAND A
+    TENANT, AND IT EXISTS FOR EXACTLY ONE ROUTE.
+
+    ``get_principal`` requires ``X-Organization-Id``, correctly -- picking
+    a default tenant for a user who belongs to several writes records into
+    whichever one happened to sort first. But every authenticated route
+    depends on it, so a browser that had just signed in held a valid token
+    and no way to discover a tenant to ask for. Authentication completed
+    and the application was still unusable. ``GET /api/me`` closes that,
+    and needs identity before tenancy to do it.
+
+    The verification is identical to ``get_principal``'s -- the same
+    ``_decode``, so signature, issuer, audience and expiry are all checked.
+    What is deliberately absent is the ORGANIZATION step, and nothing else.
+
+    It returns a bare ``str`` rather than a ``Principal`` on purpose: a
+    Principal without an organization would be a Principal that could be
+    passed to something expecting one, and ``Principal.context`` would then
+    be constructed from a tenant nobody chose. There is no such object, so
+    there is no such mistake to make.
+    """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    claims = await _decode(credentials.credentials)
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token has no subject")
+    return sub
+
+
 async def get_principal(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),

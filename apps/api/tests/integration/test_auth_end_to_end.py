@@ -30,6 +30,7 @@ CI asserts they actually ran.
 from __future__ import annotations
 
 import os
+import uuid
 
 import httpx
 import pytest
@@ -216,3 +217,101 @@ def test_permissions_come_from_the_database_not_the_token() -> None:
         f"from the token rather than the database. Got {response.status_code}: "
         f"{response.text}"
     )
+
+
+# ---------------------------------------------------------------------
+# GET /api/me -- identity BEFORE a tenant has been chosen
+# ---------------------------------------------------------------------
+#
+# 🔴 THE GAP THESE TESTS EXIST FOR
+#
+# Every other route in this application requires `X-Organization-Id`, and
+# until this one existed nothing told the browser what to put in it. A
+# user could sign in successfully and then receive 400 from every request
+# they were capable of making.
+#
+# These tests could not have caught it in that state either, because the
+# CI workflow computes TEST_ORGANIZATION_ID from the seeder and injects
+# it -- the suite was handed the answer a real browser has no way to get.
+# So the assertions below deliberately do NOT send the header.
+
+
+def test_a_signed_in_user_can_discover_their_organizations() -> None:
+    """The one call a browser can make before it knows its tenant.
+
+    No `X-Organization-Id` here, on purpose. If this route ever starts
+    requiring one, sign-in is circular again and the deployed application
+    is unusable while every test still passes.
+    """
+    response = httpx.get(
+        f"{API_URL}/api/me",
+        headers={"Authorization": f"Bearer {_token('lead.demo')}"},
+        timeout=30.0,
+    )
+    assert response.status_code == 200, response.text
+
+    body = response.json()
+    assert body["email"], "a principal with no email is not a usable identity"
+    assert body["organizations"], (
+        "a valid token resolved to a user with NO organizations. A browser "
+        "cannot proceed from here -- it has nothing to put in the header that "
+        "every other route demands."
+    )
+
+    org = body["organizations"][0]
+    assert uuid.UUID(org["organization_id"])
+    assert org["name"], "an organization with no name cannot be offered in a picker"
+
+
+def test_the_organization_from_me_is_accepted_by_a_real_route() -> None:
+    """🔴 THE WHOLE POINT: the value handed out must actually work.
+
+    A route that returns a plausible organization id which `get_principal`
+    then rejects would be worse than no route at all -- it would look
+    correct and fail one step later, which is the shape of defect this
+    project keeps catching. So the id is taken from `/api/me` and spent
+    immediately on a route that enforces membership.
+    """
+    token = _token("lead.demo")
+    me = httpx.get(
+        f"{API_URL}/api/me",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+    assert me.status_code == 200, me.text
+    organization_id = me.json()["organizations"][0]["organization_id"]
+
+    response = httpx.get(
+        f"{API_URL}{PROTECTED_ENDPOINT}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Organization-Id": organization_id,
+        },
+        timeout=30.0,
+    )
+    assert response.status_code == 200, (
+        "the organization id from /api/me was refused by a real route, so the "
+        f"sign-in path is still broken. Got {response.status_code}: {response.text}"
+    )
+
+
+def test_me_refuses_an_absent_token() -> None:
+    """Identity without a tenant is still identity, and still requires one."""
+    response = httpx.get(f"{API_URL}/api/me", timeout=30.0)
+    assert response.status_code in (401, 403), response.text
+
+
+def test_me_refuses_a_forged_token() -> None:
+    """SECURITY DEFINER sits behind this route. The signature check is what
+    keeps it safe, so assert it rather than assuming it."""
+    forged = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJzdWIiOiJhdHRhY2tlciIsImF1ZCI6ImV2ZXJjb2F0LWFwaSJ9."
+        "bm90LWEtcmVhbC1zaWduYXR1cmU"
+    )
+    response = httpx.get(
+        f"{API_URL}/api/me",
+        headers={"Authorization": f"Bearer {forged}"},
+        timeout=30.0,
+    )
+    assert response.status_code == 401, response.text

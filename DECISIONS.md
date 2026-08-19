@@ -125,3 +125,25 @@ Consequences, stated plainly so they are not rediscovered later:
 - **The 45-hour and 14-day figures are retained in the plan as recorded source requirements**, not as commitments. Reporting progress against them would be dishonest in both directions.
 - **Depth is bought through reuse, not haste.** The shared component library and the Solar infrastructure reuse (ADR-022) are what make full depth reachable; if a later slice needs new approval, discussion, attachment, task, audit, notification or dashboard infrastructure, that is a defect in Slices 1–3, not new scope.
 - **No slice is declared complete on a green build.** Type-checks, unit tests and a successful deploy have coexisted with features that never worked.
+
+### ADR-025 — Sign-in is browser-side OIDC + PKCE, not next-auth · Accepted (2026-08-19)
+
+**Decision: the web application authenticates with an OpenID Connect Authorization Code flow with PKCE, executed entirely in the browser against the existing public `evercoat-web` client. `next-auth` is removed.**
+
+`TODO.md` scheduled S1 as "next-auth Keycloak provider in `apps/web`". That cannot work on the artefact this project deploys, and building it would have produced a green CI run and a deployed site with no sign-in — which is S1's own exit condition.
+
+**The measurement.** `render.yaml:80` builds with `NEXT_OUTPUT=export` and publishes `staticPublishPath: out` — a Render **static site**. A static export has no server and no route handlers; there is no `apps/web/app/api/` directory at all. **NextAuth v5 requires server route handlers** (`app/api/auth/[...nextauth]/route.ts`) for its callback, session and CSRF endpoints. `next-auth@5.0.0-beta.25` was a declared dependency that nothing imported, in a build that could never have run it.
+
+**The realm was already configured for the flow that does work.** `evercoat-web` is `publicClient: true`, `standardFlowEnabled: true`, carries `pkce.code.challenge.method: S256`, and holds the `evercoat-api-audience` mapper so its tokens are accepted by the API. The only thing pointing at next-auth was the redirect URI path. The realm did not need convincing; the plan did.
+
+**Why this is architecturally sound here and not a compromise.** `CLAUDE.md` §6 already states that frontend permission checks are cosmetic and that every control is re-enforced server-side, and `get_principal` reads permissions from the database rather than from the token's claims. A public client that cannot keep a secret is therefore not holding one: the browser proves possession of a code verifier, and every authorization decision is made by the API against a token whose signature it verifies independently.
+
+**The alternative was a Render web service, which is spend.** That is the operator's decision and is never proposed by the build. This route keeps the deployment on the free static tier.
+
+Consequences, stated plainly:
+
+- **The access token lives in memory only.** `lib/api/session.ts` already recorded this constraint before there was an implementation: `localStorage` is readable by any script on the origin, so one XSS becomes a stolen session that outlives the page. A reload therefore ends the in-memory session and is recovered by a silent `prompt=none` re-authorization against Keycloak's own SSO cookie, not by persisting a credential.
+- **The PKCE code verifier does go in `sessionStorage`, and that is not the same claim.** It must survive exactly one redirect, it is single-use, it is useless without the matching authorization code, and it is cleared the moment the exchange completes. Storing it is what makes the flow safe; storing the token is what would make it unsafe.
+- **The redirect URI is a real page in the export** (`/auth/callback/`), not a route handler. The realm's `redirectUris` and `webOrigins` change with it, and must list every deployed origin — a static export cannot compute them at runtime.
+- **`next-auth` is removed from `package.json`.** A dependency that is imported by nothing and cannot work in this build is a trap for the next reader, and it is the reason S1 was scheduled wrongly in the first place.
+- **This does not by itself put sign-in on the deployed site.** Keycloak still has no public URL, because deploying it needs a web service. What this changes is that the blocker is now **one configuration value**, not an architecture, and the flow is provable in CI against the real Keycloak that already runs there.
