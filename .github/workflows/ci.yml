@@ -616,8 +616,17 @@ jobs:
           TEST_ORGANIZATION_ID: ${{ env.TEST_ORGANIZATION_ID }}
         run: |
           set -euo pipefail
-          pytest tests/integration/test_auth_end_to_end.py -v --junitxml=auth-results.xml || true
+          # BOTH signals are used. The report answers "did anything
+          # actually run?"; the exit code catches a pytest that died
+          # before it could write one, or an error outside any test.
+          # Codex flagged that `|| true` alone discarded the second.
+          rc=0
+          pytest tests/integration/test_auth_end_to_end.py -v             --junitxml=auth-results.xml || rc=$?
           python "$GITHUB_WORKSPACE/scripts/assert-suite-ran.py" auth-results.xml
+          if [ "$rc" != "0" ]; then
+            echo "FAIL: pytest exited $rc" >&2
+            exit 1
+          fi
 
       - name: Keycloak and API logs on failure
         if: failure()

@@ -1,26 +1,7 @@
 {
-  "_comment": [
-    "EvercoatITWRD APP — Keycloak realm.",
-    "",
-    "Imported on first start via --import-realm. Realm roles here MUST",
-    "match core.roles.code in 002_seed_roles_permissions.sql exactly.",
-    "A mismatch is silent: Keycloak issues a token with a role the",
-    "database has never heard of, the principal query returns no",
-    "permissions, and the user sees an empty application with no error.",
-    "tests/db/test_002_roles_permissions.py asserts the two lists agree.",
-    "",
-    "Keycloak owns identity ONLY. It does not own authorization — roles",
-    "here are coarse bundles, and the application authorizes on",
-    "permissions read from the database (CLAUDE.md §6). Membership is",
-    "deliberately NOT a token claim: a JWT states identity, not current",
-    "authorization, so revoking a project membership must bite",
-    "immediately rather than whenever the access token expires."
-  ],
-
   "realm": "evercoat",
   "displayName": "EvercoatITWRD APP",
   "enabled": true,
-
   "sslRequired": "external",
   "registrationAllowed": false,
   "resetPasswordAllowed": true,
@@ -28,26 +9,16 @@
   "verifyEmail": true,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
-
-  "_comment_tokens": [
-    "Short access tokens because authorization is re-read from the",
-    "database each request anyway; a long-lived token buys nothing here",
-    "and widens the window on a stolen one. Refresh rotation is on, with",
-    "reuse detection, so a replayed refresh token invalidates the chain."
-  ],
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,
   "revokeRefreshToken": true,
   "refreshTokenMaxReuse": 0,
-
   "bruteForceProtected": true,
   "permanentLockout": false,
   "maxFailureWaitSeconds": 900,
   "failureFactor": 5,
-
   "passwordPolicy": "length(12) and notUsername(undefined) and notEmail(undefined) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and passwordHistory(5)",
-
   "roles": {
     "realm": [
       {
@@ -92,18 +63,8 @@
       }
     ]
   },
-
   "clients": [
     {
-      "_comment": [
-        "The web client is PUBLIC — a browser cannot keep a secret, and",
-        "shipping one would only create the illusion of confidentiality.",
-        "PKCE S256 is what actually protects the authorization code.",
-        "",
-        "Redirect URIs are exact. A wildcard host here is an open redirect",
-        "and an authorization-code interception path. Adding a deployment",
-        "means adding its URI explicitly."
-      ],
       "clientId": "evercoat-web",
       "name": "EvercoatITWRD Web",
       "enabled": true,
@@ -116,14 +77,16 @@
         "http://localhost:3000/api/auth/callback/keycloak",
         "http://localhost/api/auth/callback/keycloak"
       ],
-      "webOrigins": ["http://localhost:3000", "http://localhost"],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:3000##http://localhost"
       },
       "protocolMappers": [
         {
-          "_comment": "Audience mapper. Without it the token's aud omits evercoat-api and the API rejects every request as invalid_audience — a failure that looks like a broken login.",
           "name": "evercoat-api-audience",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
@@ -136,14 +99,6 @@
       ]
     },
     {
-      "_comment": [
-        "Bearer-only: the API validates tokens and never initiates a",
-        "login, so it needs no flows of its own.",
-        "",
-        "It has NO service account. An API that can mint its own",
-        "privileged token has a path around the authorization chain, and",
-        "background work runs as the worker client instead."
-      ],
       "clientId": "evercoat-api",
       "name": "EvercoatITWRD API",
       "enabled": true,
@@ -154,14 +109,6 @@
       "serviceAccountsEnabled": false
     },
     {
-      "_comment": [
-        "Confidential client for Celery. Secret is a placeholder and is",
-        "replaced at provisioning from SOPS — it must never be the value",
-        "committed here.",
-        "",
-        "The worker holds no realm role. Background jobs act on records",
-        "they are given, not on an identity that can approve anything."
-      ],
       "clientId": "evercoat-worker",
       "name": "EvercoatITWRD Worker",
       "enabled": true,
@@ -171,18 +118,6 @@
       "directAccessGrantsEnabled": false,
       "secret": "CHANGE-ME-AT-PROVISIONING"
     }
-  ],
-
-  "_comment_users": [
-    "No users are seeded here. Ten synthetic demo users — one per role —",
-    "are created by scripts/seed.sh, which labels them clearly as demo",
-    "data. Seeding users in a realm import means the same credentials",
-    "exist in every environment the file is imported into, including any",
-    "that later becomes production.",
-    "",
-    "No default roles are assigned either: a new account should be able",
-    "to sign in and see nothing until someone deliberately grants it",
-    "membership."
   ],
   "users": [],
   "defaultRoles": []

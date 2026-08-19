@@ -85,13 +85,18 @@ def channel_fixture(owner_session: Session, app_session: Session) -> Iterator[di
     project = owner_session.execute(
         text(
             """
+            -- Columns read from migration 001, not guessed. There is no
+            -- `project_type` and no `created_by` on projects.projects;
+            -- naming them cost a full CI round trip, which is the same
+            -- price the same mistake charged for `criticality` and for
+            -- `project_role`.
             INSERT INTO projects.projects
-                (organization_id, project_code, name, project_type, confidentiality, created_by)
-            VALUES (:o, :c, 'Restricted Work', 'new_product', 'restricted', :u)
+                (organization_id, project_code, name, status, confidentiality)
+            VALUES (:o, :c, 'Restricted Work', 'active', 'restricted')
             RETURNING id
             """
         ),
-        {"o": org, "c": f"P-{suffix}", "u": author},
+        {"o": org, "c": f"P-{suffix}"},
     ).scalar_one()
 
     owner_session.execute(

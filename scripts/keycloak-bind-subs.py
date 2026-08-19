@@ -67,6 +67,14 @@ def main() -> int:
     bound = 0
     missing: list[str] = []
 
+    # 🔴 ONE TRANSACTION, COMMITTED ONLY IF EVERY USER BINDS.
+    #
+    # The first version committed each UPDATE as it went and reported the
+    # missing users afterwards, so a partial failure left the database
+    # half-rebound: some accounts working, some not, and a rerun of the
+    # auth suite in between producing a mixed result nobody could read.
+    # Codex caught it. Either all ten identities line up or none of them
+    # move.
     with psycopg.connect(dsn) as conn, conn.cursor() as cur:
         for username, sub in mapping.items():
             # Matched on EMAIL, not on the placeholder sub. The seeder's
@@ -86,7 +94,11 @@ def main() -> int:
                 missing.append(username)
             else:
                 bound += 1
-        conn.commit()
+
+        if missing:
+            conn.rollback()
+        else:
+            conn.commit()
 
     print(f"bound {bound} of {len(mapping)} subjects")
 

@@ -69,6 +69,12 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "types-python-jose",
+    # Semgrep blocks the stdlib `xml` parser outright (XXE, billion
+    # laughs) and it is right to: an allowlist of "but this input is
+    # trusted" is exactly how the untrusted one eventually gets parsed.
+    # scripts/assert-suite-ran.py reads JUnit XML with it.
+    "defusedxml>=0.7",
+    "types-defusedxml",
 ]
 
 [tool.ruff]

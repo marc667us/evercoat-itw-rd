@@ -26,7 +26,12 @@ Usage:
 from __future__ import annotations
 
 import sys
-import xml.etree.ElementTree as ET
+
+# NOT `xml.etree` -- Semgrep blocks the stdlib parser (XXE, entity
+# expansion). The input here is pytest's own report, but a rule that
+# carries exceptions for trusted input is a rule that eventually parses
+# untrusted input. defusedxml is a drop-in and costs nothing.
+from defusedxml import ElementTree as ET  # type: ignore[import-untyped]
 from pathlib import Path
 
 
