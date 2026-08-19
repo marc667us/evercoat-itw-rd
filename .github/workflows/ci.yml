@@ -576,21 +576,19 @@ jobs:
           SEED_DATABASE_URL: postgresql://postgres:ci-postgres@localhost:5432/evercoat_itw_rd
         run: |
           set -euo pipefail
-          # 🔴 `bash -x` DELIBERATELY, until this is understood.
+          # The `bash -x` trace that used to be here has been REMOVED, and
+          # it did its job: it answered in one run what reading the source
+          # had got wrong twice. The abort was a literal \n on the
+          # role-mapping call in keycloak-bootstrap.sh, which bash reduced
+          # to a bare word `n` and curl read as a SECOND URL -- hence
+          # "could not resolve host", exit 6, and a status of 204000,
+          # because -w prints once per URL.
           #
-          # Two runs have now died here with a bare `exit code 6` -- curl's
-          # "could not resolve host" -- immediately after a SUCCESSFUL
-          # request to the same host, and WITHOUT the script's own failure
-          # branch printing anything. So the abort is not where the
-          # instrumentation assumed it was, and reasoning about it from the
-          # source has been wrong twice.
-          #
-          # A trace answers in one run what inspection has not answered in
-          # two. Passwords reach the script through the environment and are
-          # masked by the runner, and `admin_token` is the only place a
-          # secret appears in an argument -- check the trace before making
-          # this permanent.
-          bash -x scripts/keycloak-bootstrap.sh --with-test-client
+          # It is removed rather than left on, deliberately: api_status
+          # now names its own failures, and leaving the trace would mask
+          # whether that diagnostic actually works. If this step ever
+          # dies silently again, THAT is the finding.
+          bash scripts/keycloak-bootstrap.sh --with-test-client
           python scripts/keycloak-bind-subs.py keycloak-subs.json
 
       - name: Start the API

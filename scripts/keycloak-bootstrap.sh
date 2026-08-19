@@ -38,6 +38,17 @@
 
 set -euo pipefail
 
+# 🔴 A FIXED PATH IN A SHARED /tmp IS SOMEBODY ELSE'S TO WRITE.
+#
+# Both api_status and api_body capture curl's stderr so a failure can be
+# named. They used the literal `/tmp/kc-curl-err`, which any other user on
+# the host can pre-create as a symlink, and which two concurrent runs
+# would share. `2>file` truncates on every call, so a STALE message could
+# never be reported -- that half of the review finding was measured and
+# refuted -- but the predictable name stands on its own.
+CURL_ERR="$(mktemp "${TMPDIR:-/tmp}/kc-curl-err.XXXXXX")"
+trap 'rm -f "$CURL_ERR"' EXIT
+
 KC_URL="${KC_URL:-http://localhost:8080}"
 KC_ADMIN="${KC_ADMIN:-admin}"
 KC_REALM="${KC_REALM:-evercoat}"
@@ -121,10 +132,30 @@ api() {
 # authenticate as. Codex caught it. A bootstrap that reports success
 # while leaving the realm unusable is worse than one that fails, because
 # the next thing to break is authentication, three steps away.
+# 🔴 AND A FAILING CURL IN HERE PRINTED NOTHING AT ALL.
+#
+# api_body was given a failure branch that names the request. api_status
+# was not -- and api_status is what every write goes through. Called as
+# `status="$(api_status ...)"` under `set -e`, a non-zero curl aborts the
+# whole script with a bare exit code and no message, which is precisely
+# what two CI runs reported. The rc is captured and named here now, so an
+# abort is always preceded by a line saying which request died.
+#
+# The rc is RETURNED, not exited on, so the one deliberately tolerant
+# call site (the brute-force reset, `... >/dev/null || true`) keeps its
+# tolerance while still printing the diagnosis.
 api_status() {
   local method="$1" path="$2"
   shift 2
-  curl -s -o /dev/null -w '%{http_code}' -X "$method" "${KC_URL}/admin/realms${path}"     -H "Authorization: Bearer ${TOKEN}"     -H "Content-Type: application/json" "$@"
+  local code="" rc=0
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -X "$method" "${KC_URL}/admin/realms${path}" -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" "$@" 2>"${CURL_ERR}")" || rc=$?
+  if [ "$rc" != "0" ]; then
+    echo "FAIL: curl exited ${rc} for ${method} ${KC_URL}/admin/realms${path}" >&2
+    echo "      curl said: $(cat "${CURL_ERR}" 2>/dev/null)" >&2
+    echo "      status so far: '${code}' -- more than three digits means curl was handed more than one URL" >&2
+  fi
+  printf '%s' "$code"
+  return "$rc"
 }
 
 # 🔴 A BARE "exit 6" IS NOT A DIAGNOSIS.
@@ -141,10 +172,10 @@ api_body() {
   local method="$1" path="$2" what="$3"
   shift 3
   local out="" rc=0
-  out="$(curl -sS -X "$method" "${KC_URL}/admin/realms${path}"     -H "Authorization: Bearer ${TOKEN}"     -H "Content-Type: application/json" "$@" 2>/tmp/kc-curl-err)" || rc=$?
+  out="$(curl -sS -X "$method" "${KC_URL}/admin/realms${path}"     -H "Authorization: Bearer ${TOKEN}"     -H "Content-Type: application/json" "$@" 2>"${CURL_ERR}")" || rc=$?
   if [ "$rc" != "0" ]; then
     echo "FAIL: ${what} -- curl exited ${rc} for ${KC_URL}/admin/realms${path}" >&2
-    echo "      curl said: $(cat /tmp/kc-curl-err 2>/dev/null)" >&2
+    echo "      curl said: $(cat "${CURL_ERR}" 2>/dev/null)" >&2
     exit 1
   fi
   printf '%s' "$out"
@@ -154,6 +185,17 @@ api_body() {
 expect_status() {
   local got="$1" what="$2"
   shift 2
+  # 🔴 `case "$got" in 2*)` MATCHED "204000" AND RETURNED SUCCESS.
+  #
+  # The role-mapping bug concatenated two response codes into one string,
+  # because -w prints once per URL. Only curl's own exit 6 stopped that
+  # run; had the stray second URL resolved, a failed role mapping would
+  # have passed this gate silently. A status is exactly three digits, or
+  # it is not a status.
+  case "$got" in
+    [0-9][0-9][0-9]) ;;
+    *) echo "FAIL: ${what} produced '${got}', which is not an HTTP status" >&2; exit 1 ;;
+  esac
   case "$got" in 2*) return 0 ;; esac
   for ok in "$@"; do
     [ "$got" = "$ok" ] && return 0
@@ -232,9 +274,17 @@ except Exception:
     }')"
     expect_status "$status" "repairing the evercoat-test client"
 
-    # The mapper, re-created when missing. 409 here means it is already
-    # present, which is the outcome either way.
-    api_status POST "/${KC_REALM}/clients/${cid}/protocol-mappers/models" -d '{
+    # The mapper, re-created when missing. 409 means it is already present,
+    # which is the outcome either way.
+    #
+    # 🔴 THIS CALL USED TO END `>/dev/null || true`, WHICH SWALLOWED 400,
+    # 401 AND 500 ALONGSIDE THE 409 IT MEANT TO TOLERATE. The comment
+    # fifty lines above says the audience mapper is NOT optional -- and
+    # then the code accepted every way it could fail. A bootstrap that
+    # skips the mapper leaves every GENUINE token rejected with the same
+    # flat "invalid token" a forged one gets, four steps from here.
+    # Codex found it. Tolerate 409 by name; tolerate nothing else.
+    mapper_status="$(api_status POST "/${KC_REALM}/clients/${cid}/protocol-mappers/models" -d '{
       "name": "evercoat-api-audience",
       "protocol": "openid-connect",
       "protocolMapper": "oidc-audience-mapper",
@@ -243,7 +293,8 @@ except Exception:
         "access.token.claim": "true",
         "id.token.claim": "false"
       }
-    }' >/dev/null || true
+    }')"
+    expect_status "$mapper_status" "adding the evercoat-api audience mapper" 409
   fi
 fi
 
@@ -340,7 +391,14 @@ except Exception:
     echo "FAIL: realm role '${role}' does not exist -- the realm import did not apply" >&2
     exit 1
   fi
-  status="$(api_status POST "/${KC_REALM}/users/${sub}/role-mappings/realm" \n    -d "[${role_json}]")"
+  # THIS LINE ONCE CARRIED A LITERAL \n INSTEAD OF A LINE CONTINUATION.
+  # Bash strips the backslash from an unquoted \n, leaving the bare word
+  # `n`, which curl accepts as a SECOND URL. curl then fetched the real
+  # endpoint (204) and then "n" -- could not resolve host, exit 6 -- and
+  # -w '%{http_code}' prints ONCE PER URL, so the status read 204000.
+  # Two CI runs died here on a bare `exit code 6` printing nothing at all.
+  # Keep this call on ONE line.
+  status="$(api_status POST "/${KC_REALM}/users/${sub}/role-mappings/realm" -d "[${role_json}]")"
   expect_status "$status" "granting ${role} to ${username}" 409
 
   [ "$first" = "1" ] || echo "," >> "$KC_SUBS_OUT"
