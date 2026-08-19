@@ -91,11 +91,50 @@ interface LiveTokens {
   readonly expiresAt: number;
 }
 
+/**
+ * Which organization stays active across a token refresh.
+ *
+ * 🔴 A REFRESH MUST NOT SILENTLY MOVE THE USER TO ANOTHER TENANT.
+ *
+ * `establish()` runs on sign-in AND on every refresh. The first version
+ * always took `choices[0]`, so a chemist working in their second
+ * organization was silently switched back to the first roughly once per
+ * token lifetime — and every write after that went to the WRONG TENANT,
+ * with the correct name shown only in a corner nobody was watching. In an
+ * application whose records are controlled and audited, that is a
+ * data-integrity defect, not a UI annoyance. Codex found it.
+ *
+ * Falling back to the first when the preferred one is gone is deliberate:
+ * that means the membership was revoked, and staying on it is not an
+ * option. Extracted and exported so the rule is testable on its own
+ * rather than reachable only through a network call.
+ */
+export function chooseOrganization(
+  choices: readonly OrganizationChoice[],
+  preferred: string | undefined,
+): OrganizationChoice {
+  const kept = choices.find((org) => org.organizationId === preferred);
+  if (kept !== undefined) return kept;
+  const first = choices[0];
+  if (first === undefined) {
+    throw new Error("chooseOrganization called with no organizations");
+  }
+  return first;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const session = useSession();
   const [organizations, setOrganizations] = useState<readonly OrganizationChoice[]>([]);
   const tokens = useRef<LiveTokens | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 🔴 clearTimeout CANNOT STOP A REFRESH THAT IS ALREADY IN FLIGHT.
+  //
+  // The cleanup clears the pending timer, but if the callback has already
+  // fired it is sitting in `await refreshTokens(...)`, and when that
+  // resolves it sets state and schedules the NEXT timer -- after unmount.
+  // The result is a React warning, a token refreshed for a tree nobody is
+  // rendering, and a timer that outlives the provider. Codex found it.
+  const mounted = useRef(true);
 
   /**
    * Ask the API who we are, and which tenants we may act in.
@@ -172,10 +211,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    // 🔴 A TOKEN REFRESH MUST NOT SILENTLY MOVE THE USER TO ANOTHER TENANT.
+    //
+    // This function runs on sign-in AND on every refresh. The first
+    // version always selected `choices[0]`, so a chemist working in their
+    // second organization was silently switched back to the first roughly
+    // once every token lifetime -- and every write after that point went
+    // to the wrong tenant, with the UI showing the wrong name in a corner
+    // nobody was looking at. Codex found it.
+    //
+    // The active organization is therefore CARRIED unless it has gone
+    // away, in which case falling back to the first is correct: the
+    // membership was revoked and staying on it is not an option.
+    const currently = readSession();
+    const chosen = chooseOrganization(
+      choices,
+      currently.status === "authenticated" ? currently.credentials.organizationId : undefined,
+    );
+
     setOrganizations(choices);
     setSession({
       status: "authenticated",
-      credentials: { token: accessToken, organizationId: first.organizationId },
+      credentials: { token: accessToken, organizationId: chosen.organizationId },
     });
   }, []);
 
@@ -197,13 +254,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               clientId: KEYCLOAK_CLIENT_ID,
               refreshToken: live.refreshToken as string,
             });
+            if (!mounted.current) return;
             tokens.current = next;
             await establish(next.accessToken);
+            if (!mounted.current) return;
             scheduleRefresh(next);
           } catch {
             // The refresh token has expired or been revoked. Signing the
             // user out is the honest outcome; retrying would produce a
             // session that appears live and 401s on every request.
+            if (!mounted.current) return;
             tokens.current = null;
             setSession({
               status: "anonymous",
@@ -230,8 +290,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await establish(live.accessToken);
       scheduleRefresh(live);
     };
+    mounted.current = true;
     (window as unknown as Record<string, unknown>).__evercoatAdoptTokens = adopt;
     return () => {
+      mounted.current = false;
       if (refreshTimer.current !== null) clearTimeout(refreshTimer.current);
       delete (window as unknown as Record<string, unknown>).__evercoatAdoptTokens;
     };
