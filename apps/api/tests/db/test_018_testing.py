@@ -196,8 +196,13 @@ def testable(owner_session: Session) -> dict[str, uuid.UUID]:
                 (organization_id, project_id, requirement_code, category, name,
                  minimum_value, maximum_value, canonical_unit, warning_threshold,
                  criticality, verification_method, status, created_by)
+            -- 'major', not 'high'. The vocabulary is
+            -- ('critical','major','minor','informational') -- migration 003
+            -- line 309. The first draft of this fixture guessed a plausible
+            -- word instead of reading the constraint, and CI failed all
+            -- seventeen database tests in this file on it.
             VALUES (:o, :p, :c, 'technical', 'Adhesion', 5.0, 20.0, 'MPa', 10.0,
-                    'high', 'test', 'approved', :u)
+                    'major', 'test', 'approved', :u)
             RETURNING id
             """
         ),
