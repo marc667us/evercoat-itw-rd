@@ -264,3 +264,46 @@ def test_the_green_explanation_refuses_to_be_a_bare_tick() -> None:
 
 def test_guidance_returns_nothing_rather_than_guessing() -> None:
     assert explain_the_application("what is the airspeed of a swallow") is None
+
+
+def test_every_retrievable_source_can_actually_be_stored_as_evidence() -> None:
+    """🔴 THE TWO LITERALS THAT MUST AGREE, AND ALMOST DID NOT.
+
+    `retrieve_for_question` decides which `entity_type` values MSD can
+    produce; `ai.msd_evidence` has a CHECK constraint deciding which it
+    will store. They are declared in different files, in different
+    languages, and nothing connected them.
+
+    If a source is ever added to `_SOURCES` whose name the constraint
+    rejects, MSD would answer correctly and then fail at write time — on
+    every answer that happened to cite that kind of record, and only
+    those. An intermittent 500 that depends on what the search matched is
+    about the worst shape a defect can have.
+
+    Caught the near-miss the honest way: a test of mine used `'formula'`
+    where the schema says `'formula_version'`, CI refused it, and the
+    real question — *does the SERVICE emit valid values?* — turned out to
+    be fine. This is that question asked permanently.
+    """
+    import re
+    from pathlib import Path
+
+    api_root = Path(__file__).resolve().parents[1]
+    sql = (api_root / "migrations" / "022_messaging_notifications_msd.sql").read_text(
+        encoding="utf-8"
+    )
+    block = sql[sql.index("CREATE TABLE IF NOT EXISTS ai.msd_evidence") :]
+    match = re.search(
+        r"entity_type\s+TEXT NOT NULL\s*CHECK \(entity_type IN \(([^)]*)\)", block, re.S
+    )
+    assert match is not None, "the entity_type CHECK constraint has moved or changed shape"
+    allowed = set(re.findall(r"'([a-z_]+)'", match.group(1)))
+
+    from app.domains.msd.retrieval import _SOURCES
+
+    emitted = set(_SOURCES)
+    assert emitted <= allowed, (
+        "MSD can retrieve record kinds that ai.msd_evidence will refuse to "
+        f"store: {sorted(emitted - allowed)}. Every answer citing one would "
+        "fail at write time. Add them to the CHECK constraint in a migration."
+    )

@@ -558,7 +558,7 @@ def _a_thread_with_a_turn(session: Session, org: uuid.UUID, owner: uuid.UUID) ->
             """
             INSERT INTO ai.msd_evidence
                 (organization_id, turn_id, entity_type, entity_id, excerpt)
-            VALUES (:org, :turn, 'formula', gen_random_uuid(),
+            VALUES (:org, :turn, 'formula_version', gen_random_uuid(),
                     'talc 12.5 percent, glass microspheres 4.0 percent')
             """
         ),
