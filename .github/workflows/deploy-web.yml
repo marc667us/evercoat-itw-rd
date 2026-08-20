@@ -1,0 +1,192 @@
+# Deploy the web application to Render, by hand.
+#
+# 🔴 WHY THIS EXISTS: RENDER STOPPED DEPLOYING AND NOTHING SAID SO.
+#
+# The service is configured correctly — `render-audit` reports
+# `autoDeploy: yes`, `branch: master`, the right repository, not
+# suspended — and its last deploy is `2026-08-18T20:09:24Z`. Meanwhile
+# the live site serves `last-modified: Tue, 18 Aug 2026 20:09:25 UTC` and
+# 404s `/auth/callback/`, a page that has been in `master` since the
+# following morning.
+#
+# So the push webhook is not reaching Render. Nothing in the repository
+# can observe that: CI goes green, the commit lands, and the deployment
+# silently stays where it was. **A green pipeline is not a deployed
+# product** — this platform has recorded that five times, and this is the
+# same failure with the notification removed.
+#
+# The permanent fix is reconnecting the GitHub integration in Render's
+# dashboard, which is the operator's. This is the lever that works
+# meanwhile, and it doubles as the thing to run when a deploy must happen
+# at a chosen moment rather than on a push.
+#
+# 🔴 IT CAN ONLY EVER TOUCH THIS PROJECT'S OWN WEB SERVICE.
+#
+# The Render workspace also hosts AutoWorkshop and Solar, and the
+# operator's standing instruction is that AutoWorkshop must not be
+# touched: *"if i find the autoworkshop in issues you will be responsible
+# for breaking it."* `render-setup.yml` in apply mode issues DELETE
+# against custom domains and must never be used to force a deploy.
+#
+# This workflow resolves the service BY NAME, refuses to proceed if the
+# name it finds is not exactly `evercoat-itw-rd-web`, and issues exactly
+# one POST: create a deploy. It has no DELETE, no PATCH and no PUT.
+
+name: Deploy web (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      clear_cache:
+        description: "Clear Render's build cache for this deploy"
+        type: boolean
+        default: false
+
+# One deploy at a time. A second run started while the first is in flight
+# would report on a deploy it did not create.
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      # The ONLY service this workflow may act on. Compared exactly.
+      SERVICE_NAME: evercoat-itw-rd-web
+      CLEAR_CACHE: ${{ inputs.clear_cache }}
+    steps:
+      - name: Guard — the key must be present
+        run: |
+          set -euo pipefail
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "FAIL: RENDER_API_KEY is not set for this repository." >&2
+            echo "Nothing was attempted." >&2
+            exit 1
+          fi
+          echo "RENDER_API_KEY is present."
+
+      - name: Create the deploy and wait for it
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          KEY = os.environ["RENDER_API_KEY"]
+          WANTED = os.environ["SERVICE_NAME"]
+          CLEAR = os.environ.get("CLEAR_CACHE", "false") == "true"
+          BASE = "https://api.render.com/v1"
+
+
+          def api(method: str, path: str, body=None):
+              request = urllib.request.Request(
+                  f"{BASE}{path}",
+                  method=method,
+                  data=None if body is None else json.dumps(body).encode(),
+                  headers={
+                      "Authorization": f"Bearer {KEY}",
+                      "Accept": "application/json",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return response.status, json.loads(response.read() or b"null")
+              except urllib.error.HTTPError as exc:
+                  # The body of an error is the only thing that says WHY.
+                  return exc.code, exc.read().decode(errors="replace")
+
+
+          status, services = api("GET", "/services?limit=100")
+          if status != 200 or not isinstance(services, list):
+              raise SystemExit(f"FAIL: GET /services -> {status} {services}")
+
+          # 🔴 Resolve by NAME and verify the match exactly. An id copied
+          # into a workflow file is an id that is eventually wrong, and the
+          # thing it would be wrong ABOUT is somebody else's service.
+          matches = [
+              s.get("service", s)
+              for s in services
+              if (s.get("service", s) or {}).get("name") == WANTED
+          ]
+          if len(matches) != 1:
+              found = sorted((s.get("service", s) or {}).get("name", "?") for s in services)
+              raise SystemExit(
+                  f"FAIL: expected exactly one service named {WANTED!r}, found "
+                  f"{len(matches)}. Services on this workspace: {found}. "
+                  "Nothing was deployed."
+              )
+
+          service = matches[0]
+          service_id = service["id"]
+          if service.get("name") != WANTED:
+              raise SystemExit("FAIL: resolved service name does not match. Refusing.")
+
+          print(f"service   {service.get('name')}  ({service_id})")
+          print(f"type      {service.get('type')}")
+          print(f"branch    {service.get('branch')}")
+          print(f"autoDeploy {service.get('autoDeploy')}")
+
+          payload = {"clearCache": "clear"} if CLEAR else {}
+          status, created = api("POST", f"/services/{service_id}/deploys", payload)
+          if status not in (200, 201) or not isinstance(created, dict):
+              raise SystemExit(f"FAIL: POST deploys -> {status} {created}")
+
+          deploy_id = created.get("id")
+          print(f"\ncreated deploy {deploy_id}")
+
+          # Poll to a terminal state. Reporting "triggered" and exiting is
+          # how a failed deploy reads as a success -- the whole point is to
+          # know whether the site actually changed.
+          TERMINAL_OK = {"live"}
+          TERMINAL_BAD = {"build_failed", "update_failed", "canceled", "deactivated"}
+          deadline = time.time() + 20 * 60
+          state = "unknown"
+          while time.time() < deadline:
+              status, deploy = api("GET", f"/services/{service_id}/deploys/{deploy_id}")
+              if status != 200 or not isinstance(deploy, dict):
+                  raise SystemExit(f"FAIL: GET deploy -> {status} {deploy}")
+              state = deploy.get("status", "unknown")
+              print(f"  {state}")
+              if state in TERMINAL_OK or state in TERMINAL_BAD:
+                  break
+              time.sleep(15)
+
+          print(f"\nfinal status: {state}")
+          if state not in TERMINAL_OK:
+              raise SystemExit(
+                  f"FAIL: deploy finished as {state!r}. The site has NOT been updated."
+              )
+          print("The web service reports this deploy as live.")
+          PY
+
+      - name: Prove the deployed site actually changed
+        run: |
+          set -euo pipefail
+          # 🔴 "The deploy says live" is not "the site serves the new build".
+          #
+          # `/auth/callback/` shipped in master on 2026-08-19 and 404s on
+          # the stale build, so it is a precise marker: 200 means this
+          # deploy reached the edge, 404 means it did not.
+          URL="https://itwevercoatrd.aiappinvent.com/auth/callback/"
+          for attempt in $(seq 1 20); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$URL")" || code="000"
+            echo "  attempt ${attempt}: ${URL} -> ${code}"
+            if [ "$code" = "200" ]; then
+              echo "The deployed site is serving the current build."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "FAIL: the deploy reported live, but ${URL} never returned 200." >&2
+          echo "The edge is still serving an older build." >&2
+          exit 1
