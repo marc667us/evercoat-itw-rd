@@ -1,6 +1,6 @@
 # TODO — EvercoatITWRD APP
 
-**Updated 2026-08-19, tip `b892995`. CI is 5 of 5 GREEN. S1 is BUILT.** Read `RESUME_HERE.md` first.
+**Updated 2026-08-19, tip `686b226`. CI is 5 of 5 GREEN. S1 and S2 are BUILT.** Read `RESUME_HERE.md` first.
 
 ---
 
@@ -24,7 +24,7 @@
 | # | Issue | Detail |
 |---|---|---|
 | ~~I1~~ | ~~No sign-in flow.~~ | ✅ **BUILT 2026-08-19 (ADR-025).** Browser-side OIDC + PKCE: `lib/auth/*`, `AuthProvider`, `/auth/callback/`, `AccountMenu` with a real organization switcher. `GET /api/me` + migration 024 close the circularity that made a valid token useless. Auth job **11/0/0** against a real Keycloak, including "the organization id from /api/me is accepted by a real route". **Not yet exercisable by a human: no Keycloak is deployed (I13), and see B4 — the site has not deployed at all since 08-18.** |
-| **I2** | **11 of 12 web screens render `demo-data.json`.** | Only `tests/e2e/shell/api-wiring.spec.ts` proves a real request. A backend with no UI cannot demonstrate the digital thread. |
+| ~~I2~~ | ~~11 of 12 web screens render `demo-data.json`.~~ | ✅ **S2, 2026-08-19.** Five list screens now issue real requests: **Projects, Formulations, My Work, Suppliers, Materials**. The fixture is still IMPORTED by each of them, by design — it is the labelled fallback when there is no API address compiled in or no session. Remaining on the fixture only: Dashboard, Innovation, Pipeline, and the two detail screens. |
 | **I3** | **The golden Playwright E2E does not exist.** | It *is* MVP-1's acceptance gate. 15 arrows, every one asserted in UI **and** database state. The YELLOW→GREEN transition is the single most important assertion. |
 | **I4** | **No dashboards.** | Chemist, Engineer, Lead, Director — four role dashboards with drill-down to real source records. Slice 7 scope. |
 
@@ -37,6 +37,19 @@
 | **I7** | **`revise_version` never writes `formula_version_drivers`.** | So "which failure caused this revision?" has no answer — a hole straight through the digital thread. |
 | **I8** | **Notifications have no producer outside mentions.** | `notify()` is the single writer and only `_resolve_mentions` calls it. Approvals, failures and task assignment should all notify. §11 sidebar counts are actionable-item counts and will read zero. |
 | **I9** | **CI seed gate does not cover `laboratory.*`, `testing.*`, `quality.*`, approval or messaging tables.** | The gate counts what the seeder wrote for Slices 1–3 only, so a seeder that silently stopped writing Slice 4–7 data would still pass. |
+
+### 🟠 P2 — what the live endpoints could NOT answer (opened by S2)
+
+Each of these is stated on the screen itself, not hidden. They close when
+a detail route or a richer endpoint exists — none is a defect in the
+wiring.
+
+| # | Gap | Detail |
+|---|---|---|
+| **I14** | **Suppliers: sole-source risk is not computed live.** | `GET /api/suppliers` returns `material_count`, not the material names, so "what breaks if this supplier fails" — the entire point of the screen, and a live risk (RSK-014-01, glass microspheres) — cannot be derived. The page carries a `role="note"` saying the analysis was NOT run, because a supplier showing no flag must not read as "not sole-sourced". Needs a supplier detail route. |
+| **I15** | **Formulations index shows the LATEST version, not the current APPROVED one.** | `list_formulas` orders by `version_number DESC`. §8 makes revisions additive, so the newest is often an unapproved draft — which the old fixture page deliberately refused to lead with. Mitigated by always rendering that version's own badge (a draft says DRAFT). A correct "current approved version" needs a query per formula or a new endpoint. |
+| **I16** | **Formulations index no longer shows computed figures.** | Theoretical density, solids, VOC, binder:filler and cost need `/versions/{id}/evaluation` — one call per version. They belong on the formula detail screen. §4 forbids the browser deriving them. |
+| **I17** | **Projects list no longer shows gate progress, requirement counts or lead.** | `ProjectSummary` returns the project's own columns. Those three live on `/dashboard`, `/requirements/matrix` and `/members`; a list of forty projects must not run forty sub-queries. They belong on the project detail screen. |
 
 ### 🟡 P3 — worth doing, not blocking
 

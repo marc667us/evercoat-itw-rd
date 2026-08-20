@@ -337,3 +337,185 @@ test.describe("the materials page", () => {
     await expect(page.getByTestId("data-source-error")).toContainText(/disagree/i);
   });
 });
+
+// ---------------------------------------------------------------------
+// The screens S2 wired
+// ---------------------------------------------------------------------
+//
+// 🔴 ONE PAGE PROVING THE SEAM DOES NOT PROVE THE OTHER FOUR USE IT.
+//
+// Before S2 only the materials page issued a real request, and these
+// assertions existed only for it. Four more pages were then wired through
+// the same hook — and "the same hook" is exactly the kind of claim that is
+// true of four files and false of the fifth, because a page can import a
+// hook and still render the fixture it was handed.
+//
+// So each newly wired screen is driven in a real browser: the request is
+// intercepted, a row is returned whose identifiers appear NOWHERE in
+// demo-data.json, and the page must show that row AND declare itself live.
+// A page that quietly rendered the bundle would pass a test that only
+// checked a request had been made.
+
+test.describe("the screens wired in S2", () => {
+  const LIVE_PROJECT = {
+    id: "00000000-0000-0000-0000-0000000000a1",
+    project_code: "RDP-LIVE-01",
+    name: "A project that only exists in the API",
+    product_family: "polyester filler",
+    status: "active",
+    priority: "high",
+    current_stage: "development",
+    confidentiality: "restricted",
+    target_release_date: "2026-12-01",
+  };
+
+  const LIVE_FORMULA = {
+    id: "00000000-0000-0000-0000-0000000000b1",
+    formula_code: "FRM-LIVE-01",
+    name: "A formula that only exists in the API",
+    product_family: "polyester filler",
+    status: "active",
+    project_id: LIVE_PROJECT.id,
+    project_code: LIVE_PROJECT.project_code,
+    owner_user_id: null,
+    updated_at: null,
+    latest_version_code: "FRM-LIVE-01-v7",
+    latest_version_number: 7,
+    latest_version_status: "draft",
+    version_count: 7,
+  };
+
+  const LIVE_TASK = {
+    id: "00000000-0000-0000-0000-0000000000c1",
+    task_type: "approval",
+    title: "A task that only exists in the API",
+    description: null,
+    priority: "high",
+    status: "open",
+    due_date: "2026-01-01",
+    required_action: "Approve or return",
+    entity_type: null,
+    entity_id: null,
+    project_id: LIVE_PROJECT.id,
+    assigned_user_id: null,
+    assigned_role: "product_development_lead",
+    created_at: null,
+    project_code: LIVE_PROJECT.project_code,
+    project_name: LIVE_PROJECT.name,
+    is_overdue: true,
+  };
+
+  const LIVE_SUPPLIER = {
+    id: "00000000-0000-0000-0000-0000000000d1",
+    supplier_code: "SUP-LIVE-01",
+    name: "A supplier that only exists in the API",
+    country: "DE",
+    status: "approved",
+    quality_rating: "A",
+    contact_name: null,
+    contact_email: null,
+    material_count: 4,
+    updated_at: null,
+  };
+
+  async function stub(page: Page, path: string, body: unknown): Promise<void> {
+    await page.route(`**${path}`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+  }
+
+  test("projects renders API rows and declares itself live", async ({ page }) => {
+    await signIn(page);
+    await stub(page, "/api/projects", [LIVE_PROJECT]);
+    await page.goto("/projects/");
+
+    await expect(page.getByText("RDP-LIVE-01")).toBeVisible();
+    await expect(page.getByRole("note", { name: "Data source notice" })).toContainText(
+      /live data/i,
+    );
+    // Confidentiality is rendered because it changes who can see the row
+    // at all — a reader comparing two lists must be able to tell why a
+    // colleague sees a different number of projects.
+    await expect(page.getByText("RESTRICTED")).toBeVisible();
+  });
+
+  test("formulations shows the LATEST version WITH its own status", async ({ page }) => {
+    // 🔴 The index leads with the latest version, which §8 says is often an
+    // unapproved draft. The badge is what stops that reading as approval,
+    // so assert the badge and not merely the version code.
+    await signIn(page);
+    await stub(page, "/api/formulations", [LIVE_FORMULA]);
+    await page.goto("/formulations/");
+
+    await expect(page.getByText("FRM-LIVE-01", { exact: true })).toBeVisible();
+    await expect(page.getByText(/FRM-LIVE-01-v7 . DRAFT/)).toBeVisible();
+  });
+
+  test("my work separates unclaimed role work from your own", async ({ page }) => {
+    // `assigned_user_id: null` is unclaimed role work. It must appear under
+    // the unclaimed heading and NOT under "Assigned to you" — putting it in
+    // both is how five people end up working the same item.
+    await signIn(page);
+    await stub(page, "/api/my-work", [LIVE_TASK]);
+    await page.goto("/my-work/");
+
+    await expect(
+      page.getByRole("table", { name: /Unclaimed tasks addressed to your role/i }),
+    ).toContainText("A task that only exists in the API");
+    await expect(
+      page.getByRole("table", { name: /Tasks assigned to you/i }),
+    ).not.toContainText("A task that only exists in the API");
+  });
+
+  test("my work shows the SERVER's overdue verdict, not one it derived", async ({ page }) => {
+    // due_date is 2026-01-01 and is_overdue is true. The browser takes the
+    // server's word: re-deriving it crosses a time-zone boundary and
+    // produces a page that disagrees with the database.
+    await signIn(page);
+    await stub(page, "/api/my-work", [LIVE_TASK]);
+    await page.goto("/my-work/");
+
+    await expect(page.getByText(/2026-01-01 . OVERDUE/)).toBeVisible();
+  });
+
+  test("suppliers says the sole-source analysis was NOT run", async ({ page }) => {
+    // 🔴 THE MOST IMPORTANT ASSERTION ON THAT SCREEN. The live endpoint
+    // returns a count, not names, so the risk cannot be computed — and a
+    // supplier showing no flag must never be read as "not sole-sourced".
+    // An absence of analysis has to be stated, not inferred from an absent
+    // badge.
+    await signIn(page);
+    await stub(page, "/api/suppliers", [LIVE_SUPPLIER]);
+    await page.goto("/suppliers/");
+
+    await expect(page.getByText("SUP-LIVE-01")).toBeVisible();
+    await expect(
+      page.getByRole("note", { name: "Sole-source analysis not available" }),
+    ).toContainText(/not computed on this screen/i);
+  });
+
+  test("a failed request shows the failure on EVERY wired screen", async ({ page }) => {
+    // The rule the whole seam exists for: a request that was MADE and
+    // failed must not fall back to demonstration rows. Asserted per page,
+    // because the fallback is decided per page.
+    await signIn(page);
+    const screens = [
+      ["/api/projects", "/projects/"],
+      ["/api/formulations", "/formulations/"],
+      ["/api/my-work", "/my-work/"],
+      ["/api/suppliers", "/suppliers/"],
+    ] as const;
+
+    for (const [path, url] of screens) {
+      await page.route(`**${path}`, (route) =>
+        route.fulfill({ status: 500, contentType: "application/json", body: "{}" }),
+      );
+      await page.goto(url);
+      await expect(page.getByTestId("data-source-error")).toBeVisible();
+    }
+  });
+});
