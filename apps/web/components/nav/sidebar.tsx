@@ -129,6 +129,21 @@ function SidebarLink({
           {item.label.slice(0, 2)}
         </span>
       )}
+      {/* 🔴 THE STATE IS CARRIED BY A WORD, NOT BY A COLOUR.
+          Two thirds of this sidebar is not built yet, and the only thing
+          that used to distinguish those items was how faint they were.
+          Colour alone is not an indicator — the same rule `StatusBadge`
+          enforces for the traffic light applies to navigation. Hidden
+          when collapsed only because there is no room; the `sr-only`
+          sentence below still says it in both states. */}
+      {!available && !collapsed && (
+        <span
+          aria-hidden
+          className="ml-auto shrink-0 rounded border border-slate-300 px-1 py-px text-[10px] font-medium uppercase tracking-wide text-slate-500"
+        >
+          Planned
+        </span>
+      )}
       {/* Only render a badge for a positive count. A grey "0" is visual
           noise that trains people to ignore the badge entirely. */}
       {available && count !== undefined && count > 0 && (
@@ -151,14 +166,38 @@ function SidebarLink({
     // Not yet built. Rendered inert rather than linking into a 404 —
     // a dead link in the shell reads as a broken product, not as an
     // unfinished slice.
+    //
+    // 🔴 `text-slate-300` WAS 1.48:1 AGAINST WHITE, AND AXE COULD NOT SEE IT.
+    //
+    // WCAG 2.1 AA wants 4.5:1 for normal text. Measured: slate-300 is
+    // **1.48:1**, slate-400 is 2.56:1, and slate-500 — used by the group
+    // headings a few lines above for exactly this reason — is 4.76:1.
+    // SEVENTEEN of this sidebar's twenty-six items are in this state, so
+    // two thirds of the primary navigation was illegible.
+    //
+    // The accessibility suite was green over all of it. axe-core's
+    // `color-contrast` rule SKIPS anything it considers disabled, and
+    // `isDisabled()` (axe.js:25440) returns true for any element — or
+    // ancestor — carrying `aria-disabled="true"`. So the attribute that
+    // correctly describes the state also silenced the check that would
+    // have caught the colour. **A check that cannot fail**, which is this
+    // platform's signature defect, wearing an accessibility hat.
+    //
+    // `aria-disabled` stays, because it is the truth. The colour is
+    // fixed, the distinction moves to the "Planned" chip, and
+    // `tests/e2e/shell/accessibility.spec.ts` now measures this contrast
+    // ratio directly instead of trusting a rule that opts out.
     return (
       <li>
         <span
-          className={`${shared} cursor-not-allowed text-slate-300`}
-          title={`Available in slice ${item.slice}`}
+          className={`${shared} cursor-not-allowed text-slate-500`}
+          // Plain language, not "slice 15". The slice number is a build
+          // schedule; nobody using this application knows what it means.
+          title={`${item.label} — planned, not yet available`}
           aria-disabled="true"
         >
           {body}
+          <span className="sr-only"> — planned, not yet available</span>
         </span>
       </li>
     );
@@ -169,6 +208,11 @@ function SidebarLink({
       <Link
         href={item.href}
         aria-current={active ? "page" : undefined}
+        // The collapsed rail shows two letters and nothing else, so
+        // "Materials" and "My Work" both read as "Ma"/"My" with no way to
+        // tell them apart. The accessible name was already correct via
+        // the sr-only label; this gives sighted users the same fact.
+        title={collapsed ? item.label : undefined}
         className={[
           shared,
           "border-l-2 transition-colors",

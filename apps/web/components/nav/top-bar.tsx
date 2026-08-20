@@ -79,7 +79,20 @@ function TopBarButton({ label, hint }: { label: string; hint: string }) {
       type="button"
       disabled
       title={hint}
-      className="rounded px-2.5 py-1.5 text-sm text-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed"
+      // slate-500, not slate-400 — the same correction the sidebar's
+      // inert items needed, for the same reason. slate-400 is 2.56:1 on
+      // white; slate-500 is 4.76:1.
+      //
+      // WCAG 1.4.3 does formally exempt an inactive user-interface
+      // component, and axe-core skips `<button disabled>` outright, so
+      // nothing was going to flag this. It is fixed anyway: "Quick
+      // Create", "MSD", "Alerts" and "Help" are four of the seven
+      // controls in the global chrome, and a top bar whose labels cannot
+      // be read does not look unbuilt, it looks broken. The disabled
+      // STATE is still carried by the `disabled` attribute — announced by
+      // assistive technology, and visible as the absence of hover and the
+      // not-allowed cursor — rather than by how faint the text is.
+      className="rounded px-2.5 py-1.5 text-sm text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed"
     >
       {label}
     </button>

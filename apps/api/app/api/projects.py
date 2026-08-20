@@ -145,6 +145,12 @@ class RequirementRevise(RequirementCreate):
 # Projects
 # ---------------------------------------------------------------------------
 
+# The same 200 every other collection in this codebase uses (materials,
+# suppliers, formulations, batches, tests, failures, messages). Kept
+# identical on purpose: a second, different bound would be one more pair
+# of literals nothing can check against each other.
+COLLECTION_LIMIT = 200
+
 
 @router.get("", response_model=list[ProjectSummary], tags=["projects"])
 def list_projects(
@@ -157,6 +163,18 @@ def list_projects(
     both, and a restricted project the caller is not a member of simply
     does not appear. The application-side check is the resource-scope
     dependency on the detail routes.
+
+    **Bounded.** This returned every visible row. Materials, suppliers,
+    formulations, batches, tests, failures and messages all cap at 200 in
+    their service functions; projects and opportunities were the two that
+    did not, so a large tenant — or a caller repeating the request —
+    could make the database, the API process and the response body grow
+    without limit. Raised by Codex in the 2026-08-20 API security audit.
+
+    The cap is a hard SQL `LIMIT` rather than a client-supplied page size,
+    matching the convention already in use. Cursor pagination is the
+    right long-term answer and is recorded in `TODO.md`; a bound that
+    exists now is worth more than a design that does not.
     """
     rows = session.execute(
         text(
@@ -168,8 +186,10 @@ def list_projects(
                 CASE priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2
                               WHEN 'medium' THEN 3 ELSE 4 END,
                 project_code
+            LIMIT :limit
             """
-        )
+        ),
+        {"limit": COLLECTION_LIMIT},
     ).mappings()
     _ = principal
     return [ProjectSummary(**r) for r in rows]

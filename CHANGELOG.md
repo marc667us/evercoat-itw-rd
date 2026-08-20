@@ -1,5 +1,105 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-20 — API security audit, and two thirds of the navigation was illegible
+
+Three reviewers: **Codex CLI** (independent read-only sweep of `apps/api`),
+the **Supervisor**, and an adversarial review pointed at the audit's own
+fix. **CodeRabbit CLI 0.7.5 was installed and signature-verified** on this
+host but is not yet authenticated, so its pass is still outstanding.
+
+🔴 **THE DATABASE TESTS IN THIS CHANGE HAVE NOT BEEN RUN.** Docker on this
+host is still wedged and nothing answers on 5432 or 55432, so
+`tests/db/test_025_message_visibility.py` (9 tests) has never executed.
+It compiles and lints; **CI is its first run.** Stated rather than implied.
+
+**What DID run here:** `ruff check`, `ruff format --check` and `mypy app`
+clean · **117 passed** on every database-free backend test · web
+`typecheck` and `lint` clean · **128 passed** on Vitest · **3 passed** in a
+real Chromium against a real production build for the new navigation
+accessibility tests. Every fix below was additionally **verified to fail
+against the prior state**, not merely to pass against the new one.
+
+### Security — five defects fixed
+
+- 🔴 **Any organization member could read any channel's messages.**
+  `messaging.messages` carried an organization-only RLS policy while
+  `messaging.channels` carried the project-confidentiality predicate, and
+  `list_messages` filtered by `channel_id` **without ever joining
+  `channels`** — so the channel's protection was never consulted at all.
+  Restricted-project conversations and other people's **direct messages**
+  were both readable by anyone holding a channel id. Fixed in the service
+  *and* in the database (**migration 025**, `core.can_read_channel()`).
+  Codex did not find this one.
+- 🔴 **Unbounded Prometheus label cardinality, anonymously reachable.**
+  The middleware read `request.scope["route"]` *before* `call_next`, and
+  the router is what writes that key — so the `request.url.path` fallback
+  fired on every request. Found by Codex.
+- 🟠 **A signed token with no `exp` was accepted and never expired.**
+  `verify_exp` validates an `exp` that is present; `require_exp` is what
+  makes its absence a failure, and it defaults to `False`. Found by Codex.
+- 🟠 **The reverse proxy stripped a prefix the API expects.** Caddy did
+  `uri strip_prefix /api` while FastAPI mounts every router under `/api`,
+  so **every API route would have 404'd through the proxy** — and
+  `/api/metrics` reached the unauthenticated Prometheus endpoint.
+- 🟠 `GET /api/projects` and `GET /api/opportunities` returned every
+  visible row. Now capped at 200, like every other collection.
+
+### The audit's own fix was then reviewed adversarially, and leaked twice
+
+Migration 025 tightened the read side of `messaging.messages` and left the
+**write** side of the two tables its predicate *reads* at
+organization-only. `evercoat_app` holds INSERT/UPDATE on all of
+`messaging`, so the predicate could be fed a different answer: **self-
+enrolment** into someone else's direct channel, and **retyping** a channel
+out of `direct` with one UPDATE. Both closed. Neither was reachable over
+HTTP — which is the point, since that layer exists for when the
+application layer is bypassed.
+
+🔴 **The reviewer's own proposed fix would have broken direct messages
+entirely** — a `WITH CHECK` subquery cannot see the row its own command is
+inserting, so the creator's first membership row would be refused and no
+direct message could ever be created. The shipped policy uses the
+channel's immutable `created_by` to bootstrap instead.
+
+**Left open deliberately:** `projects.project_members` has a `USING`
+clause and no `WITH CHECK`, so self-enrolment there defeats **every**
+project-scoped policy at once (`TODO.md` **I20**). It is a strictly larger
+hole, it is also unreachable over HTTP, and it is **not** fixed blind: the
+obvious fix hits the same bootstrap problem and `projects.projects` has no
+`created_by` to escape through. It needs a live database.
+
+Also recorded honestly rather than half-built: **there is no rate limiting
+of any kind** (`TODO.md` **I18**), which `SECURITY.md` §10 had described in
+detail as though it existed, and **`core.rls_permissive()` is still
+`SELECT TRUE`** (**I19**), so the database is not independently
+fail-closed. `SECURITY.md` §9's CSRF claim was corrected too: no token
+exists, and none is needed while no credential is ambient.
+
+### UI/UX — the accessibility suite was green over an illegible sidebar
+
+- 🔴 **17 of the sidebar's 26 items rendered at `text-slate-300` —
+  measured 1.48:1 against white, where WCAG 2.1 AA asks 4.5:1.** Two
+  thirds of the primary navigation could not be read, and **every axe-core
+  scan reported zero violations**: `isDisabled()` returns true for
+  anything carrying `aria-disabled="true"`, and the `color-contrast` rule
+  skips disabled nodes. The attribute that correctly described the state
+  also silenced the check. *A check that cannot fail.*
+- The distinction moved off colour entirely onto a **"Planned"** chip, so
+  raising the contrast does not make unbuilt items look live.
+- **"Available in slice 15" is gone.** A slice number is a build schedule;
+  nobody using this application knows what one is.
+- The collapsed rail showed two ambiguous letters — "Ma", "My", "Me" —
+  with no tooltip. The accessible name was already correct; sighted users
+  now get the same fact.
+- Top-bar controls were `text-slate-400` (2.56:1). Same correction. axe
+  skips `<button disabled>` outright, so nothing was going to flag it.
+- **New instrument:** `accessibility.spec.ts` now computes the contrast
+  ratio from the browser's own computed styles rather than asking axe —
+  a test using the same rule would inherit the same blind spot.
+- **Verified, not changed:** every traffic-light token passes AA on its
+  badge background (pass 4.76:1, fail 5.91:1, conditional 4.75:1, neutral
+  7.59:1).
+
 ## 2026-08-18 (pt3) — Slice 3's back half: the engine finally has callers
 
 **229 tests collected** (from 155). **60 API routes** (from 51). Migrations

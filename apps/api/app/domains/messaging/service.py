@@ -358,12 +358,36 @@ def post_message(
     the alternative is a link whose existence confirms that a record with
     that code exists somewhere the author cannot look.
     """
+    # 🔴 THE SAME MEMBERSHIP RULE AS THE READ PATH, FOR THE SAME REASON.
+    #
+    # This lookup already goes through `messaging.channels`, so the
+    # project predicate in that table's RLS policy stops a non-member
+    # writing into a RESTRICTED project's channel — the row is simply not
+    # there for them. A `direct` channel has `project_id IS NULL` and so
+    # has no project to hide behind, and the policy lets every org member
+    # see the row. Without the clause below, any organization member
+    # could post into a private conversation between two other people.
+    #
+    # `core.current_user_id()` rather than the `actor_id` argument: it is
+    # the identity the RLS policies themselves read, so the check and the
+    # policies cannot disagree, and a caller cannot widen its own access
+    # by passing a different actor than the session is scoped to.
     channel = (
         session.execute(
             text(
                 """
-                SELECT id, project_id, channel_type FROM messaging.channels
-                WHERE id = :cid AND organization_id = :org AND NOT is_archived
+                SELECT c.id, c.project_id, c.channel_type
+                FROM messaging.channels c
+                WHERE c.id = :cid AND c.organization_id = :org
+                  AND NOT c.is_archived
+                  AND (
+                        c.channel_type <> 'direct'
+                        OR EXISTS (
+                            SELECT 1 FROM messaging.channel_members cm
+                            WHERE cm.channel_id = c.id
+                              AND cm.user_id = core.current_user_id()
+                        )
+                      )
                 """
             ),
             {"cid": channel_id, "org": organization_id},
@@ -372,6 +396,11 @@ def post_message(
         .one_or_none()
     )
     if channel is None:
+        # Deliberately the same answer whether the channel does not exist,
+        # is archived, belongs to a project this caller cannot see, or is
+        # a direct conversation they are not part of. "You may not see it"
+        # and "it is not there" must be indistinguishable, or the error
+        # itself confirms that a conversation exists.
         raise MessagingNotFoundError("no such channel in this organization")
 
     message_id: uuid.UUID = session.execute(
@@ -597,6 +626,47 @@ def list_messages(
     Withdrawn messages come back with their body replaced rather than
     omitted: a conversation with holes in it cannot be read, and a reply
     to a message that has vanished is unintelligible.
+
+    🔴 WHY THIS QUERY JOINS `messaging.channels` WHEN IT SELECTS NO COLUMN
+    FROM IT
+
+    It did not, and that was a confidentiality defect. RLS on
+    `messaging.channels` carries the project predicate — a channel
+    belonging to a `restricted` project is invisible to a non-member. RLS
+    on `messaging.messages` carries **only** `organization_id`
+    (migration 022's `org_scope` loop). So a query that filtered messages
+    by `channel_id` alone and never touched `channels` **bypassed the
+    channel's protection entirely**: any authenticated member of the
+    organization holding a channel id could read
+
+      * every message in a RESTRICTED project's channel they are not a
+        member of, and
+      * every message in a DIRECT message between two other people.
+
+    The DM half is the sharper one. The `channels` policy deliberately
+    lets any org member see a `direct` channel row and says so in its own
+    comment — *"direct messages … are governed by channel membership
+    instead"* — and that governance existed in exactly one place,
+    `list_channels`'s listing query. Nothing enforced it on the read path
+    that actually returns the words.
+
+    Two mechanisms now do:
+
+    1. the JOIN, which subjects every row to the `channels` policy and so
+       inherits the project predicate; and
+    2. the `channel_members` EXISTS, which supplies the membership rule
+       for `direct` channels, where `project_id IS NULL` leaves the
+       policy nothing to hide behind.
+
+    The membership test reads `core.current_user_id()` — the same GUC
+    every RLS policy reads — rather than an `actor_id` argument, so the
+    predicate and the policies cannot come to different answers about who
+    is asking. With no context set the GUC is NULL, the EXISTS is false,
+    and a direct channel returns nothing: fail closed.
+
+    Migration 025 adds the same rule to the database as an independent
+    backstop, because `SECURITY.md` §1 requires that any ONE layer failing
+    must not expose data — and this defect was one layer, failing.
     """
     rows = [
         dict(r)
@@ -607,7 +677,19 @@ def list_messages(
                        m.is_deleted, m.reply_to_id, u.display_name AS author_name
                 FROM messaging.messages m
                 JOIN core.users u ON u.id = m.author_id
+                -- 🔴 THE JOIN TO `channels` IS THE ACCESS CONTROL, NOT DECORATION.
+                JOIN messaging.channels c
+                  ON c.id = m.channel_id
+                 AND c.organization_id = m.organization_id
                 WHERE m.channel_id = :cid AND m.organization_id = :org
+                  AND (
+                        c.channel_type <> 'direct'
+                        OR EXISTS (
+                            SELECT 1 FROM messaging.channel_members cm
+                            WHERE cm.channel_id = c.id
+                              AND cm.user_id = core.current_user_id()
+                        )
+                      )
                 ORDER BY m.posted_at
                 LIMIT :limit
                 """
@@ -679,6 +761,23 @@ def promote_message(
                 JOIN messaging.channels c
                   ON c.id = m.channel_id AND c.organization_id = m.organization_id
                 WHERE m.id = :mid AND m.organization_id = :org
+                  -- The same membership clause as `list_messages` and
+                  -- `post_message`. It is not redundant with the RLS
+                  -- policy on `messaging.messages`: this is the ONE path
+                  -- in this module that had only the database layer, and
+                  -- `SECURITY.md` §1 asks for two. It also matters more
+                  -- here than anywhere else, because promotion copies the
+                  -- message BODY into `workflow.tasks.description`, where
+                  -- it is readable by people who were never in the
+                  -- conversation. Raised as N2 by the Supervisor.
+                  AND (
+                        c.channel_type <> 'direct'
+                        OR EXISTS (
+                            SELECT 1 FROM messaging.channel_members cm
+                            WHERE cm.channel_id = c.id
+                              AND cm.user_id = core.current_user_id()
+                        )
+                      )
                 """
             ),
             {"mid": message_id, "org": organization_id},

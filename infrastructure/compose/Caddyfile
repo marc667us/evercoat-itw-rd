@@ -15,19 +15,52 @@
 :80 {
 	encode gzip
 
-	# API
+	# 🔴 NO `uri strip_prefix /api` HERE. IT WAS THERE, AND IT WAS WRONG.
+	#
+	# FastAPI mounts every router UNDER `/api` itself —
+	# `include_router(projects_router, prefix="/api/projects")` in
+	# `apps/api/app/main.py` — and the web client asks for `/api/...`
+	# unstripped; `apps/web/lib/api/client.test.ts` asserts the exact URL
+	# `https://api.test/api/materials`.
+	#
+	# So stripping the prefix rewrote `/api/projects` to `/projects`,
+	# which the API does not serve. EVERY API ROUTE WOULD HAVE 404'D
+	# THROUGH THIS PROXY. It has not been noticed because the full compose
+	# stack has never been up at once (see `CLAUDE.md` §15), and CI talks
+	# to uvicorn directly rather than through Caddy.
+	#
+	# The `/auth` block below DOES strip, correctly: Keycloak serves
+	# `/realms/...` at its root. The rule was copied to a service where
+	# the opposite is true.
 	handle /api/* {
-		uri strip_prefix /api
 		reverse_proxy api:8000 {
 			header_up X-Real-IP {remote_host}
 			header_up X-Forwarded-Proto {scheme}
 		}
 	}
 
-	# Health and metrics are proxied but not published beyond the edge
-	# network; metrics in particular must not be internet-reachable.
+	# Health is proxied so a probe can reach it. Liveness and readiness
+	# disclose nothing and must answer.
 	handle /health/* {
 		reverse_proxy api:8000
+	}
+
+	# 🔴 METRICS ARE REFUSED AT THE EDGE, NOT MERELY UNROUTED.
+	#
+	# The comment here used to say metrics were "proxied but not published
+	# beyond the edge network" — and no `/metrics` handler existed at all,
+	# so the claim described nothing. Worse, while `/api/*` stripped its
+	# prefix, `/api/metrics` was rewritten to `/metrics` and reached the
+	# API's UNAUTHENTICATED Prometheus endpoint from the internet, which is
+	# the exact opposite of what the comment promised.
+	#
+	# `/metrics` carries request counts and latencies for every route
+	# template. That is reconnaissance — it tells an outsider which
+	# endpoints exist and which are being exercised — so it is answered
+	# with a flat refusal here and scraped over the internal network
+	# instead.
+	handle /metrics* {
+		respond 404
 	}
 
 	# Identity

@@ -136,7 +136,32 @@ async def _get_jwks() -> dict[str, Any]:
 
 
 async def _decode(token: str) -> dict[str, Any]:
-    """Verify signature, issuer, audience and expiry. All four."""
+    """Verify signature, issuer, audience and expiry. All four.
+
+    🔴 `verify_exp` CHECKS AN `exp` THAT IS THERE. IT DOES NOT REQUIRE ONE.
+
+    python-jose's ``verify_*`` options validate a claim *when the claim is
+    present*; the separate ``require_*`` options are what make its absence
+    a failure, and they default to ``False``. Measured against
+    python-jose 3.5.0:
+
+        token = {"aud": ..., "iss": ...}          # no exp, no sub
+        jwt.decode(token, ..., options={"verify_exp": True})   -> ACCEPTED
+
+    So a correctly signed token carrying no ``exp`` was accepted **and
+    never expired**. A realm or client misconfiguration is enough to mint
+    one; nothing here would have noticed, and the resulting token would
+    outlive every revocation the short-lived-token design depends on.
+
+    ``require_sub`` is defence in depth rather than a second hole:
+    ``get_principal`` and ``get_verified_subject`` both check the subject
+    afterwards. It is set because a token with no subject is malformed for
+    this application's purposes, and refusing it in the decoder means
+    every future caller of ``_decode`` inherits the check instead of
+    having to repeat it.
+
+    Raised by Codex in the 2026-08-20 API security audit.
+    """
     jwks = await _get_jwks()
     try:
         # cast: python-jose is untyped, so decode() is Any. The claims are
@@ -152,6 +177,9 @@ async def _decode(token: str) -> dict[str, Any]:
                 "verify_aud": True,
                 "verify_iss": True,
                 "verify_exp": True,
+                # The claims must EXIST, not merely validate if supplied.
+                "require_exp": True,
+                "require_sub": True,
             },
         )
         return decoded

@@ -54,6 +54,37 @@ LATENCY = Histogram(
     ["method", "path"],
 )
 
+# The one label value every unrouted request collapses into.
+UNMATCHED_ROUTE_LABEL = "<unmatched>"
+
+
+def _metric_label(request: Request) -> str:
+    """The ROUTE TEMPLATE for metrics labels, or a single fixed value.
+
+    🔴 THIS MUST BE CALLED **AFTER** ``call_next``, NEVER BEFORE.
+
+    The previous version read ``request.scope["route"]`` at the top of the
+    middleware and fell back to ``request.url.path``. Starlette's router
+    is what puts ``route`` into the scope, and the router runs *inside*
+    ``call_next`` -- so at middleware entry the key is never present and
+    the fallback fired on **every single request**. The comment said
+    "route template, not the concrete path"; the code did the exact
+    opposite of its own comment.
+
+    The cost is not cosmetic. Prometheus creates one time series per
+    distinct label value, so ``/api/projects/<uuid>`` minted a new series
+    per project, and an anonymous caller could mint an unbounded number
+    by requesting ``/whatever/<nonce>`` -- growing API and Prometheus
+    memory until one of them fell over. Found by Codex.
+
+    Requests that match no route have no template to report. They collapse
+    into one fixed label rather than reporting their path, because a 404
+    probe is precisely the attacker-controlled input this bounds.
+    """
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    return path if isinstance(path, str) and path else UNMATCHED_ROUTE_LABEL
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
@@ -109,17 +140,12 @@ def create_app() -> FastAPI:
             path=request.url.path,
         )
 
-        # Route template, not the concrete path: labelling metrics with
-        # /projects/<uuid> would create unbounded cardinality and take
-        # Prometheus down.
-        route = request.scope.get("route")
-        label_path = getattr(route, "path", request.url.path)
-
         started = time.perf_counter()
         try:
             response = await call_next(request)
         except Exception:
             elapsed = time.perf_counter() - started
+            label_path = _metric_label(request)
             REQUESTS.labels(request.method, label_path, "500").inc()
             LATENCY.labels(request.method, label_path).observe(elapsed)
             # exc_info, but never the request body -- formulation payloads
@@ -132,6 +158,7 @@ def create_app() -> FastAPI:
             )
 
         elapsed = time.perf_counter() - started
+        label_path = _metric_label(request)
         REQUESTS.labels(request.method, label_path, str(response.status_code)).inc()
         LATENCY.labels(request.method, label_path).observe(elapsed)
         log.info(

@@ -444,9 +444,22 @@ def convert_to_project(
 
 
 def list_opportunities(
-    session: Session, *, organization_id: uuid.UUID, status: str | None = None
+    session: Session, *, organization_id: uuid.UUID, status: str | None = None, limit: int = 200
 ) -> list[dict[str, Any]]:
-    """The innovation funnel, most urgent first."""
+    """The innovation funnel, most urgent first.
+
+    **Bounded.** This returned every visible row. Every other collection
+    in this codebase caps at 200 in its service function; opportunities
+    and projects were the two that did not, so a large tenant — or a
+    caller repeating the request — could make the database, the API
+    process and the response body grow without limit. Raised by Codex in
+    the 2026-08-20 API security audit.
+
+    The ordering is already deterministic (priority, then `created_at`
+    descending), which is what makes a bare `LIMIT` safe to apply: an
+    unordered truncation returns an arbitrary subset and reads as missing
+    records.
+    """
     rows = session.execute(
         text(
             """
@@ -472,9 +485,10 @@ def list_opportunities(
                 CASE o.priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2
                                 WHEN 'medium' THEN 3 ELSE 4 END,
                 o.created_at DESC
+            LIMIT :limit
             """
         ),
-        {"org": organization_id, "status": status},
+        {"org": organization_id, "status": status, "limit": limit},
     ).mappings()
     return [dict(r) for r in rows]
 
