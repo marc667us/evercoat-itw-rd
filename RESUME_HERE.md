@@ -3,8 +3,8 @@
 **Session 2026-08-19. Read this file, then `TODO.md`.**
 
 Repository: **https://github.com/marc667us/evercoat-itw-rd** (PUBLIC),
-branch `master`. Tip **`b892995`**, working tree clean, pushed.
-**CI 5 of 5 green. S1 (sign-in) is built.**
+branch `master`. Tip **`bc156da`**, working tree clean, pushed.
+**CI 5 of 5 green. S1 (sign-in) and S2 (read screens) are built and DEPLOYED.**
 
 ---
 
@@ -181,49 +181,99 @@ reported as an expired session.
 
 ---
 
-## 🔴 FIRST THING TO DO NEXT SESSION — B4: NOTHING HAS DEPLOYED SINCE 08-18
+## ✅ S2 IS BUILT AND THE SITE IS DEPLOYED AGAIN
 
-**Measured, not guessed.** `render-audit` (read-only) reports the web
-service correctly configured:
+Five list screens now issue real requests: **Projects, Formulations, My
+Work, Suppliers, Materials.** New `lib/api/{projects,formulations,tasks}.ts`,
+zod-parsed and never cast, behind the existing `Sourced<T>` seam. Six new
+Playwright tests drive each screen in a real browser with a row that
+appears nowhere in the fixture.
 
+**Live suite against the CURRENT build: passed 25 · failed 0 · skipped 2.**
+
+### Where a live endpoint means something narrower than the fixture did
+
+Each is stated on the screen, not papered over — I14–I17 in `TODO.md`.
+Projects lost gate progress / requirement counts / lead; the formulations
+index leads with the LATEST version (badged, so a draft says DRAFT) and
+lost the computed figures; My Work lost "elsewhere in the organisation";
+Suppliers lost sole-source risk and says so in a `role="note"`.
+
+### What the two reviewers caught, and neither caught alone
+
+**Codex — the materials endpoint could never have worked.**
+`_with_percentages` stringified the two derived percentages and left every
+stored quantity a `Decimal`. FastAPI encodes Decimal as **float**
+(`jsonable_encoder(Decimal("1.1000")) -> 1.1`), so a density recorded to
+four places went out with one, and the client — which correctly requires
+strings — would have rejected **every live material row**. The end-to-end
+test could not see it because it STUBS the response with the shape the
+client wants. **A test that supplies its own contract cannot detect a
+contract mismatch.** Fixed server-side; `tests/test_material_serialisation.py`
+asserts the server's half through the real encoder.
+
+**Supervisor — every live row linked to a 404.** The detail screens still
+build routes from `generateStaticParams()` over the fixture, so under
+`NEXT_OUTPUT=export` a database code has no exported page. `RecordLink`
+now links only where a page exists and says why otherwise.
+
+Also fixed: a failed `/api/me` was turning into demonstration data across
+every screen; the query cache could serve one user's rows to another;
+the demo path used the APPROVED version under a "Latest version" heading;
+the sidebar kept a stale count after a failed refetch; six columns lost
+their sort buttons; live stage codes were labelled from the fixture's
+stage names.
+
+---
+
+## 🔴 FIRST THING TO DO NEXT SESSION
+
+### B4 — Render's push webhook is not firing (root cause still open)
+
+`render-audit` reports the service correct in every respect, and it had
+not deployed since **2026-08-18T20:09:24Z** — a day and a half of green
+CI on top of a site nobody was updating.
+
+**A manual lever now exists and works:**
+
+```bash
+gh workflow run "Deploy web (manual)"
 ```
-evercoat-itw-rd-web   suspended: not_suspended   autoDeploy: yes
-branch: master        repo: marc667us/evercoat-itw-rd
-last deploy live at 2026-08-18T20:09:24Z
-```
 
-And the live site serves `last-modified: Tue, 18 Aug 2026 20:09:25 UTC`.
-`/auth/callback/` returns **404** there after 14 minutes of polling while
-`/` returns 200 — so the site is UP and serving an OLD build.
+`.github/workflows/deploy-web.yml` resolves the service BY NAME, refuses
+unless it finds exactly one `evercoat-itw-rd-web`, issues one POST, waits
+for a terminal state, then PROVES the edge changed by requiring
+`/auth/callback/` to answer 200. Ran it; the site now serves
+`last-modified: 2026-08-20 00:50:31 UTC`.
 
-**Every commit in this session is un-deployed.** The push webhook is not
-reaching Render despite the configuration being right. That is a
-dashboard action — reconnect the GitHub integration, or press Manual
-Deploy — and therefore the operator's.
+**Reconnecting the GitHub integration in Render's dashboard is the real
+fix, and it is the operator's.** Until then, deploy by hand after every
+push.
 
-⚠️ **Do NOT run `render-setup.yml` in apply mode to force it.** That
-workflow issues `DELETE` against custom domains on the **AutoWorkshop**
-service, which the operator has forbidden touching.
+⚠️ **Never** use `render-setup.yml` apply mode to force a deploy — it
+issues `DELETE` against **AutoWorkshop** custom domains.
 
-### What this means for the live-suite number
+### B5 — why the live site still shows no Sign in button
 
-```
-LIVE SUITE — https://itwevercoatrd.aiappinvent.com
-   passed : 25    failed : 0    skipped : 2
-```
+Not a defect. Three causes, one fixed:
 
-That is green, and it describes the **2026-08-18 build**, not this
-session's code. Both statements are true and only saying the first would
-be misleading.
+1. ~~The site was serving an 08-18 build.~~ Fixed above.
+2. **`render.yaml` sets no `NEXT_PUBLIC_KEYCLOAK_URL`**, and `NEXT_PUBLIC_*`
+   is inlined at BUILD time — so the deployed bundle has no identity
+   provider and honestly renders "Not signed in" with the reason.
+3. **No Keycloak is deployed to point it at.**
 
-### The other thing S1 still needs
+Setting the variable without (3) compiles in an address that answers
+nothing, which `render.yaml` already argues is worse than an absent one.
+The button appears when a Keycloak exists, the variable is set, and the
+site is rebuilt. Deploying Keycloak needs a Render web service —
+**spend, and the operator's decision.**
 
-**No Keycloak is deployed anywhere** (I13). Deploying it needs a Render
-web service, which is spend, which is the operator's decision and is
-never proposed by the build. Until then the deployed shell renders "Not
-signed in" and names the reason, which is honest — and the whole flow is
-proven in CI against a real Keycloak. **The blocker is now one
-configuration value, not an architecture.**
+**Operator is considering Railway** as an alternative host on cost
+grounds. For a fair comparison: the static site costs nothing on Render
+today and B4 is a webhook fault, not a billing one. The cost pressure is
+entirely the **API + Keycloak** needing paid instances — that is what a
+Railway move would actually be about.
 
 ---
 
