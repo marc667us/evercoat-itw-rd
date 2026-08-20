@@ -16,11 +16,18 @@
 
 import { useState } from "react";
 
+import { MsdPanel } from "@/components/msd/msd-panel";
+
 import { AccountMenu } from "@/components/nav/account-menu";
 import { ApiStatus } from "@/components/nav/api-status";
 
 export function TopBar() {
   const [query, setQuery] = useState("");
+  // 🔴 MSD IS REAL NOW, AND THIS CONTROL WAS A DISABLED PLACEHOLDER FOR
+  // FOUR SLICES. Concept Note §33 asks for a "persistent but unobtrusive
+  // chatbot control"; a control that has never done anything is not
+  // unobtrusive, it is a promise the product does not keep.
+  const [msdOpen, setMsdOpen] = useState(false);
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4">
@@ -56,10 +63,22 @@ export function TopBar() {
             "showing old figures" and "cannot reach the database" look
             identical to a chemist, and only the second is actionable. */}
         <ApiStatus />
-        <TopBarButton label="Quick Create" hint="New project, formula, batch, failure" />
+        <TopBarButton
+          label="Quick Create"
+          hint="New project, formula, batch, failure"
+        />
         {/* MSD — Material Science & Development Assistant. Persistent but
-            unobtrusive, per Concept Note §33. Arrives in Slice 7. */}
-        <TopBarButton label="MSD" hint="Material Science & Development Assistant" />
+            unobtrusive, per Concept Note §33. */}
+        <button
+          type="button"
+          onClick={() => setMsdOpen((open) => !open)}
+          aria-expanded={msdOpen}
+          aria-controls="msd-panel"
+          title="Material Science & Development Assistant"
+          className="rounded px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900"
+        >
+          MSD
+        </button>
         <TopBarButton label="Alerts" hint="Notifications" />
         <TopBarButton label="Help" hint="Help" />
         <div
@@ -69,6 +88,18 @@ export function TopBar() {
           —
         </div>
       </div>
+
+      {/* Beside the shell, not over it: a chemist asks MSD ABOUT WHAT
+          THEY ARE LOOKING AT, and a full-screen modal removes the thing
+          the question is about. */}
+      {msdOpen && (
+        <div
+          id="msd-panel"
+          className="fixed bottom-0 right-0 top-14 z-40 w-full max-w-md shadow-lg"
+        >
+          <MsdPanel onClose={() => setMsdOpen(false)} />
+        </div>
+      )}
     </header>
   );
 }

@@ -31,6 +31,7 @@ from app.api.materials import router as materials_router
 from app.api.materials import suppliers_router
 from app.api.me import router as me_router
 from app.api.messaging import router as messaging_router
+from app.api.msd import router as msd_router
 from app.api.opportunities import router as opportunities_router
 from app.api.projects import router as projects_router
 from app.api.tasks import router as tasks_router
@@ -260,6 +261,13 @@ def create_app() -> FastAPI:
     # domain links INTO -- a thread hangs off a formula, a batch, a
     # failure -- and nothing in it is a prerequisite for them.
     application.include_router(messaging_router, prefix="/api/messaging", tags=["messaging"])
+    # MSD — the Material Science & Development Assistant.
+    #
+    # 🔴 Reached through `app/agents/orchestrators/root_orchestrator.py`
+    # and never through a conductor or a tool (§0.2). Mounted last
+    # because it READS across every other domain and is a prerequisite
+    # for none of them.
+    application.include_router(msd_router, prefix="/api/msd", tags=["msd"])
 
     if settings.metrics_enabled:
 

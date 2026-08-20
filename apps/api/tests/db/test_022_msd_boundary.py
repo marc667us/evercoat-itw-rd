@@ -448,3 +448,175 @@ def test_an_msd_thread_cannot_be_reassigned(
 
     assert "authorization boundary" in str(caught.value.orig)
     owner_session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Migration 026 — a conversation is exactly as private as its thread
+# ---------------------------------------------------------------------------
+# 🔴 022 SAID THE THREAD WAS THE BOUNDARY AND LEFT THE TURNS ORG-WIDE.
+#
+# `ai.msd_threads` got an owner-scoped policy, with a comment stating a
+# thread is visible "to its OWNER and to nobody else, even inside the same
+# project". In the SAME FILE, a DO-block loop gave `ai.msd_turns` and
+# `ai.msd_evidence` policies carrying only `organization_id` — so the room
+# was private and the words said in it were readable by any colleague who
+# had a thread id.
+#
+# `ai.msd_evidence` is the sharper half: it stores up to 500 characters of
+# each CITED RECORD. Those excerpts are gathered inside the asker's
+# boundary — correctly — and were then readable organization-wide.
+# Retrieval was filtered before the model saw anything; the record of what
+# it saw was not.
+#
+# Migration 025's twin, on the two tables immediately below it in the same
+# loop. Found while building the MSD routes, before they shipped.
+
+
+@pytest.fixture
+def two_colleagues(owner_session: Session, app_session: Session) -> Iterator[dict[str, uuid.UUID]]:
+    """One organization, two active members. Nothing else separates them."""
+    suffix = uuid.uuid4().hex[:8]
+    org = owner_session.execute(
+        text("INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"),
+        {"c": f"MSD-{suffix}", "n": "MSD Org"},
+    ).scalar_one()
+
+    def _user(handle: str) -> uuid.UUID:
+        uid: uuid.UUID = owner_session.execute(
+            text(
+                """
+                INSERT INTO core.users (keycloak_sub, email, display_name)
+                VALUES (:s, :e, :n) RETURNING id
+                """
+            ),
+            {"s": f"msd-{handle}-{suffix}", "e": f"{handle}-{suffix}@example.test", "n": handle},
+        ).scalar_one()
+        owner_session.execute(
+            text(
+                """
+                INSERT INTO core.organization_members (organization_id, user_id, status)
+                VALUES (:o, :u, 'active')
+                """
+            ),
+            {"o": org, "u": uid},
+        )
+        return uid
+
+    owner = _user("owner")
+    colleague = _user("colleague")
+    owner_session.commit()
+
+    _scope(app_session, org, owner)
+    yield {"org": org, "owner": owner, "colleague": colleague}
+
+    app_session.rollback()
+    owner_session.begin()
+    # Turns and evidence are append-only by trigger (`audit.deny_mutation`),
+    # so cleanup disables it exactly as the fixture above does.
+    owner_session.execute(text("ALTER TABLE ai.msd_evidence DISABLE TRIGGER USER"))
+    owner_session.execute(text("ALTER TABLE ai.msd_turns DISABLE TRIGGER USER"))
+    for statement in (
+        "DELETE FROM ai.msd_evidence WHERE organization_id = :o",
+        "DELETE FROM ai.msd_turns WHERE organization_id = :o",
+        "DELETE FROM ai.msd_threads WHERE organization_id = :o",
+        "DELETE FROM core.organization_members WHERE organization_id = :o",
+    ):
+        owner_session.execute(text(statement), {"o": org})
+    owner_session.execute(text("ALTER TABLE ai.msd_turns ENABLE TRIGGER USER"))
+    owner_session.execute(text("ALTER TABLE ai.msd_evidence ENABLE TRIGGER USER"))
+    owner_session.execute(
+        text("DELETE FROM core.users WHERE id IN (:a, :b)"), {"a": owner, "b": colleague}
+    )
+    owner_session.execute(text("DELETE FROM core.organizations WHERE id = :o"), {"o": org})
+    owner_session.commit()
+
+
+def _a_thread_with_a_turn(session: Session, org: uuid.UUID, owner: uuid.UUID) -> uuid.UUID:
+    thread_id = session.execute(
+        text(
+            """
+            INSERT INTO ai.msd_threads (organization_id, owner_id, title)
+            VALUES (:org, :owner, 'Shrinkage on the second batch') RETURNING id
+            """
+        ),
+        {"org": org, "owner": owner},
+    ).scalar_one()
+    turn_id = session.execute(
+        text(
+            """
+            INSERT INTO ai.msd_turns
+                (organization_id, thread_id, turn_number, role, body, disclaimer, asked_by)
+            VALUES (:org, :tid, 1, 'assistant', 'The filler shrank 0.4 percent.',
+                    'AI-generated recommendation - requires technical review.', :actor)
+            RETURNING id
+            """
+        ),
+        {"org": org, "tid": thread_id, "actor": owner},
+    ).scalar_one()
+    session.execute(
+        text(
+            """
+            INSERT INTO ai.msd_evidence
+                (organization_id, turn_id, entity_type, entity_id, excerpt)
+            VALUES (:org, :turn, 'formula', gen_random_uuid(),
+                    'talc 12.5 percent, glass microspheres 4.0 percent')
+            """
+        ),
+        {"org": org, "turn": turn_id},
+    )
+    return thread_id
+
+
+def test_a_colleague_cannot_read_someone_elses_msd_conversation(
+    app_session: Session, two_colleagues: dict[str, uuid.UUID]
+) -> None:
+    fx = two_colleagues
+    thread_id = _a_thread_with_a_turn(app_session, fx["org"], fx["owner"])
+
+    _scope(app_session, fx["org"], fx["colleague"])
+    seen = app_session.execute(
+        text("SELECT count(*) FROM ai.msd_turns WHERE thread_id = :tid"),
+        {"tid": thread_id},
+    ).scalar_one()
+    assert seen == 0, (
+        "a colleague read another person's MSD conversation: the thread is "
+        "owner-scoped but its turns were organization-scoped"
+    )
+
+
+def test_a_colleague_cannot_read_the_cited_record_excerpts(
+    app_session: Session, two_colleagues: dict[str, uuid.UUID]
+) -> None:
+    """🔴 THE ONE THAT LEAKS CONTROLLED CONTENT, NOT JUST A POINTER."""
+    fx = two_colleagues
+    _a_thread_with_a_turn(app_session, fx["org"], fx["owner"])
+
+    _scope(app_session, fx["org"], fx["colleague"])
+    leaked = app_session.execute(
+        text("SELECT count(*) FROM ai.msd_evidence WHERE organization_id = :o"),
+        {"o": fx["org"]},
+    ).scalar_one()
+    assert leaked == 0, (
+        "a colleague read the record excerpts MSD cited in someone else's "
+        "conversation - controlled formulation content, organization-wide"
+    )
+
+
+def test_the_owner_can_still_read_their_own_conversation(
+    app_session: Session, two_colleagues: dict[str, uuid.UUID]
+) -> None:
+    """Both directions. A policy that hid the conversation from its own
+    owner would pass the two tests above and make MSD useless."""
+    fx = two_colleagues
+    thread_id = _a_thread_with_a_turn(app_session, fx["org"], fx["owner"])
+
+    turns = app_session.execute(
+        text("SELECT count(*) FROM ai.msd_turns WHERE thread_id = :tid"),
+        {"tid": thread_id},
+    ).scalar_one()
+    evidence = app_session.execute(
+        text("SELECT count(*) FROM ai.msd_evidence WHERE organization_id = :o"),
+        {"o": fx["org"]},
+    ).scalar_one()
+    assert turns == 1, "the thread's owner cannot read their own conversation"
+    assert evidence == 1, "the thread's owner cannot read their own cited evidence"

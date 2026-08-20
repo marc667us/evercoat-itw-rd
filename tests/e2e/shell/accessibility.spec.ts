@@ -219,3 +219,72 @@ test("an unbuilt navigation item says so in words, not only in colour", async ({
     "an inert nav item explains itself with an internal slice number",
   ).toEqual([]);
 });
+
+test("the MSD panel opens, is announced, and has no violations", async ({
+  page,
+}) => {
+  /**
+   * MSD is the first interactive surface in this shell — everything else
+   * is a page. So it is the first thing whose accessibility depends on
+   * STATE rather than on markup, and scanning the closed shell says
+   * nothing about it.
+   *
+   * Concept Note §33 asks for a "persistent but unobtrusive" control.
+   * Unobtrusive must not mean unreachable: the trigger carries
+   * `aria-expanded`, the panel is a labelled dialog, and focus moves into
+   * it on open.
+   */
+  await page.goto("/dashboard");
+
+  const trigger = page.getByRole("button", { name: "MSD", exact: true });
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+  await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+  const panel = page.getByRole("dialog", { name: /Material Science/i });
+  await expect(panel).toBeVisible();
+
+  // The standing notice about what MSD is and is not. §7 is about every
+  // OUTPUT being labelled; this is the reader knowing before they start.
+  await expect(
+    panel.getByRole("note", { name: /What MSD can and cannot do/i }),
+  ).toContainText(/never approves anything/i);
+
+  const results = await new AxeBuilder({ page }).withTags(STANDARD).analyze();
+  expect(
+    results.violations.map((v) => `${v.id}: ${v.help}`),
+    "opening the MSD panel introduced accessibility violations",
+  ).toEqual([]);
+
+  // Escape closes it, as every dialog is expected to.
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+});
+
+test("MSD refuses to answer without a session, and says why", async ({
+  page,
+}) => {
+  /**
+   * 🔴 THE REFUSAL IS THE FEATURE.
+   *
+   * §7: MSD operates under exactly the calling user's authorization
+   * boundary. With no session there is no boundary to operate under, so
+   * there is no safe answer — and an assistant that answered anyway,
+   * from the demonstration fixture, would be exactly the
+   * "permission-bypass channel" the rule forbids.
+   *
+   * The deployed site has no API and no identity provider, so this is
+   * the state a visitor actually meets.
+   */
+  await page.goto("/dashboard");
+  await page.getByRole("button", { name: "MSD", exact: true }).click();
+
+  const panel = page.getByRole("dialog", { name: /Material Science/i });
+  await panel.getByRole("button", { name: /What is waiting for me/i }).click();
+
+  await expect(panel.getByRole("alert")).toContainText(/signed-in session/i);
+  await expect(panel.getByRole("alert")).toContainText(/no anonymous mode/i);
+});
