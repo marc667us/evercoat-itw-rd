@@ -30,8 +30,11 @@ import {
   type ApiCredentials,
 } from "./client";
 import { API_UNCONFIGURED_REASON, isApiConfigured, type DataSource } from "./config";
+import { fetchFormulas, type Formula } from "./formulations";
 import { fetchMaterials, fetchSuppliers, type Material, type Supplier } from "./materials";
+import { fetchProjects, type Project } from "./projects";
 import { useSession } from "./session";
+import { fetchMyWork, type Task } from "./tasks";
 
 /**
  * What every screen receives.
@@ -149,4 +152,37 @@ export function useSuppliers<TShown>(
   project: (live: Supplier[]) => TShown,
 ): Sourced<TShown> {
   return useSourcedList("suppliers", demo, project, fetchSuppliers);
+}
+
+export function useProjects<TShown>(
+  demo: TShown,
+  project: (live: Project[]) => TShown,
+): Sourced<TShown> {
+  return useSourcedList("projects", demo, project, fetchProjects);
+}
+
+export function useFormulas<TShown>(
+  demo: TShown,
+  project: (live: Formula[]) => TShown,
+): Sourced<TShown> {
+  return useSourcedList("formulations", demo, project, fetchFormulas);
+}
+
+/**
+ * The caller's inbox.
+ *
+ * 🔴 THE QUERY KEY INCLUDES THE ORGANIZATION, WHICH IS WHY THIS IS SAFE.
+ *
+ * `useSourcedList` keys every query on the active organization id, so
+ * switching tenants does not serve the previous tenant's rows out of the
+ * cache while the new request is in flight. That matters more here than
+ * on a reference list: My Work is per-USER as well as per-tenant, and a
+ * stale inbox showing another organization's tasks would read as a
+ * cross-tenant leak even though the API had behaved correctly.
+ */
+export function useMyWork<TShown>(
+  demo: TShown,
+  project: (live: Task[]) => TShown,
+): Sourced<TShown> {
+  return useSourcedList("my-work", demo, project, fetchMyWork);
 }

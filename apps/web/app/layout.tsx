@@ -16,9 +16,8 @@ import type { Metadata } from "next";
 
 import { AuthProvider } from "@/components/providers/auth-provider";
 import { QueryProvider } from "@/components/providers/query-provider";
-import { Sidebar } from "@/components/nav/sidebar";
+import { AppSidebar } from "@/components/nav/app-sidebar";
 import { TopBar } from "@/components/nav/top-bar";
-import { DEMO_VIEWER, tasksAssignedTo } from "@/lib/demo/dataset";
 import { ALL_NAV_PERMISSIONS } from "@/lib/navigation";
 
 import "./globals.css";
@@ -60,12 +59,16 @@ export default function RootLayout({
   // permissions and the RBAC filter is exercised for real.
   const permissions = ALL_NAV_PERMISSIONS;
 
-  // Actionable counts, from the demo dataset. CLAUDE.md §11: a badge shows
-  // items needing action BY THE HOLDER, never total rows. So this counts
-  // the demonstration viewer's own open tasks — not TASKS.length, and not
-  // the organisation's open tasks either, which is what a badge beside the
-  // words "My Work" would have been claiming.
-  const counts = { "my-work": tasksAssignedTo(DEMO_VIEWER).length };
+  // 🔴 THE BADGE COUNT MOVED OUT OF THIS FILE.
+  //
+  // It used to be computed here, in a SERVER component, from the bundled
+  // demonstration fixture. That was right while My Work was a
+  // demonstration screen. Now that My Work issues a real request, a
+  // build-time constant beside a live list would mean a signed-in chemist
+  // with four real tasks saw whatever number the fixture contained.
+  //
+  // `AppSidebar` reads the count from the same hook, query key and cache
+  // entry the page reads, so the two cannot drift.
 
   return (
     <html lang="en">
@@ -80,7 +83,7 @@ export default function RootLayout({
         <AuthProvider>
         <QueryProvider>
         <div className="flex h-screen overflow-hidden">
-          <Sidebar permissions={permissions} counts={counts} />
+          <AppSidebar permissions={permissions} />
           <div className="flex min-w-0 flex-1 flex-col">
             <TopBar />
             {/* min-w-0 above and here is what lets wide technical tables

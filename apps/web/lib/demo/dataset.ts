@@ -733,7 +733,14 @@ export function materialStatus(m: { status: string }): Derived {
  * blocked source would have been shown as a usable one. Raised by the
  * Supervisor.
  */
-export function supplierStatus(s: DemoSupplier): Derived {
+/**
+ * Narrowed to `{ status }` so a LIVE row and a demonstration row both
+ * reach it without either being cast into the other's shape -- the same
+ * move already made for `materialStatus` and `versionStatus`. One
+ * derivation, two sources: a suspended supplier must not read as
+ * QUALIFIED on one screen and SUSPENDED on another.
+ */
+export function supplierStatus(s: { readonly status: string }): Derived {
   switch (s.status) {
     case "approved":
       return { status: "green", label: "APPROVED" };
@@ -758,7 +765,14 @@ export function supplierStatus(s: DemoSupplier): Derived {
  * `approved` while the workspace greened `released` too, so a released
  * formula showed a neutral grey badge on one screen and green on the other.
  */
-export function versionStatus(v: DemoFormulaVersion): Derived {
+/**
+ * Narrowed to `{ status }` so a LIVE row and a demonstration row both
+ * reach it without either being cast into the other's shape -- the same
+ * move already made for `materialStatus`. Two derivations of one rule is
+ * how a released formula once showed grey on one screen and green on
+ * another.
+ */
+export function versionStatus(v: { readonly status: string }): Derived {
   switch (v.status) {
     case "approved":
       return { status: "green", label: "APPROVED" };
