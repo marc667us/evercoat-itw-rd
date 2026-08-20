@@ -112,6 +112,19 @@ DEFINER_OWNED_BY_DESIGN = {
     # function in an application schema". Each entry is a deliberate
     # security decision, made once and written down.
     "laboratory.deny_component_mutation",
+    # Migration 027. It answers "who is this project's declared lead?"
+    # for a project the caller CANNOT read -- which is the whole point: a
+    # Director may convert an opportunity into a RESTRICTED project led
+    # by somebody else, and must still be able to enrol that lead. An
+    # invoker-rights version returns NULL there and breaks conversion.
+    #
+    # The disclosure is ONE COLUMN of one row, for a project id the
+    # caller already possesses, and ids are gen_random_uuid(). That is
+    # the same assumption core.is_project_member rests on.
+    #
+    # This test has now caught the addition FOUR times, which is the
+    # argument for keeping it exact rather than loosening it.
+    "core.project_lead",
 }
 
 

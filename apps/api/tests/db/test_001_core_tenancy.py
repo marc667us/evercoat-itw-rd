@@ -385,3 +385,128 @@ def test_session_scope_refuses_missing_context():
 
     with pytest.raises(MissingContextError), session_scope(None):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Migration 027 - project membership cannot be granted to yourself
+# ---------------------------------------------------------------------------
+# 001 gave projects.project_members a USING clause and NO WITH CHECK, so
+# PostgreSQL reused USING - organization-only - for writes. One INSERT
+# made core.is_project_member() answer TRUE, and EVERY project-scoped
+# policy in this database is written as
+# "confidentiality = 'normal' OR core.is_project_member(p.id)".
+#
+# So a single row opened a restricted project's formulas, batches, tests,
+# failures, approvals and conversations. It is the largest of the four
+# boundary defects found on 2026-08-20 and the last one closed.
+
+
+def test_a_non_member_cannot_enrol_themselves_in_a_restricted_project(
+    app_session, seeded_projects
+) -> None:
+    """The escalation, by INSERT."""
+    _org, _normal, restricted, outsider = seeded_projects
+    set_local(app_session, "app.current_org", _org)
+    set_local(app_session, "app.current_user_id", outsider)
+
+    with pytest.raises(DBAPIError, match="row-level security") as caught:
+        app_session.execute(
+            text(
+                """
+                INSERT INTO projects.project_members
+                    (organization_id, project_id, user_id, project_role, status)
+                VALUES (:org, :pid, :uid, 'observer', 'active')
+                """
+            ),
+            {"org": _org, "pid": restricted, "uid": outsider},
+        )
+    assert "row-level security" in str(caught.value).lower(), (
+        "a non-member granted themselves membership of a restricted project, "
+        f"which opens every project-scoped policy at once: {caught.value}"
+    )
+    app_session.rollback()
+
+
+def test_a_non_member_cannot_repoint_an_existing_membership_row_at_themselves(
+    app_session, owner_session, seeded_projects
+) -> None:
+    """The same escalation, by UPDATE.
+
+    USING stays organization-only, so a restricted project's member rows
+    are VISIBLE. Without a WITH CHECK, repointing somebody else's row at
+    yourself was the identical privilege grant with a different verb.
+    """
+    _org, _normal, restricted, outsider = seeded_projects
+    set_local(app_session, "app.current_org", _org)
+    set_local(app_session, "app.current_user_id", outsider)
+
+    with pytest.raises(DBAPIError, match="row-level security") as caught:
+        app_session.execute(
+            text(
+                """
+                UPDATE projects.project_members
+                SET user_id = :uid
+                WHERE project_id = :pid AND organization_id = :org
+                """
+            ),
+            {"uid": outsider, "pid": restricted, "org": _org},
+        )
+    assert "row-level security" in str(caught.value).lower(), (
+        f"a non-member repointed a membership row at themselves: {caught.value}"
+    )
+    app_session.rollback()
+
+
+def test_the_declared_lead_can_still_be_enrolled_by_someone_who_cannot_see_the_project(
+    app_session, owner_session, seeded_projects
+) -> None:
+    """THE FIX MUST NOT BREAK PROJECT CREATION.
+
+    A Director with `project.create` may convert an opportunity into a
+    RESTRICTED project led by somebody else, and cannot read that project
+    afterwards - correctly. A visibility-based WITH CHECK refuses their
+    enrolment INSERT and conversion stops working. That is the version of
+    this fix I rejected.
+
+    The policy admits a row that materialises the project's DECLARED
+    lead, read through `core.project_lead`. This test is what
+    distinguishes the two designs.
+    """
+    org, _normal, restricted, outsider = seeded_projects
+
+    # Make the outsider the project's declared lead, as a conversion would.
+    owner_session.begin()
+    owner_session.execute(
+        text("UPDATE projects.projects SET lead_user_id = :uid WHERE id = :pid"),
+        {"uid": outsider, "pid": restricted},
+    )
+    owner_session.commit()
+
+    # A DIFFERENT person, who is not a member and cannot see the project,
+    # enrols that declared lead.
+    set_local(app_session, "app.current_org", org)
+    set_local(app_session, "app.current_user_id", uuid.uuid4())
+    app_session.execute(
+        text(
+            """
+            INSERT INTO projects.project_members
+                (organization_id, project_id, user_id, project_role, status)
+            VALUES (:org, :pid, :uid, 'lead', 'active')
+            """
+        ),
+        {"org": org, "pid": restricted, "uid": outsider},
+    )
+    enrolled = app_session.execute(
+        text(
+            """
+            SELECT count(*) FROM projects.project_members
+            WHERE project_id = :pid AND user_id = :uid
+            """
+        ),
+        {"pid": restricted, "uid": outsider},
+    ).scalar_one()
+    assert enrolled == 1, (
+        "the declared lead could not be enrolled, so converting an "
+        "opportunity into a restricted project is broken"
+    )
+    app_session.rollback()
