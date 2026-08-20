@@ -1,5 +1,16 @@
 import { expect, test } from "@playwright/test";
 
+// The SINGLE SOURCE OF TRUTH for what is built, imported rather than
+// restated. `lib/navigation.ts` is self-contained data with no imports of
+// its own, so it costs nothing to reuse here — and reusing it is what
+// stops this file drifting out of step with the sidebar it asserts on.
+import { NAVIGATION, isAvailable } from "../../../apps/web/lib/navigation";
+
+/** Every destination the sidebar renders as inert, derived not named. */
+const UNAVAILABLE_ITEMS = NAVIGATION.flatMap((group) =>
+  group.items.filter((item) => !isAvailable(item)),
+);
+
 /**
  * The application shell, in a real browser.
  *
@@ -37,15 +48,21 @@ test.describe("application shell", () => {
     // anchoring on `$` without the `\/?` made this test assert a build mode
     // rather than the behaviour it is named after.
     await expect(page).toHaveURL(/\/dashboard\/?$/);
-    await expect(page.getByRole("heading", { name: "Dashboard", level: 1 })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Dashboard", level: 1 }),
+    ).toBeVisible();
   });
 
   test("the shell renders its landmarks", async ({ page }) => {
     await page.goto("/dashboard");
 
-    await expect(page.getByRole("navigation", { name: "Main navigation" })).toBeVisible();
+    await expect(
+      page.getByRole("navigation", { name: "Main navigation" }),
+    ).toBeVisible();
     await expect(page.getByRole("main")).toBeVisible();
-    await expect(page.getByText("EvercoatITWRD", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("EvercoatITWRD", { exact: true }),
+    ).toBeVisible();
   });
 
   test("the document title carries the product name", async ({ page }) => {
@@ -57,7 +74,9 @@ test.describe("application shell", () => {
     await expect(page).not.toHaveTitle(/ITERDRD/i);
   });
 
-  test("every figure is unmistakably labelled as demonstration data", async ({ page }) => {
+  test("every figure is unmistakably labelled as demonstration data", async ({
+    page,
+  }) => {
     // Rule 3 of the seven non-negotiables: predictions must never render as
     // confirmed results, and §10 that a dashboard of invented KPIs is
     // indistinguishable from a working one at a glance.
@@ -80,8 +99,15 @@ test.describe("application shell", () => {
     // A notice that appears on the landing page and nowhere else is worse
     // than none: a viewer who navigates once will believe the rest is real.
     for (const path of [
-      "/dashboard", "/projects", "/my-work", "/pipeline", "/innovation",
-      "/materials", "/suppliers", "/formulations", "/formulations/FRM-014",
+      "/dashboard",
+      "/projects",
+      "/my-work",
+      "/pipeline",
+      "/innovation",
+      "/materials",
+      "/suppliers",
+      "/formulations",
+      "/formulations/FRM-014",
     ]) {
       await page.goto(path);
       await expect(
@@ -97,25 +123,46 @@ test.describe("navigation gating", () => {
     await page.goto("/dashboard");
     const nav = page.getByRole("navigation", { name: "Main navigation" });
 
-    // "Laboratory" is slice 4. Its page does not exist. It must be present
-    // (so the structure is legible) and NOT navigable (so it cannot 404).
+    // 🔴 DERIVED FROM THE NAV MODEL, NOT NAMED.
     //
-    // This named "My Work" until Slice 2 built it, then "Formulations"
-    // until Slice 3 built it. The example has to be a destination that is
-    // genuinely still unbuilt, or the assertion says nothing — and moving
-    // it each slice is the cost of the assertion continuing to mean
-    // something.
-    const item = nav.getByText("Laboratory", { exact: true });
-    await expect(item).toBeVisible();
+    // This asserted on "Laboratory" and broke the moment Laboratory was
+    // built — as it had already broken for "My Work" at Slice 2 and
+    // "Formulations" at Slice 3. The old comment treated re-editing it
+    // every slice as the price of the assertion. It is not: it is the
+    // same "two literals in two files" trap this repository keeps
+    // finding, and `lib/navigation.test.ts` had ALREADY rejected exactly
+    // this approach in its own comment — *"naming a specific item means
+    // editing this test every slice, and a test edited every slice is a
+    // test nobody reads."* That lesson had been learned in the unit
+    // suite and not carried across to this one.
+    //
+    // So the example comes from the single source of truth. The
+    // assertion is now the INVARIANT — every unavailable destination is
+    // inert and none is navigable — which is what was meant all along
+    // and never needs touching again.
+    const unbuilt = UNAVAILABLE_ITEMS;
+    expect(
+      unbuilt.length,
+      "every destination is built, so there is nothing left to gate — delete this test",
+    ).toBeGreaterThan(0);
 
-    const inert = nav.locator('[aria-disabled="true"]', { hasText: "Laboratory" });
-    await expect(inert).toHaveCount(1);
+    for (const item of unbuilt) {
+      const inert = nav.locator('[aria-disabled="true"]', {
+        hasText: item.label,
+      });
+      await expect(inert, `${item.label} should be inert`).toHaveCount(1);
 
-    // The decisive assertion: no anchor points at it.
-    await expect(nav.locator('a[href^="/laboratory"]')).toHaveCount(0);
+      // The decisive assertion: no anchor points at it.
+      await expect(
+        nav.locator(`a[href^="${item.href}"]`),
+        `${item.label} is unbuilt but the sidebar links to ${item.href}`,
+      ).toHaveCount(0);
+    }
   });
 
-  test("every unbuilt item is inert and every built item is a link", async ({ page }) => {
+  test("every unbuilt item is inert and every built item is a link", async ({
+    page,
+  }) => {
     await page.goto("/dashboard");
     const nav = page.getByRole("navigation", { name: "Main navigation" });
 
@@ -131,7 +178,10 @@ test.describe("navigation gating", () => {
       const anchor = anchors.nth(i);
       await expect(anchor).not.toHaveAttribute("aria-disabled", "true");
       const href = await anchor.getAttribute("href");
-      expect(href, "a sidebar anchor with no href is a dead control").toBeTruthy();
+      expect(
+        href,
+        "a sidebar anchor with no href is a dead control",
+      ).toBeTruthy();
     }
 
     const disabled = nav.locator('[aria-disabled="true"]');
@@ -171,7 +221,10 @@ test.describe("navigation gating", () => {
           .map((e) => (e as HTMLAnchorElement).getAttribute("href"))
           .filter((h): h is string => Boolean(h)),
       );
-    expect(hrefs.length, "the sidebar rendered no links at all").toBeGreaterThan(3);
+    expect(
+      hrefs.length,
+      "the sidebar rendered no links at all",
+    ).toBeGreaterThan(3);
 
     for (const href of hrefs) {
       const response = await page.goto(href);
@@ -190,8 +243,16 @@ test.describe("navigation gating", () => {
     // visible possible failure, so it is worth the extra seconds.
     const seen = new Set<string>();
     const pages = [
-      "/dashboard", "/projects", "/my-work", "/pipeline", "/innovation", "/admin",
-      "/materials", "/suppliers", "/formulations", "/formulations/FRM-014",
+      "/dashboard",
+      "/projects",
+      "/my-work",
+      "/pipeline",
+      "/innovation",
+      "/admin",
+      "/materials",
+      "/suppliers",
+      "/formulations",
+      "/formulations/FRM-014",
     ];
 
     for (const path of pages) {
@@ -235,10 +296,14 @@ test.describe("navigation gating", () => {
       }
     }
 
-    expect(seen.size, "no internal links were crawled at all").toBeGreaterThan(5);
+    expect(seen.size, "no internal links were crawled at all").toBeGreaterThan(
+      5,
+    );
   });
 
-  test("the sidebar collapses and reports its state assistively", async ({ page }) => {
+  test("the sidebar collapses and reports its state assistively", async ({
+    page,
+  }) => {
     await page.goto("/dashboard");
     const nav = page.getByRole("navigation", { name: "Main navigation" });
     const toggle = page.getByRole("button", { name: /Collapse|»/ });
@@ -269,12 +334,21 @@ test.describe("routes that exist are reachable", () => {
   });
 
   test("an unbuilt route is not silently served", async ({ page }) => {
-    // `/laboratory` is slice 4: no page exists. It must 404 rather than
-    // render an empty shell that looks like a working screen with no data.
+    // Derived, for the reason given on the gating test above: this named
+    // `/my-work` until Slice 2 built it, `/formulations` until Slice 3,
+    // and `/laboratory` until Slice 4 — breaking each time.
     //
-    // This named `/my-work` until Slice 2 built it and `/formulations`
-    // until Slice 3 built it.
-    const response = await page.goto("/laboratory");
-    expect(response?.status()).toBe(404);
+    // An unbuilt route must 404 rather than render an empty shell that
+    // looks like a working screen with no data. That is the same rule
+    // `RecordLink` follows: a dead link reads as a missing RECORD, not as
+    // an unbuilt screen.
+    const [first] = UNAVAILABLE_ITEMS;
+    expect(first, "every destination is built — delete this test").toBeTruthy();
+
+    const response = await page.goto(first.href);
+    expect(
+      response?.status(),
+      `${first.href} is not built, so it must 404 rather than serve a shell`,
+    ).toBe(404);
   });
 });
