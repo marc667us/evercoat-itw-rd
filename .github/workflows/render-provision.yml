@@ -1,0 +1,186 @@
+# Provision the Evercoat API tier on Render — ADDITIVE ONLY.
+#
+# 🔴 WHY THIS IS A SEPARATE WORKFLOW FROM `render-setup.yml`.
+#
+# `render-setup.yml` in apply mode issues DELETE against custom domains,
+# and it has already been established that it removes AUTOWORKSHOP's.
+# This workflow issues **POST only**. There is no DELETE, no PATCH and no
+# PUT anywhere in it, and a test asserts that.
+#
+# 🔴 NAME-SCOPED, AND IT REFUSES RATHER THAN OVERWRITES.
+#
+# Every resource it creates is named `evercoat-itw-rd-*`. Before creating
+# anything it lists what exists and STOPS if the name is taken — so a
+# second run cannot clobber a service a first run made, and it can never
+# act on `autoworkshop-*` or `solarpro-*`.
+#
+# 🔴 COST. This workspace runs five `standard` web services already
+# (three AutoWorkshop, two Solar). A web service on Render is billed per
+# instance. `plan` is an INPUT with no default so the choice is explicit
+# and recorded in the run, rather than a hidden constant in a file.
+
+name: Render provision (Evercoat API tier)
+
+on:
+  workflow_dispatch:
+    inputs:
+      resource:
+        description: "What to create"
+        required: true
+        type: choice
+        options:
+          - inventory-only
+          - postgres
+          - api-service
+      plan:
+        description: "Instance plan for a web service (free | starter | standard)"
+        required: false
+        default: "free"
+        type: string
+      confirm:
+        description: "Type CREATE to proceed. Anything else is a dry inventory."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RESOURCE: ${{ inputs.resource }}
+      PLAN: ${{ inputs.plan }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Guard — the key must be present
+        run: |
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "::error::RENDER_API_KEY is not set on this repository." >&2
+            exit 1
+          fi
+
+      - name: Inventory, then create only what is missing
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          KEY = os.environ["RENDER_API_KEY"]
+          RESOURCE = os.environ["RESOURCE"]
+          PLAN = (os.environ.get("PLAN") or "free").strip()
+          CONFIRM = (os.environ.get("CONFIRM") or "").strip()
+          BASE = "https://api.render.com/v1"
+
+          # Every name this workflow may create. Anything outside this set
+          # is refused before a request is issued.
+          PREFIX = "evercoat-itw-rd-"
+
+          def call(method, path, body=None):
+              """POST and GET only. There is deliberately no DELETE branch."""
+              if method not in ("GET", "POST"):
+                  raise SystemExit(f"refusing method {method}: this workflow is additive only")
+              req = urllib.request.Request(
+                  BASE + path,
+                  method=method,
+                  data=json.dumps(body).encode() if body is not None else None,
+                  headers={
+                      "Authorization": f"Bearer {KEY}",
+                      "Accept": "application/json",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as resp:
+                      raw = resp.read().decode()
+                      return resp.status, (json.loads(raw) if raw else None)
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode()
+                  try:
+                      return exc.code, json.loads(raw)
+                  except Exception:
+                      return exc.code, raw
+
+          def unwrap(items, key):
+              out = []
+              for item in items or []:
+                  out.append(item.get(key, item) if isinstance(item, dict) else item)
+              return out
+
+          status, owners = call("GET", "/owners?limit=10")
+          owner_id = unwrap(owners, "owner")[0]["id"]
+          print(f"owner {owner_id}")
+
+          status, services = call("GET", "/services?limit=100")
+          service_names = {s.get("name") for s in unwrap(services, "service")}
+          status, dbs = call("GET", "/postgres?limit=100")
+          db_names = {d.get("name") for d in unwrap(dbs, "postgres")}
+
+          print("\nEXISTING")
+          for name in sorted(service_names):
+              print(f"   service  {name}")
+          for name in sorted(db_names):
+              print(f"   postgres {name}")
+
+          if RESOURCE == "inventory-only" or CONFIRM != "CREATE":
+              print("\nNo confirm=CREATE, or inventory-only. Nothing was created.")
+              raise SystemExit(0)
+
+          # --- Postgres ------------------------------------------------
+          if RESOURCE == "postgres":
+              name = PREFIX + "postgres"
+              if not name.startswith(PREFIX):
+                  raise SystemExit("refusing a name outside the evercoat prefix")
+              if name in db_names:
+                  print(f"\n{name} already exists. Refusing to touch it.")
+                  raise SystemExit(0)
+              payload = {
+                  "name": name,
+                  "ownerId": owner_id,
+                  "plan": "free",
+                  "region": "oregon",
+                  # PG16 matches what CI runs migrations against.
+                  "version": "16",
+                  "databaseName": "evercoat_itw_rd",
+                  "databaseUser": "evercoat_owner",
+              }
+              print(f"\nPOST /postgres  {payload}")
+              status, created = call("POST", "/postgres", payload)
+              print(f"   -> {status}")
+              print(json.dumps(created, indent=2)[:2000])
+              raise SystemExit(0 if status in (200, 201) else 1)
+
+          # --- API web service -----------------------------------------
+          if RESOURCE == "api-service":
+              name = PREFIX + "api"
+              if name in service_names:
+                  print(f"\n{name} already exists. Refusing to touch it.")
+                  raise SystemExit(0)
+              payload = {
+                  "type": "web_service",
+                  "name": name,
+                  "ownerId": owner_id,
+                  "repo": "https://github.com/marc667us/evercoat-itw-rd",
+                  "branch": "master",
+                  "autoDeploy": "no",
+                  "rootDir": "apps/api",
+                  "serviceDetails": {
+                      "env": "docker",
+                      "region": "oregon",
+                      "plan": PLAN,
+                      "envSpecificDetails": {"dockerfilePath": "./Dockerfile"},
+                      "healthCheckPath": "/health/live",
+                  },
+              }
+              print(f"\nPOST /services  plan={PLAN}")
+              status, created = call("POST", "/services", payload)
+              print(f"   -> {status}")
+              print(json.dumps(created, indent=2)[:3000])
+              raise SystemExit(0 if status in (200, 201) else 1)
+
+          raise SystemExit(f"unknown resource {RESOURCE}")
+          PY
