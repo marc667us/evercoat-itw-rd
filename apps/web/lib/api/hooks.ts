@@ -60,7 +60,7 @@ export interface Sourced<T> {
  */
 function useCredentials():
   | { ok: true; credentials: ApiCredentials }
-  | { ok: false; reason: string } {
+  | { ok: false; reason: string; failed: boolean } {
   // `useSession()` is called UNCONDITIONALLY and before any branch.
   //
   // The first version of this returned early when the API was
@@ -76,10 +76,18 @@ function useCredentials():
   const session = useSession();
 
   if (!isApiConfigured) {
-    return { ok: false, reason: API_UNCONFIGURED_REASON };
+    // An ABSENCE: this build has nothing to call. Known before any
+    // request, and not a failure.
+    return { ok: false, reason: API_UNCONFIGURED_REASON, failed: false };
   }
   if (session.status !== "authenticated") {
-    return { ok: false, reason: session.reason };
+    // 🔴 `failed` DECIDES WHETHER THE FIXTURE IS ALLOWED.
+    //
+    // Anonymity from having nobody to sign in as is an absence.
+    // Anonymity because `/api/me` returned 500 is a FAILURE, and
+    // substituting demonstration rows for it renders a real outage as a
+    // full, plausible, synthetic application. Codex found that.
+    return { ok: false, reason: session.reason, failed: session.failed === true };
   }
   return { ok: true, credentials: session.credentials };
 }
@@ -100,7 +108,17 @@ function useSourcedList<TLive, TShown>(
   const resolved = useCredentials();
 
   const query = useQuery({
-    queryKey: [key, resolved.ok ? resolved.credentials.organizationId : null],
+    // 🔴 THE USER IS IN THE KEY, NOT JUST THE ORGANIZATION.
+    //
+    // With `[key, organizationId]` alone, Alice could load My Work, sign
+    // out, and Bob could sign in to the SAME organization and be served
+    // Alice's rows from the cache — under a LIVE banner — until a refetch
+    // replaced them, and indefinitely if it stalled. Codex found it.
+    queryKey: [
+      key,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
     // `enabled` is what stops a request that cannot succeed from being
     // made at all. Without it the hook would fire, fail, and the page would
     // show "the API did not accept this session" on a deployment that has
@@ -120,6 +138,18 @@ function useSourcedList<TLive, TShown>(
   });
 
   if (!resolved.ok) {
+    if (resolved.failed) {
+      // A request was made and it failed. Show the failure; substitute
+      // nothing. This is the same contract the query-error branch below
+      // honours, applied one level up.
+      return {
+        data: undefined,
+        source: "live",
+        sourceReason: null,
+        isLoading: false,
+        error: new Error(resolved.reason),
+      };
+    }
     return {
       data: demo,
       source: "demonstration",

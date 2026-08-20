@@ -1185,6 +1185,21 @@ def list_material_documents(
 # ---------------------------------------------------------------------------
 
 
+#: Every stored NUMERIC a material row can carry. They are serialised as
+#: STRINGS so the stored scale survives the wire -- see _with_percentages.
+#: Add to this list whenever a NUMERIC column joins the row, or it will
+#: silently go out as a float.
+_QUANTITY_KEYS = (
+    "density_g_cm3",
+    "solids_fraction",
+    "voc_fraction",
+    "cost_per_kg",
+    "epoxy_equivalent_weight",
+    "amine_hydrogen_equivalent_weight",
+    "quoted_price_per_kg",
+)
+
+
 def _with_percentages(row: dict[str, Any]) -> dict[str, Any]:
     """Add the percentage forms of the stored fractions.
 
@@ -1212,6 +1227,27 @@ def _with_percentages(row: dict[str, Any]) -> dict[str, Any]:
     ):
         value = row.get(fraction_key)
         row[percent_key] = None if value is None else str(fraction_to_percent(value))
+
+    # 🔴 THE STORED QUANTITIES MUST BE STRINGIFIED TOO, AND THEY WERE NOT.
+    #
+    # Only the two derived percentages above were. Everything else left
+    # this function as a `Decimal`, and FastAPI's jsonable_encoder maps
+    # Decimal -> FLOAT. Measured:
+    #
+    #     jsonable_encoder(Decimal("1.1000"))  ->  1.1   (a float)
+    #
+    # So a density recorded to four places went out as a JSON number with
+    # one, which is precisely the round trip the docstring above says the
+    # whole Decimal discipline exists to prevent -- and the web client,
+    # which correctly types these as strings, rejected every live row with
+    # a parse error.
+    #
+    # Nothing caught it because the end-to-end test STUBS this response
+    # with the shape the client wants. A test that supplies its own
+    # contract cannot detect a contract mismatch. Codex found it.
+    for quantity_key in _QUANTITY_KEYS:
+        if quantity_key in row:
+            row[quantity_key] = _num(row[quantity_key])
     return row
 
 

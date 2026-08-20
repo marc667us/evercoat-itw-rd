@@ -36,16 +36,16 @@
  * browser doing formulation arithmetic at all.
  */
 
-import Link from "next/link";
 import { useMemo } from "react";
 
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
+import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useFormulas } from "@/lib/api/hooks";
 import type { Formula } from "@/lib/api/formulations";
 import {
   FORMULAS,
-  currentVersion,
+
   userName,
   versionStatus,
   type DemoFormula,
@@ -71,9 +71,14 @@ function fromApi(formula: Formula): FormulaRow {
     project_code: formula.project_code,
     product_family: formula.product_family,
     // The list returns an owner USER ID, not a name — resolving it needs a
-    // join this endpoint does not do. An id is not a name, so rather than
-    // print a UUID at a chemist, the field is omitted for live rows and
-    // the cell says so.
+    // join this endpoint does not do, and printing a UUID at a chemist is
+    // not an improvement.
+    //
+    // 🔴 The comment here used to claim "the cell says so". It did not:
+    // the render simply omitted the field, so a reader comparing a
+    // demonstration card (owner shown) with a live one concluded the
+    // formula had no owner. The Supervisor found the comment describing
+    // behaviour the code did not have. It says so now.
     owner: null,
     version_count: formula.version_count,
     latest_version_code: formula.latest_version_code,
@@ -82,7 +87,34 @@ function fromApi(formula: Formula): FormulaRow {
 }
 
 function fromDemo(formula: DemoFormula): FormulaRow {
-  const latest = currentVersion(formula);
+  // 🔴 THE HIGHEST-NUMBERED VERSION, NOT `currentVersion`.
+  //
+  // `currentVersion` deliberately prefers the newest APPROVED or RELEASED
+  // version. That is the right answer to a different question, and using
+  // it here put the approved version under a column labelled "Latest
+  // version" — so a fixture formula with v1 approved and v2 draft showed
+  // "v1 · APPROVED" while the identical live formula showed "v2 · DRAFT".
+  // One heading, two meanings, decided by which environment you were in:
+  // exactly the drift this file's header claims to have closed. Both
+  // reviewers found it independently.
+  //
+  // `list_formulas` orders by `version_number DESC`, so the demonstration
+  // path must do the same.
+  const latest = [...formula.versions].sort(
+    (a, b) => b.version_number - a.version_number,
+  )[0];
+  if (latest === undefined) {
+    return {
+      formula_code: formula.formula_code,
+      name: formula.name,
+      project_code: formula.project_code,
+      product_family: formula.product_family,
+      owner: userName(formula.owner),
+      version_count: 0,
+      latest_version_code: null,
+      latest_version_status: null,
+    };
+  }
   return {
     formula_code: formula.formula_code,
     name: formula.name,
@@ -93,16 +125,6 @@ function fromDemo(formula: DemoFormula): FormulaRow {
     latest_version_code: latest.version_code,
     latest_version_status: latest.status,
   };
-}
-
-/** `—` with a screen-reader label. Never a blank, never an invented value. */
-function Absent({ what }: { what: string }): React.ReactNode {
-  return (
-    <span className="text-slate-500" title={what}>
-      <span aria-hidden>—</span>
-      <span className="sr-only">{what}</span>
-    </span>
-  );
 }
 
 function VersionBadge({ row }: { row: FormulaRow }): React.ReactNode {
@@ -149,16 +171,13 @@ export default function FormulationsPage() {
             <li key={f.formula_code} className="rounded border border-slate-200 bg-white p-4">
               <div className="flex flex-wrap items-baseline gap-3">
                 <span className="text-xs font-medium tabular-nums text-slate-500">
-                  {f.formula_code}
-                </span>
-                <h2 className="flex-1 text-sm font-semibold text-slate-900">
-                  <Link
-                    href={`/formulations/${f.formula_code}`}
+                  <RecordLink
+                    kind="formula"
+                    code={f.formula_code}
                     className="underline underline-offset-2"
-                  >
-                    {f.name}
-                  </Link>
-                </h2>
+                  />
+                </span>
+                <h2 className="flex-1 text-sm font-semibold text-slate-900">{f.name}</h2>
                 <span className="text-xs text-slate-600">
                   {f.version_count} version{f.version_count === 1 ? "" : "s"}
                 </span>
@@ -167,13 +186,16 @@ export default function FormulationsPage() {
 
               <p className="mt-3 text-xs text-slate-600">
                 Project{" "}
-                <Link
-                  href={`/projects/${f.project_code}`}
+                <RecordLink
+                  kind="project"
+                  code={f.project_code}
                   className="underline underline-offset-2"
-                >
-                  {f.project_code}
-                </Link>
-                {f.owner !== null && <> · owner {f.owner}</>}
+                />
+                {f.owner === null ? (
+                  <> · owner <Absent what="the owner's name is not available on this screen" /></>
+                ) : (
+                  <> · owner {f.owner}</>
+                )}
                 {f.product_family !== null && <> · {f.product_family}</>}
               </p>
             </li>

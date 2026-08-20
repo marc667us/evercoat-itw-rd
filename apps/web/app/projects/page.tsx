@@ -28,12 +28,12 @@
  * a supplier COUNT rather than inventing names it had not fetched.
  */
 
-import Link from "next/link";
 import { useMemo } from "react";
 
 import type { ColumnDef } from "@tanstack/react-table";
 
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
+import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
 import { useProjects } from "@/lib/api/hooks";
@@ -69,7 +69,18 @@ function fromApi(project: Project): ProjectRow {
     // `stageName` maps a stage CODE to its human label and is shared with
     // the demonstration path, so both sources render the same words for
     // the same stage. A project with no stage yet is a real state.
-    stage: project.current_stage === null ? "" : stageName(project.current_stage),
+    // 🔴 THE FIXTURE'S STAGE NAMES ARE NOT THIS ORGANIZATION'S.
+    //
+    // `stageName` looks a code up in the bundled eight-stage fixture and
+    // falls back to the raw code. Real stage definitions live per
+    // organization in `projects.stage_definitions` and are editable
+    // through /api/admin/stage-gates — so a tenant that keeps a colliding
+    // code but renames the stage would have seen the FIXTURE's name
+    // rendered as if it were their data. The Supervisor found it.
+    //
+    // The live path therefore shows the code the server sent, verbatim,
+    // until the list endpoint joins `stage_definitions.name`.
+    stage: project.current_stage ?? "",
     target_release_date: project.target_release_date ?? null,
     confidentiality: project.confidentiality,
   };
@@ -88,19 +99,6 @@ function fromDemo(project: DemoProject): ProjectRow {
   };
 }
 
-/** `—` with a screen-reader label. Never a blank cell, never an invented value. */
-function Absent({ what }: { what: string }): React.ReactNode {
-  return (
-    // text-slate-500, not slate-400: slate-400 on white is about 2.9:1
-    // against a required 4.5:1, the exact failure axe-core found on this
-    // project's sidebar headings.
-    <span className="text-slate-500" title={what}>
-      <span aria-hidden>—</span>
-      <span className="sr-only">{what}</span>
-    </span>
-  );
-}
-
 export default function ProjectsPage() {
   const demoRows = useMemo(() => PROJECTS.map(fromDemo), []);
   const { data, source, sourceReason, isLoading, error } = useProjects(demoRows, (live) =>
@@ -115,24 +113,28 @@ export default function ProjectsPage() {
       {
         accessorKey: "project_code",
         header: "Code",
-        cell: ({ row }) => (
-          <Link
-            href={`/projects/${row.original.project_code}`}
-            className="font-medium text-slate-900 underline underline-offset-2"
-          >
-            {row.original.project_code}
-          </Link>
-        ),
+        // A link only when a detail page for this code exists in the
+        // build. Every live row linked to a 404 before this — see
+        // `record-link.tsx`.
+        cell: ({ row }) => <RecordLink kind="project" code={row.original.project_code} />,
       },
       { accessorKey: "name", header: "Project" },
       {
+        // `accessorFn` as well as `cell`. Converting these to display-only
+        // columns silently removed their sort buttons: TanStack's
+        // `getCanSort()` requires an accessor, so Family, Current stage
+        // and Target release stopped being sortable — and sorting a
+        // project list by target release is the obvious thing to do with
+        // it. The Supervisor found it.
         id: "product_family",
+        accessorFn: (p) => p.product_family ?? "",
         header: "Family",
         cell: ({ row }) =>
           row.original.product_family ?? <Absent what="no product family recorded" />,
       },
       {
         id: "stage",
+        accessorFn: (p) => p.stage,
         header: "Current stage",
         cell: ({ row }) =>
           row.original.stage === "" ? (
@@ -143,6 +145,7 @@ export default function ProjectsPage() {
       },
       {
         id: "status",
+        accessorFn: (p) => p.status,
         header: "Status",
         cell: ({ row }) => (
           <span className="text-xs capitalize text-slate-700">
@@ -152,6 +155,7 @@ export default function ProjectsPage() {
       },
       {
         id: "confidentiality",
+        accessorFn: (p) => p.confidentiality,
         header: "Access",
         // Shown because it changes who can see the project at all, and a
         // reader comparing two lists should be able to tell why a
@@ -166,6 +170,7 @@ export default function ProjectsPage() {
       },
       {
         id: "priority",
+        accessorFn: (p) => p.priority,
         header: "Priority",
         cell: ({ row }) =>
           row.original.priority === "high" || row.original.priority === "critical" ? (
@@ -176,6 +181,7 @@ export default function ProjectsPage() {
       },
       {
         id: "target_release_date",
+        accessorFn: (p) => p.target_release_date ?? "",
         header: "Target release",
         cell: ({ row }) =>
           row.original.target_release_date ?? <Absent what="no target release date set" />,
@@ -200,11 +206,16 @@ export default function ProjectsPage() {
       {error !== null ? (
         <DataSourceError error={error} />
       ) : (
+        // `loading` renders a skeleton. Putting the loading text into
+        // `emptyMessage` drew it inside the dashed "no records" box, which
+        // reads as a RESULT — "no projects" — while the request is still in
+        // flight. The Supervisor found it.
         <TechnicalDataGrid
           data={data ?? []}
           columns={columns}
+          loading={isLoading}
           caption="Development projects"
-          emptyMessage={isLoading ? "Loading projects…" : "No projects."}
+          emptyMessage="No projects."
         />
       )}
     </DataPage>

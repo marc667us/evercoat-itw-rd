@@ -39,7 +39,9 @@ export const taskSchema = z.object({
   project_id: z.string().nullable(),
   assigned_user_id: z.string().nullable(),
   assigned_role: z.string().nullable(),
-  created_at: z.string().nullable(),
+  // NOT NULL in `workflow.tasks`. See the formulations schema for why a
+  // needlessly nullable field hides a contract regression.
+  created_at: z.string(),
   // From the LEFT JOIN: null for a task that belongs to no project.
   project_code: z.string().nullable(),
   project_name: z.string().nullable(),

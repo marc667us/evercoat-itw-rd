@@ -26,12 +26,12 @@
  * SOMEONE with your role to pick up.
  */
 
-import Link from "next/link";
 import { useMemo } from "react";
 
 import type { ColumnDef } from "@tanstack/react-table";
 
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
+import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
 import { useMyWork } from "@/lib/api/hooks";
@@ -91,9 +91,20 @@ function fromDemo(task: DemoTask, index: number): TaskRow {
     // Every fixture task names an assignee, so the demonstration view has
     // no unclaimed role work to show. Stated rather than faked.
     claimed: true,
-    // The fixture carries no server-computed flag and the browser must not
-    // invent one — see the field's own comment.
-    is_overdue: false,
+    // 🔴 DERIVED HERE, AND ONLY FOR FIXTURE ROWS.
+    //
+    // Hardcoding `false` meant a fixture task whose due date had passed
+    // rendered as an ordinary date while an identical LIVE task rendered
+    // OVERDUE — the same column meaning two things depending on source,
+    // and the misleading direction: a missing verdict presented as
+    // "on time". Codex found it.
+    //
+    // This does NOT contradict the rule on the field above. That rule
+    // exists because the browser and the SERVER can disagree about the
+    // date; a bundled fixture has no server to disagree with, so there is
+    // exactly one clock. Live rows still take the server's word and never
+    // recompute it.
+    is_overdue: task.due_date < new Date().toISOString().slice(0, 10),
   };
 }
 
@@ -120,31 +131,26 @@ export default function MyWorkPage() {
         header: "Project",
         cell: ({ row }) =>
           row.original.project_code === null ? (
-            <span className="text-slate-500" title="not attached to a project">
-              <span aria-hidden>—</span>
-              <span className="sr-only">not attached to a project</span>
-            </span>
+            <Absent what="not attached to a project" />
           ) : (
-            <Link
-              href={`/projects/${row.original.project_code}`}
+            <RecordLink
+              kind="project"
+              code={row.original.project_code}
               className="underline underline-offset-2"
-            >
-              {row.original.project_code}
-            </Link>
+            />
           ),
       },
       {
+        // `accessorFn` as well as `cell`: converting this to a display-only
+        // column removed the sort button, and a task queue you cannot sort
+        // by due date is a real regression. The Supervisor found it.
         id: "due",
+        accessorFn: (t) => t.due_date ?? "",
         header: "Due",
         cell: ({ row }) => {
           const { due_date, is_overdue } = row.original;
           if (due_date === null) {
-            return (
-              <span className="text-slate-500" title="no due date">
-                <span aria-hidden>—</span>
-                <span className="sr-only">no due date</span>
-              </span>
-            );
+            return <Absent what="no due date" />;
           }
           // Overdue is a WARNING with a stated reason, not a red date. §10:
           // colour is never the sole indicator — colour + icon + text.
@@ -162,6 +168,7 @@ export default function MyWorkPage() {
       },
       {
         id: "state",
+        accessorFn: (t) => t.status,
         header: "State",
         cell: ({ row }) =>
           row.original.status === "in_progress" ? (
@@ -177,10 +184,13 @@ export default function MyWorkPage() {
       },
       {
         id: "required_action",
+        accessorFn: (t) => t.required_action ?? "",
         header: "Required action",
         cell: ({ row }) => (
           <span className="text-xs text-slate-600">
-            {row.original.required_action ?? "—"}
+            {row.original.required_action ?? (
+              <Absent what="no required action recorded" />
+            )}
           </span>
         ),
       },
@@ -211,8 +221,9 @@ export default function MyWorkPage() {
             <TechnicalDataGrid
               data={mine}
               columns={columns}
+              loading={isLoading}
               caption="Tasks assigned to you"
-              emptyMessage={isLoading ? "Loading your tasks…" : "Nothing assigned to you."}
+              emptyMessage="Nothing assigned to you."
             />
           </div>
 
@@ -227,10 +238,9 @@ export default function MyWorkPage() {
             <TechnicalDataGrid
               data={unclaimed}
               columns={columns}
+              loading={isLoading}
               caption="Unclaimed tasks addressed to your role"
-              emptyMessage={
-                isLoading ? "Loading…" : "Nothing is waiting to be picked up."
-              }
+              emptyMessage="Nothing is waiting to be picked up."
             />
           </div>
         </>

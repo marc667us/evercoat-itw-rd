@@ -31,6 +31,7 @@
 import { useMemo } from "react";
 
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
+import { Absent } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useSuppliers } from "@/lib/api/hooks";
 import type { Supplier } from "@/lib/api/materials";
@@ -164,11 +165,11 @@ export default function SuppliersPage() {
                   <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600">
                     <div className="flex gap-1.5">
                       <dt className="font-medium text-slate-500">Country</dt>
-                      <dd>{s.country ?? "—"}</dd>
+                      <dd>{s.country ?? <Absent what="no country recorded" />}</dd>
                     </div>
                     <div className="flex gap-1.5">
                       <dt className="font-medium text-slate-500">Quality rating</dt>
-                      <dd>{s.quality_rating ?? "—"}</dd>
+                      <dd>{s.quality_rating ?? <Absent what="not yet rated" />}</dd>
                     </div>
                     <div className="flex gap-1.5">
                       <dt className="font-medium text-slate-500">Materials</dt>

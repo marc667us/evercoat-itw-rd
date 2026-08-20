@@ -33,6 +33,7 @@ vi.mock("./config", () => ({
 const credentials: ApiCredentials = {
   token: "a-token",
   organizationId: "11111111-1111-1111-1111-111111111111",
+  userId: "00000000-0000-0000-0000-0000000000ff",
 };
 
 /**

@@ -195,6 +195,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         reason:
           "you signed in successfully, but this application has no account for " +
           "you yet — your identity is valid and your access is not provisioned",
+        failed: true,
       });
       return false;
     }
@@ -203,11 +204,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession({
         status: "anonymous",
         reason: `the API refused to identify you (HTTP ${response.status})`,
+        // A request WAS made and it failed. Not an absence -- see the
+        // `failed` field on SessionState.
+        failed: true,
       });
       return false;
     }
 
     const body = (await response.json()) as {
+      user_id?: string;
       organizations?: {
         organization_id: string;
         name: string;
@@ -230,6 +235,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession({
         status: "anonymous",
         reason: "you are signed in but belong to no organization, so there is nothing to show",
+        failed: true,
       });
       return false;
     }
@@ -252,10 +258,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       currently.status === "authenticated" ? currently.credentials.organizationId : undefined,
     );
 
+    const userId = typeof body.user_id === "string" ? body.user_id : "";
+    if (userId === "") {
+      // A principal with no id cannot scope a cache entry, and a cache
+      // entry that cannot be scoped is one that can be served to the
+      // wrong person. Refuse rather than fall back to a shared key.
+      setSession({
+        status: "anonymous",
+        reason: "the API did not identify who you are",
+        failed: true,
+      });
+      return false;
+    }
+
     setOrganizations(choices);
     setSession({
       status: "authenticated",
-      credentials: { token: accessToken, organizationId: chosen.organizationId },
+      credentials: {
+        token: accessToken,
+        organizationId: chosen.organizationId,
+        userId,
+      },
     });
     return true;
   }, []);
@@ -298,6 +321,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 reason:
                   "you are signed in, but the application cannot be reached right " +
                   "now. Your session is intact -- retry in a moment.",
+                failed: true,
               });
               // Tokens are KEPT and the timer is rescheduled: the
               // credential is fine, the network is not.
@@ -457,7 +481,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // from anywhere else would be refused server-side anyway, but
       // offering it at all would imply it was a choice.
       if (!organizations.some((org) => org.organizationId === organizationId)) return;
-      setSession({ status: "authenticated", credentials: { token, organizationId } });
+      // Read the store, not the render-time `session` prop: this callback
+      // is memoised on `organizations` and would otherwise close over a
+      // stale session.
+      const active = readSession();
+      const userId = active.status === "authenticated" ? active.credentials.userId : "";
+      if (userId === "") return;
+      setSession({
+        status: "authenticated",
+        credentials: { token, organizationId, userId },
+      });
     },
     [organizations],
   );

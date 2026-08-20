@@ -108,6 +108,20 @@ export class ApiShapeError extends ApiError {
 export interface ApiCredentials {
   readonly token: string;
   readonly organizationId: string;
+  /**
+   * Who the token belongs to.
+   *
+   * 🔴 NOT SENT ON THE WIRE. It exists so a cached response cannot cross
+   * users: the query key was `[resource, organizationId]`, so Alice could
+   * load My Work, sign out, and Bob could sign in to the SAME
+   * organization and be served Alice's tasks out of the cache, under a
+   * LIVE banner, until a refetch replaced them. If the refetch stalled,
+   * they stayed. Codex found it.
+   *
+   * The API still decides everything from the token; this only scopes the
+   * browser's cache.
+   */
+  readonly userId: string;
 }
 
 export interface ApiRequest {

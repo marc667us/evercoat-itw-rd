@@ -41,11 +41,15 @@ export const projectSchema = z.object({
   priority: z.string(),
   current_stage: z.string().nullable(),
   confidentiality: z.string(),
-  // Serialised from a DATE, or absent entirely — the field is declared
-  // `object | None = None` on the model, so it may be missing rather than
-  // null. `.optional().nullable()` covers both; treating "missing" as a
-  // parse failure would reject perfectly valid rows.
-  target_release_date: z.string().nullable().optional(),
+  // 🔴 REQUIRED, THOUGH NULLABLE. IT WAS `.optional()` AND THAT WAS WRONG.
+  //
+  // `ProjectSummary` declares a DEFAULT for this field, and Pydantic
+  // serialises defaulted fields, so the key is ALWAYS present — either a
+  // date or null. Accepting its absence meant a server that dropped or
+  // renamed the column would parse cleanly and the grid would state "no
+  // target release date set", which is a claim about the project rather
+  // than about the response. Absence presenting as a fact. Codex found it.
+  target_release_date: z.string().nullable(),
 });
 
 export type Project = z.infer<typeof projectSchema>;

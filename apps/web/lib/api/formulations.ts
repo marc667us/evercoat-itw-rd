@@ -28,8 +28,11 @@ export const formulaSchema = z.object({
   status: z.string(),
   project_id: z.string(),
   project_code: z.string(),
-  owner_user_id: z.string().nullable(),
-  updated_at: z.string().nullable(),
+  // Both are NOT NULL in `formulations.formulas` (migration 015:352,357).
+  // Typing them nullable would let a real contract regression through
+  // while the UI silently rendered a gap. Codex found it.
+  owner_user_id: z.string(),
+  updated_at: z.string(),
   // Null when the formula has no version yet. Not an error, and not zero.
   latest_version_code: z.string().nullable(),
   latest_version_number: z.number().nullable(),
@@ -37,9 +40,33 @@ export const formulaSchema = z.object({
   version_count: z.number(),
 });
 
+/**
+ * 🔴 THE THREE LATEST-VERSION FIELDS TRAVEL TOGETHER OR NOT AT ALL.
+ *
+ * Typed independently, a row with a version code and a null status parsed
+ * cleanly — and `VersionBadge` then announced "no version has been created
+ * for this formula yet" for a formula that plainly has one. The LEFT JOIN
+ * LATERAL either matches a version or it does not; there is no state in
+ * which it half-matches. Codex found it.
+ */
+export const formulaWithCoherentVersion = formulaSchema.refine(
+  (f) =>
+    (f.latest_version_code === null &&
+      f.latest_version_number === null &&
+      f.latest_version_status === null) ||
+    (f.latest_version_code !== null &&
+      f.latest_version_number !== null &&
+      f.latest_version_status !== null),
+  {
+    message:
+      "latest_version_code, _number and _status must all be present or all be null — " +
+      "a half-populated latest version is not a state this endpoint can produce",
+  },
+);
+
 export type Formula = z.infer<typeof formulaSchema>;
 
-const formulaList = z.array(formulaSchema);
+const formulaList = z.array(formulaWithCoherentVersion);
 
 export function fetchFormulas(
   credentials: ApiCredentials,

@@ -58,7 +58,24 @@ import type { ApiCredentials } from "./client";
 /** A session, or a stated reason there is not one. */
 export type SessionState =
   | { readonly status: "authenticated"; readonly credentials: ApiCredentials }
-  | { readonly status: "anonymous"; readonly reason: string };
+  | {
+      readonly status: "anonymous";
+      readonly reason: string;
+      /**
+       * 🔴 TRUE WHEN THIS ANONYMITY IS A FAILURE, NOT AN ABSENCE.
+       *
+       * The whole demonstration-fallback rule turns on this distinction.
+       * Demonstration data is correct when there is NOTHING TO CALL or
+       * NOBODY TO CALL AS -- properties of the environment, known before
+       * any request. It is wrong when a request was made and failed.
+       *
+       * `/api/me` returning 500 produced an anonymous session, and every
+       * sourced hook then substituted its fixture: a real outage rendered
+       * as a full, plausible, synthetic application. Codex found it. When
+       * this is true the hooks surface the failure instead.
+       */
+      readonly failed?: boolean;
+    };
 
 /**
  * Why there is no session, in words that describe the DEPLOYMENT rather

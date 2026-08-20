@@ -377,8 +377,9 @@ test.describe("the screens wired in S2", () => {
     status: "active",
     project_id: LIVE_PROJECT.id,
     project_code: LIVE_PROJECT.project_code,
-    owner_user_id: null,
-    updated_at: null,
+    // NOT NULL in formulations.formulas, and the schema now enforces it.
+    owner_user_id: "44444444-4444-4444-4444-444444444444",
+    updated_at: "2026-08-01T10:00:00Z",
     latest_version_code: "FRM-LIVE-01-v7",
     latest_version_number: 7,
     latest_version_status: "draft",
@@ -399,7 +400,8 @@ test.describe("the screens wired in S2", () => {
     project_id: LIVE_PROJECT.id,
     assigned_user_id: null,
     assigned_role: "product_development_lead",
-    created_at: null,
+    // NOT NULL in workflow.tasks.
+    created_at: "2026-08-01T10:00:00Z",
     project_code: LIVE_PROJECT.project_code,
     project_name: LIVE_PROJECT.name,
     is_overdue: true,
@@ -466,9 +468,15 @@ test.describe("the screens wired in S2", () => {
     await expect(
       page.getByRole("table", { name: /Unclaimed tasks addressed to your role/i }),
     ).toContainText("A task that only exists in the API");
-    await expect(
-      page.getByRole("table", { name: /Tasks assigned to you/i }),
-    ).not.toContainText("A task that only exists in the API");
+    // 🔴 A POSITIVE ASSERTION, NOT `.not.toContainText`.
+    //
+    // The first version asserted the "Assigned to you" table did NOT
+    // contain the task -- and that table does not RENDER at all when it is
+    // empty, so the locator resolved to nothing and the assertion failed
+    // for the wrong reason. Worse, had the grid rendered an empty table,
+    // `.not.toContainText` would have passed whether the row was misfiled
+    // or the section was simply broken. Assert the empty state by name.
+    await expect(page.getByText("Nothing assigned to you.")).toBeVisible();
   });
 
   test("my work shows the SERVER's overdue verdict, not one it derived", async ({ page }) => {
