@@ -29,12 +29,23 @@ import {
   ApiNotConfiguredError,
   type ApiCredentials,
 } from "./client";
-import { API_UNCONFIGURED_REASON, isApiConfigured, type DataSource } from "./config";
+import {
+  API_UNCONFIGURED_REASON,
+  isApiConfigured,
+  type DataSource,
+} from "./config";
 import { fetchFormulas, type Formula } from "./formulations";
-import { fetchMaterials, fetchSuppliers, type Material, type Supplier } from "./materials";
+import { fetchBatches, type Batch } from "./laboratory";
+import {
+  fetchMaterials,
+  fetchSuppliers,
+  type Material,
+  type Supplier,
+} from "./materials";
 import { fetchProjects, type Project } from "./projects";
 import { useSession } from "./session";
 import { fetchMyWork, type Task } from "./tasks";
+import { fetchTests, type Test } from "./testing";
 
 /**
  * What every screen receives.
@@ -87,7 +98,11 @@ function useCredentials():
     // Anonymity because `/api/me` returned 500 is a FAILURE, and
     // substituting demonstration rows for it renders a real outage as a
     // full, plausible, synthetic application. Codex found that.
-    return { ok: false, reason: session.reason, failed: session.failed === true };
+    return {
+      ok: false,
+      reason: session.reason,
+      failed: session.failed === true,
+    };
   }
   return { ok: true, credentials: session.credentials };
 }
@@ -103,7 +118,10 @@ function useSourcedList<TLive, TShown>(
   key: string,
   demo: TShown,
   project: (live: TLive) => TShown,
-  fetcher: (credentials: ApiCredentials, signal?: AbortSignal) => Promise<TLive>,
+  fetcher: (
+    credentials: ApiCredentials,
+    signal?: AbortSignal,
+  ) => Promise<TLive>,
 ): Sourced<TShown> {
   const resolved = useCredentials();
 
@@ -215,4 +233,115 @@ export function useMyWork<TShown>(
   project: (live: Task[]) => TShown,
 ): Sourced<TShown> {
   return useSourcedList("my-work", demo, project, fetchMyWork);
+}
+
+/**
+ * A resource that has NO demonstration equivalent.
+ *
+ * 🔴 WHY THESE SCREENS DO NOT FALL BACK TO A FIXTURE.
+ *
+ * `demo-data.json` carries organizations, users, stages, opportunities,
+ * projects, tasks, suppliers, materials and formulas. It carries **no
+ * batches, no samples, no tests and no methods** — so Laboratory and
+ * Testing have nothing to fall back TO.
+ *
+ * That absence is worth keeping. The operator has flagged the
+ * demonstration banner on the live site as a thing to remove, not to
+ * spread; and fabricating laboratory batches and physical test results
+ * for a formulated-chemicals platform is materially worse than
+ * fabricating a supplier list. A synthetic adhesion measurement sitting
+ * in a queue labelled "Testing" is exactly the kind of record §3 rule 3
+ * exists to keep separable from a real one — *"physical testing verifies;
+ * models only predict"* — and a reader who scrolls past a banner sees a
+ * measurement, not a fixture.
+ *
+ * So these screens have two honest states and no third: rows from the
+ * database, or a plain statement that this build has no API to ask.
+ *
+ * This does NOT introduce a third `DataSource`. `config.ts` argues
+ * correctly that a screen which cannot say where its numbers came from
+ * must not display numbers — and this screen displays none. It knows
+ * exactly where its zero rows came from and says so.
+ */
+export interface LiveOnly<T> {
+  readonly data: T | undefined;
+  readonly isLoading: boolean;
+  readonly error: Error | null;
+  /**
+   * Why this build cannot serve the screen at all, or null when it can.
+   *
+   * An ABSENCE, never a failure — no API address compiled in, or nobody
+   * to act as. A request that was made and failed lands in `error`, and
+   * the two must not be conflated: one is a deployment that was never
+   * given an API, the other is an outage.
+   */
+  readonly unavailable: string | null;
+}
+
+function useLiveOnlyList<TLive, TShown>(
+  key: string,
+  project: (live: TLive) => TShown,
+  fetcher: (
+    credentials: ApiCredentials,
+    signal?: AbortSignal,
+  ) => Promise<TLive>,
+): LiveOnly<TShown> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      key,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetcher(resolved.credentials, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    // The same distinction `useSourcedList` draws, and for the same
+    // reason: a failed `/api/me` is an outage and must not render as a
+    // tidy "not available on this build" notice.
+    return resolved.failed
+      ? {
+          data: undefined,
+          isLoading: false,
+          error: new Error(resolved.reason),
+          unavailable: null,
+        }
+      : {
+          data: undefined,
+          isLoading: false,
+          error: null,
+          unavailable: resolved.reason,
+        };
+  }
+
+  return {
+    data: query.data === undefined ? undefined : project(query.data),
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/** Laboratory batches. Live or nothing — see `LiveOnly`. */
+export function useBatches<TShown>(
+  project: (live: Batch[]) => TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("laboratory-batches", project, fetchBatches);
+}
+
+/** The test queue. Live or nothing — see `LiveOnly`. */
+export function useTests<TShown>(
+  project: (live: Test[]) => TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("testing-tests", project, fetchTests);
 }

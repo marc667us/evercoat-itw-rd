@@ -43,6 +43,12 @@ const PAGES = [
   { name: "suppliers", path: "/suppliers" },
   { name: "formulations", path: "/formulations" },
   { name: "formula workspace", path: "/formulations/FRM-014" },
+  // Slices 4 and 5. These two are the first screens with NO demonstration
+  // fallback — with no API compiled in they render a "no data source"
+  // notice rather than rows, so what axe scans here is that state. Worth
+  // scanning precisely because it is the state the deployed site is in.
+  { name: "laboratory", path: "/laboratory" },
+  { name: "testing", path: "/testing" },
 ];
 
 for (const target of PAGES) {

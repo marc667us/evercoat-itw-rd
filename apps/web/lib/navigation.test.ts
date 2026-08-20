@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 /**
  * Navigation contract tests.
  *
@@ -99,7 +102,9 @@ describe("permission filtering", () => {
       "failure.view",
       "project.view",
     ]);
-    const ids = visibleNavigation(chemist).flatMap((g) => g.items.map((i) => i.id));
+    const ids = visibleNavigation(chemist).flatMap((g) =>
+      g.items.map((i) => i.id),
+    );
 
     expect(ids).toContain("formulations");
     expect(ids).toContain("materials");
@@ -112,7 +117,9 @@ describe("permission filtering", () => {
     // ADR-021: Administration section 1 ships in Slice 1, so this must
     // be reachable from the start for someone who holds the permission.
     const admin = new Set(["admin.users"]);
-    const ids = visibleNavigation(admin).flatMap((g) => g.items.map((i) => i.id));
+    const ids = visibleNavigation(admin).flatMap((g) =>
+      g.items.map((i) => i.id),
+    );
     expect(ids).toContain("administration");
   });
 
@@ -126,7 +133,9 @@ describe("permission filtering", () => {
           (p): p is string => Boolean(p) && p !== item.permission,
         ),
       );
-      const ids = visibleNavigation(others).flatMap((g) => g.items.map((i) => i.id));
+      const ids = visibleNavigation(others).flatMap((g) =>
+        g.items.map((i) => i.id),
+      );
       expect(ids).not.toContain(item.id);
     }
   });
@@ -146,20 +155,29 @@ describe("slice availability", () => {
     // Stated as a property it holds forever: availability is exactly
     // "slice <= CURRENT_SLICE", for all items, whatever CURRENT_SLICE is.
     const future = ALL_NAV_ITEMS.filter((i) => (i.slice ?? 1) > CURRENT_SLICE);
-    const shipped = ALL_NAV_ITEMS.filter((i) => (i.slice ?? 1) <= CURRENT_SLICE);
+    const shipped = ALL_NAV_ITEMS.filter(
+      (i) => (i.slice ?? 1) <= CURRENT_SLICE,
+    );
 
     // Both sides must be non-empty, or the property is vacuously true — a
     // green test asserting nothing is worse than a red one.
-    expect(future.length, "no future-slice items left to check").toBeGreaterThan(0);
+    expect(
+      future.length,
+      "no future-slice items left to check",
+    ).toBeGreaterThan(0);
     expect(shipped.length, "no shipped items to check").toBeGreaterThan(0);
 
     for (const item of future) {
-      expect(isAvailable(item), `${item.id} is slice ${item.slice} and should be inert`).toBe(
-        false,
-      );
+      expect(
+        isAvailable(item),
+        `${item.id} is slice ${item.slice} and should be inert`,
+      ).toBe(false);
     }
     for (const item of shipped) {
-      expect(isAvailable(item), `${item.id} has shipped and should be a link`).toBe(true);
+      expect(
+        isAvailable(item),
+        `${item.id} has shipped and should be a link`,
+      ).toBe(true);
     }
   });
 
@@ -193,5 +211,62 @@ describe("href resolution", () => {
 
   it("returns undefined for an unknown path", () => {
     expect(navItemByHref("/nothing-here")).toBeUndefined();
+  });
+});
+
+describe("an available destination has a page behind it", () => {
+  /**
+   * 🔴 THE GUARD THAT `CURRENT_SLICE`'s COMMENT ASKED FOR.
+   *
+   * `isAvailable` decides whether a sidebar entry is a LINK or an inert
+   * span, and it decides it from a slice NUMBER. Nothing connected that
+   * number to whether the page it points at exists — the comment above
+   * the constant simply asked the next person to remember, which is the
+   * same shape as every "two literals in two files cannot be
+   * type-checked into agreement" defect recorded on this platform.
+   *
+   * Raising CURRENT_SLICE one slice too far would silently turn a set of
+   * inert items into live links into 404s. The repository's own rule is
+   * that a dead link is worse than no link: it reads as a missing record
+   * rather than an unbuilt screen.
+   *
+   * So this reads the filesystem. It is the only test here that touches
+   * disk, and that is the point — the fact it is checking lives on disk.
+   */
+  const APP_DIR = path.join(__dirname, "..", "app");
+
+  it("every available item resolves to a real page.tsx", () => {
+    const missing = ALL_NAV_ITEMS.filter((item) => {
+      if (!isAvailable(item)) return false;
+      // href is always root-relative and never has a query or hash.
+      const segments = item.href.replace(/^\//, "").split("/");
+      return !fs.existsSync(path.join(APP_DIR, ...segments, "page.tsx"));
+    });
+
+    expect(
+      missing.map((i) => `${i.id} -> ${i.href}`),
+      "these navigation items are AVAILABLE (so the sidebar renders them as " +
+        "links) but have no page.tsx, so clicking one reaches a 404. Either " +
+        "build the screen or raise its `slice` above CURRENT_SLICE.",
+    ).toEqual([]);
+  });
+
+  it("the two screens built for slices 4 and 5 are the ones that became available", () => {
+    // Named explicitly, unlike the generic test above, because this is a
+    // claim about THIS change rather than about the invariant: raising
+    // CURRENT_SLICE to 5 must expose Laboratory and Testing and nothing
+    // else. If a later slice-4 or slice-5 item is added without a screen,
+    // the generic test catches it; this one catches the reverse mistake of
+    // the constant being raised for an unrelated reason.
+    const newlyAvailable = ALL_NAV_ITEMS.filter(
+      (i) => (i.slice ?? 1) === 4 || (i.slice ?? 1) === 5,
+    );
+    expect(newlyAvailable.map((i) => i.id).sort()).toEqual([
+      "laboratory",
+      "testing",
+    ]);
+    for (const item of newlyAvailable) {
+      expect(isAvailable(item), `${item.id} should now be a link`).toBe(true);
+    }
   });
 });

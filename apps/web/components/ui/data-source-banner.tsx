@@ -50,7 +50,9 @@ export function DataSourceBanner({
           ⛁
         </span>
         <p className="text-[11px] leading-snug">
-          <span className="font-semibold uppercase tracking-wide">Live data</span>{" "}
+          <span className="font-semibold uppercase tracking-wide">
+            Live data
+          </span>{" "}
           — read from the application database through the API.
         </p>
       </div>
@@ -141,6 +143,72 @@ export function DataPage({
   return (
     <>
       <DataSourceBanner source={source} reason={sourceReason} />
+      <div className="p-6">
+        <h1 className="text-xl font-semibold text-slate-900">{title}</h1>
+        {lede && (
+          <p className="mt-1.5 max-w-3xl text-sm text-slate-600">{lede}</p>
+        )}
+        <div className="mt-6">{children}</div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The frame for a screen that has NO demonstration equivalent.
+ *
+ * 🔴 THIS IS NOT A THIRD `DataSource`, AND `config.ts` IS STILL RIGHT.
+ *
+ * That file argues a screen which cannot say where its numbers came from
+ * must not display numbers. This screen displays none: Laboratory and
+ * Testing have no fixture in `demo-data.json`, so when there is no API
+ * they show a statement instead of rows. It knows exactly where its zero
+ * rows came from.
+ *
+ * Fabricating batches and physical test results was the alternative and
+ * it was refused. The operator has flagged demonstration data on the live
+ * site as a thing to remove rather than spread, and a synthetic adhesion
+ * measurement in a queue labelled "Testing" is materially worse than a
+ * synthetic supplier: §3 rule 3 exists to keep predicted and measured
+ * separable, and a reader who scrolls past a banner sees a measurement.
+ */
+export function LiveOnlyPage({
+  title,
+  lede,
+  unavailable,
+  children,
+}: {
+  title: string;
+  lede?: string;
+  /** Why this build cannot serve the screen, or null when it can. */
+  unavailable: string | null;
+  children: ReactNode;
+}): ReactNode {
+  return (
+    <>
+      {unavailable === null ? (
+        <DataSourceBanner source="live" reason={null} />
+      ) : (
+        <div
+          role="note"
+          aria-label="No data source notice"
+          data-testid="no-data-source"
+          className="flex items-start gap-2 border-b border-slate-300 bg-slate-100 px-6 py-2 text-slate-800"
+        >
+          <span aria-hidden className="mt-px shrink-0 font-bold">
+            ⊘
+          </span>
+          <p className="text-[11px] leading-snug">
+            <span className="font-semibold uppercase tracking-wide">
+              No data source
+            </span>{" "}
+            — {unavailable}. This screen has{" "}
+            <strong>no demonstration equivalent</strong>: laboratory batches and
+            physical test results are not invented, so nothing is shown rather
+            than something synthetic.
+          </p>
+        </div>
+      )}
       <div className="p-6">
         <h1 className="text-xl font-semibold text-slate-900">{title}</h1>
         {lede && (

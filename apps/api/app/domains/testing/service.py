@@ -28,6 +28,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -82,6 +83,40 @@ _APPROVAL_OUTCOMES: dict[str, str] = {
 # The development-side approval permission. Anyone who has decided at this
 # stage is barred from supplying the independent QA approval (ADR-019).
 _DEVELOPMENT_APPROVAL = "development"
+
+
+# ---------------------------------------------------------------------------
+# Decimal on the wire
+# ---------------------------------------------------------------------------
+#: 🔴 A `NUMERIC` COLUMN REACHES JSON AS A **FLOAT** UNLESS IT IS STRINGIFIED.
+#:
+#: FastAPI's `jsonable_encoder` maps `Decimal` to `float`. Measured:
+#: `jsonable_encoder(Decimal("12.5000")) -> 12.5`, and
+#: `Decimal("2.00") -> 2.0`. So a batch mass recorded to four decimal
+#: places went out carrying one, which is exactly the round trip
+#: `CLAUDE.md` §5 forbids -- *"NUMERIC, never float, for percentages,
+#: masses, densities and measured values"*.
+#:
+#: This is the same defect Codex found in `materials` on 2026-08-19, which
+#: "would have rejected every live material row". It was fixed there and
+#: nowhere else; this module had it too, undetected, because no screen was
+#: wired to these routes yet.
+#:
+#: 🔴 GENERIC, NOT A KEY LIST. `materials` enumerates its quantity columns
+#: by name. That works until somebody adds a NUMERIC column and does not
+#: think to extend the tuple -- which is precisely how this class of bug
+#: survives. Converting every `Decimal` in the row cannot be forgotten,
+#: because there is nothing to remember.
+def _decimal_strings(row: RowMapping | dict[str, Any]) -> dict[str, Any]:
+    """Every `Decimal` in the row as a string; everything else untouched.
+
+    Strings preserve the stored scale across the wire. The web client
+    parses them with `zod` and never does arithmetic on them -- §4 keeps
+    derivation on the server.
+    """
+    return {
+        key: (str(value) if isinstance(value, Decimal) else value) for key, value in row.items()
+    }
 
 
 class TestingError(RuntimeError):
@@ -260,7 +295,7 @@ def create_test(
             reason="test planned against a physical sample",
         ),
     )
-    return dict(row)
+    return _decimal_strings(row)
 
 
 def start_execution(
@@ -310,7 +345,7 @@ def start_execution(
             reason="test execution started",
         ),
     )
-    return dict(row)
+    return _decimal_strings(row)
 
 
 def record_replicate(
@@ -448,7 +483,7 @@ def exclude_replicate(
             reason=reason,
         ),
     )
-    return dict(row)
+    return _decimal_strings(row)
 
 
 def complete_execution(
@@ -521,7 +556,7 @@ def complete_execution(
             reason="execution complete; result computed from the raw replicates",
         ),
     )
-    out = dict(row)
+    out = _decimal_strings(row)
     out["evaluation_detail"] = context["evaluation"].detail
     return out
 
@@ -779,7 +814,7 @@ def confirm_test(
             reason="result confirmed as final",
         ),
     )
-    return dict(row)
+    return _decimal_strings(row)
 
 
 # ---------------------------------------------------------------------------
@@ -825,7 +860,7 @@ def get_test(session: Session, *, test_id: uuid.UUID, organization_id: uuid.UUID
         "rule": disposition.rule,
     }
     test["decisions"] = [
-        dict(r)
+        _decimal_strings(r)
         for r in session.execute(
             text(
                 """
@@ -885,7 +920,7 @@ def list_tests(
         ),
         {"org": organization_id, "pid": project_id, "review": review_state, "limit": limit},
     ).mappings()
-    return [dict(r) for r in rows]
+    return [_decimal_strings(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -920,7 +955,7 @@ def _evaluation_context(
     )
 
     replicates = [
-        dict(r)
+        _decimal_strings(r)
         for r in session.execute(
             text(
                 """
@@ -1043,4 +1078,4 @@ def _test_row(
     )
     if row is None:
         raise TestNotFoundError("no such test in this organization")
-    return dict(row)
+    return _decimal_strings(row)

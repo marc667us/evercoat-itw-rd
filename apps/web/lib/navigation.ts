@@ -168,7 +168,21 @@ export function visibleNavigation(permissions: ReadonlySet<string>): NavGroup[] 
 // link or a disabled item. Raising it without building the pages would turn
 // every Slice 2 item into a live link into a 404 — which is exactly the
 // failure `isAvailable` exists to prevent, so the two must move together.
-export const CURRENT_SLICE = 3;
+//
+// 🔴 THAT WARNING IS NOW ENFORCED, NOT JUST WRITTEN DOWN.
+//
+// It was a comment asking the next person to remember something, which is
+// the same shape as every "two literals in two files" defect this project
+// keeps finding. `navigation.test.ts` now reads the filesystem and fails
+// if any item this constant makes available has no `page.tsx` behind it,
+// so raising it too far is caught by a test rather than by a user
+// reaching a 404.
+//
+// Raised 3 → 5 on 2026-08-20: Laboratory (slice 4) and Testing (slice 5)
+// now have real screens wired to `/api/laboratory/batches` and
+// `/api/testing/tests`. Nothing else sits at slice 4 or 5, so exactly
+// those two moved.
+export const CURRENT_SLICE = 5;
 
 /**
  * Every permission any navigation item asks for, derived from NAVIGATION.

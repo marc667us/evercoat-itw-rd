@@ -1,5 +1,84 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-20 (pt2) — Laboratory and Testing have screens, and a controlled mass was a float
+
+**21 static pages** (from 19). Web typecheck + lint clean · **130 Vitest**
+passed · **142** database-free backend tests passed · **4 passed** in a real
+Chromium, including axe-core WCAG 2.1 AA on both new screens.
+
+### 🔴 FOUND BEFORE WRITING ANY UI: A BATCH MASS WAS SHIPPING AS A FLOAT
+
+`jsonable_encoder` maps `Decimal` to `float`. Measured:
+`Decimal("12.5000") -> 12.5`, `Decimal("2.00") -> 2.0`.
+
+`materials` was fixed for this on 2026-08-19 and **nowhere else was**. So:
+
+- `laboratory.batches.planned_quantity_kg` — `NUMERIC(14,4)`, the planned
+  mass of a controlled formulation batch — went out with its stored scale
+  destroyed, and
+- `testing.test_replicates.measured_value` — `NUMERIC(18,6)`, the raw
+  physical measurement this platform exists to record faithfully — did the
+  same.
+
+`CLAUDE.md` §5: *"NUMERIC, never float, for percentages, masses, densities
+and measured values."* Nothing had caught it because no screen was wired to
+these routes, so no client had ever parsed the response. Found by reading
+the contract before writing against it.
+
+Both modules now carry `_decimal_strings`. **Generic, not a key list** —
+`materials` enumerates its quantity columns by name, which works until
+somebody adds a NUMERIC column and forgets the tuple, which is exactly how
+this class of bug survives. `tests/test_laboratory_testing_serialisation.py`
+pins it through the real encoder with no database.
+
+### Laboratory and Testing
+
+Two screens wired to `/api/laboratory/batches` and `/api/testing/tests`,
+with zod-parsed clients that require the masses as **strings** — the client
+half of the same contract, so a server regression fails to parse rather
+than silently rounding a mass.
+
+🔴 **Testing shows NO traffic light, deliberately.** `list_tests` withholds
+the disposition on purpose — deriving it per row costs a statistics query
+per test. Four of §10's fourteen rules need inputs this endpoint does not
+return (`cv_limit`, requirement margin, `trend_alert`, replicate
+statistics). A browser colouring these rows would be deciding a traffic
+light on the client from an incomplete input, which is the one thing §10
+forbids — and `calculated_result: "pass"` looks like a green light while
+§6 says a technically passing test stays YELLOW until approvals complete.
+So the five stored axes are shown as facts and the page states, in a
+`role="note"`, that the disposition is not computed there.
+
+🔴 **Neither screen has a demonstration fallback, and that is deliberate.**
+`demo-data.json` has no batches, samples, tests or methods. Rather than
+invent them, a new `LiveOnly` seam gives these screens two honest states:
+rows from the database, or a plain statement that this build has no API to
+ask. Fabricating laboratory batches and physical test results is materially
+worse than fabricating a supplier list — §3 rule 3 exists to keep predicted
+and measured separable, and a reader who scrolls past a banner sees a
+measurement. This does **not** add a third `DataSource`: the screen shows
+no numbers, and knows exactly where its zero rows came from.
+
+### The sidebar can no longer promise a page that does not exist
+
+`CURRENT_SLICE` 3 → 5, exposing exactly Laboratory (4) and Testing (5).
+
+That constant's comment warned that raising it without building the pages
+would turn items into live links into 404s — a comment asking the next
+person to remember, which is the shape of every "two literals in two files"
+defect here. It is now **enforced**: `navigation.test.ts` reads the
+filesystem and fails if any available item has no `page.tsx`. Verified by
+raising the constant to 6, which immediately named `failures -> /failures`
+and `approvals -> /approvals`.
+
+### Still not built, stated plainly
+
+Batch detail (the weigh-up sheet), per-replicate test entry, the derived
+disposition view, approvals and failure UI — and **MSD, which has no HTTP
+route at all**, only `app/domains/msd/retrieval.py`. None of it works
+against the deployed site regardless, because the live artefact is a static
+export with no API and no Keycloak (`TODO.md` I13).
+
 ## 2026-08-20 — API security audit, and two thirds of the navigation was illegible
 
 Three reviewers: **Codex CLI** (independent read-only sweep of `apps/api`),
