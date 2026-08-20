@@ -429,32 +429,90 @@ def test_a_non_member_cannot_enrol_themselves_in_a_restricted_project(
 
 def test_a_non_member_cannot_repoint_an_existing_membership_row_at_themselves(
     app_session, owner_session, seeded_projects
-) -> None:
+):
     """The same escalation, by UPDATE.
 
-    USING stays organization-only, so a restricted project's member rows
-    are VISIBLE. Without a WITH CHECK, repointing somebody else's row at
+    `USING` stays organization-only, so a restricted project's member rows
+    are VISIBLE. Without a `WITH CHECK`, repointing somebody else's row at
     yourself was the identical privilege grant with a different verb.
-    """
-    _org, _normal, restricted, outsider = seeded_projects
-    set_local(app_session, "app.current_org", _org)
-    set_local(app_session, "app.current_user_id", outsider)
 
-    with pytest.raises(DBAPIError, match="row-level security") as caught:
-        app_session.execute(
-            text(
-                """
-                UPDATE projects.project_members
-                SET user_id = :uid
-                WHERE project_id = :pid AND organization_id = :org
-                """
-            ),
-            {"uid": outsider, "pid": restricted, "org": _org},
-        )
-    assert "row-level security" in str(caught.value).lower(), (
-        f"a non-member repointed a membership row at themselves: {caught.value}"
+    🔴 THE FIRST VERSION OF THIS TEST COULD NOT FAIL.
+
+    `seeded_projects` creates two projects and one user and NO member
+    rows, so the UPDATE matched nothing, no `WITH CHECK` was ever
+    evaluated, and the assertion was measuring an empty result set. CI
+    caught it as "DID NOT RAISE" — which is the honest failure, but the
+    test would have been worthless had it been written with a plain
+    assertion instead of `pytest.raises`.
+
+    So it now creates the row it intends to attack, and asserts the row is
+    actually there first.
+    """
+    org_id, _normal, restricted, outsider = seeded_projects
+
+    owner_session.begin()
+    victim = owner_session.execute(
+        text(
+            """
+            INSERT INTO core.users (keycloak_sub, email, display_name)
+            VALUES (:s, :e, 'Existing Member') RETURNING id
+            """
+        ),
+        {"s": f"victim-{uuid.uuid4().hex[:8]}", "e": f"victim-{uuid.uuid4().hex[:8]}@example.test"},
+    ).scalar_one()
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO core.organization_members (organization_id, user_id, status)
+            VALUES (:o, :u, 'active')
+            """
+        ),
+        {"o": org_id, "u": victim},
     )
-    app_session.rollback()
+    member_row = owner_session.execute(
+        text(
+            """
+            INSERT INTO projects.project_members
+                (organization_id, project_id, user_id, project_role)
+            VALUES (:o, :p, :u, 'chemist') RETURNING id
+            """
+        ),
+        {"o": org_id, "p": restricted, "u": victim},
+    ).scalar_one()
+    owner_session.commit()
+
+    try:
+        set_local(app_session, "app.current_org", org_id)
+        set_local(app_session, "app.current_user_id", outsider)
+
+        # The premise: the attacker CAN see the row. If they could not,
+        # the refusal below would prove nothing about WITH CHECK.
+        visible = app_session.execute(
+            text("SELECT count(*) FROM projects.project_members WHERE id = :id"),
+            {"id": member_row},
+        ).scalar_one()
+        assert visible == 1, (
+            "the attacker cannot see the membership row, so this test would "
+            "pass without exercising the WITH CHECK at all"
+        )
+
+        with pytest.raises(DBAPIError, match="row-level security"):
+            app_session.execute(
+                text("UPDATE projects.project_members SET user_id = :uid WHERE id = :id"),
+                {"uid": outsider, "id": member_row},
+            )
+        app_session.rollback()
+    finally:
+        # Before the fixture's own teardown: every FK here is RESTRICT.
+        owner_session.begin()
+        owner_session.execute(
+            text("DELETE FROM projects.project_members WHERE id = :id"), {"id": member_row}
+        )
+        owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE user_id = :u"), {"u": victim}
+        )
+        owner_session.execute(text("DELETE FROM core.users WHERE id = :u"), {"u": victim})
+        owner_session.commit()
 
 
 def test_the_declared_lead_can_still_be_enrolled_by_someone_who_cannot_see_the_project(
