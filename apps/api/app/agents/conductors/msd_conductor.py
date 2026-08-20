@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.ports import LanguageModelPort, NullLanguageModel
 from app.agents.tools import (
+    compare_formulas,
     explain_the_application,
     find_records,
     formula_figures,
@@ -54,6 +55,7 @@ __all__ = ["DISCLAIMER", "MsdAnswer", "answer"]
 DISCLAIMER = "AI-generated recommendation — requires technical review."
 
 Intent = Literal[
+    "compare_formulas",
     "guidance",
     "pending_work",
     "material_safety",
@@ -126,6 +128,16 @@ def classify(question: str) -> Intent:
         )
     ):
         return "pending_work"
+
+    # Comparison is checked before the single-formula equations: "compare
+    # F018 and F023 on density" names a property, and answering it with
+    # ONE formula's density would be a confident non-answer to the
+    # question actually asked (Concept Note §9).
+    if any(
+        word in lowered
+        for word in ("compare", "comparison", "versus", " vs ", "difference between")
+    ):
+        return "compare_formulas"
 
     # 🔴 SAFETY BEFORE SEARCH. Concept Note §11's questions -- "which
     # components in this formula are restricted?", "are any material
@@ -244,6 +256,53 @@ def answer(
             intent=intent,
             href="/materials",
             tool_calls=({"tool": "material_safety", "returned": len(materials)},),
+        )
+
+    if intent == "compare_formulas":
+        # Two records, resolved SEPARATELY. Searching the whole sentence
+        # would look for "compare FRM-014 and FRM-021" as one string and
+        # match nothing at all.
+        targets = _resolve_versions(
+            session,
+            organization_id=organization_id,
+            question=question,
+            project_id=project_id,
+        )
+        if len(targets) < 2:
+            return MsdAnswer(
+                body=(
+                    "I need two formula versions you have access to, named by "
+                    "their codes - for example 'compare FRM-014 and FRM-021'. "
+                    f"I could resolve {len(targets)}."
+                ),
+                intent=intent,
+                evidence=tuple(targets),
+                tool_calls=({"tool": "find_records", "resolved": len(targets)},),
+            )
+
+        left, right = targets[0], targets[1]
+        diff = compare_formulas(
+            session,
+            organization_id=organization_id,
+            left_version_id=left.entity_id,
+            right_version_id=right.entity_id,
+            include_cost="formula.view_cost" in permissions,
+        )
+        return MsdAnswer(
+            body=model.rephrase(
+                composed=_compose_comparison(left.label, right.label, diff),
+                question=question,
+            ),
+            intent=intent,
+            evidence=(left, right),
+            href="/formulations",
+            tool_calls=(
+                {
+                    "tool": "compare_formulas",
+                    "left": str(left.entity_id),
+                    "right": str(right.entity_id),
+                },
+            ),
         )
 
     if intent == "formula_figures":
@@ -579,4 +638,148 @@ def _compose_usage(subject: str, usage: list[dict[str, Any]]) -> str:
         "Percentages are as recorded on each version. This is a usage lookup, "
         "not a compliance determination."
     )
+    return "\n".join(lines)
+
+
+def _resolve_versions(
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    question: str,
+    project_id: uuid.UUID | None,
+) -> list[RetrievedRecord]:
+    """The formula versions a comparison question names, in the order named.
+
+    EACH CODE IS SEARCHED SEPARATELY, AND ONLY TOKENS THAT LOOK LIKE CODES
+    ARE SEARCHED.
+
+    `retrieve_for_question` does one ILIKE over the whole string, so
+    "compare FRM-014 and FRM-021" matches nothing - the sentence is not a
+    formula name. Splitting on codes is what makes the question
+    answerable at all.
+
+    A token counts as a code only if it contains a digit. Crude and
+    deliberately so: "compare", "and" and "density" contain none, and a
+    token that is not a code searches for nothing rather than resolving to
+    a confidently wrong formula.
+
+    Order is preserved, because "compare A and B" is not the same question
+    as "compare B and A": the second is the revision, and `change_reason`
+    reads backwards if they are swapped.
+    """
+    seen: set[uuid.UUID] = set()
+    ordered: list[RetrievedRecord] = []
+    for token in question.replace(",", " ").split():
+        cleaned = token.strip("?.;:()").strip('"').strip("'")
+        if not any(character.isdigit() for character in cleaned):
+            continue
+        found = find_records(
+            session,
+            organization_id=organization_id,
+            question=cleaned,
+            project_id=project_id,
+            entity_types=("formula_version",),
+        )
+        for record in found:
+            if record.entity_id not in seen:
+                seen.add(record.entity_id)
+                ordered.append(record)
+                break
+    return ordered
+
+
+def _compose_comparison(left_label: str, right_label: str, diff: dict[str, Any]) -> str:
+    """Concept Note section 9's comparison, without computing one number.
+
+    PERCENTAGES ARE SHOWN AS A PAIR, NEVER AS A DELTA.
+
+    `compare_versions` deliberately returns `previous_percentage` and
+    `new_percentage` rather than their difference, and says why: "The
+    percentage-point delta on a component is a SUBTRACTION OF TWO
+    PERCENTAGES and is therefore arithmetic -- so it is not done here."
+    Two such conversions were already caught inside React components on
+    this project. An assistant is the last place to reintroduce one,
+    because a number MSD prints is a number a chemist may quote.
+
+    AND IT REPORTS WHAT SECTION 9 CANNOT ANSWER YET.
+
+    The Concept Note also asks comparison to cover sanding and adhesion
+    performance, failure history and statistical significance. Those need
+    the test records for both versions, which this comparison does not
+    read. Saying nothing would let a reader take a composition diff for a
+    performance comparison, which is the more dangerous of the two.
+    """
+    previous = diff.get("previous") or {}
+    new = diff.get("new") or {}
+    lines = [f"{left_label} -> {right_label}"]
+
+    if diff.get("change_reason"):
+        lines.append(f"Stated reason for the change: {diff['change_reason']}")
+    if diff.get("technical_hypothesis"):
+        lines.append(f"Hypothesis: {diff['technical_hypothesis']}")
+    if diff.get("expected_effect"):
+        lines.append(f"Expected effect: {diff['expected_effect']}")
+    # Observed effect is recorded only AFTER testing. Its absence is a
+    # fact about the version, not a gap in this answer.
+    lines.append(
+        f"Observed effect: {diff['observed_effect']}"
+        if diff.get("observed_effect")
+        else "Observed effect: not recorded yet - this revision has not been tested."
+    )
+
+    changed = [c for c in diff.get("components", []) if c["change"] != "unchanged"]
+    lines.append("")
+    if not changed:
+        lines.append("No component differs between these two versions.")
+    else:
+        lines.append(f"{len(changed)} component(s) differ:")
+        for component in changed:
+            code = f"{component['material_code']} ({component['material_name']})"
+            if component["change"] == "added":
+                lines.append(f"- ADDED {code} at {component['new_percentage']}%")
+            elif component["change"] == "removed":
+                lines.append(f"- REMOVED {code}, was {component['previous_percentage']}%")
+            else:
+                # A pair, not a difference.
+                lines.append(
+                    f"- {code}: {component['previous_percentage']}% "
+                    f"-> {component['new_percentage']}%"
+                )
+
+    readable = {
+        "theoretical_density_g_cm3": "Theoretical density (g/cm3)",
+        "solids_content_pct": "Solids content (%)",
+        "voc_content_g_per_l": "VOC content (g/L)",
+        "binder_to_filler_ratio": "Binder to filler",
+        "total_percentage": "Total percentage",
+        "raw_material_cost_per_kg": "Raw material cost (per kg)",
+    }
+    property_lines: list[str] = []
+    for key, name in readable.items():
+        before = (diff.get("previous_properties") or {}).get(key)
+        after = (diff.get("new_properties") or {}).get(key)
+        if before is None or after is None:
+            # ABSENT, not null. The cost key is omitted entirely without
+            # `formula.view_cost`, and rendering "not available" would
+            # state that no cost data exists.
+            continue
+        if before.get("value") is not None and after.get("value") is not None:
+            property_lines.append(f"- {name}: {before['value']} -> {after['value']}")
+        else:
+            reason = before.get("unavailable_reason") or after.get("unavailable_reason")
+            property_lines.append(f"- {name}: NOT COMPARABLE - {reason}")
+    if property_lines:
+        lines.append("")
+        lines.append("Computed properties:")
+        lines.extend(property_lines)
+
+    lines.append("")
+    lines.append(
+        "This compares COMPOSITION and computed properties. It does not "
+        "compare test performance, failure history or statistical "
+        "significance - those need the test records for both versions, "
+        "which this comparison does not read."
+    )
+    if previous.get("status") and new.get("status"):
+        lines.append(f"Statuses: {previous['status']} -> {new['status']}.")
     return "\n".join(lines)

@@ -16,6 +16,7 @@ import pytest
 from app.agents.conductors.msd_conductor import (
     DISCLAIMER,
     MsdAnswer,
+    _compose_comparison,
     _compose_figures,
     _compose_records,
     _compose_safety,
@@ -491,3 +492,124 @@ def test_cost_is_absent_rather_than_null_without_the_permission() -> None:
         },
     )
     assert "cost" not in composed.lower()
+
+
+# ---------------------------------------------------------------------------
+# Formula comparison - Concept Note section 9
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Compare F005 and F008",
+        "compare FRM-014 and FRM-021 on density",
+        "difference between F018 and F023",
+    ],
+)
+def test_comparison_questions_reach_the_comparison_tool(question):
+    """Checked BEFORE the single-formula equations.
+
+    "compare F018 and F023 on density" names a property, and answering it
+    with ONE formula density would be a confident non-answer to the
+    question actually asked.
+    """
+    assert classify(question) == "compare_formulas"
+
+
+def test_a_comparison_shows_a_pair_of_percentages_never_a_delta():
+    """The rule `compare_versions` states and this must not relax.
+
+    "The percentage-point delta on a component is a SUBTRACTION OF TWO
+    PERCENTAGES and is therefore arithmetic -- so it is not done here."
+    Two such conversions were already caught inside React components on
+    this project. A number MSD prints is a number a chemist may quote.
+    """
+    composed = _compose_comparison(
+        "FRM-014 v2",
+        "FRM-014 v3",
+        {
+            "previous": {"status": "approved"},
+            "new": {"status": "draft"},
+            "change_reason": "reduce density",
+            "technical_hypothesis": None,
+            "expected_effect": None,
+            "observed_effect": None,
+            "components": [
+                {
+                    "material_code": "RM-TAL-01",
+                    "material_name": "Talc",
+                    "previous_percentage": "12.5000",
+                    "new_percentage": "9.0000",
+                    "change": "changed",
+                },
+                {
+                    "material_code": "RM-MSP-02",
+                    "material_name": "Glass microspheres",
+                    "previous_percentage": None,
+                    "new_percentage": "4.0000",
+                    "change": "added",
+                },
+            ],
+            "previous_properties": {
+                "theoretical_density_g_cm3": {"value": "1.5790", "unavailable_reason": None}
+            },
+            "new_properties": {
+                "theoretical_density_g_cm3": {"value": "1.0920", "unavailable_reason": None}
+            },
+        },
+    )
+    assert "12.5000% -> 9.0000%" in composed
+    assert "ADDED RM-MSP-02" in composed
+    assert "1.5790 -> 1.0920" in composed
+    # No computed difference anywhere.
+    assert "-3.5" not in composed
+    assert "3.5000" not in composed
+    assert "0.487" not in composed
+
+
+def test_a_comparison_says_it_is_not_a_performance_comparison():
+    """Section 9 also asks for sanding, adhesion, failure history and
+    statistical significance. Those need the test records for both
+    versions, which this comparison does not read. Silence would let a
+    reader take a composition diff for a performance comparison."""
+    composed = _compose_comparison(
+        "A",
+        "B",
+        {
+            "previous": {},
+            "new": {},
+            "change_reason": None,
+            "technical_hypothesis": None,
+            "expected_effect": None,
+            "observed_effect": None,
+            "components": [],
+            "previous_properties": {},
+            "new_properties": {},
+        },
+    )
+    assert "does not" in composed
+    assert "test performance" in composed
+    assert "statistical" in composed
+
+
+def test_an_untested_revision_says_the_observed_effect_is_not_recorded():
+    """Absence stated as absence. `observed_effect` is written only after
+    testing, so a blank there is a fact about the version."""
+    composed = _compose_comparison(
+        "A",
+        "B",
+        {
+            "previous": {},
+            "new": {},
+            "change_reason": None,
+            "technical_hypothesis": None,
+            "expected_effect": None,
+            "observed_effect": None,
+            "components": [],
+            "previous_properties": {},
+            "new_properties": {},
+        },
+    )
+    assert "not recorded yet" in composed
+    assert "has not been tested" in composed

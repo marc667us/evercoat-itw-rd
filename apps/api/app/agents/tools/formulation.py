@@ -39,9 +39,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.domains.formulations.service import evaluate_version
+from app.domains.formulations.service import compare_versions, evaluate_version
 
-__all__ = ["formula_figures"]
+__all__ = ["compare_formulas", "formula_figures"]
 
 
 def formula_figures(
@@ -65,6 +65,41 @@ def formula_figures(
     return evaluate_version(
         session,
         version_id=version_id,
+        organization_id=organization_id,
+        include_cost=include_cost,
+    )
+
+
+def compare_formulas(
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    left_version_id: uuid.UUID,
+    right_version_id: uuid.UUID,
+    include_cost: bool,
+) -> dict[str, Any]:
+    """Two versions, side by side — Concept Note §9.
+
+    🔴 IT DELEGATES, AND IT DOES NOT SUBTRACT.
+
+    `compare_versions` returns each component as a PAIR of percentages
+    rather than a delta, and says why in its own docstring: *"The
+    percentage-point delta on a component is a SUBTRACTION OF TWO
+    PERCENTAGES and is therefore arithmetic -- so it is not done here."*
+    Two such conversions were already caught inside React components on
+    this project.
+
+    MSD is the last place that rule should be relaxed. The composition
+    renders "12.5000 -> 9.0000", never "-3.5", so nothing in the assistant
+    computes a number a chemist might quote.
+
+    `include_cost` is the caller's `formula.view_cost`, threaded from the
+    verified principal exactly as `formula_figures` does.
+    """
+    return compare_versions(
+        session,
+        left_version_id=left_version_id,
+        right_version_id=right_version_id,
         organization_id=organization_id,
         include_cost=include_cost,
     )

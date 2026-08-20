@@ -14,7 +14,7 @@ arithmetic to `app/calculations/`, and a second implementation here would
 be a second answer to the same question.
 """
 
-from app.agents.tools.formulation import formula_figures
+from app.agents.tools.formulation import compare_formulas, formula_figures
 from app.agents.tools.guidance import explain_the_application
 from app.agents.tools.records import find_records
 from app.agents.tools.safety import (
@@ -25,6 +25,7 @@ from app.agents.tools.safety import (
 from app.agents.tools.work import pending_work
 
 __all__ = [
+    "compare_formulas",
     "explain_the_application",
     "find_records",
     "formula_figures",
