@@ -16,7 +16,10 @@ import pytest
 from app.agents.conductors.msd_conductor import (
     DISCLAIMER,
     MsdAnswer,
+    _compose_figures,
     _compose_records,
+    _compose_safety,
+    _compose_usage,
     _compose_work,
     answer,
     classify,
@@ -307,3 +310,184 @@ def test_every_retrievable_source_can_actually_be_stored_as_evidence() -> None:
         f"store: {sorted(emitted - allowed)}. Every answer citing one would "
         "fail at write time. Add them to the CHECK constraint in a migration."
     )
+
+
+# ---------------------------------------------------------------------------
+# Safety and the equations - Concept Note 11, 17 and rule 2
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Show the current SDS for this resin.",
+        "Which components in this formula are restricted?",
+        "Are any material safety documents missing?",
+        "Which formulas contain Material RM-104?",
+    ],
+)
+def test_the_founders_four_safety_questions_reach_the_safety_tool(question: str) -> None:
+    """All four are named in the source document, and all four contain search words.
+
+    "which", "show", "contain" - a generic record search would swallow
+    every one of them and answer a SAFETY question with a list of names
+    carrying no safety state at all. So safety is classified BEFORE
+    search, and this is the test that keeps it that way.
+    """
+    assert classify(question) == "material_safety"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what is the density of FRM-014",
+        "what is the VOC content of FRM-014",
+        "solids content of FRM-014",
+        "calculate the total percentage",
+    ],
+)
+def test_equation_questions_reach_the_calculation_tool(question: str) -> None:
+    """Concept Note 17: the engine calculates, MSD interprets and communicates."""
+    assert classify(question) == "formula_figures"
+
+
+def test_msd_does_no_arithmetic_of_its_own() -> None:
+    """Rule 2, as a structural check.
+
+    "Python owns deterministic scientific calculation. The LLM may CALL
+    calculation tools and EXPLAIN results; it must never perform the
+    arithmetic."
+
+    The formulation tool delegates to `evaluate_version`, which runs the
+    Hypothesis-tested engine. If arithmetic ever appears in the agent
+    tier this fails - a second implementation of "what is this formula's
+    density" is the defect.
+    """
+    import ast
+    from pathlib import Path
+
+    agents = Path(__file__).resolve().parents[1] / "app" / "agents"
+    offenders: list[str] = []
+    for path in sorted(agents.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            # Division and multiplication are how a unit conversion or an
+            # average sneaks in. String/list addition is fine, so only
+            # these two are policed.
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div | ast.Mult):
+                offenders.append(f"{path.name}:{node.lineno}")
+
+    assert not offenders, (
+        "arithmetic in the agent tier. Rule 2 gives calculation to "
+        f"app/calculations/ and MSD may only explain the result: {offenders}"
+    )
+
+
+def test_a_safety_answer_says_who_decides() -> None:
+    """Concept Note 11: MSD must not replace formal Compliance/QA review.
+
+    A chemist who asks an assistant whether a material is safe and gets a
+    confident sentence has been handed a regulatory opinion by a text
+    generator. Every safety answer states what is ON FILE and names who
+    decides.
+    """
+    composed = _compose_safety(
+        [
+            {
+                "material_code": "RM-104",
+                "name": "Polyester resin",
+                "status": "approved",
+                "restriction_reason": None,
+                "hazard_summary": None,
+                "requires_sds": True,
+                "sds_count": 1,
+                "sds_issued_on": "2026-01-04",
+            }
+        ]
+    )
+    assert "not a compliance determination" in composed
+    assert "Compliance/QA" in composed
+
+
+def test_a_missing_safety_data_sheet_is_stated_as_a_block() -> None:
+    """The one actionable fact in a safety answer.
+
+    Section 8 makes a `requires_sds` material with no SDS on file a hard
+    block on submission that cannot be waived. Reporting it softly would
+    be "absence presenting as a value" applied to safety.
+    """
+    composed = _compose_safety(
+        [
+            {
+                "material_code": "RM-999",
+                "name": "Unknown hardener",
+                "status": "development",
+                "restriction_reason": None,
+                "hazard_summary": None,
+                "requires_sds": True,
+                "sds_count": 0,
+                "sds_issued_on": None,
+            }
+        ]
+    )
+    assert "SAFETY DATA SHEET REQUIRED AND NONE IS ON FILE" in composed
+    assert "blocks" in composed
+
+
+def test_an_empty_usage_answer_does_not_say_nothing_uses_it() -> None:
+    """The sentence somebody acts on during a recall.
+
+    "Nothing uses RM-104" is what a person needs when a lot is recalled,
+    and MSD cannot know it: a formula in a project the asker is not a
+    member of is never returned. The empty case says what was actually
+    established and names the reason.
+    """
+    composed = _compose_usage("RM-104", [])
+    assert "no formula versions you have access to" in composed
+    assert "not the same as none existing" in composed
+    assert "Compliance/QA" in composed
+    assert "nothing uses" not in composed.lower()
+
+
+def test_a_property_that_could_not_be_computed_says_so() -> None:
+    """`evaluate_version` returns a value OR a stated reason, never a blank."""
+    composed = _compose_figures(
+        "FRM-014 v3",
+        {
+            "component_count": 4,
+            "properties": {
+                "total_percentage": {"value": "100.00", "unavailable_reason": None},
+                "theoretical_density_g_cm3": {
+                    "value": None,
+                    "unavailable_reason": "density unknown for: RM-FIL-07",
+                },
+            },
+            "submission_blocks": [],
+            "submittable": True,
+            "version": {"status": "draft"},
+        },
+    )
+    assert "Total percentage: 100.00" in composed
+    assert "NOT CALCULATED" in composed
+    assert "density unknown for: RM-FIL-07" in composed
+
+
+def test_cost_is_absent_rather_than_null_without_the_permission() -> None:
+    """Asking MSD is not a way around `formula.view_cost`.
+
+    `evaluate_version` omits the KEY when the caller lacks the permission
+    - a null would read as "no cost data exists", a different and false
+    statement - and the composition must not reintroduce it as
+    "cost: not available".
+    """
+    composed = _compose_figures(
+        "FRM-014 v3",
+        {
+            "component_count": 4,
+            "properties": {"total_percentage": {"value": "100.00", "unavailable_reason": None}},
+            "submission_blocks": [],
+            "submittable": True,
+            "version": {"status": "draft"},
+        },
+    )
+    assert "cost" not in composed.lower()

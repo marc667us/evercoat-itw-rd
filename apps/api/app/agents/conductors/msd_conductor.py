@@ -36,7 +36,14 @@ from typing import Any, Literal
 from sqlalchemy.orm import Session
 
 from app.agents.ports import LanguageModelPort, NullLanguageModel
-from app.agents.tools import explain_the_application, find_records, pending_work
+from app.agents.tools import (
+    explain_the_application,
+    find_records,
+    formula_figures,
+    formulas_containing,
+    material_safety,
+    pending_work,
+)
 from app.domains.msd.retrieval import RetrievedRecord
 
 __all__ = ["DISCLAIMER", "MsdAnswer", "answer"]
@@ -46,7 +53,14 @@ __all__ = ["DISCLAIMER", "MsdAnswer", "answer"]
 #: convention that can lapse — an unlabelled answer cannot be stored.
 DISCLAIMER = "AI-generated recommendation — requires technical review."
 
-Intent = Literal["guidance", "pending_work", "find_records", "unsupported"]
+Intent = Literal[
+    "guidance",
+    "pending_work",
+    "material_safety",
+    "formula_figures",
+    "find_records",
+    "unsupported",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +127,45 @@ def classify(question: str) -> Intent:
     ):
         return "pending_work"
 
+    # 🔴 SAFETY BEFORE SEARCH. Concept Note §11's questions -- "which
+    # components in this formula are restricted?", "are any material
+    # safety documents missing?" -- all contain search words, so a
+    # generic record search swallows them and answers a SAFETY question
+    # with a list of names carrying no safety state at all.
+    if any(
+        word in lowered
+        for word in (
+            "sds",
+            "safety",
+            "hazard",
+            "restricted",
+            "coshh",
+            "contain",
+            "contains",
+            "used in",
+        )
+    ):
+        return "material_safety"
+
+    # The equations (§17, rule 2). Same reasoning: "what is the density of
+    # FRM-014" has no search intent worth honouring, and answering it with
+    # a list of matching formulas is a non-answer.
+    if any(
+        word in lowered
+        for word in (
+            "density",
+            "solids",
+            "voc",
+            "binder",
+            "filler ratio",
+            "total percentage",
+            "cost per kg",
+            "figures",
+            "calculate",
+        )
+    ):
+        return "formula_figures"
+
     if any(
         word in lowered
         for word in ("show", "find", "which", "list", "search", "formula", "material", "batch")
@@ -130,6 +183,7 @@ def answer(
     role_codes: frozenset[str],
     question: str,
     project_id: uuid.UUID | None = None,
+    permissions: frozenset[str] = frozenset(),
     model: LanguageModelPort | None = None,
 ) -> MsdAnswer:
     """Answer one question, inside the caller's boundary.
@@ -164,6 +218,69 @@ def answer(
             intent=intent,
             href="/my-work",
             tool_calls=({"tool": "pending_work", "returned": len(tasks)},),
+        )
+
+    if intent == "material_safety":
+        subject = _subject_of(question)
+        # "Which formulas contain RM-104?" is a USAGE question wearing a
+        # safety hat, and it is the one asked when a material is
+        # restricted or a supplier recalls a lot. It needs the component
+        # join: the record search would have looked for "RM-104" in
+        # formula NAMES, found nothing, and said so confidently.
+        if any(w in question.lower() for w in ("contain", "contains", "used in")):
+            usage = formulas_containing(
+                session, organization_id=organization_id, material_query=subject
+            )
+            return MsdAnswer(
+                body=model.rephrase(composed=_compose_usage(subject, usage), question=question),
+                intent=intent,
+                href="/formulations",
+                tool_calls=({"tool": "formulas_containing", "returned": len(usage)},),
+            )
+
+        materials = material_safety(session, organization_id=organization_id, query=subject)
+        return MsdAnswer(
+            body=model.rephrase(composed=_compose_safety(materials), question=question),
+            intent=intent,
+            href="/materials",
+            tool_calls=({"tool": "material_safety", "returned": len(materials)},),
+        )
+
+    if intent == "formula_figures":
+        # Resolve the formula the question names, through the SAME
+        # boundary-enforcing retrieval every other record answer uses.
+        found = find_records(
+            session,
+            organization_id=organization_id,
+            question=_subject_of(question),
+            project_id=project_id,
+            entity_types=("formula_version",),
+        )
+        if not found:
+            return MsdAnswer(
+                body=(
+                    "I could not find a formula version you have access to matching "
+                    "that. Name it by its code, for example FRM-014."
+                ),
+                intent=intent,
+                tool_calls=({"tool": "find_records", "returned": 0},),
+            )
+        target = found[0]
+        evaluation = formula_figures(
+            session,
+            organization_id=organization_id,
+            version_id=target.entity_id,
+            # 🔴 The caller's own permission. Asking MSD is not a way
+            # around `formula.view_cost` (§7).
+            include_cost="formula.view_cost" in permissions,
+        )
+        return MsdAnswer(
+            body=model.rephrase(
+                composed=_compose_figures(target.label, evaluation), question=question
+            ),
+            intent=intent,
+            evidence=(target,),
+            tool_calls=({"tool": "formula_figures", "version": str(target.entity_id)},),
         )
 
     if intent == "find_records":
@@ -238,4 +355,228 @@ def _compose_records(records: list[RetrievedRecord]) -> str:
     for entity_type, group in by_type.items():
         lines.append(f"{entity_type.replace('_', ' ')} ({len(group)}):")
         lines.extend(f"· {r.label}" for r in group[:5])
+    return "\n".join(lines)
+
+
+def _subject_of(question: str) -> str:
+    """The thing being asked about, with the question words removed.
+
+    Crude on purpose, and bounded: it strips a small set of interrogative
+    and filler words so "what is the density of FRM-014" searches for
+    "FRM-014" rather than for the whole sentence. It is not parsing and
+    does not pretend to be — a question it cannot reduce simply searches
+    for more words and finds less, which fails toward "I found nothing"
+    rather than toward a confident wrong record.
+    """
+    noise = {
+        "what",
+        "whats",
+        "what's",
+        "is",
+        "are",
+        "the",
+        "of",
+        "for",
+        "in",
+        "on",
+        "show",
+        "me",
+        "find",
+        "which",
+        "list",
+        "search",
+        "tell",
+        "about",
+        "a",
+        "an",
+        "any",
+        "does",
+        "do",
+        "have",
+        "has",
+        "this",
+        "that",
+        "current",
+        "sds",
+        "safety",
+        "data",
+        "sheet",
+        "hazard",
+        "restricted",
+        "density",
+        "solids",
+        "voc",
+        "binder",
+        "filler",
+        "ratio",
+        "total",
+        "percentage",
+        "cost",
+        "per",
+        "kg",
+        "figures",
+        "calculate",
+        "components",
+        "missing",
+        "documents",
+        "formula",
+        "formulas",
+    }
+    words = [w for w in question.lower().replace("?", " ").split() if w not in noise]
+    return " ".join(words).strip() or question.strip()
+
+
+def _compose_safety(materials: list[dict[str, Any]]) -> str:
+    """Safety-record STATE, never a hazard assessment.
+
+    🔴 THE LAST LINE IS NOT BOILERPLATE.
+
+    Concept Note §11: *"MSD should not replace formal Compliance/QA
+    review. Safety and regulatory decisions should remain controlled
+    through the appropriate Compliance or Quality workflow."* A chemist
+    who asks an assistant whether a material is safe and receives a
+    confident sentence has been handed a regulatory opinion by a text
+    generator. So every safety answer says what is ON FILE and says who
+    decides.
+
+    A MISSING safety data sheet is reported first and plainly, because it
+    is the one fact here that is actionable — and because §8 makes it a
+    hard block on submission that cannot be waived.
+    """
+    if not materials:
+        return (
+            "I found no materials you have access to matching that. Name the "
+            "material by its code, for example RM-104."
+        )
+
+    lines: list[str] = []
+    for m in materials:
+        parts = [f"{m['material_code']} — {m['name']}"]
+        parts.append(f"status: {m['status']}")
+        if m["status"] == "restricted" and m.get("restriction_reason"):
+            parts.append(f"restriction on file: {m['restriction_reason']}")
+        if m["requires_sds"] and (m["sds_count"] or 0) == 0:
+            # Named as an absence, not softened.
+            parts.append(
+                "SAFETY DATA SHEET REQUIRED AND NONE IS ON FILE — this blocks "
+                "submission of any formula containing it"
+            )
+        elif (m["sds_count"] or 0) > 0:
+            issued = m.get("sds_issued_on")
+            parts.append(f"SDS on file{f' (issued {issued})' if issued else ''}")
+        else:
+            parts.append("no SDS required for this material")
+        if m.get("hazard_summary"):
+            parts.append(f"hazard summary on file: {m['hazard_summary']}")
+        lines.append("· " + "; ".join(parts))
+
+    lines.append("")
+    lines.append(
+        "This is the safety information RECORDED against these materials. It is "
+        "not a compliance determination — hazard and regulatory decisions stay "
+        "with Compliance/QA."
+    )
+    return "\n".join(lines)
+
+
+def _compose_figures(label: str, evaluation: dict[str, Any]) -> str:
+    """The engine's numbers, carried through without arithmetic.
+
+    🔴 A PROPERTY IS A VALUE **OR A STATED REASON**, NEVER A BLANK.
+
+    `evaluate_version` returns `{"value": ..., "unavailable_reason": ...}`
+    per property precisely so "density unknown for: RM-FIL-07" reaches the
+    reader. Rendering that as an empty cell — or omitting the line — would
+    tell a chemist the density was calculated and came out empty, which is
+    the "absence presenting as a value" failure this codebase keeps
+    finding.
+
+    Nothing here rounds, converts or recomputes. Rule 2 gives the
+    arithmetic to `app/calculations/`, and this function is the
+    "explain" half of *"the engine calculates; MSD interprets"*.
+    """
+    version = evaluation.get("version") or {}
+    header = f"{label} — {evaluation.get('component_count', 0)} component(s)."
+    lines = [header]
+
+    readable = {
+        "total_percentage": "Total percentage",
+        "theoretical_density_g_cm3": "Theoretical density (g/cm³)",
+        "binder_to_filler_ratio": "Binder to filler",
+        "solids_content_pct": "Solids content (%)",
+        "voc_content_g_per_l": "VOC content (g/L)",
+        "raw_material_cost_per_kg": "Raw material cost (per kg)",
+    }
+    for key, name in readable.items():
+        prop = evaluation.get("properties", {}).get(key)
+        if prop is None:
+            # ABSENT, not null. `raw_material_cost_per_kg` is absent when
+            # the caller lacks `formula.view_cost`, and saying "cost: not
+            # available" would imply no cost data exists.
+            continue
+        if prop.get("value") is not None:
+            lines.append(f"· {name}: {prop['value']}")
+        else:
+            lines.append(f"· {name}: NOT CALCULATED — {prop['unavailable_reason']}")
+
+    blocks = evaluation.get("submission_blocks") or []
+    if blocks:
+        lines.append("")
+        lines.append(f"{len(blocks)} thing(s) currently block submission:")
+        lines.extend(f"· {b['message']}" for b in blocks)
+    elif evaluation.get("submittable"):
+        lines.append("")
+        lines.append(
+            "Nothing currently blocks submission. That is a check on the "
+            "recorded composition, not an approval — approval is a human "
+            "decision recorded against the version."
+        )
+
+    if version.get("status"):
+        lines.append("")
+        lines.append(f"Version status: {version['status']}.")
+    return "\n".join(lines)
+
+
+def _compose_usage(subject: str, usage: list[dict[str, Any]]) -> str:
+    """Where a material is used, for the question asked when it matters.
+
+    🔴 THE EMPTY ANSWER IS THE CAREFUL ONE.
+
+    "Nothing uses RM-104" is the sentence somebody acts on when a lot is
+    recalled, and MSD cannot know it: a formula in a project the asker is
+    not a member of is not returned here at all. So the empty case says
+    what was actually established — nothing THEY can see — and names the
+    reason, exactly as `_compose_records` does.
+    """
+    if not usage:
+        return (
+            f"I found no formula versions you have access to that use "
+            f"'{subject}'. That is not the same as none existing: a formula in "
+            "a project you are not a member of would not appear here. For a "
+            "recall or a restriction, ask Compliance/QA to run it across every "
+            "project."
+        )
+
+    by_formula: dict[str, list[dict[str, Any]]] = {}
+    for row in usage:
+        by_formula.setdefault(f"{row['formula_code']} — {row['formula_name']}", []).append(row)
+
+    lines = [
+        f"'{subject}' appears in {len(by_formula)} formula"
+        f"{'s' if len(by_formula) != 1 else ''} you can open "
+        f"({len(usage)} version{'s' if len(usage) != 1 else ''}):"
+    ]
+    for formula, rows in by_formula.items():
+        lines.append(f"· {formula}")
+        for row in rows[:5]:
+            lines.append(
+                f"    {row['version_code']} ({row['version_status']}) — "
+                f"{row['material_code']} at {row['percentage']}%"
+            )
+    lines.append("")
+    lines.append(
+        "Percentages are as recorded on each version. This is a usage lookup, "
+        "not a compliance determination."
+    )
     return "\n".join(lines)

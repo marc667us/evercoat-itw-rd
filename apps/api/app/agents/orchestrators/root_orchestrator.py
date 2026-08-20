@@ -35,6 +35,7 @@ def answer_question(
     role_codes: frozenset[str],
     question: str,
     project_id: uuid.UUID | None = None,
+    permissions: frozenset[str] = frozenset(),
     model: LanguageModelPort | None = None,
 ) -> MsdAnswer:
     """Answer a question as the given principal.
@@ -59,5 +60,6 @@ def answer_question(
         role_codes=role_codes,
         question=question,
         project_id=project_id,
+        permissions=permissions,
         model=model,
     )

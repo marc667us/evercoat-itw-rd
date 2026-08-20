@@ -126,6 +126,11 @@ def post_question(
             organization_id=principal.organization_id,
             user_id=principal.user_id,
             role_codes=frozenset(principal.roles),
+            # From the resolved Principal, so asking MSD cannot
+            # bypass a permission that governs the screen -- cost
+            # is gated on `formula.view_cost` here exactly as it is
+            # on the formulations routes.
+            permissions=frozenset(principal.permissions),
             question=payload.question,
             project_id=payload.project_id,
         )
