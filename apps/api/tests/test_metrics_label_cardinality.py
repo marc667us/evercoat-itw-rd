@@ -104,12 +104,44 @@ def test_a_matched_route_reports_its_template(client: TestClient) -> None:
     A version that returned `<unmatched>` for everything would pass the
     test above while making the metrics useless, so the positive case is
     asserted too.
+
+    🔴 THIS ASSERTED `"/health/live"` AND IT WAS THE WRONG ASSERTION.
+
+    It passed locally and **failed in CI**, because what `route.path`
+    holds is version-dependent. Measured:
+
+        fastapi 0.135.3 / starlette 1.3.1   ->  "/health/live"
+        fastapi 0.141.1 / starlette 1.6.0   ->  "/live"
+
+    The newer stack reports the path relative to the router. The
+    SECURITY property is identical in both — it is a route template
+    either way, so the label set stays bounded — and only the exact
+    string differs. Pinning the string tested the framework's internals
+    rather than this application's behaviour, and turned a dependency
+    bump into a red build for no defect.
+
+    So the assertions below are the ones that actually matter: a matched
+    route is NOT reported as unmatched, and its label is a TEMPLATE
+    rather than the concrete request path.
     """
+    before = _path_labels()
     response = client.get("/health/live")
     assert response.status_code == 200, response.text
 
-    assert "/health/live" in _path_labels(), (
-        "a matched route did not report its own template; the label is now bounded but says nothing"
+    added = _path_labels() - before
+    assert added, (
+        "a matched route recorded no label at all; the middleware stopped "
+        "observing successful requests"
+    )
+    assert UNMATCHED_ROUTE_LABEL not in added, (
+        "a route that MATCHED was labelled as unmatched, so every real "
+        "endpoint now collapses into one meaningless series"
+    )
+    # The label must END with the router-relative template. That holds on
+    # both stacks — "/health/live" and "/live" alike — while still failing
+    # if the raw request path or some unrelated value is recorded.
+    assert any(label.endswith("/live") for label in added), (
+        f"the label for /health/live does not name the route: {sorted(added)}"
     )
 
 

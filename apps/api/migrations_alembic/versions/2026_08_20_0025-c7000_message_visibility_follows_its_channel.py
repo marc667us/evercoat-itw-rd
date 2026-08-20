@@ -55,29 +55,67 @@ def downgrade() -> None:
     """
     from alembic import op
 
+    # 🔴 WRITTEN OUT LITERALLY, NOT BUILT IN A LOOP.
+    #
+    # The first version interpolated a table name into the statement with
+    # an f-string. Semgrep blocked it on `formatted-sql-query` and
+    # `sqlalchemy-execute-raw-query` — six findings across three
+    # statements — and although the interpolated values were a hardcoded
+    # tuple of identifiers rather than user input, the rule is right to
+    # be unconditional here: an identifier cannot be a bind parameter, so
+    # "this f-string is safe" is an argument a reader has to re-verify
+    # every time rather than a property the code enforces. Literal
+    # statements need no argument.
     op.execute("DROP TRIGGER IF EXISTS channels_keep_their_scope ON messaging.channels")
     op.execute("DROP FUNCTION IF EXISTS messaging.deny_channel_retyping()")
 
-    for table in (
-        "messaging.messages",
-        "messaging.message_links",
-        "messaging.channel_members",
-    ):
-        op.execute(f"DROP POLICY IF EXISTS channel_scope ON {table}")
-        op.execute(f"DROP POLICY IF EXISTS parent_message_scope ON {table}")
-        op.execute(
-            f"""
-            CREATE POLICY org_scope ON {table}
-            USING (
-                core.rls_permissive() AND core.current_org_id() IS NULL
-                OR organization_id = core.current_org_id()
-            )
-            WITH CHECK (
-                core.rls_permissive() AND core.current_org_id() IS NULL
-                OR organization_id = core.current_org_id()
-            )
-            """
+    op.execute("DROP POLICY IF EXISTS channel_scope ON messaging.messages")
+    op.execute("DROP POLICY IF EXISTS channel_scope ON messaging.message_links")
+    op.execute("DROP POLICY IF EXISTS channel_scope ON messaging.channel_members")
+    op.execute("DROP POLICY IF EXISTS parent_message_scope ON messaging.messages")
+    op.execute("DROP POLICY IF EXISTS parent_message_scope ON messaging.message_links")
+    op.execute("DROP POLICY IF EXISTS parent_message_scope ON messaging.channel_members")
+
+    op.execute(
+        """
+        CREATE POLICY org_scope ON messaging.messages
+        USING (
+            core.rls_permissive() AND core.current_org_id() IS NULL
+            OR organization_id = core.current_org_id()
         )
+        WITH CHECK (
+            core.rls_permissive() AND core.current_org_id() IS NULL
+            OR organization_id = core.current_org_id()
+        )
+        """
+    )
+    op.execute(
+        """
+        CREATE POLICY org_scope ON messaging.message_links
+        USING (
+            core.rls_permissive() AND core.current_org_id() IS NULL
+            OR organization_id = core.current_org_id()
+        )
+        WITH CHECK (
+            core.rls_permissive() AND core.current_org_id() IS NULL
+            OR organization_id = core.current_org_id()
+        )
+        """
+    )
+    op.execute(
+        """
+        CREATE POLICY org_scope ON messaging.channel_members
+        USING (
+            core.rls_permissive() AND core.current_org_id() IS NULL
+            OR organization_id = core.current_org_id()
+        )
+        WITH CHECK (
+            core.rls_permissive() AND core.current_org_id() IS NULL
+            OR organization_id = core.current_org_id()
+        )
+        """
+    )
+
     # After the policies, never before: `channel_members.channel_scope`
     # references this function, and dropping it first would fail.
     op.execute("DROP FUNCTION IF EXISTS core.can_read_channel(UUID)")

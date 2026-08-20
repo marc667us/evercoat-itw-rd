@@ -80,10 +80,35 @@ def _metric_label(request: Request) -> str:
     Requests that match no route have no template to report. They collapse
     into one fixed label rather than reporting their path, because a 404
     probe is precisely the attacker-controlled input this bounds.
+
+    🔴 WHAT `route.path` CONTAINS IS VERSION-DEPENDENT. MEASURED:
+
+        fastapi 0.135.3 / starlette 1.3.1   ->  "/health/live"
+        fastapi 0.141.1 / starlette 1.6.0   ->  "/live"
+
+    The newer stack reports the path RELATIVE TO THE ROUTER rather than
+    the fully-prefixed one. This cost a CI round trip: a test that
+    hard-coded `/health/live` passed locally and failed on the runner.
+
+    **The security property is unaffected either way** — both are route
+    TEMPLATES, so the label set stays bounded by the size of the route
+    table and no attacker-controlled value reaches it. Only the label's
+    readability changes, and `root_path` is prepended to recover the
+    prefix where the framework supplies it there instead.
+
+    Do not re-introduce an assertion on the exact string. Assert the
+    property that matters: it is a template, and it is not the raw path.
     """
     route = request.scope.get("route")
     path = getattr(route, "path", None)
-    return path if isinstance(path, str) and path else UNMATCHED_ROUTE_LABEL
+    if not isinstance(path, str) or not path:
+        return UNMATCHED_ROUTE_LABEL
+
+    # Empty on the older stack (the prefix is already in `route.path`),
+    # so this is a no-op there and a repair on the newer one. Never
+    # request-controlled: `root_path` is set by the mount, not the caller.
+    root = request.scope.get("root_path") or ""
+    return f"{root}{path}" if isinstance(root, str) else path
 
 
 @asynccontextmanager
