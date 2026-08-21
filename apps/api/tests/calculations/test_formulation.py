@@ -229,11 +229,42 @@ def test_normalisation_totals_exactly_one_hundred(components):
     )
 )
 def test_normalisation_preserves_component_ratios(pcts):
+    """Normalisation rescales; it must not re-proportion.
+
+    🔴 THE TOLERANCE IS DERIVED, NOT CHOSEN. This asserted a fixed ABSOLUTE
+    bound of 0.01 on the RATIO, and Hypothesis broke it with
+    `[79.8578, 1.0077, 31.2516, 100, 100]`: ratio 79.24, drift 0.01006.
+
+    That was a defect in the TEST, not in `normalize_to_100`. Each normalised
+    percentage is quantised to `0.0001` (matching `NUMERIC(9,4)`), so each
+    carries up to half a quantum of error. For a ratio a/b the RELATIVE error
+    is bounded by (q/2)/a + (q/2)/b — so the ABSOLUTE error on the ratio grows
+    with the ratio itself. A fixed absolute bound therefore claims a guarantee
+    the arithmetic cannot provide, and it happened to hold only until
+    Hypothesis generated a ratio near 80 with a small denominator.
+
+    Rounding harder is not the alternative: the quantum IS the database's
+    scale, and §5 requires the stored value and the computed one to agree.
+
+    The bound below is computed from the actual normalised values, so the test
+    asserts exactly what quantisation permits and fails on anything worse —
+    including a genuine re-proportioning bug, which this still catches.
+    """
     components = [Component(f"RM-{i}", p) for i, p in enumerate(pcts)]
     before = components[0].percentage / components[1].percentage
     after_list = normalize_to_100(components)
-    after = after_list[0].percentage / after_list[1].percentage
-    assert abs(after - before) < Decimal("0.01")
+    a, b = after_list[0].percentage, after_list[1].percentage
+    after = a / b
+
+    # Half a quantum on each operand, propagated through the division.
+    half_quantum = Decimal("0.0001") / 2
+    permitted = abs(after) * (half_quantum / abs(a) + half_quantum / abs(b))
+
+    assert abs(after - before) <= permitted, (
+        f"ratio moved by {abs(after - before)}, more than quantisation permits "
+        f"({permitted}). normalize_to_100 re-proportioned the formula rather than "
+        "merely rescaling it."
+    )
 
 
 # ------------------------------------------------------------- density

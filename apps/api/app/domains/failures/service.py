@@ -37,6 +37,9 @@ from app.core.audit import AuditEvent, write_audit
 from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
 
+# Cross-domain, and it cannot cycle: `messaging` imports only `app.core.*`.
+from app.domains.messaging.service import notify
+
 __all__ = [
     "ActionInput",
     "DriverInput",
@@ -208,6 +211,45 @@ def open_failure(
             reason=spec.title,
         ),
     )
+
+    # 🔴 I8 -- AN INVESTIGATION NOBODY IS TOLD ABOUT INVESTIGATES NOTHING.
+    #
+    # This matters more than the task case, because §10 opens investigations
+    # AUTOMATICALLY when a confirmation test fails. Without this, the system
+    # silently creates a failure investigation that nobody is informed of and
+    # nobody owns -- the most consequential record in the product, appearing
+    # in a queue no one is prompted to look at.
+    #
+    # THE PROJECT LEAD, and only the lead. §11 sidebar counts are actionable
+    # items, so fanning this out to every project member would put one
+    # investigation into everybody's action count and make the badge useless.
+    # The lead is the one role §9 makes responsible for the project's gates.
+    #
+    # 🔴 AND THE LEAD IS THE SAFE RECIPIENT. §7: a notification must not
+    # disclose what the recipient cannot see. `projects.projects.lead_user_id`
+    # is what migration 006 already uses to grant read access to a RESTRICTED
+    # project, so a lead can by construction read the failure this names --
+    # which is not true of an arbitrary organization member.
+    lead = session.execute(
+        text(
+            "SELECT lead_user_id FROM projects.projects WHERE id = :pid AND organization_id = :org"
+        ),
+        {"pid": project_id, "org": organization_id},
+    ).scalar_one_or_none()
+
+    if lead is not None and lead != actor_id:
+        notify(
+            session,
+            organization_id=organization_id,
+            recipient_id=lead,
+            notification_type="failure_opened",
+            title=f"{spec.failure_code}: {spec.title}",
+            body=spec.description,
+            entity_type="failure",
+            entity_id=row["id"],
+            is_actionable=True,
+        )
+
     return dict(row)
 
 

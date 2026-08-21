@@ -36,6 +36,11 @@ from app.core.audit import AuditEvent, write_audit
 from app.core.logging import log_audit
 from app.core.tenancy import require_active_member
 
+# Cross-domain, and it cannot cycle: `messaging` imports only `app.core.*`.
+# §12 names NotificationService as shared infrastructure -- a module that
+# grows its own notification table is the duplication that rule forbids.
+from app.domains.messaging.service import notify
+
 __all__ = [
     "TaskError",
     "TaskInput",
@@ -168,6 +173,37 @@ def create_task(
             reason=data.source_event or "task created",
         ),
     )
+    # 🔴 I8 -- A TASK NOBODY IS TOLD ABOUT IS NOT AN ASSIGNMENT.
+    #
+    # `notify()` had exactly ONE caller in the whole application
+    # (`_resolve_mentions`), so §11's sidebar badge -- which counts ACTIONABLE
+    # items -- read zero for everything except being @-mentioned. A chemist
+    # could be assigned every task in the project and see no indication at all.
+    #
+    # `is_actionable=True` deliberately: an assigned task is the definition of
+    # something the recipient must do, and §11 requires that distinction to
+    # exist in the data or every count is just a row total.
+    #
+    # NOT sent to the person who created it. Being told you did the thing you
+    # just did trains people to ignore the badge, which costs more than the
+    # notification is worth.
+    #
+    # A ROLE assignment notifies nobody here on purpose: the task is unclaimed,
+    # `my_work` surfaces it to every holder of that role, and fanning a
+    # notification out to all of them would make one task look like several.
+    if data.assigned_user_id is not None and data.assigned_user_id != actor_id:
+        notify(
+            session,
+            organization_id=organization_id,
+            recipient_id=data.assigned_user_id,
+            notification_type="task_assigned",
+            title=data.title.strip(),
+            body=data.description,
+            entity_type="task",
+            entity_id=task_id,
+            is_actionable=True,
+        )
+
     log_audit("task_created", task_id=str(task_id), task_type=data.task_type)
     return task_id
 
