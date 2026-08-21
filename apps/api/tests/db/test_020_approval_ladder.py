@@ -324,30 +324,18 @@ def test_a_controlled_authority_test_can_be_reviewed_and_approved(
     assert second["state"] == "approved"
 
 
-def test_an_escalation_opens_the_rung_it_escalates_to(
+def test_an_answered_escalation_completes_the_route(
     owner_session: Session,
     testable: dict[str, uuid.UUID],  # noqa: F811
 ) -> None:
-    """ESCALATION MUST HAVE SOMEWHERE TO LAND — AND MUST NOT APPROVE ANYTHING.
+    """ESCALATION HANDS THE DECISION UP, AND THE ANSWER IS THE SIGNATURE. I39.
 
     OVERSIGHT_STANDARD's second rung is optional and exists, in migration
     020's words, "so an escalation has somewhere to land". `escalate` means
-    "this is above me": it hands the decision UP, so the next rung must open.
-    Treating every non-approving decision as blocking made that rung
-    unreachable — the escalation had nowhere to land after all. Raised by the
-    Supervisor.
-
-    🔴 BUT REACHABLE IS NOT THE SAME AS SETTLED, and the difference is a
-    safety property. An escalated MANDATORY rung carries no signature. If
-    `escalate` also counted as advancing for settlement, a route would reach
-    `approved` on an escalation ALONE — nobody would have approved anything
-    and the test would go GREEN. So it advances reachability and not
-    settlement: the lead's view is recorded, and the route stays open.
-
-    Resolving an escalation therefore goes the same way as a correction: the
-    work is re-reviewed and the stalled ladder is superseded. Clunky, and
-    deliberately not "fixed" by inventing auto-approval semantics for a
-    regulated approval chain. Recorded as TODO I39.
+    "this is above me". When the higher rung then APPROVES, that approval is
+    the signature the escalated rung was asking for — holding the route open
+    anyway would mean an escalation could only ever be resolved by
+    re-reviewing the whole test.
     """
     fx = testable
     test_id = _ready(owner_session, fx)
@@ -364,10 +352,8 @@ def test_an_escalation_opens_the_rung_it_escalates_to(
             rationale="the margin is inside the warning threshold; the lead should see it",
         ),
     )
-    assert escalated["state"] == "pending", "an escalation is not a signature"
+    assert escalated["state"] == "pending", "an escalation is not itself a signature"
 
-    # THE RUNG IS REACHABLE — this is what the Supervisor's finding was about.
-    # Before the fix this raised, because the escalated rung read as blocking.
     landed = record_decision(
         owner_session,
         test_id=test_id,
@@ -379,16 +365,48 @@ def test_an_escalation_opens_the_rung_it_escalates_to(
     assert landed["step_label"] == "Lead approval (on escalation)", (
         "the escalation rung was not the one offered to the lead"
     )
+    assert landed["state"] == "approved", "the answered escalation did not settle the route"
 
-    # AND THE ROUTE IS STILL OPEN. The mandatory engineer rung was escalated,
-    # not signed, so nothing has approved this test.
-    assert landed["state"] == "pending", (
-        "the route completed on an escalation - a test would be GREEN with no "
-        "approving signature on its mandatory rung"
+
+def test_an_unanswered_escalation_approves_nothing(
+    owner_session: Session,
+    testable: dict[str, uuid.UUID],  # noqa: F811
+) -> None:
+    """🔴 THE SAFETY HALF, AND THE REASON `escalate` IS NOT SIMPLY ADVANCING.
+
+    If an escalation counted as advancing on its own, this route would settle
+    as `approved` the moment the engineer escalated — no signature anywhere,
+    and the test GREEN. The escalated rung is excused ONLY when a LATER group
+    carries an approving decision.
+
+    Nobody answers here. The route must stay open and the test must not be
+    green.
+    """
+    fx = testable
+    test_id = _ready(owner_session, fx)
+
+    escalated = record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["engineer"],
+        held_permissions=DEV,
+        spec=DecisionInput(
+            decision="escalate",
+            stage="approval",
+            rationale="above my authority",
+        ),
     )
 
+    assert escalated["state"] == "pending", (
+        "an unanswered escalation approved the test - nobody signed anything"
+    )
+    assert escalated["route_status"] == "open"
+
     seen = get_test(owner_session, test_id=test_id, organization_id=fx["org"])
-    assert seen["final_disposition"]["colour"] != "green"
+    assert seen["final_disposition"]["colour"] != "green", (
+        "a test nobody approved went GREEN on an escalation"
+    )
 
 
 def test_a_plain_re_review_does_not_discard_a_healthy_ladder(

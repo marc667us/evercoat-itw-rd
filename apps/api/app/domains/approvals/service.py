@@ -397,13 +397,43 @@ def _settle_route(session: Session, *, route_id: uuid.UUID, organization_id: uui
                 SELECT
                     count(*) FILTER (WHERE decision = 'reject') AS rejected,
                     count(*) FILTER (WHERE is_mandatory AND decision IS NULL) AS outstanding,
+                    -- 🔴 AN ESCALATED RUNG IS NOT STOPPED **IF THE ESCALATION
+                    -- WAS ANSWERED**, and is stopped if it was not. TODO I39.
+                    --
+                    -- `escalate` means "this is above me": the decision is
+                    -- handed UP, and OVERSIGHT_STANDARD's optional lead rung
+                    -- exists (020's words) "so an escalation has somewhere to
+                    -- land". If the higher rung then APPROVES, that approval
+                    -- is the signature the escalated rung was asking for, and
+                    -- holding the route open forever would mean an escalation
+                    -- could never be resolved except by re-reviewing the whole
+                    -- test.
+                    --
+                    -- 🔴 BUT AN ESCALATION MUST NEVER APPROVE BY ITSELF. If
+                    -- `escalate` simply counted as advancing, a route would
+                    -- reach `approved` on an escalation ALONE -- no signature
+                    -- anywhere and the test GREEN. So it is excused only when
+                    -- some LATER group actually carries an approving decision.
+                    -- Nobody signed, nothing is approved.
                     count(*) FILTER (
                         WHERE is_mandatory
                           AND decision IS NOT NULL
                           AND decision NOT IN ('approve','approve_with_condition')
+                          AND NOT (
+                                decision = 'escalate'
+                                AND EXISTS (
+                                    SELECT 1
+                                    FROM workflow.approval_route_steps answer
+                                    WHERE answer.route_id = s.route_id
+                                      AND answer.organization_id = s.organization_id
+                                      AND answer.parallel_group > s.parallel_group
+                                      AND answer.decision IN
+                                            ('approve', 'approve_with_condition')
+                                )
+                          )
                     ) AS stopped
-                FROM workflow.approval_route_steps
-                WHERE route_id = :rid AND organization_id = :org
+                FROM workflow.approval_route_steps s
+                WHERE s.route_id = :rid AND s.organization_id = :org
                 """
             ),
             {"rid": route_id, "org": organization_id},
