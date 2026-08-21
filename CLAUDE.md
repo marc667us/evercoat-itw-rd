@@ -329,11 +329,23 @@ database schema · relationships · migrations · indexes · constraints · Pyda
 **A green build is not a working feature.** Build it, run it, and look at it in a browser.
 
 > **What the E2E suite can and cannot prove today (updated 2026-08-18).**
-> The golden MVP scenario (§44) and the RBAC/MSD-boundary suite are
-> **not** written, and a file named after either would be worse than
-> none. Eleven of the golden scenario's fifteen steps have no table,
-> route, service or page. Both belong to Slice 7, where
-> `IMPLEMENTATION_PLAN.md:436` already places them.
+> **CORRECTED 2026-08-21.** This said "eleven of the golden scenario's
+> fifteen steps have no table, route, service or page". That was true when
+> written on 2026-08-18 and is now **false** — every one of §44's fifteen
+> arrows resolves to a real service, measured not assumed.
+>
+> `apps/api/tests/db/test_golden_scenario.py` walks all fifteen against a
+> real PostgreSQL, including the YELLOW→GREEN transition §44 calls the most
+> important assertion in the suite. Writing it found that the FIRST arrow had
+> no production path at all: an opportunity was created in `draft` and
+> nothing could move it to a decidable status, so it could never become a
+> project.
+>
+> ⚠️ **That file is NOT the §44 gate and I3 stays open.** The gate is the
+> scenario passing **on the deployed instance** with every arrow asserted in
+> **UI and** database state. The UI half needs screens that do not exist for
+> most steps; "deployed" needs the API and Keycloak of I13. The RBAC/MSD
+> boundary suite is still unwritten.
 >
 > **CORRECTED.** This paragraph used to add that `apps/web` makes "no API
 > calls at all — no `fetch`, no `next-auth` wiring, no sign-in — so a
