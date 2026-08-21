@@ -34,12 +34,12 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
 from app.core.logging import log_audit
-from app.core.tenancy import require_active_member
 
 # Cross-domain, and it cannot cycle: `messaging` imports only `app.core.*`.
 # §12 names NotificationService as shared infrastructure -- a module that
 # grows its own notification table is the duplication that rule forbids.
-from app.domains.messaging.service import notify
+from app.core.notifications import notify
+from app.core.tenancy import require_active_member
 
 __all__ = [
     "TaskError",
@@ -191,7 +191,51 @@ def create_task(
     # A ROLE assignment notifies nobody here on purpose: the task is unclaimed,
     # `my_work` surfaces it to every holder of that role, and fanning a
     # notification out to all of them would make one task look like several.
-    if data.assigned_user_id is not None and data.assigned_user_id != actor_id:
+    #
+    # 🔴 AND ONLY IF THE ASSIGNEE CAN SEE WHAT IT IS ABOUT. §7: a notification
+    # must not disclose what its recipient cannot reach. `require_active_member`
+    # above proves ORGANIZATION membership, which is not the same thing -- a
+    # task on a RESTRICTED project can be assigned to an organization member
+    # who is not on that project, and the notification's title would name work
+    # they have no access to. The notification becomes the leak.
+    #
+    # The same predicate `_resolve_mentions` uses for a project channel, plus
+    # the project LEAD, whom migration 006 already grants read access on the
+    # strength of `lead_user_id` alone.
+    #
+    # A task with NO project is organization-wide and reaches any member.
+    #
+    # The TASK IS STILL CREATED either way. Refusing the assignment would be a
+    # different and larger decision; withholding the notification is the narrow
+    # thing §7 actually requires.
+    reachable = True
+    if data.assigned_user_id is not None and data.project_id is not None:
+        reachable = bool(
+            session.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM projects.projects p
+                        WHERE p.id = :pid AND p.organization_id = :org
+                          AND (
+                                p.confidentiality = 'normal'
+                                OR p.lead_user_id = :uid
+                                OR EXISTS (
+                                    SELECT 1 FROM projects.project_members pm
+                                    WHERE pm.project_id = p.id
+                                      AND pm.organization_id = p.organization_id
+                                      AND pm.user_id = :uid
+                                      AND pm.status = 'active'
+                                )
+                          )
+                    )
+                    """
+                ),
+                {"pid": data.project_id, "org": organization_id, "uid": data.assigned_user_id},
+            ).scalar_one()
+        )
+
+    if data.assigned_user_id is not None and data.assigned_user_id != actor_id and reachable:
         notify(
             session,
             organization_id=organization_id,

@@ -37,8 +37,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
-from app.core.db import guarded_write
+from app.core.notifications import notify
 from app.core.tenancy import require_active_member
+from app.domains.tasks.service import TaskInput, TaskStateError, create_task
 
 __all__ = [
     "ChannelInput",
@@ -822,49 +823,43 @@ def promote_message(
     if message is None:
         raise MessagingNotFoundError("no such message in this organization")
 
-    if assigned_user_id is not None:
-        require_active_member(
-            session,
-            user_id=assigned_user_id,
-            organization_id=organization_id,
-            role_description="assignee",
-        )
-
+    # 🔴 I36 -- `create_task`, NOT A SECOND INSERT.
+    #
+    # This used to write `workflow.tasks` directly, which made it a second
+    # implementation of something §12 names as shared -- and it drifted, as
+    # second implementations do. It was missing the ASSIGNEE-NOTIFICATION that
+    # I33 added to `create_task`, so a task promoted out of a conversation
+    # reached its owner's queue with nothing telling them it was there. It also
+    # duplicated the assignee-membership check that Codex added to `create_task`
+    # (C1: `assigned_user_id` is a plain FK that will happily accept a user from
+    # another tenant, because referential integrity bypasses RLS).
+    #
+    # The duplication was held in place by an import cycle, not by a decision:
+    # `tasks` imported `notify` from `messaging`, so `messaging` could not
+    # import `create_task` from `tasks`. Moving `notify` to `app/core` --
+    # where §12 says shared infrastructure belongs -- removed the obstacle.
+    #
+    # `assigned_role` fills in when no user is named, because `tasks_has_an_owner`
+    # requires one of the two: a task nobody owns is a task nobody does.
     try:
-        with guarded_write(session):
-            task_id: uuid.UUID = session.execute(
-                text(
-                    """
-                    INSERT INTO workflow.tasks
-                        (organization_id, project_id, task_type, title, description,
-                         assigned_user_id, assigned_role, source_event, entity_type,
-                         entity_id)
-                    -- `assigned_role` fills in when no user is named, because
-                    -- `tasks_has_an_owner` requires one of the two: a task
-                    -- nobody owns is a task nobody does.
-                    --
-                    -- There is no `created_by` column on workflow.tasks. An
-                    -- earlier version of this INSERT named one; the schema was
-                    -- read, not assumed, and it is not there. The promoter is
-                    -- recorded in the audit event instead, which is where the
-                    -- rest of this application looks for "who did this".
-                    VALUES (:org, :pid, :ttype, :title, :description, :assignee,
-                            CASE WHEN CAST(:assignee AS uuid) IS NULL
-                                 THEN 'product_development_lead' END,
-                            'message.promoted', 'message', :mid)
-                    RETURNING id
-                    """
-                ),
-                {
-                    "org": organization_id,
-                    "pid": message["project_id"],
-                    "ttype": task_type,
-                    "title": title,
-                    "description": message["body"][:2000],
-                    "assignee": assigned_user_id,
-                    "mid": message_id,
-                },
-            ).scalar_one()
+        task_id = create_task(
+            session,
+            actor_id=actor_id,
+            organization_id=organization_id,
+            data=TaskInput(
+                task_type=task_type,
+                title=title,
+                description=message["body"][:2000],
+                project_id=message["project_id"],
+                assigned_user_id=assigned_user_id,
+                assigned_role=("product_development_lead" if assigned_user_id is None else None),
+                source_event="message.promoted",
+                entity_type="message",
+                entity_id=message_id,
+            ),
+        )
+    except TaskStateError as exc:
+        raise MessagingError(str(exc)) from exc
     except IntegrityError as exc:
         # The raw driver message is NOT returned to the caller. It names
         # tables, columns and constraint names, and this path is reachable
@@ -874,6 +869,8 @@ def promote_message(
             "channel belongs to a project you can write to"
         ) from exc
 
+    # The promotion is a LINK on the message, so the conversation and the
+    # controlled record each point at the other (§2: no isolated islands).
     session.execute(
         text(
             """
@@ -903,49 +900,6 @@ def promote_message(
 # ---------------------------------------------------------------------------
 # Notifications
 # ---------------------------------------------------------------------------
-
-
-def notify(
-    session: Session,
-    *,
-    organization_id: uuid.UUID,
-    recipient_id: uuid.UUID,
-    notification_type: str,
-    title: str,
-    body: str | None = None,
-    entity_type: str | None = None,
-    entity_id: uuid.UUID | None = None,
-    is_actionable: bool = False,
-) -> uuid.UUID:
-    """Write one notification.
-
-    THE single writer, in the same sense as one approval engine: every
-    module calls this rather than growing its own table. `is_actionable`
-    separates "you must do something" from "this happened", because §11
-    requires a badge to count items needing action and that distinction
-    has to exist in the data or every count is a total.
-    """
-    return session.execute(  # type: ignore[no-any-return]
-        text(
-            """
-            INSERT INTO messaging.notifications
-                (organization_id, recipient_id, notification_type, title, body,
-                 entity_type, entity_id, is_actionable)
-            VALUES (:org, :recipient, :ntype, :title, :body, :etype, :eid, :actionable)
-            RETURNING id
-            """
-        ),
-        {
-            "org": organization_id,
-            "recipient": recipient_id,
-            "ntype": notification_type,
-            "title": title,
-            "body": body,
-            "etype": entity_type,
-            "eid": entity_id,
-            "actionable": is_actionable,
-        },
-    ).scalar_one()
 
 
 def my_notifications(

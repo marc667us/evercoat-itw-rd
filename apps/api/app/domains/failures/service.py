@@ -35,10 +35,10 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
 from app.core.db import guarded_write
-from app.core.tenancy import require_active_member
 
 # Cross-domain, and it cannot cycle: `messaging` imports only `app.core.*`.
-from app.domains.messaging.service import notify
+from app.core.notifications import notify
+from app.core.tenancy import require_active_member
 
 __all__ = [
     "ActionInput",

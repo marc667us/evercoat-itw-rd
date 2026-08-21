@@ -81,6 +81,11 @@ def channel_fixture(owner_session: Session, app_session: Session) -> Iterator[di
 
     author = _user(f"author{suffix}", "Author")
     outsider = _user(f"outsider{suffix}", "Outsider")
+    # A THIRD person, INSIDE the restricted project and not its author. Needed
+    # because §7's rule about notifications turns on whether the RECIPIENT can
+    # see the thing -- and with only an author and an outsider, "notified" and
+    # "in the project" could never be told apart from "is the actor".
+    member = _user(f"member{suffix}", "Member")
 
     project = owner_session.execute(
         text(
@@ -109,11 +114,27 @@ def channel_fixture(owner_session: Session, app_session: Session) -> Iterator[di
         ),
         {"o": org, "p": project, "u": author},
     )
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO projects.project_members
+                (organization_id, project_id, user_id, project_role)
+            VALUES (:o, :p, :u, 'chemist')
+            """
+        ),
+        {"o": org, "p": project, "u": member},
+    )
     owner_session.commit()
 
     _scope(app_session, org, author)
 
-    yield {"org": org, "author": author, "outsider": outsider, "project": project}
+    yield {
+        "org": org,
+        "author": author,
+        "member": member,
+        "outsider": outsider,
+        "project": project,
+    }
 
     app_session.rollback()
     owner_session.begin()
@@ -444,4 +465,122 @@ def test_a_channel_past_its_limit_shows_the_newest_messages(
     assert bodies == ["message 3", "message 4", "message 5"], (
         "the window is anchored to the START of the conversation - a busy channel "
         f"can never show what was said most recently. Got {bodies}"
+    )
+
+
+def test_promoting_a_message_notifies_the_person_it_is_assigned_to(
+    app_session: Session, channel_fixture: dict[str, uuid.UUID]
+) -> None:
+    """I36 -- A TASK NOBODY IS TOLD ABOUT IS NOT AN ASSIGNMENT.
+
+    `promote_message` wrote `workflow.tasks` with its own INSERT rather than
+    calling `create_task`, so it silently missed the assignee notification
+    that I33 added there. A decision promoted out of a conversation landed in
+    somebody's queue with nothing telling them it was there -- which is the
+    whole point of promoting it.
+
+    The duplication was held in place by an import cycle (`tasks` imported
+    `notify` from `messaging`), not by a decision. Moving `notify` to
+    `app/core` removed the obstacle.
+    """
+    fx = channel_fixture
+
+    channel = create_channel(
+        app_session,
+        organization_id=fx["org"],
+        actor_id=fx["author"],
+        spec=ChannelInput(channel_type="project", name="Promotion", project_id=fx["project"]),
+    )
+    message = post_message(
+        app_session,
+        channel_id=channel["id"],
+        organization_id=fx["org"],
+        actor_id=fx["author"],
+        spec=MessageInput(body="We should re-run the adhesion series at 40C."),
+    )
+
+    promote_message(
+        app_session,
+        message_id=message["id"],
+        organization_id=fx["org"],
+        actor_id=fx["author"],
+        task_type="experiment",
+        title="Re-run the adhesion series at 40C",
+        assigned_user_id=fx["member"],
+    )
+
+    notified = (
+        app_session.execute(
+            text(
+                """
+            SELECT notification_type, is_actionable
+            FROM messaging.notifications
+            WHERE organization_id = :o AND recipient_id = :u
+              AND notification_type = 'task_assigned'
+            """
+            ),
+            {"o": fx["org"], "u": fx["member"]},
+        )
+        .mappings()
+        .all()
+    )
+
+    assert len(notified) == 1, "promoting a message assigned a task to someone and never told them"
+    assert notified[0]["is_actionable"] is True, (
+        "an assigned task is actionable; §11's badge counts items needing action"
+    )
+
+
+def test_promoting_to_someone_outside_a_restricted_project_does_not_notify_them(
+    app_session: Session, channel_fixture: dict[str, uuid.UUID]
+) -> None:
+    """§7 -- THE NOTIFICATION MUST NOT BE THE LEAK.
+
+    `create_task` proves ORGANIZATION membership, which is not the same as
+    being able to see the project. A task on a RESTRICTED project can be
+    assigned to an organization member who is not on it, and the
+    notification's TITLE would name work they have no access to.
+
+    Found in my own I33 change while writing the test above: the mention path
+    had this guard from the start and the task path did not.
+
+    The task is still CREATED -- refusing the assignment is a larger decision.
+    Withholding the notification is the narrow thing §7 requires.
+    """
+    fx = channel_fixture
+
+    channel = create_channel(
+        app_session,
+        organization_id=fx["org"],
+        actor_id=fx["author"],
+        spec=ChannelInput(channel_type="project", name="Leaky", project_id=fx["project"]),
+    )
+    message = post_message(
+        app_session,
+        channel_id=channel["id"],
+        organization_id=fx["org"],
+        actor_id=fx["author"],
+        spec=MessageInput(body="The catalyst supplier substitution is confidential."),
+    )
+
+    promote_message(
+        app_session,
+        message_id=message["id"],
+        organization_id=fx["org"],
+        actor_id=fx["author"],
+        task_type="experiment",
+        title="Confidential catalyst substitution follow-up",
+        assigned_user_id=fx["outsider"],
+    )
+
+    leaked = app_session.execute(
+        text(
+            "SELECT count(*) FROM messaging.notifications "
+            "WHERE organization_id = :o AND recipient_id = :u"
+        ),
+        {"o": fx["org"], "u": fx["outsider"]},
+    ).scalar_one()
+
+    assert leaked == 0, (
+        "somebody outside a restricted project was sent a notification naming its work"
     )
