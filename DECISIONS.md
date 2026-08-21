@@ -148,7 +148,11 @@ Consequences, stated plainly:
 - **`next-auth` is removed from `package.json`.** A dependency that is imported by nothing and cannot work in this build is a trap for the next reader, and it is the reason S1 was scheduled wrongly in the first place.
 - **This does not by itself put sign-in on the deployed site.** Keycloak still has no public URL, because deploying it needs a web service. What this changes is that the blocker is now **one configuration value**, not an architecture, and the flow is provable in CI against the real Keycloak that already runs there.
 
-### ADR-026 — Railway free tier replaces Render as this app's deployment target · Accepted (operator decision, 2026-08-20)
+### ADR-026 — Railway free tier replaces Render as this app's deployment target · 🔴 **SUPERSEDED BY ADR-027 (2026-08-21) — ITS PREMISE WAS FALSE**
+
+> ⚠️ **Do not act on this ADR.** It was accepted on the belief that Railway has a free tier. Verified 2026-08-21 against Railway's own pricing: it does not. See **ADR-027** at the end of this file. Everything below is retained as the record of a decision that was made, not as guidance.
+
+**Original heading:** Accepted (operator decision, 2026-08-20)
 
 **Decision: Railway's free offering is the SELECTED TARGET for the API, PostgreSQL and Keycloak tiers of EvercoatITWRD APP; Render is retired as the target for this app. Nothing is deployed there yet — this ADR records the choice, not an accomplished migration.** Operator, 2026-08-20, verbatim: *"we replace render with railway free version for this app"*.
 
@@ -179,3 +183,70 @@ POST /services free   -> 400  "free tier usage quota has been exhausted,
 4. Keep `render-audit.yml` and `render-provision.yml` in the repository until Railway is serving. They are read-mostly and `render-provision.yml` has no DELETE path. Retire them in the same commit that proves the Railway deploy live.
 
 **Supersedes ADR-009** ("Render is optional demo staging only") only as to which provider hosts this app's runtime tiers. ADR-009's substantive point — that the deployed instance is demonstration staging and not production — is unchanged.
+
+
+---
+
+### ADR-027 — Railway is rejected on the zero-cost rule; Render is retained under a measured ceiling · Accepted 2026-08-21
+
+**Supersedes ADR-026.**
+
+**Decision: Railway is NOT a viable target for this app. ADR-026 is reversed.** Its
+premise — that Railway offers a free tier — is false.
+
+**What was verified, 2026-08-21, against Railway's published pricing:**
+
+* **$5 of one-time credit, valid for 30 days.** A trial, not a tier.
+* After it expires, a Free plan with **$1 of credit per month**.
+* Anything beyond a single lightweight service **with no database** requires
+  **Hobby at $5 per month minimum**.
+
+EvercoatITWRD APP needs three runtime tiers and a PostgreSQL database. Under
+Railway the trial is exhausted inside a month and the account then bills. That
+violates rule 7 of the seven non-negotiables and the platform-wide zero-cost
+rule. **ADR-026 was never zero-cost compliant** — the error was accepting a
+provider's marketing word "free" without checking what it expires into.
+
+**A second, independent disqualifier.** Railway requires an interactive
+`railway login` and a `RAILWAY_TOKEN`, both of which only the operator can
+produce. The operator's standing rule of 2026-08-21 is that **no task may be
+assigned to them**. A path whose first step is an owner action is not a path.
+
+**What was measured on Render the same day**, with the repository's own key:
+
+```
+POST /services  plan=free   -> 400  "free tier usage quota has been exhausted,
+                                     new services are not allowed"
+POST /postgres  plan=free   -> 400  "cannot have more than one active free
+                                     tier database"
+```
+
+Both are **400s, not 401s**; `GET /owners` returns 200. This is a capacity and
+plan boundary, not authentication. Rotating the key changes nothing.
+
+🔴 **The ceiling is structural, not temporal.** The instance-hour quota resets
+monthly, but the free-database limit is **one per workspace**, and
+`autoworkshop-postgres` holds it until it expires 2026-09-01 — at which point a
+live AutoWorkshop needs it back. **Evercoat can obtain a free Render database
+only by taking the slot another running application depends on.** Waiting for
+the reset does not solve this; it only changes who is broken.
+
+**Consequence, stated plainly rather than softened:** under strict zero-cost
+with no owner action, **there is no provider on which this app's API and
+Keycloak can be deployed today.** The web tier stays on Render as a static site
+with a working certificate on `itwevercoatrd.aiappinvent.com`.
+
+**The best alternative measured, for when that constraint changes:** **Coolify
+(open source) on Oracle Cloud Always Free** — permanent, 4 ARM cores, 24 GB RAM,
+200 GB disk, no deploy cap, no sleep, no cold start. It would hold the API,
+Keycloak, PostgreSQL and pgvector at once and would outlive the AutoWorkshop
+database expiry. It costs exactly one signup, which is why it is recorded here
+rather than actioned. Caveats: Oracle's ARM capacity is frequently unavailable
+by region, and the API image would need an ARM or multi-architecture build.
+
+Full compliance matrix — every option scored against zero cost, no card, no
+owner action, and support for an iterative deploy loop — is in
+`Desktop\Evercoat-Hosting-Options-2026-08-21.pdf`.
+
+**Do not restart the Railway path.** If a future session finds ADR-026 and not
+this ADR, that is the failure mode this record exists to prevent.
