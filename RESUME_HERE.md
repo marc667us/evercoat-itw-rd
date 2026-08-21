@@ -36,8 +36,11 @@ gives a stable named tunnel and ends that — a browser step, the owner's to do.
 **Session 2026-08-21. Read this file, then `TODO.md`.**
 
 Repository: **https://github.com/marc667us/evercoat-itw-rd** (PUBLIC), branch
-`master`. Tip **`c358625`**, working tree clean, pushed.
-**CI 5 of 5 GREEN.** Local API suite **416 passed / 0 failed / 0 skipped**.
+`master`. Tip **`cafb34f`**, working tree clean, pushed.
+**CI 5 of 5 GREEN.** Local API suite **507 passed / 0 failed / 0 skipped**
+(that number INCLUDES `tests/auth`, which runs without Keycloak - its conftest
+says so in its first paragraph, and it was excluded all session on the
+opposite assumption).
 
 Run `./scripts/handover.sh` first — it prints the repo tip, CI conclusion,
 what production is actually serving, and the next command to run.
@@ -80,7 +83,12 @@ The role passwords are set on the container to match CI's (`ci-owner` /
 ⚠️ **Host RAM is 7.92 GB with very little free.** The 7 `aw-*` containers
 auto-start with Docker. A stray `nginxdemos/hello` container
 (`adoring_lederberg`) was stopped to make room — it belongs to nothing.
-**Do not stop any `aw-*` container.**
+
+**CORRECTED 2026-08-21: the `aw-*` containers are now deliberately STOPPED.**
+AutoWorkshop is being retired and the owner confirmed nobody uses it; stopping
+them freed **834 MiB** (`aw-keycloak` alone was 568 MiB). `docker start` brings
+them back. The old rule said never to touch them, which was right while it was
+running and is no longer.
 
 **This matters more than it sounds.** Three defects found today were found
 *only* because the suite could run locally against a real PostgreSQL — CI had
