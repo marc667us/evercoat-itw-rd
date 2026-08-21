@@ -22,6 +22,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from app.api.admin import router as admin_router
 from app.api.admin_reference_data import router as admin_reference_data_router
 from app.api.admin_stage_gates import router as admin_stage_gates_router
+from app.api.dashboards import router as dashboards_router
 from app.api.failures import approvals_router
 from app.api.failures import router as failures_router
 from app.api.formulations import router as formulations_router
@@ -230,6 +231,7 @@ def create_app() -> FastAPI:
     # a valid token and no way to discover a tenant to ask for. See
     # app/api/me.py and migration 024.
     application.include_router(me_router, prefix="/api/me")
+    application.include_router(dashboards_router, prefix="/api/dashboards")
     application.include_router(projects_router, prefix="/api/projects")
     application.include_router(opportunities_router, prefix="/api/opportunities")
     # My Work. Mounted at its own prefix rather than under /api/projects
