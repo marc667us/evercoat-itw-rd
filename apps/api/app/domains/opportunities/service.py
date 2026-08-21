@@ -46,6 +46,7 @@ __all__ = [
     "decide_opportunity",
     "list_opportunities",
     "opportunity_detail",
+    "submit_opportunity",
 ]
 
 # Only an opportunity that has been worked up can be decided. Deciding a
@@ -176,6 +177,90 @@ def create_opportunity(
     )
     log_audit("opportunity_created", opportunity_code=data.opportunity_code)
     return opportunity_id
+
+
+def submit_opportunity(
+    session: Session,
+    *,
+    opportunity_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+) -> str:
+    """Move a DRAFT opportunity to `awaiting_decision`. Returns the status.
+
+    🔴 WHY THIS DID NOT EXIST, AND WHAT ITS ABSENCE MEANT.
+
+    `create_opportunity` writes `draft` (migration 003's column default) and
+    `decide_opportunity` refuses anything outside
+    {feasibility, awaiting_decision, on_hold}. **Nothing in this application
+    wrote any of those three.** So every opportunity ever created sat in
+    `draft` and could never be decided — which means it could never be
+    approved, which means it could never become a project.
+
+    The FIRST arrow of §44's golden scenario was unreachable in production,
+    and the whole thread hangs off it. It went unnoticed because the pieces
+    were each tested in isolation: `create_opportunity` has tests,
+    `decide_opportunity` has tests, and nothing had ever asked whether a real
+    opportunity could get from one to the other. Found by writing the golden
+    scenario, on its first step.
+
+    This is the same question the platform's own lesson names — *ask of every
+    state: WHICH PRODUCTION PATH WRITES IT?* — asked of a status rather than
+    of a role.
+
+    **Submission is the author saying it is ready to be judged**, which is why
+    it is separate from creation: a draft is somebody thinking, and putting
+    every half-formed idea in the Director's decision queue would make the
+    queue useless. `feasibility` is deliberately NOT the target — that status
+    means somebody is doing feasibility work, and this function does not know
+    whether anyone is.
+    """
+    row = (
+        session.execute(
+            text(
+                """
+                UPDATE innovation.opportunities
+                SET status = 'awaiting_decision', updated_at = now()
+                WHERE id = :oid AND organization_id = :org AND status = 'draft'
+                RETURNING opportunity_code, status
+                """
+            ),
+            {"oid": opportunity_id, "org": organization_id},
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+    if row is None:
+        # Distinguish "not here" from "not in draft", because they need
+        # different things from the reader.
+        current = session.execute(
+            text(
+                "SELECT status FROM innovation.opportunities "
+                "WHERE id = :oid AND organization_id = :org"
+            ),
+            {"oid": opportunity_id, "org": organization_id},
+        ).scalar_one_or_none()
+        if current is None:
+            raise OpportunityNotFoundError("opportunity not found")
+        raise OpportunityStateError(
+            f"an opportunity in '{current}' cannot be submitted; only a draft can"
+        )
+
+    write_audit(
+        session,
+        AuditEvent(
+            action="opportunity.submitted",
+            entity_type="opportunity",
+            entity_id=str(opportunity_id),
+            organization_id=organization_id,
+            user_id=actor_id,
+            previous_state={"status": "draft"},
+            new_state={"status": "awaiting_decision"},
+            reason="submitted for a gate decision",
+        ),
+    )
+    return str(row["status"])
 
 
 def decide_opportunity(

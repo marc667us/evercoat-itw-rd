@@ -33,6 +33,7 @@ from app.domains.opportunities.service import (
     decide_opportunity,
     list_opportunities,
     opportunity_detail,
+    submit_opportunity,
 )
 
 router = APIRouter()
@@ -117,6 +118,43 @@ def get_opportunity(
         )
     except OpportunityNotFoundError as exc:
         raise _missing(exc) from exc
+
+
+@router.post("/{opportunity_id}/submission", tags=["opportunities"])
+def post_submission(
+    opportunity_id: uuid.UUID,
+    principal: Principal = Depends(require_permission("opportunity.create")),
+    session: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Submit a draft opportunity for a gate decision.
+
+    🔴 THE ROUTE THAT DID NOT EXIST. `create_opportunity` writes `draft`,
+    `decide_opportunity` refuses anything outside
+    {feasibility, awaiting_decision, on_hold}, and NOTHING wrote those -- so
+    an opportunity could be created and never decided, and therefore never
+    become a project. §44's golden scenario begins with exactly that
+    transition, and the whole digital thread hangs off it.
+
+    Behind `opportunity.create`, not `opportunity.decide`: submitting is the
+    AUTHOR saying their draft is ready to be judged. Requiring the deciding
+    permission would mean only a Director could put work in their own queue.
+
+    No body: there is nothing for the caller to state. The target status is
+    the one the decision gate reads, and letting a client name it would let
+    somebody skip straight past feasibility.
+    """
+    try:
+        new_status = submit_opportunity(
+            session,
+            opportunity_id=opportunity_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+        )
+    except OpportunityNotFoundError as exc:
+        raise _missing(exc) from exc
+    except OpportunityStateError as exc:
+        raise _refuse(exc) from exc
+    return {"status": new_status}
 
 
 @router.post("/{opportunity_id}/decision", tags=["opportunities"])
