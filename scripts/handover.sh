@@ -120,7 +120,12 @@ cat <<'COMMANDS'
       --ignore=tests/integration
 
   Quality:
-    cd apps/api && ruff check app/ tests/ && ruff format --check app/ tests/ && mypy app
+    # 🔴 `.` NOT `app/ tests/`. CI runs `ruff check . && ruff format --check .`
+    # from apps/api, which includes migrations_alembic/ and scripts/. A local
+    # gate narrower than CI's is a gate that reports green on a red commit --
+    # it did exactly that on 3f791d7 (2026-08-21), where an unformatted
+    # migration passed here and failed CI.
+    cd apps/api && ruff check . && ruff format --check . && mypy app
     cd apps/web && npm run typecheck && npm run lint && npm run test
 
   Browser (builds first, ~2 min):

@@ -54,8 +54,6 @@ def downgrade() -> None:
     """
     from alembic import op
 
-    op.execute(
-        "DROP TRIGGER IF EXISTS organizations_get_approval_templates ON core.organizations"
-    )
+    op.execute("DROP TRIGGER IF EXISTS organizations_get_approval_templates ON core.organizations")
     op.execute("DROP FUNCTION IF EXISTS workflow.provision_templates_on_new_org()")
     op.execute("DROP FUNCTION IF EXISTS workflow.provision_approval_templates(UUID)")
