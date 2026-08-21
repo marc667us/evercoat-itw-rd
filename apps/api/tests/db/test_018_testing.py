@@ -33,7 +33,7 @@ from app.calculations.testing import (
     REVIEW_STATES,
     VALIDITY_STATUSES,
 )
-from app.domains.failures.service import open_failure_for_failed_test
+from app.domains.failures.service import FailureError, open_failure_for_failed_test
 from app.domains.testing.service import (
     DecisionInput,
     ReplicateInput,
@@ -988,3 +988,111 @@ def test_the_automatic_open_links_rather_than_opening_a_second(
     assert again is not None
     assert again["id"] == first["id"], "a second investigation was opened for one failure"
     assert len(_failure_rows_for(owner_session, test_id)) == 1
+
+
+def test_completion_links_to_an_investigation_that_already_existed(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """🔴 "Opens OR LINKS" — the LINK half, exercised through the real caller.
+
+    Raised by Codex against the first version of this commit: the idempotence
+    test above proves the helper can rediscover a row IT had just created,
+    which is a weaker claim. Here the investigation exists BEFORE the test is
+    completed, so `complete_execution` must find and link it rather than open
+    a second one.
+    """
+    fx = testable
+    test_id = _plan(owner_session, fx)
+    _measure(owner_session, fx, test_id, ["2.0", "2.1", "1.9"])
+
+    pre_existing = owner_session.execute(
+        text(
+            """
+            INSERT INTO quality.failures
+                (organization_id, project_id, failure_code, title, description,
+                 severity, test_id, opened_by)
+            VALUES (:o, :p, :c, 'Opened by hand before completion',
+                    'Pre-existing investigation', 'major', :t, :u)
+            RETURNING id
+            """
+        ),
+        {
+            "o": fx["org"],
+            "p": fx["project"],
+            "c": f"FI-PRE-{uuid.uuid4().hex[:6]}",
+            "t": test_id,
+            "u": fx["engineer"],
+        },
+    ).scalar_one()
+    owner_session.flush()
+
+    result = complete_execution(
+        owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+    )
+
+    assert result["failure_investigation"] is not None
+    assert result["failure_investigation"]["id"] == pre_existing, (
+        "completion opened a new investigation instead of linking the existing one"
+    )
+    assert len(_failure_rows_for(owner_session, test_id)) == 1
+
+
+def test_a_duplicate_failure_code_does_not_destroy_the_caller_transaction(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """🔴 THE SAVEPOINT, PROVED — the conflict path, not the happy path.
+
+    Raised by Codex: the original commit called `open_failure` from inside
+    `complete_execution` while `open_failure` still called
+    `session.rollback()` on IntegrityError. That rolls back the TOPMOST
+    transaction, so a duplicate failure code would have discarded the
+    completion and its audit event too.
+
+    The collision is forced by squatting on the exact code the automatic path
+    generates, `FI-<test_number>`, from an unrelated test. The assertion that
+    matters is the LAST one: after the raise, the session must still be usable.
+    Before the savepoint fix the transaction was dead and this query raised
+    `PendingRollbackError` instead of returning a row.
+    """
+    fx = testable
+    test_id = _plan(owner_session, fx)
+    _measure(owner_session, fx, test_id, ["2.0", "2.1", "1.9"])
+
+    test_number = owner_session.execute(
+        text("SELECT test_number FROM testing.tests WHERE id = :t"), {"t": test_id}
+    ).scalar_one()
+
+    # A DIFFERENT test's investigation, squatting on the generated code.
+    other_test = _plan(owner_session, fx)
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO quality.failures
+                (organization_id, project_id, failure_code, title, description,
+                 severity, test_id, opened_by)
+            VALUES (:o, :p, :c, 'Squatter', 'Holds the generated code',
+                    'major', :t, :u)
+            """
+        ),
+        {
+            "o": fx["org"],
+            "p": fx["project"],
+            "c": f"FI-{test_number}",
+            "t": other_test,
+            "u": fx["engineer"],
+        },
+    )
+    owner_session.flush()
+
+    with pytest.raises(FailureError) as caught:
+        complete_execution(
+            owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+        )
+
+    assert "already used" in str(caught.value)
+
+    # 🔴 The point of the test. A live transaction can still answer a query.
+    still_alive = owner_session.execute(
+        text("SELECT count(*) FROM quality.failures WHERE test_id = :t"), {"t": test_id}
+    ).scalar_one()
+    assert still_alive == 0, "no investigation should exist for the test that could not open one"

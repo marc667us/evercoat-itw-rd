@@ -140,40 +140,56 @@ def open_failure(
         session, user_id=actor_id, organization_id=organization_id, role_description="author"
     )
 
+    # 🔴 SAVEPOINT, NOT `session.rollback()`.
+    #
+    # This used to catch IntegrityError and call `session.rollback()`, which
+    # rolls back the TOPMOST transaction and discards every nested one. That is
+    # fine when `open_failure` is the whole request, and destructive when it is
+    # one step inside a larger unit of work: `complete_execution` calls this to
+    # satisfy §10, and a duplicate failure code would have thrown away the test
+    # completion and its audit event along with the failed INSERT.
+    #
+    # `begin_nested()` issues a real SAVEPOINT, so a constraint violation rolls
+    # back to it and leaves the caller's transaction alive and usable. The
+    # caller then decides what the failure means -- which is the caller's
+    # decision to make, not this function's.
     try:
-        row = (
-            session.execute(
-                text(
-                    """
-                    INSERT INTO quality.failures
-                        (organization_id, project_id, failure_code, title, description,
-                         severity, test_id, formula_version_id, batch_id, opened_by)
-                    SELECT :org, p.id, :code, :title, :description, :severity,
-                           :test, :version, :batch, :actor
-                    FROM projects.projects p
-                    WHERE p.id = :pid AND p.organization_id = :org
-                      AND (p.confidentiality = 'normal' OR core.is_project_member(p.id))
-                    RETURNING id, failure_code, status
-                    """
-                ),
-                {
-                    "org": organization_id,
-                    "pid": project_id,
-                    "code": spec.failure_code,
-                    "title": spec.title,
-                    "description": spec.description,
-                    "severity": spec.severity,
-                    "test": spec.test_id,
-                    "version": spec.formula_version_id,
-                    "batch": spec.batch_id,
-                    "actor": actor_id,
-                },
+        with session.begin_nested():
+            row = (
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO quality.failures
+                            (organization_id, project_id, failure_code, title, description,
+                             severity, test_id, formula_version_id, batch_id, opened_by)
+                        SELECT :org, p.id, :code, :title, :description, :severity,
+                               :test, :version, :batch, :actor
+                        FROM projects.projects p
+                        WHERE p.id = :pid AND p.organization_id = :org
+                          AND (p.confidentiality = 'normal' OR core.is_project_member(p.id))
+                        RETURNING id, failure_code, status
+                        """
+                    ),
+                    {
+                        "org": organization_id,
+                        "pid": project_id,
+                        "code": spec.failure_code,
+                        "title": spec.title,
+                        "description": spec.description,
+                        "severity": spec.severity,
+                        "test": spec.test_id,
+                        "version": spec.formula_version_id,
+                        "batch": spec.batch_id,
+                        "actor": actor_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
             )
-            .mappings()
-            .one_or_none()
-        )
     except IntegrityError as exc:
-        session.rollback()
+        # No `session.rollback()`: the SAVEPOINT above has already been rolled
+        # back by leaving the `with` block, and the caller's transaction is
+        # intact. Rolling back here would destroy it.
         if "failures_org_code_key" in str(exc.orig):
             raise FailureError(
                 f"failure code '{spec.failure_code}' is already used in this organization"

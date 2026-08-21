@@ -573,11 +573,15 @@ def complete_execution(
     # §10 forbids, so it must not be reachable by committing half of this. If
     # the open fails, the completion fails with it and says why.
     #
-    # 🔴 Do NOT "harden" this with a savepoint and a bare except. SQLAlchemy's
-    # `Session.rollback()` always rolls back the TOPMOST transaction and
-    # discards nested ones, and `open_failure` calls it on IntegrityError — so
-    # a savepoint would not protect this completion, it would only hide that it
-    # had already been destroyed.
+    # 🔴 WHY THIS IS SAFE TO CALL FROM INSIDE A LARGER UNIT OF WORK.
+    # `open_failure` used to call `session.rollback()` on IntegrityError, which
+    # rolls back the TOPMOST transaction — it would have thrown away the
+    # completion above and its audit event along with the failed INSERT. It now
+    # wraps its INSERT in a SAVEPOINT and rolls back only that, so a duplicate
+    # failure code raises here with this transaction intact, and
+    # `session_scope` rolls the request back cleanly. Found by Codex on the
+    # first version of this commit, which documented the hazard instead of
+    # removing it.
     #
     # Idempotent by construction: the helper returns the existing investigation
     # when one already points at this test, and returns None for a screening

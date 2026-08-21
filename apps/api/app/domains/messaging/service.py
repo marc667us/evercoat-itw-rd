@@ -690,7 +690,15 @@ def list_messages(
                               AND cm.user_id = core.current_user_id()
                         )
                       )
-                ORDER BY m.posted_at
+                -- `m.id` is a TIEBREAKER, not decoration. An ORDER BY that is
+                -- not total is not deterministic: PostgreSQL may return equal
+                -- rows in any order, and two messages CAN share a `posted_at`
+                -- to the microsecond. Migration 028 changed the default from
+                -- `now()` (transaction-start time, identical for every row
+                -- written in one transaction) to `clock_timestamp()`, which
+                -- makes the order right; this makes it repeatable. Both are
+                -- needed -- see 028's header for why neither alone suffices.
+                ORDER BY m.posted_at, m.id
                 LIMIT :limit
                 """
             ),
