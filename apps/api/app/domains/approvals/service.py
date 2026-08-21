@@ -42,6 +42,7 @@ __all__ = [
     "ApprovalStateError",
     "DecisionInput",
     "IncompatibleDutyError",
+    "cancel_route",
     "decide_step",
     "get_route",
     "next_step_for",
@@ -261,18 +262,22 @@ def decide_step(
     blocking = session.execute(
         text(
             """
+            -- ADVANCING, not merely decided -- see `next_step_for`.
             SELECT count(*) FROM workflow.approval_route_steps
             WHERE route_id = :rid AND organization_id = :org
               AND parallel_group < :group
               AND is_mandatory
-              AND decision IS NULL
+              AND (
+                    decision IS NULL
+                    OR decision NOT IN ('approve', 'approve_with_condition')
+              )
             """
         ),
         {"rid": route_id, "org": organization_id, "group": step["parallel_group"]},
     ).scalar_one()
     if blocking:
         raise ApprovalStateError(
-            f"{blocking} earlier mandatory step(s) have not been decided; this step's "
+            f"{blocking} earlier mandatory step(s) have not been APPROVED; this step's "
             "turn has not come"
         )
 
@@ -509,6 +514,69 @@ def route_for_entity(
     return get_route(session, route_id=row["id"], organization_id=organization_id)
 
 
+def cancel_route(
+    session: Session,
+    *,
+    route_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    reason: str,
+) -> None:
+    """Close an open route as `cancelled`, keeping every signature on it.
+
+    🔴 WHY THIS EXISTS RATHER THAN RE-OPENING STEPS. A mandatory step decided
+    `return_for_correction` or `request_retest` leaves the route open and that
+    step permanently undecidable — `decide_step` refuses a step that already
+    carries a decision, because a decision is a signature and is not revisited.
+    The route is then stalled: correct work comes back, and there is no rung
+    left to sign.
+
+    Erasing the decision to free the rung is the wrong answer twice over: it
+    destroys a signature, and it rewrites history to say the correction was
+    never asked for.
+
+    So the stalled route is CANCELLED and a fresh one is snapshotted when the
+    work is re-reviewed. The old route survives in full as the record of what
+    happened, `approval_routes_one_open_per_entity` is satisfied because the
+    old one is no longer open, and the new ladder starts clean — which is what
+    "the work comes back" means.
+
+    Raised by Codex, which found that an unconditional `open_route` on
+    re-review collided with the exclusion constraint and, because
+    `session_scope` rolls the request back, WEDGED THE TEST PERMANENTLY: every
+    retry hit the same collision.
+    """
+    updated = session.execute(
+        text(
+            """
+            UPDATE workflow.approval_routes
+            SET status = 'cancelled', closed_at = now()
+            WHERE id = :rid AND organization_id = :org AND status = 'open'
+            RETURNING id
+            """
+        ),
+        {"rid": route_id, "org": organization_id},
+    ).scalar_one_or_none()
+
+    if updated is None:
+        # Already closed by someone else. Not an error: the caller wants it
+        # not-open, and it is not open.
+        return
+
+    write_audit(
+        session,
+        AuditEvent(
+            action="approval.route_cancelled",
+            entity_type="approval_route",
+            entity_id=str(route_id),
+            organization_id=organization_id,
+            user_id=actor_id,
+            new_state={"status": "cancelled"},
+            reason=reason,
+        ),
+    )
+
+
 def next_step_for(
     session: Session,
     *,
@@ -561,7 +629,17 @@ def next_step_for(
                         WHERE earlier.route_id = s.route_id
                           AND earlier.parallel_group < s.parallel_group
                           AND earlier.is_mandatory
-                          AND earlier.decision IS NULL
+                          -- 🔴 ADVANCING, not merely DECIDED. `return_for_correction`
+                          -- and `request_retest` leave a NON-NULL decision on a
+                          -- mandatory step while `_settle_route` deliberately keeps
+                          -- the route open. Testing `decision IS NULL` alone therefore
+                          -- declared that group satisfied and EXPOSED EVERY LATER RUNG:
+                          -- a qualification ladder could be signed off past a step that
+                          -- had been sent back for correction. Raised by Codex.
+                          AND (
+                                earlier.decision IS NULL
+                                OR earlier.decision NOT IN ('approve', 'approve_with_condition')
+                          )
                   )
                 ORDER BY s.parallel_group, s.step_number
                 LIMIT 1
@@ -598,7 +676,17 @@ def route_outcome(
                        count(*) FILTER (
                            WHERE s.decision = 'approve_with_condition'
                        ) AS conditional_steps,
-                       max(s.condition_text) FILTER (
+                       -- 🔴 EVERY condition, in ladder order. This was
+                       -- `max(condition_text)`, which kept ONE limitation --
+                       -- the lexicographically greatest -- and silently
+                       -- discarded the rest. §9 requires the stated
+                       -- limitation preserved; two conditional approvals mean
+                       -- two limitations, both of which a chemist must read.
+                       -- Raised by Codex.
+                       string_agg(
+                           s.condition_text,
+                           ' | ' ORDER BY s.parallel_group, s.step_number
+                       ) FILTER (
                            WHERE s.decision = 'approve_with_condition'
                        ) AS condition_text
                 FROM workflow.approval_routes r
@@ -654,7 +742,17 @@ def pending_steps_for(
                     WHERE earlier.route_id = s.route_id
                       AND earlier.parallel_group < s.parallel_group
                       AND earlier.is_mandatory
-                      AND earlier.decision IS NULL
+                      -- 🔴 ADVANCING, not merely DECIDED. `return_for_correction`
+                      -- and `request_retest` leave a NON-NULL decision on a
+                      -- mandatory step while `_settle_route` deliberately keeps
+                      -- the route open. Testing `decision IS NULL` alone therefore
+                      -- declared that group satisfied and EXPOSED EVERY LATER RUNG:
+                      -- a qualification ladder could be signed off past a step that
+                      -- had been sent back for correction. Raised by Codex.
+                      AND (
+                            earlier.decision IS NULL
+                            OR earlier.decision NOT IN ('approve', 'approve_with_condition')
+                      )
               )
             ORDER BY r.opened_at
             LIMIT :limit

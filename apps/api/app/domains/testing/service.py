@@ -52,6 +52,7 @@ from app.domains.approvals.service import (
     ApprovalNotFoundError,
     ApprovalStateError,
     IncompatibleDutyError,
+    cancel_route,
     decide_step,
     next_step_for,
     open_route,
@@ -728,6 +729,34 @@ def record_decision(
     # letting a caller name it would restore exactly the bypass §9 forbids.
     approval_state = test["approval_state"]
     if new_state == "reviewed":
+        # 🔴 A RE-REVIEW MUST NOT COLLIDE WITH THE ROUTE IT ALREADY OPENED.
+        #
+        # `return_for_correction` and `request_retest` leave the route OPEN by
+        # design -- "the work comes back, and the route is where it comes back
+        # TO". So a second review reaching `reviewed` used to call `open_route`
+        # unconditionally, hit `approval_routes_one_open_per_entity`, and raise;
+        # `session_scope` then rolled the whole review back, so every retry hit
+        # the identical collision and THE TEST WAS WEDGED PERMANENTLY.
+        # Raised by Codex.
+        #
+        # The stalled route is superseded rather than reused: its
+        # `return_for_correction` rung already carries a signature and
+        # `decide_step` will never accept a second decision on it, so reusing
+        # the route would leave a ladder with an unclimbable rung. Cancelling
+        # keeps every signature as the record of what happened and starts the
+        # corrected work on a clean ladder.
+        existing = route_for_entity(
+            session, organization_id=organization_id, entity_type="test", entity_id=test_id
+        )
+        if existing is not None:
+            cancel_route(
+                session,
+                route_id=existing["route_id"] if "route_id" in existing else existing["id"],
+                organization_id=organization_id,
+                actor_id=actor_id,
+                reason=f"test {test['test_number']} was re-reviewed after correction",
+            )
+
         open_route(
             session,
             organization_id=organization_id,
