@@ -40,14 +40,48 @@
 -- messages written in one transaction, repeatably WRONG.
 --
 -- ─────────────────────────────────────────────────────────────────────────
+-- WHAT THIS DOES **NOT** GUARANTEE — stated because the first draft of this
+-- header claimed more than the change delivers, which is the exact defect
+-- this codebase keeps finding in its own comments. Raised by Codex.
+-- ─────────────────────────────────────────────────────────────────────────
+--
+-- This delivers a STABLE DISPLAY ORDER that equals insertion order to the
+-- resolution of the system clock. It is NOT a guaranteed insertion order:
+--
+--   * `id` is a random UUID, so where two rows share a `posted_at` exactly,
+--     the tiebreaker is deterministic but ARBITRARY — it is not "who was
+--     first". It makes the answer stable, not true.
+--   * A wall clock can step backwards (NTP correction), which would place a
+--     later message earlier.
+--   * Rows written before this migration all carry the old transaction-scoped
+--     `now()` value. Their true original order is UNRECOVERABLE; they gain a
+--     stable order here, not a correct one.
+--
+-- A real insertion-order guarantee needs a monotonic key — a sequence column,
+-- or a per-channel counter. That is a bigger change with a backfill attached
+-- and it is NOT done here. Recorded as TODO I28. What this migration fixes is
+-- the defect that was actually observed: a thread with NO defined order at
+-- all, rendering differently between two runs of the same query.
+--
+-- ─────────────────────────────────────────────────────────────────────────
 -- WHY THIS IS SAFE
 -- ─────────────────────────────────────────────────────────────────────────
 --
 -- Changing a column DEFAULT affects only rows inserted afterwards. It does
--- not rewrite the table, does not take a lengthy lock, and does not touch a
--- single existing message. Existing rows keep the `now()` timestamps they
--- were written with; they are not made worse, and the ordering tiebreaker
--- gives them a stable order they did not have before.
+-- not rewrite the table and does not touch a single existing message.
+-- Existing rows keep the `now()` timestamps they were written with; they are
+-- not made worse, and the ordering tiebreaker gives them a stable order they
+-- did not have before.
+--
+-- ⚠️ THE LOCK, STATED ACCURATELY. `ALTER TABLE ... ALTER COLUMN ... SET
+-- DEFAULT` is a catalogue-only change, but it still takes an ACCESS EXCLUSIVE
+-- lock on `messaging.messages`. Holding it is near-instant because no rows
+-- are read or rewritten — but ACQUIRING it queues behind every open
+-- transaction touching the table, and while it queues it blocks new readers
+-- behind it. On a busy instance this is a brief stall in messaging, not a
+-- free operation. An earlier draft of this header said it "does not take a
+-- lengthy lock", which is true about duration and silent about acquisition.
+-- Raised by Codex.
 --
 -- The append-only trigger on `messaging.messages` refuses any UPDATE that
 -- changes `posted_at` ("a message cannot be re-attributed or moved"). That

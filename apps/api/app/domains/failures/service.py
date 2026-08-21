@@ -153,8 +153,21 @@ def open_failure(
     # back to it and leaves the caller's transaction alive and usable. The
     # caller then decides what the failure means -- which is the caller's
     # decision to make, not this function's.
+    #
+    # AND `begin_nested()` IS OUTSIDE THE `try`, DELIBERATELY. Entering it
+    # flushes any pending session state BEFORE the SAVEPOINT exists. With the
+    # call inside the `try`, an IntegrityError raised by that flush — from
+    # some unrelated pending write — would be caught by a handler that assumes
+    # a savepoint protected it, misreported as a duplicate failure code if the
+    # message happened to mention the constraint, and returned from with the
+    # outer transaction already dead. Raised by Codex.
+    #
+    # Both halves are proved by
+    # `test_a_duplicate_failure_code_does_not_destroy_the_caller_transaction`,
+    # which was run against the OLD implementation to confirm it fails there.
+    savepoint = session.begin_nested()
     try:
-        with session.begin_nested():
+        with savepoint:
             row = (
                 session.execute(
                     text(

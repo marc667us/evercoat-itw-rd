@@ -876,6 +876,16 @@ def _failure_rows_for(session: Session, test_id: uuid.UUID) -> list[dict[str, ob
     Deliberately not via the return value of `complete_execution` — that is
     the thing under test, and a test that only reads its own subject's report
     of itself cannot detect a report that is wrong.
+
+    ⚠️ WHAT THIS CANNOT SEE, stated rather than left implied. This reads
+    through the SAME session, inside the SAME uncommitted transaction, so it
+    observes flushed-but-uncommitted rows. It therefore proves the write
+    reached PostgreSQL and survived whatever the subject did next; it does
+    NOT prove the request-boundary commit. That gap is deliberate: this
+    module's fixtures roll back by contract so the suite can be re-run against
+    a developer's database without residue, and committing here would break
+    it. Raised by Codex and accepted as a known limit, not closed. The
+    commit boundary belongs to an API-level test — TODO I29.
     """
     return [
         dict(r)
@@ -1049,10 +1059,21 @@ def test_a_duplicate_failure_code_does_not_destroy_the_caller_transaction(
     completion and its audit event too.
 
     The collision is forced by squatting on the exact code the automatic path
-    generates, `FI-<test_number>`, from an unrelated test. The assertion that
-    matters is the LAST one: after the raise, the session must still be usable.
-    Before the savepoint fix the transaction was dead and this query raised
-    `PendingRollbackError` instead of returning a row.
+    generates, `FI-<test_number>`, from an unrelated test.
+
+    🔴 THE FIRST VERSION OF THIS TEST COULD NOT FAIL, and Codex caught it.
+    It asserted only that the session could still answer a query afterwards —
+    but `session.rollback()` leaves a Session perfectly usable, so that query
+    would have succeeded under the OLD code too and returned the same 0. A
+    test written specifically to catch a destroyed transaction could not have
+    detected one.
+
+    What actually distinguishes the two implementations is whether the work
+    done BEFORE the failed INSERT survived it. Under the old top-level
+    rollback the completion was discarded and `execution_status` fell back to
+    `in_progress`; under the savepoint only the INSERT is undone, so the test
+    is still `complete` inside this transaction. That is the assertion below,
+    and it fails against the old implementation.
     """
     fx = testable
     test_id = _plan(owner_session, fx)
@@ -1091,8 +1112,36 @@ def test_a_duplicate_failure_code_does_not_destroy_the_caller_transaction(
 
     assert "already used" in str(caught.value)
 
-    # 🔴 The point of the test. A live transaction can still answer a query.
-    still_alive = owner_session.execute(
+    # 🔴 THE ASSERTION THAT DISTINGUISHES THE TWO IMPLEMENTATIONS.
+    # The completion happened before the failed INSERT. A savepoint rolls back
+    # only the INSERT, so it survives; a top-level `session.rollback()` would
+    # have discarded it and left this reading `in_progress`.
+    survived = (
+        owner_session.execute(
+            text("SELECT execution_status, calculated_result FROM testing.tests WHERE id = :t"),
+            {"t": test_id},
+        )
+        .mappings()
+        .one()
+    )
+    assert survived["execution_status"] == "complete", (
+        "the failed investigation INSERT rolled back the caller's completion — "
+        "the savepoint is not containing it"
+    )
+    assert survived["calculated_result"] == "fail"
+
+    # And the audit event written by the completion is still there too.
+    audited = owner_session.execute(
+        text(
+            "SELECT count(*) FROM audit.events "
+            "WHERE entity_type = 'test' AND entity_id = :t AND action = 'test.completed'"
+        ),
+        {"t": str(test_id)},
+    ).scalar_one()
+    assert audited == 1, "the completion's audit event was rolled back with the failed INSERT"
+
+    # No investigation exists for the test that could not open one.
+    still_none = owner_session.execute(
         text("SELECT count(*) FROM quality.failures WHERE test_id = :t"), {"t": test_id}
     ).scalar_one()
-    assert still_alive == 0, "no investigation should exist for the test that could not open one"
+    assert still_none == 0
