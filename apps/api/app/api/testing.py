@@ -51,6 +51,7 @@ from app.core.security import (
     require_permission,
 )
 from app.core.tenancy import CrossTenantReferenceError
+from app.domains.failures.service import FailureError, FailureNotFoundError
 from app.domains.testing.service import (
     DecisionInput,
     ReplicateInput,
@@ -328,6 +329,15 @@ def post_completion(
     except TestNotFoundError as exc:
         raise _missing(exc) from exc
     except TestStateError as exc:
+        raise _conflict(exc) from exc
+    # §10's automatic Failure Investigation can refuse. Mapped to the SAME
+    # statuses `app/api/failures.py` gives the identical conditions, so the
+    # caller gets one answer for one situation regardless of which route
+    # surfaced it. Previously these escaped as an unhandled 500 with no
+    # actionable message.
+    except FailureNotFoundError as exc:
+        raise _missing(exc) from exc
+    except FailureError as exc:
         raise _conflict(exc) from exc
 
 

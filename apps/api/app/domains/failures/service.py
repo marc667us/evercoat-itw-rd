@@ -231,6 +231,44 @@ def open_failure(
     return dict(row)
 
 
+def _free_failure_code(session: Session, *, organization_id: uuid.UUID, base: str) -> str:
+    """Return `base`, or the first free `base-2`, `base-3`, ... suffix.
+
+    🔴 WHY THIS EXISTS. Raised by the Supervisor: the automatic investigation
+    generates `FI-<test_number>`, and `test_number` is caller-supplied. If
+    anything already holds that code — a human investigation for a DIFFERENT
+    test, say — `failures_org_code_key` refuses the INSERT, and because §10's
+    open is deliberately not swallowed, **that test could never be completed,
+    permanently.** `failure_code` has no rename path, so there was no recovery
+    that did not involve a database edit.
+
+    A suffix is preferable to widening the generated code for everyone: the
+    common case stays the readable `FI-T-1234`, and the collision case stays
+    possible instead of fatal.
+
+    Bounded at ten attempts. An eleventh collision means something is wrong
+    that a loop should not paper over, and the caller then gets the ordinary
+    duplicate-code refusal — now a 409 rather than a 500.
+
+    Not a substitute for the unique index: this closes the RACE-FREE case
+    inside one transaction. Two concurrent transactions can still pick the
+    same suffix, and the constraint is what refuses the loser. That refusal is
+    correct and recoverable — a retry finds the next free suffix.
+    """
+    for attempt in range(1, 11):
+        candidate = base if attempt == 1 else f"{base}-{attempt}"
+        taken = session.execute(
+            text(
+                "SELECT 1 FROM quality.failures "
+                "WHERE organization_id = :org AND failure_code = :code"
+            ),
+            {"org": organization_id, "code": candidate},
+        ).first()
+        if taken is None:
+            return candidate
+    return base
+
+
 def open_failure_for_failed_test(
     session: Session,
     *,
@@ -281,18 +319,33 @@ def open_failure_for_failed_test(
     if test["calculated_result"] != "fail":
         return None
 
+    # 🔴 `.first()`, NOT `.one_or_none()`. Raised by the Supervisor.
+    #
+    # Migration 029 adds a partial UNIQUE index on `(organization_id, test_id)`
+    # so at most one investigation can name a test — which is what "opens OR
+    # LINKS" has always claimed. But this code must not DEPEND on that index
+    # being present: against a database migrated only to 028, two rows are
+    # legal, and `.one_or_none()` would raise `MultipleResultsFound` — which is
+    # not caught anywhere, so the test could never be completed AGAIN. A
+    # permanent lockout on a safety-critical path, reachable by two engineers
+    # legitimately opening an investigation for the same test.
+    #
+    # Ordered so the answer is stable rather than whichever row the heap
+    # returns first.
     existing = (
         session.execute(
             text(
                 """
                 SELECT id, failure_code, status FROM quality.failures
                 WHERE test_id = :tid AND organization_id = :org
+                ORDER BY opened_at, id
+                LIMIT 1
                 """
             ),
             {"tid": test_id, "org": organization_id},
         )
         .mappings()
-        .one_or_none()
+        .first()
     )
     if existing is not None:
         return dict(existing)
@@ -303,7 +356,9 @@ def open_failure_for_failed_test(
         organization_id=organization_id,
         actor_id=actor_id,
         spec=FailureInput(
-            failure_code=f"FI-{test['test_number']}",
+            failure_code=_free_failure_code(
+                session, organization_id=organization_id, base=f"FI-{test['test_number']}"
+            ),
             title=f"Confirmation test {test['test_number']} failed its requirement",
             description=(
                 "Opened automatically because a confirmation test returned a failing "
@@ -758,30 +813,37 @@ def record_driver(
     if version is None:
         raise FailureNotFoundError("no such formula version in this organization")
 
+    # SAVEPOINT, for the same reason as `open_failure` above: `revise_version`
+    # now calls this to satisfy §2's "a new formula revision must show exactly
+    # which failure or improvement objective caused it", so a constraint
+    # violation here must not roll back the version that was just cloned.
+    # `begin_nested()` is outside the `try` so a pre-savepoint flush error is
+    # not caught by a handler that assumes a savepoint protected it.
+    savepoint = session.begin_nested()
     try:
-        driver_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO formulations.formula_version_drivers
-                    (organization_id, project_id, formula_version_id, driver_type,
-                     failure_id, requirement_id, reason, recorded_by)
-                VALUES (:org, :pid, :vid, :dtype, :fid, :rid, :reason, :actor)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "pid": version["project_id"],
-                "vid": formula_version_id,
-                "dtype": spec.driver_type,
-                "fid": spec.failure_id,
-                "rid": spec.requirement_id,
-                "reason": spec.reason,
-                "actor": actor_id,
-            },
-        ).scalar_one()
+        with savepoint:
+            driver_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO formulations.formula_version_drivers
+                        (organization_id, project_id, formula_version_id, driver_type,
+                         failure_id, requirement_id, reason, recorded_by)
+                    VALUES (:org, :pid, :vid, :dtype, :fid, :rid, :reason, :actor)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "pid": version["project_id"],
+                    "vid": formula_version_id,
+                    "dtype": spec.driver_type,
+                    "fid": spec.failure_id,
+                    "rid": spec.requirement_id,
+                    "reason": spec.reason,
+                    "actor": actor_id,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         detail = str(exc.orig)
         if "failure_is_present" in detail or "requirement_is_present" in detail:
             raise FailureError(

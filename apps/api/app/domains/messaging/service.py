@@ -621,7 +621,15 @@ def list_messages(
     organization_id: uuid.UUID,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """A channel's messages, oldest first, with their links.
+    """A channel's `limit` MOST RECENT messages, returned oldest-first.
+
+    🔴 THE MOST RECENT, not the first ever posted. This used to order ascending
+    with a LIMIT, which pinned every reader to the opening of the conversation:
+    past `limit` messages, nothing newly posted could be reached at all and
+    there is no cursor parameter to page with. Raised by the Supervisor.
+    Within the returned page the order is oldest-first, which is how a
+    conversation reads.
+
 
     Withdrawn messages come back with their body replaced rather than
     omitted: a conversation with holes in it cannot be read, and a reply
@@ -690,6 +698,14 @@ def list_messages(
                               AND cm.user_id = core.current_user_id()
                         )
                       )
+                -- 🔴 DESC + LIMIT TAKES THE NEWEST PAGE, THEN PYTHON REVERSES
+                -- IT. Ascending with a LIMIT returns the OLDEST `limit` rows,
+                -- so once a channel passed 100 messages every message posted
+                -- after that was unreachable through this API -- the reader
+                -- was pinned to the start of the conversation forever. There
+                -- is no offset or cursor parameter to escape with. Raised by
+                -- the Supervisor.
+                --
                 -- `m.id` is a TIEBREAKER, not decoration. An ORDER BY that is
                 -- not total is not deterministic: PostgreSQL may return equal
                 -- rows in any order, and two messages CAN share a `posted_at`
@@ -698,7 +714,10 @@ def list_messages(
                 -- written in one transaction) to `clock_timestamp()`, which
                 -- makes the order right; this makes it repeatable. Both are
                 -- needed -- see 028's header for why neither alone suffices.
-                ORDER BY m.posted_at, m.id
+                --
+                -- Migration 029 adds (channel_id, posted_at DESC, id DESC) to
+                -- serve exactly this.
+                ORDER BY m.posted_at DESC, m.id DESC
                 LIMIT :limit
                 """
             ),
@@ -708,6 +727,12 @@ def list_messages(
 
     if not rows:
         return []
+
+    # The query took the NEWEST page (see the ORDER BY above); the contract of
+    # this function, and what a reader expects, is oldest-first WITHIN that
+    # page. Reversed here rather than in SQL because a subquery to re-sort the
+    # limited set would defeat the index the LIMIT is using.
+    rows.reverse()
 
     links = session.execute(
         text(

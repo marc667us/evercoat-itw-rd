@@ -57,6 +57,7 @@ from app.calculations.formulation import (
 )
 from app.core.audit import AuditEvent, write_audit
 from app.core.tenancy import require_active_member
+from app.domains.failures.service import DriverInput, record_driver
 from app.domains.materials.service import BLOCKING_STATUSES
 
 __all__ = [
@@ -155,6 +156,25 @@ class ComponentInput:
 class RevisionInput:
     change_reason: str
     technical_hypothesis: str
+    # 🔴 `driver_type` HAS NO DEFAULT, DELIBERATELY.
+    #
+    # §2: "A new formula revision must show exactly which failure or
+    # improvement objective caused it." `change_reason` is free text — it
+    # explains, it does not LINK — so a revision with only a change_reason
+    # leaves §29's question ("why was F008 created?") answerable in prose and
+    # unanswerable by query. That is the isolated data island §2 forbids.
+    #
+    # A default would silently pick a reason on the chemist's behalf, and
+    # 'other' is the one answer that carries no information. The vocabulary
+    # already covers every honest case — failure, requirement, optimization,
+    # cost, regulatory, customer_request, other — so there is always a true
+    # answer available and no reason to guess one.
+    driver_type: str = ""
+    # Required by migration 021's CHECK constraints when driver_type is
+    # 'failure' or 'requirement' respectively. Validated here too so the
+    # refusal explains itself instead of arriving as a constraint violation.
+    driver_failure_id: uuid.UUID | None = None
+    driver_requirement_id: uuid.UUID | None = None
     expected_effect: str | None = None
     version_code: str | None = None
 
@@ -921,6 +941,27 @@ def revise_version(
     would refuse the second, which is a correct refusal reached by a race
     rather than by a check.
     """
+    # Checked BEFORE anything is written. A revision that cannot record why it
+    # exists must not exist: creating the version first and refusing the driver
+    # afterwards would leave the exact orphan §2 forbids, and rely on the
+    # caller's rollback to clean it up.
+    if not spec.driver_type:
+        raise FormulationError(
+            "a revision must say what drove it — one of: failure, requirement, "
+            "optimization, cost, regulatory, customer_request, other. §2 requires a "
+            "revision to show which failure or objective caused it, and a change "
+            "reason explains without linking."
+        )
+    if spec.driver_type == "failure" and spec.driver_failure_id is None:
+        raise FormulationError(
+            "a revision driven by a failure must name the failure it answers; "
+            "otherwise the digital thread records a category and loses the link"
+        )
+    if spec.driver_type == "requirement" and spec.driver_requirement_id is None:
+        raise FormulationError(
+            "a revision driven by a requirement must name the requirement it chases"
+        )
+
     parent = _load_version(session, version_id=version_id, organization_id=organization_id)
 
     try:
@@ -1026,12 +1067,36 @@ def revise_version(
             reason=spec.change_reason,
         ),
     )
+
+    # 🔴 I7 — THE OTHER END OF THE DIGITAL THREAD.
+    # `record_driver` existed and had no caller from here, so
+    # `formula_version_drivers` was never written by the only function that
+    # creates a revision, and §29's "why was F008 created?" had no answer.
+    # Reused rather than re-implemented (§12): it already enforces the
+    # composite CHECKs and writes its own audit event.
+    driver_id = record_driver(
+        session,
+        formula_version_id=new_row["id"],
+        organization_id=organization_id,
+        actor_id=actor_id,
+        spec=DriverInput(
+            driver_type=spec.driver_type,
+            reason=spec.change_reason,
+            failure_id=spec.driver_failure_id,
+            requirement_id=spec.driver_requirement_id,
+        ),
+    )
+
     return {
         "version_id": new_row["id"],
         "version_code": new_row["version_code"],
         "version_number": new_row["version_number"],
         "parent_version_code": parent["version_code"],
         "component_count": copied,
+        # Reported so the caller can show the link it just created, and so a
+        # null here would be visible rather than silent.
+        "driver_id": driver_id,
+        "driver_type": spec.driver_type,
     }
 
 

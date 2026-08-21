@@ -33,7 +33,12 @@ from app.calculations.testing import (
     REVIEW_STATES,
     VALIDITY_STATUSES,
 )
-from app.domains.failures.service import FailureError, open_failure_for_failed_test
+from app.domains.failures.service import (
+    FailureError,
+    FailureInput,
+    open_failure,
+    open_failure_for_failed_test,
+)
 from app.domains.testing.service import (
     DecisionInput,
     ReplicateInput,
@@ -1047,33 +1052,22 @@ def test_completion_links_to_an_investigation_that_already_existed(
     assert len(_failure_rows_for(owner_session, test_id)) == 1
 
 
-def test_a_duplicate_failure_code_does_not_destroy_the_caller_transaction(
+def test_a_squatted_failure_code_does_not_block_completing_a_test(
     owner_session: Session, testable: dict[str, uuid.UUID]
 ) -> None:
-    """🔴 THE SAVEPOINT, PROVED — the conflict path, not the happy path.
+    """🔴 A SQUATTED CODE MUST NOT MAKE A TEST PERMANENTLY UNCOMPLETABLE.
 
-    Raised by Codex: the original commit called `open_failure` from inside
-    `complete_execution` while `open_failure` still called
-    `session.rollback()` on IntegrityError. That rolls back the TOPMOST
-    transaction, so a duplicate failure code would have discarded the
-    completion and its audit event too.
+    Raised by the Supervisor. The automatic investigation generates
+    `FI-<test_number>`, and `test_number` is caller-supplied. If anything
+    already holds that code — a human investigation for a DIFFERENT test — the
+    unique constraint refused the INSERT. Because §10's open is deliberately
+    not swallowed, `complete_execution` then raised, and raised again on every
+    retry: recording that a confirmation test failed became permanently
+    impossible for that test, with no recovery short of a database edit.
 
-    The collision is forced by squatting on the exact code the automatic path
-    generates, `FI-<test_number>`, from an unrelated test.
-
-    🔴 THE FIRST VERSION OF THIS TEST COULD NOT FAIL, and Codex caught it.
-    It asserted only that the session could still answer a query afterwards —
-    but `session.rollback()` leaves a Session perfectly usable, so that query
-    would have succeeded under the OLD code too and returned the same 0. A
-    test written specifically to catch a destroyed transaction could not have
-    detected one.
-
-    What actually distinguishes the two implementations is whether the work
-    done BEFORE the failed INSERT survived it. Under the old top-level
-    rollback the completion was discarded and `execution_status` fell back to
-    `in_progress`; under the savepoint only the INSERT is undone, so the test
-    is still `complete` inside this transaction. That is the assertion below,
-    and it fails against the old implementation.
+    `_free_failure_code` now takes the first free suffix instead. The common
+    case keeps the readable code; the collision case stays possible rather
+    than fatal.
     """
     fx = testable
     test_id = _plan(owner_session, fx)
@@ -1105,32 +1099,75 @@ def test_a_duplicate_failure_code_does_not_destroy_the_caller_transaction(
     )
     owner_session.flush()
 
-    with pytest.raises(FailureError) as caught:
-        complete_execution(
-            owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
-        )
+    result = complete_execution(
+        owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+    )
 
+    assert result["execution_status"] == "complete", "the squatted code blocked the completion"
+    assert result["failure_investigation"] is not None
+    # The suffix, not the base code, and not a failure.
+    assert result["failure_investigation"]["failure_code"] == f"FI-{test_number}-2"
+    assert len(_failure_rows_for(owner_session, test_id)) == 1
+
+
+def test_open_failure_savepoint_does_not_destroy_the_callers_work(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """🔴 THE SAVEPOINT, PROVED DIRECTLY.
+
+    `_free_failure_code` now avoids the collision that used to reach
+    `open_failure`'s IntegrityError handler through `complete_execution`, so
+    the savepoint needs its own test rather than riding on that path.
+
+    A caller does real work, then calls `open_failure` with a code that is
+    already taken. The refusal must be a refusal — not a demolition of what
+    the caller had already written.
+
+    Before the savepoint, `open_failure` called `session.rollback()`, which
+    rolls back the TOPMOST transaction: the completion below was discarded and
+    this assertion found no row at all.
+    """
+    fx = testable
+    test_id = _plan(owner_session, fx)
+    _measure(owner_session, fx, test_id, ["11.9", "12.0", "12.1"])  # PASSES, so no auto-open
+
+    # The caller's work: a completed test, in this transaction.
+    complete_execution(
+        owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+    )
+
+    taken = f"FI-TAKEN-{uuid.uuid4().hex[:6]}"
+    open_failure(
+        owner_session,
+        project_id=fx["project"],
+        organization_id=fx["org"],
+        actor_id=fx["engineer"],
+        spec=FailureInput(failure_code=taken, title="First", description="Holds the code"),
+    )
+    owner_session.flush()
+
+    with pytest.raises(FailureError) as caught:
+        open_failure(
+            owner_session,
+            project_id=fx["project"],
+            organization_id=fx["org"],
+            actor_id=fx["engineer"],
+            spec=FailureInput(failure_code=taken, title="Second", description="Same code"),
+        )
     assert "already used" in str(caught.value)
 
     # 🔴 THE ASSERTION THAT DISTINGUISHES THE TWO IMPLEMENTATIONS.
-    # The completion happened before the failed INSERT. A savepoint rolls back
-    # only the INSERT, so it survives; a top-level `session.rollback()` would
-    # have discarded it and left this reading `in_progress`.
     survived = (
         owner_session.execute(
-            text("SELECT execution_status, calculated_result FROM testing.tests WHERE id = :t"),
-            {"t": test_id},
+            text("SELECT execution_status FROM testing.tests WHERE id = :t"), {"t": test_id}
         )
         .mappings()
         .one()
     )
     assert survived["execution_status"] == "complete", (
-        "the failed investigation INSERT rolled back the caller's completion — "
+        "the refused INSERT rolled back the caller's earlier work - "
         "the savepoint is not containing it"
     )
-    assert survived["calculated_result"] == "fail"
-
-    # And the audit event written by the completion is still there too.
     audited = owner_session.execute(
         text(
             "SELECT count(*) FROM audit.events "
@@ -1138,10 +1175,54 @@ def test_a_duplicate_failure_code_does_not_destroy_the_caller_transaction(
         ),
         {"t": str(test_id)},
     ).scalar_one()
-    assert audited == 1, "the completion's audit event was rolled back with the failed INSERT"
+    assert audited == 1, "the caller's audit event was rolled back with the refused INSERT"
 
-    # No investigation exists for the test that could not open one.
-    still_none = owner_session.execute(
-        text("SELECT count(*) FROM quality.failures WHERE test_id = :t"), {"t": test_id}
-    ).scalar_one()
-    assert still_none == 0
+
+def test_two_investigations_cannot_name_the_same_test(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """🔴 "opens OR LINKS" IS NOW A CONSTRAINT, NOT A COMMENT (migration 029).
+
+    Raised by the Supervisor: `quality.failures` had no uniqueness on
+    `(organization_id, test_id)` and `POST /api/failures` accepts an arbitrary
+    `test_id`, so two engineers could each legitimately open an investigation
+    naming the same test. The link lookup then used `.one_or_none()`, which
+    raised `MultipleResultsFound` — caught by nothing — and because the
+    condition never cleared, **that test could never be completed again.** A
+    permanent lockout on the path that records a failed confirmation.
+
+    Raw SQL rather than the service, deliberately: this tests the DATABASE,
+    which is the layer that still has to hold when a future caller forgets.
+    Two DIFFERENT failure codes, so it is the test_id uniqueness being proved
+    and not `failures_org_code_key`.
+    """
+    fx = testable
+    test_id = _plan(owner_session, fx)
+
+    def _insert(code: str) -> None:
+        owner_session.execute(
+            text(
+                """
+                INSERT INTO quality.failures
+                    (organization_id, project_id, failure_code, title, description,
+                     severity, test_id, opened_by)
+                VALUES (:o, :p, :c, 'One', 'x', 'major', :t, :u)
+                """
+            ),
+            {
+                "o": fx["org"],
+                "p": fx["project"],
+                "c": code,
+                "t": test_id,
+                "u": fx["engineer"],
+            },
+        )
+
+    _insert(f"FI-A-{uuid.uuid4().hex[:6]}")
+    owner_session.flush()
+
+    with pytest.raises(IntegrityError) as caught:
+        _insert(f"FI-B-{uuid.uuid4().hex[:6]}")  # different CODE, same TEST
+        owner_session.flush()
+
+    assert "failures_one_per_test_uk" in str(caught.value.orig)

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -101,6 +101,23 @@ class RevisionCreate(BaseModel):
     # constraint violation from the domain.
     change_reason: str = Field(min_length=3, max_length=2000)
     technical_hypothesis: str = Field(min_length=3, max_length=2000)
+    # 🔴 REQUIRED, and a BREAKING CHANGE to this endpoint's contract — stated
+    # rather than slipped in. §2: "A new formula revision must show exactly
+    # which failure or improvement objective caused it." `change_reason` is
+    # prose; this is the link. Without it `formula_version_drivers` is never
+    # written and §29's "why was F008 created?" is unanswerable by query.
+    # A default would answer the question on the chemist's behalf.
+    driver_type: Literal[
+        "failure",
+        "requirement",
+        "optimization",
+        "cost",
+        "regulatory",
+        "customer_request",
+        "other",
+    ]
+    driver_failure_id: uuid.UUID | None = None
+    driver_requirement_id: uuid.UUID | None = None
     expected_effect: str | None = Field(default=None, max_length=2000)
     version_code: str | None = Field(default=None, max_length=50)
 
@@ -359,6 +376,9 @@ def post_revision(
             spec=RevisionInput(
                 change_reason=payload.change_reason,
                 technical_hypothesis=payload.technical_hypothesis,
+                driver_type=payload.driver_type,
+                driver_failure_id=payload.driver_failure_id,
+                driver_requirement_id=payload.driver_requirement_id,
                 expected_effect=payload.expected_effect,
                 version_code=payload.version_code,
             ),

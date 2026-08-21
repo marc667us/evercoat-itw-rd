@@ -403,3 +403,45 @@ def test_a_withdrawn_message_leaves_the_conversation_readable(
     assert len(thread) == 2, "the withdrawn message vanished and took the thread with it"
     assert thread[0]["body"] == "(this message was withdrawn)"
     assert thread[1]["reply_to_id"] == first["id"]
+
+
+def test_a_channel_past_its_limit_shows_the_newest_messages(
+    app_session: Session, channel_fixture: dict[str, uuid.UUID]
+) -> None:
+    """🔴 THE WINDOW MUST BE ANCHORED TO THE END OF THE CONVERSATION.
+
+    Raised by the Supervisor. `list_messages` ordered ASCENDING with a LIMIT,
+    which returns the OLDEST `limit` rows. There is no offset or cursor
+    parameter, so once a channel passed `limit` messages every message posted
+    afterwards was unreachable through this API — a reader was pinned to the
+    opening of the conversation permanently, and the newest thing they could
+    see never changed no matter how much was said.
+
+    Five messages with a limit of three. The correct answer is the LAST three,
+    in reading order. The old implementation returned the FIRST three, which
+    is what this asserts against.
+    """
+    fx = channel_fixture
+
+    channel = create_channel(
+        app_session,
+        organization_id=fx["org"],
+        actor_id=fx["author"],
+        spec=ChannelInput(channel_type="project", name="Busy", project_id=fx["project"]),
+    )
+    for n in range(1, 6):
+        post_message(
+            app_session,
+            channel_id=channel["id"],
+            organization_id=fx["org"],
+            actor_id=fx["author"],
+            spec=MessageInput(body=f"message {n}"),
+        )
+
+    page = list_messages(app_session, channel_id=channel["id"], organization_id=fx["org"], limit=3)
+
+    bodies = [m["body"] for m in page]
+    assert bodies == ["message 3", "message 4", "message 5"], (
+        "the window is anchored to the START of the conversation - a busy channel "
+        f"can never show what was said most recently. Got {bodies}"
+    )
