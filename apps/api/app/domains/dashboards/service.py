@@ -78,6 +78,12 @@ __all__ = [
 # would answer them. Written out so a screen can say "not built" rather than
 # "none", and so this list is the one place that has to change when a slice
 # lands. `IMPLEMENTATION_PLAN.md` section I is the schedule these cite.
+# `pending_steps_for` defaults to 100 and the dashboard used to take that
+# silently, so a Lead with 140 actionable steps was shown "100" with nothing
+# saying so. Named here and reported through `truncated`. Raised by the
+# Supervisor.
+_APPROVAL_LIMIT = 100
+
 _NOT_YET: dict[str, str] = {
     "doe_experiments": "DOE arrives in Slice 12 (pyDOE3, runs linked to formula and batch).",
     "pilot_projects": "Pilot and Scale-Up arrive in Slice 16.",
@@ -97,11 +103,51 @@ def _unavailable(panel: str) -> dict[str, Any]:
     those apart and a reader certainly cannot: "no DOE experiments" and "DOE
     does not exist yet" are opposite statements about the business.
     """
-    return {"available": False, "reason": _NOT_YET[panel], "rows": [], "count": 0}
+    return {
+        "available": False,
+        "reason": _NOT_YET[panel],
+        "rows": [],
+        "count": 0,
+        "truncated": False,
+    }
 
 
-def _panel(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"available": True, "reason": None, "rows": rows, "count": len(rows)}
+def _panel(rows: list[dict[str, Any]], *, truncated_at: int | None = None) -> dict[str, Any]:
+    """A panel that was answered.
+
+    `truncated_at` is stated rather than hidden: a count that silently caps is
+    a count Rule 2 cannot rely on, and "100" where the true answer is 140
+    understates a backlog with nothing to say it did. Raised by the
+    Supervisor.
+    """
+    return {
+        "available": True,
+        "reason": None,
+        "rows": rows,
+        "count": len(rows),
+        "truncated": truncated_at is not None and len(rows) >= truncated_at,
+    }
+
+
+def _forbidden(permission: str) -> dict[str, Any]:
+    """🔴 A THIRD STATE: THE PANEL EXISTS AND THIS CALLER MAY NOT ACT ON IT.
+
+    Raised by the Supervisor, and it is the same mistake as `_unavailable`
+    exists to prevent, one layer along. A permission-gated panel that returned
+    an empty list was byte-identical to a genuinely empty queue — so a
+    technician opening the engineer view was told there are no open process
+    deviations while there were twelve.
+
+    "Nothing to report", "not built yet" and "not yours to act on" are three
+    different statements and a screen cannot infer which from an empty list.
+    """
+    return {
+        "available": False,
+        "reason": f"requires the {permission} permission",
+        "rows": [],
+        "count": 0,
+        "truncated": False,
+    }
 
 
 def _rows(session: Session, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -198,6 +244,20 @@ def chemist_dashboard(
         WHERE t.organization_id = :org
           AND v.created_by = :uid
           AND t.calculated_result = 'fail'
+          -- An INVALID measurement is not a failure to answer -- a
+          -- calibration breach makes the number untrustworthy, not the
+          -- formula wrong. And a test that has been SUPERSEDED by a retest
+          -- has been answered by that retest, which writes no
+          -- `formula_version_drivers` row and so would otherwise leave the
+          -- original here forever. Both raised by the Supervisor: without
+          -- them this drifts from "what needs a chemist today" back into
+          -- "everything that has ever gone wrong".
+          AND t.validity_status <> 'invalid'
+          AND NOT EXISTS (
+                SELECT 1 FROM testing.tests retest
+                WHERE retest.supersedes_test_id = t.id
+                  AND retest.organization_id = t.organization_id
+          )
           AND NOT EXISTS (
                 SELECT 1 FROM formulations.formula_version_drivers d
                 WHERE d.failure_id = fl.id
@@ -248,7 +308,15 @@ def chemist_dashboard(
         WHERE t.organization_id = :org
           AND v.created_by = :uid
           AND t.test_purpose = 'confirmation'
-          AND t.approval_state = 'approved'
+          -- 🔴 `final_confirmed`, WHICH IS WHAT THE COMMENT ALWAYS CLAIMED.
+          -- This read `approval_state = 'approved'`, and DATA_MODEL.md makes
+          -- those DIFFERENT states: `final_confirmed` moves false->true only
+          -- FROM approved, requires `test.confirm`, and is never reachable
+          -- from `conditionally_approved`. So an approved-but-unconfirmed
+          -- test was listed as a validation candidate -- the query
+          -- re-deriving an answer beside the stored one, which is the exact
+          -- thing the comment said it avoided. Raised by the Supervisor.
+          AND t.final_confirmed
           AND t.calculated_result = 'pass'
         GROUP BY v.id, v.version_code, f.formula_code, v.project_id
         ORDER BY v.version_code
@@ -327,15 +395,25 @@ def engineer_dashboard(
             p,
         )
         if "test.review" in held_permissions
-        else []
+        else None
     )
 
     # Process deviations still open. `resolved_at IS NULL` is the whole
     # filter: a resolved deviation is a record, not an action.
     #
-    # Gated on `batch.review` for the same reason as the reviews panel: RLS
-    # decides what is VISIBLE, a permission decides what is ACTIONABLE, and
-    # §11 counts the second. Raised by Codex.
+    # 🔴 `batch.execute` OR `batch.complete` -- THE PERMISSIONS THAT EXIST.
+    #
+    # The first version gated this on `batch.review`, WHICH IS NOT A
+    # PERMISSION IN THIS SYSTEM. `core.permissions` holds batch.view, .create,
+    # .execute, .complete and .reject -- so no user could ever hold it and the
+    # panel returned EMPTY FOR EVERYONE, FOREVER, while reporting itself
+    # available. That is precisely the failure mode this module's docstring
+    # says it exists to catch, and it survived because the test supplied the
+    # phantom permission to itself. Raised by the Supervisor.
+    #
+    # These two are what `POST /batches/{id}/deviations` requires -- the
+    # person at the bench or the one reviewing -- so the panel now offers work
+    # to exactly the people who can act on it.
     deviations = (
         _rows(
             session,
@@ -352,18 +430,24 @@ def engineer_dashboard(
             """,
             p,
         )
-        if "batch.review" in held_permissions
-        else []
+        if held_permissions & {"batch.execute", "batch.complete"}
+        else None
     )
 
     return {
         "role": "engineer",
         "panels": {
             "pending_test_plans": _panel(planned),
-            "engineering_reviews": _panel(reviews),
+            "engineering_reviews": (
+                _panel(reviews) if reviews is not None else _forbidden("test.review")
+            ),
             "pilot_projects": _unavailable("pilot_projects"),
             "scale_up": _unavailable("scale_up"),
-            "process_deviations": _panel(deviations),
+            "process_deviations": (
+                _panel(deviations)
+                if deviations is not None
+                else _forbidden("batch.execute or batch.complete")
+            ),
             "qualification_tasks": _unavailable("qualification_tasks"),
         },
     }
@@ -481,6 +565,7 @@ def lead_dashboard(
             session,
             organization_id=organization_id,
             held_permissions=held_permissions,
+            limit=_APPROVAL_LIMIT,
         )
     ]
 
@@ -520,13 +605,66 @@ def lead_dashboard(
         p,
     )
 
+    # 🔴 A LEAD CAN SEE A RESTRICTED PROJECT AND NOT ITS CONTENTS, AND THE
+    # PANELS WOULD REPORT THAT AS "NOTHING WRONG".
+    #
+    # Migration 006 gives `projects.projects` a lead exception
+    # (`lead_user_id = core.current_user_id()`). The CHILD tables have no such
+    # clause -- `projects.risks` and `projects.milestones` are
+    # `confidentiality = 'normal' OR core.is_project_member(p.id)`, and
+    # `is_project_member` reads `project_members` alone. So a Lead NAMED on a
+    # restricted project but not carrying a membership row -- a state
+    # migration 006's own commentary says occurs -- sees the project in
+    # `assigned_projects` and ZERO risks, ZERO milestones and ZERO blockers.
+    #
+    # The panel would affirmatively report the project as unblocked and
+    # risk-free, which is worse than saying nothing: it is a false all-clear
+    # on the one screen a Lead uses to find what is going wrong.
+    #
+    # It cannot be fixed from here -- widening the query would not widen RLS,
+    # and it should not. So the condition is DETECTED and reported. Raised by
+    # the Supervisor.
+    unreadable = _rows(
+        session,
+        """
+        SELECT p.id, p.project_code, p.name
+        FROM projects.projects p
+        WHERE p.organization_id = :org
+          AND p.lead_user_id = :uid
+          AND p.confidentiality <> 'normal'
+          AND NOT EXISTS (
+                SELECT 1 FROM projects.project_members pm
+                WHERE pm.project_id = p.id
+                  AND pm.organization_id = p.organization_id
+                  AND pm.user_id = :uid
+                  AND pm.status = 'active'
+          )
+        ORDER BY p.project_code
+        """,
+        p,
+    )
+
     return {
         "role": "lead",
+        # Named at the top level rather than buried in a panel: it qualifies
+        # EVERY panel below it, and a caveat attached to one of six would be
+        # read as applying only to that one.
+        "incomplete_visibility": [
+            {
+                **row,
+                "reason": (
+                    "you lead this restricted project but are not a member of it, so "
+                    "its risks, milestones and blockers are not visible to you. The "
+                    "panels below EXCLUDE them - they are not empty."
+                ),
+            }
+            for row in unreadable
+        ],
         "panels": {
             "assigned_projects": _panel(projects),
             "pipeline_status": _panel(pipeline),
             "blocked_projects": _panel(blocked),
-            "pending_approvals": _panel(approvals),
+            "pending_approvals": _panel(approvals, truncated_at=_APPROVAL_LIMIT),
             "risks": _panel(risks),
             "milestones": _panel(milestones),
         },
@@ -571,16 +709,31 @@ def director_dashboard(
         p,
     )
 
-    innovation = _rows(
-        session,
-        """
+    # 🔴 `opportunity.view`, BECAUSE RLS DOES NOT GUARD THIS TABLE THE WAY THE
+    # ROUTE DOCSTRING ASSUMED. `innovation.opportunities` carries an
+    # ORGANIZATION-ONLY policy -- no project predicate, no confidentiality --
+    # while `/api/opportunities` guards the same rows with
+    # `require_permission("opportunity.view")`.
+    #
+    # So the dashboard's `project.view` floor was a way around that guard: a
+    # laboratory_technician calling `/api/dashboards/director` received every
+    # unannounced opportunity in the company, including the Director's whole
+    # decision queue. Raised by the Supervisor, and the route's own reasoning
+    # ("RLS decides what the caller sees") was FALSE for org-scoped tables.
+    innovation = (
+        _rows(
+            session,
+            """
         SELECT o.status, count(*) AS opportunities
         FROM innovation.opportunities o
         WHERE o.organization_id = :org
         GROUP BY o.status
         ORDER BY o.status
-        """,
-        p,
+            """,
+            p,
+        )
+        if "opportunity.view" in held_permissions
+        else None
     )
 
     critical_risks = _rows(
@@ -601,9 +754,14 @@ def director_dashboard(
     # "Projects awaiting approval" is the INNOVATION gate: an opportunity
     # submitted and waiting on a decision is a project that does not exist
     # yet, which is precisely what a Director is being asked to authorise.
-    awaiting = _rows(
-        session,
-        """
+    # And the DECISION queue needs the DECIDING permission (Supervisor finding
+    # 8): every other queue in this module is gated on actionability, and a
+    # Lead reading the director view was getting a list of decisions only a
+    # Director can make.
+    awaiting = (
+        _rows(
+            session,
+            """
         SELECT o.id, o.opportunity_code, o.title, o.priority, o.status,
                o.created_at
         FROM innovation.opportunities o
@@ -615,20 +773,27 @@ def director_dashboard(
           -- queue into a list of everything not yet finished.
           AND o.status = 'awaiting_decision'
         ORDER BY
-            CASE o.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
-                 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE -1 END,
-            o.created_at
-        """,
-        p,
+                CASE o.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                     WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE -1 END,
+                o.created_at
+            """,
+            p,
+        )
+        if "opportunity.decide" in held_permissions
+        else None
     )
 
     return {
         "role": "director",
         "panels": {
             "rd_portfolio": _panel(portfolio),
-            "innovation_pipeline": _panel(innovation),
+            "innovation_pipeline": (
+                _panel(innovation) if innovation is not None else _forbidden("opportunity.view")
+            ),
             "critical_risks": _panel(critical_risks),
-            "projects_awaiting_approval": _panel(awaiting),
+            "projects_awaiting_approval": (
+                _panel(awaiting) if awaiting is not None else _forbidden("opportunity.decide")
+            ),
             "pilot_qualification_pipeline": _unavailable("pilot_qualification_pipeline"),
             "products_awaiting_release": _unavailable("products_awaiting_release"),
         },

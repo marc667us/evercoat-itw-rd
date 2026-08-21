@@ -41,8 +41,14 @@ from app.domains.dashboards.service import (
 # dashboard built with an empty permission set must show an empty queue --
 # which is asserted below, because "shows nothing" is the failure mode a
 # permission check introduces.
-ENGINEER_PERMS = frozenset({"test.review", "batch.review"})
+# 🔴 EVERY PERMISSION HERE IS ASSERTED TO EXIST by
+# `test_every_gated_permission_is_a_real_permission` below. The first version
+# of this file hardcoded `batch.review`, WHICH DOES NOT EXIST -- so the
+# deviations panel returned empty for every real user forever while this
+# suite passed, because the test supplied the phantom permission to itself.
+ENGINEER_PERMS = frozenset({"test.review", "batch.execute", "batch.complete"})
 LEAD_PERMS = frozenset({"test.approve_development", "test.approve_lead"})
+DIRECTOR_PERMS = frozenset({"opportunity.view", "opportunity.decide"})
 
 
 def _org_and_people(session: Session) -> dict[str, Any]:
@@ -400,7 +406,12 @@ def test_an_opportunity_awaiting_decision_reaches_the_director(
     )
     owner_session.flush()
 
-    board = director_dashboard(owner_session, user_id=fx["director"], organization_id=fx["org"])
+    board = director_dashboard(
+        owner_session,
+        user_id=fx["director"],
+        organization_id=fx["org"],
+        held_permissions=DIRECTOR_PERMS,
+    )
     awaiting = board["panels"]["projects_awaiting_approval"]
     assert awaiting["count"] == 1
     assert awaiting["rows"][0]["title"] == "New putty line"
@@ -461,13 +472,24 @@ def test_every_role_returns_every_panel_the_source_names(owner_session: Session)
         ),
     }
 
+    perms = {
+        "chemist": frozenset(),
+        "engineer": ENGINEER_PERMS,
+        "lead": LEAD_PERMS,
+        "director": DIRECTOR_PERMS,
+    }
     for role, (builder, panels) in expected.items():
-        board = builder(owner_session, user_id=fx[role], organization_id=fx["org"])
+        board = builder(
+            owner_session,
+            user_id=fx[role],
+            organization_id=fx["org"],
+            held_permissions=perms[role],
+        )
         assert board["role"] == role
         assert set(board["panels"]) == panels, f"{role}: panels do not match the source"
 
         for name, panel in board["panels"].items():
-            assert set(panel) == {"available", "reason", "rows", "count"}
+            assert set(panel) == {"available", "reason", "rows", "count", "truncated"}
             assert panel["count"] == len(panel["rows"])
             if panel["available"] is False:
                 assert panel["reason"], (
@@ -542,8 +564,16 @@ def test_a_panel_gated_on_a_permission_is_empty_without_it(
         organization_id=fx["org"],
         held_permissions=frozenset(),
     )
-    assert engineer["panels"]["engineering_reviews"]["rows"] == []
-    assert engineer["panels"]["process_deviations"]["rows"] == []
+    # 🔴 AND THEY SAY "NOT PERMITTED", NOT "NOTHING TO REPORT" (Supervisor
+    # finding 3). An empty list is byte-identical to a genuinely empty queue,
+    # so a technician was told there were no deviations while there were
+    # twelve.
+    reviews = engineer["panels"]["engineering_reviews"]
+    assert reviews["available"] is False
+    assert "test.review" in reviews["reason"]
+    deviations = engineer["panels"]["process_deviations"]
+    assert deviations["available"] is False
+    assert "batch.execute" in deviations["reason"]
 
 
 def test_blocked_projects_counts_projects_not_blockers(owner_session: Session) -> None:
@@ -601,3 +631,91 @@ def test_blocked_projects_counts_projects_not_blockers(owner_session: Session) -
     row = blocked["rows"][0]
     assert row["blocker_count"] == 5
     assert sorted(row["blocked_by"]) == ["high-impact risk", "overdue milestone"]
+
+
+def test_every_gated_permission_is_a_real_permission(owner_session: Session) -> None:
+    """🔴 THE TEST THAT WOULD HAVE CAUGHT `batch.review`.
+
+    The dashboards gate four panels on permissions. A gate naming a
+    permission that DOES NOT EXIST cannot ever open, so the panel returns
+    empty for every real user forever — and the suite passed anyway, because
+    the tests supplied the phantom permission to themselves.
+
+    `core.permissions` is the authority. This asserts every string the module
+    gates on is in it. Raised by the Supervisor, after Codex's permission
+    fixes introduced the phantom.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2] / "app" / "domains" / "dashboards" / "service.py"
+    ).read_text(encoding="utf-8")
+
+    # Every permission-looking literal the module tests membership against.
+    gated = set(re.findall(r'"([a-z_]+\.[a-z_]+)" in held_permissions', source))
+    gated |= set(
+        (
+            re.findall(r"held_permissions & \{([^}]*)\}", source)
+            and re.findall(
+                r'"([a-z_]+\.[a-z_]+)"', re.findall(r"held_permissions & \{([^}]*)\}", source)[0]
+            )
+        )
+        or []
+    )
+    assert gated, "found no permission gates to check - the regex has drifted from the code"
+
+    real = {r[0] for r in owner_session.execute(text("SELECT code FROM core.permissions"))}
+    phantom = gated - real
+    assert not phantom, (
+        f"these panels gate on permissions that do not exist: {sorted(phantom)}. "
+        "No user can ever hold one, so the panel is empty for everyone while "
+        "reporting itself available."
+    )
+
+
+def test_a_director_without_opportunity_view_sees_no_innovation_pipeline(
+    owner_session: Session,
+) -> None:
+    """🔴 THE DISCLOSURE THE `project.view` FLOOR ALLOWED.
+
+    `innovation.opportunities` carries an ORGANIZATION-ONLY RLS policy — no
+    project predicate, no confidentiality — while `/api/opportunities` guards
+    the same rows with `opportunity.view`. The dashboard's floor was
+    `project.view`, so a laboratory_technician calling
+    `/api/dashboards/director` received every unannounced opportunity in the
+    company, including the Director's whole decision queue.
+
+    The route docstring's argument — "RLS decides what the caller sees" —
+    was false for org-scoped tables. Raised by the Supervisor.
+    """
+    fx = _org_and_people(owner_session)
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO innovation.opportunities
+                (organization_id, opportunity_code, title, status, priority, created_by)
+            VALUES (:o, :c, 'Confidential new line', 'awaiting_decision', 'high', :u)
+            """
+        ),
+        {"o": fx["org"], "c": f"OPP-S-{fx['suffix']}", "u": fx["director"]},
+    )
+    owner_session.flush()
+
+    # Somebody with project access and no opportunity permissions at all.
+    board = director_dashboard(
+        owner_session,
+        user_id=fx["chemist"],
+        organization_id=fx["org"],
+        held_permissions=frozenset({"project.view"}),
+    )
+
+    pipeline = board["panels"]["innovation_pipeline"]
+    assert pipeline["available"] is False, (
+        "the innovation pipeline was disclosed to somebody without opportunity.view"
+    )
+    assert pipeline["rows"] == []
+
+    queue = board["panels"]["projects_awaiting_approval"]
+    assert queue["available"] is False
+    assert queue["rows"] == []
