@@ -87,14 +87,14 @@ half**, which is what the acceptance gate actually measures.
 
 | # | Session | Work | Hours | Exit condition |
 |---|---|---|---|---|
-| ~~S1~~ | ~~Auth, end to end~~ | ✅ **DONE**, except its exit condition, which needs a deployed Keycloak (I13, spend) and a working deploy (B4). Built: PKCE flow, callback, provider, org switcher, `GET /api/me`, migration 024. **NOT** next-auth — ADR-025. | 5 | ⚠️ Exit condition NOT met: a human cannot sign in on the deployed shell, because no Keycloak is deployed. Everything below that line is proven in CI. |
+| ~~S1~~ | ~~Auth, end to end~~ | ✅ **DONE**, except its exit condition, which needs a deployed Keycloak (I13 — now Railway, ADR-026) and a working deploy (B4). Built: PKCE flow, callback, provider, org switcher, `GET /api/me`, migration 024. **NOT** next-auth — ADR-025. | 5 | ⚠️ Exit condition NOT met: a human cannot sign in on the deployed shell, because no Keycloak is deployed. Everything below that line is proven in CI. |
 | **S2** | Wire the read screens | Projects, Requirements, Materials, Formulations, Batches, Tests — swap `demo-data.json` for TanStack Query against the real routes. Keep the demo banner only where no route exists yet. | 5 | Six screens render database rows. `demo-data.json` referenced by ≤ 6 files. |
 | **S3** | Wire the write paths | Create project → create formula → submit → approve lab. Forms with React Hook Form + Zod against the existing routes. | 5 | The first four golden-scenario arrows are drivable by hand in a browser. |
 | **S4** | Lab + Test entry | Batch creation, sample, test creation, **raw per-replicate entry**. Derived status displayed as two separate fields (automatic evaluation *beside* final disposition). | 5 | A RED result can be produced through the UI. |
 | **S5** | Approvals + failure UI | `ApprovalTimeline`, the 7 decision types, failure investigation screen, hypothesis states. **Fix I5, I6, I7 here** — the UI is what makes those holes visible. | 5 | YELLOW→GREEN happens by human approval, and a RED opens a failure. |
 | **S6** | Dashboards (I4) | Four role dashboards, KPI cards, drill-down to real source records. **Fix I8** so counts are actionable items, not totals. | 5 | Every KPI drills to a real record. No panel can only ever show zero. |
 | **S7** | Golden E2E (I3) | The 15-arrow scenario, asserted in UI **and** DB. Plus RBAC E2E and the MSD boundary suite. | 5 | Golden suite green in CI against a real Keycloak. |
-| **S8** | Deploy + live suite | Deploy web (already static). API + Keycloak **only if the operator authorises the spend** — otherwise ship the browser-provable half and say so plainly. Run the full suite against the deployed site. | 5 | **passed / failed / skipped reported as three numbers** against the deployed URL. |
+| **S8** | Deploy + live suite | Deploy web (already static). API + Keycloak **on Railway per ADR-026, once `railway login` has been completed — and only on a confirmed free allowance; anything billable is an owner decision** — otherwise ship the browser-provable half and say so plainly. Run the full suite against the deployed site. | 5 | **passed / failed / skipped reported as three numbers** against the deployed URL. |
 | **S9** | Governance + hardening | Codex 5-pass, Supervisor, `MEMORY.md` / `BRAIN.md` / `CHANGELOG.md` / `CONTEXT.md`, a11y sweep with axe on every new screen, `docs/REUSABILITY.md`. | 5 | Four gates pass. MVP-1 declared with evidence, not assertion. |
 
 **Total: 45 hours = 9 sessions = 3 days at the owner's stated rate.**
@@ -102,10 +102,14 @@ half**, which is what the acceptance gate actually measures.
 ### Two risks that would blow this schedule
 
 1. **S8 is not fully in our control.** The API and Keycloak need an
-   instance; Render's free web quota is exhausted. If the operator does
-   not authorise spend, the deployed artefact stays the static site and
-   the *full* golden scenario is provable only in CI. **Say that plainly
-   rather than reporting a green that means something narrower.**
+   instance. Render's quota is exhausted and **ADR-026 re-targets those
+   tiers at Railway's free offering** — but that is a *selected target*,
+   not a migration: the Railway CLI here is unauthenticated and no
+   `RAILWAY_TOKEN` secret exists, so it is blocked on an owner action.
+   Until one of the two provides a free instance, the deployed artefact
+   stays the static site and the *full* golden scenario is provable only
+   in CI. **Say that plainly rather than reporting a green that means
+   something narrower.**
 2. **Docker on this host is wedged.** Everything is verified through CI,
    which is slower per iteration. Restarting Docker Desktop would fix it
    but restarts the `aw-*` stack — **which the operator has forbidden.**
