@@ -1,5 +1,38 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## 🔴 RENDER IS RETIRED. THIS APP RUNS LOCALLY, SHARED BY TUNNEL.
+
+**Owner decision, 2026-08-21: $0 on Render.** Settled by measurement, not
+preference: Keycloak 26 in production mode under a hard 512 MB cap is
+**OOM-killed at 451.6 MiB (exit 137)**, and Render has nothing between Starter
+($7 / 512 MB) and Standard ($25 / 2 GB). Evercoat on Render is API $7 +
+Keycloak $25 + Postgres $6 = **$38/month** against a $30 ceiling.
+
+All apps here are prototypes and zero-cost is a hard rule. **Do not re-open
+the Render hosting question without new information.**
+
+The free **static site** stays — `itwevercoatrd.aiappinvent.com` costs nothing
+and keeps a working certificate.
+
+### Run it locally, share it with a client
+
+```bash
+"C:/Users/USER/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe" start evercoat-postgres
+docker compose -f infrastructure/compose/docker-compose.yml up -d
+C:/Users/USER/cloudflared.exe tunnel --url http://localhost:18081
+```
+
+Caddy fronts web + api + keycloak on **18081**, so a client needs **one** URL.
+
+⚠️ `NEXT_PUBLIC_*` is inlined at **BUILD** time, so a random quick-tunnel URL
+means rebuilding the web bundle each restart. One `cloudflared tunnel login`
+gives a stable named tunnel and ends that — a browser step, the owner's to do.
+
+✅ Full session record and every script:
+`C:\Users\USER\Documents\session-archives\2026-08-21\`
+
+---
+
 **Session 2026-08-21. Read this file, then `TODO.md`.**
 
 Repository: **https://github.com/marc667us/evercoat-itw-rd** (PUBLIC), branch
