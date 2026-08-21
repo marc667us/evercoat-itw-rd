@@ -34,9 +34,25 @@ from sqlalchemy.orm import Session
 EXPECTED_TEMPLATES = {
     "SCREENING_SIMPLE",
     "OVERSIGHT_STANDARD",
+    # Added by migration 031: `controlled` is one of the SIX authority levels a
+    # test may carry and it had no template, so wiring approvals to the engine
+    # (I5) left a controlled test unable to be reviewed at all.
+    "CONTROLLED_OVERSIGHT",
     "VALIDATION_CONFIRMATION",
     "QUALIFICATION_CONFIRMATION",
     "RELEASE_CRITICAL",
+}
+
+# Every value `testing.tests.authority_level` permits. A level with no active
+# template cannot be routed, and the failure surfaces only when somebody plans
+# a test at it -- which is how `controlled` went unnoticed.
+AUTHORITY_LEVELS = {
+    "preliminary",
+    "development",
+    "controlled",
+    "validation",
+    "qualification",
+    "release",
 }
 
 
@@ -59,7 +75,7 @@ def _template_codes(session: Session, org: uuid.UUID) -> set[str]:
     }
 
 
-def test_a_newly_created_organization_gets_the_five_templates(
+def test_a_newly_created_organization_gets_every_template(
     owner_session: Session,
 ) -> None:
     """🔴 THE DEFECT, DIRECTLY. This returned ZERO before migration 030."""
@@ -165,3 +181,39 @@ def test_no_organization_anywhere_is_missing_its_templates(owner_session: Sessio
     ]
 
     assert not orphans, f"{len(orphans)} organization(s) have no approval templates: {orphans[:5]}"
+
+
+def test_every_authority_level_a_test_may_carry_has_a_ladder(
+    owner_session: Session,
+) -> None:
+    """🔴 SIX AUTHORITY LEVELS, AND FOR MONTHS ONLY FIVE HAD A TEMPLATE.
+
+    `testing.tests.authority_level` permits six values. Migration 020 seeded
+    five templates and none claimed `controlled`. That was harmless while test
+    approval had its own implementation — and became fatal the moment I5 wired
+    approval to the engine: completing review on a `controlled` test raised
+    "no active approval template is configured", the review rolled back, and
+    the test was stuck at `awaiting_review` permanently.
+
+    Asserted against the VOCABULARY rather than against a list of templates,
+    so adding a seventh authority level fails here rather than in production.
+    """
+    org = _new_org(owner_session)
+    owner_session.flush()
+
+    covered = {
+        r[0]
+        for r in owner_session.execute(
+            text(
+                "SELECT authority_level FROM workflow.approval_templates "
+                "WHERE organization_id = :o AND is_active"
+            ),
+            {"o": org},
+        )
+    }
+
+    missing = AUTHORITY_LEVELS - covered
+    assert not missing, (
+        f"these authority levels have no approval template: {sorted(missing)}. "
+        "A test planned at one of them cannot be reviewed at all."
+    )

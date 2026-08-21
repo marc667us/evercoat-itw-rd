@@ -52,6 +52,20 @@ __all__ = [
     "route_outcome",
 ]
 
+# 🔴 `escalate` IS ADVANCING FOR REACHABILITY AND NOT FOR SETTLEMENT, AND THE
+# DIFFERENCE IS THE POINT.
+#
+# OVERSIGHT_STANDARD seeds a MANDATORY engineer rung and an OPTIONAL lead rung
+# that exists, in migration 020's own words, "so an escalation has somewhere to
+# land". `escalate` means "this is above me" -- it hands the decision UP, so the
+# next rung must open. Treating it as non-advancing made that rung unreachable
+# and the route unfinishable: the escalation had nowhere to land after all.
+# Raised by the Supervisor.
+#
+# It is still NOT approving, so `_settle_route` leaves the route open on it --
+# an escalated step is not a signature, and a route cannot complete on one.
+ADVANCING_DECISIONS = frozenset({"approve", "approve_with_condition", "escalate"})
+
 # Decisions that advance a step. Everything else stops the route.
 _APPROVING = frozenset({"approve", "approve_with_condition"})
 _REFUSING = frozenset({"reject"})
@@ -269,7 +283,7 @@ def decide_step(
               AND is_mandatory
               AND (
                     decision IS NULL
-                    OR decision NOT IN ('approve', 'approve_with_condition')
+                    OR decision NOT IN ('approve', 'approve_with_condition', 'escalate')
               )
             """
         ),
@@ -638,7 +652,8 @@ def next_step_for(
                           -- had been sent back for correction. Raised by Codex.
                           AND (
                                 earlier.decision IS NULL
-                                OR earlier.decision NOT IN ('approve', 'approve_with_condition')
+                                OR earlier.decision NOT IN
+                                     ('approve', 'approve_with_condition', 'escalate')
                           )
                   )
                 ORDER BY s.parallel_group, s.step_number
@@ -751,7 +766,8 @@ def pending_steps_for(
                       -- had been sent back for correction. Raised by Codex.
                       AND (
                             earlier.decision IS NULL
-                            OR earlier.decision NOT IN ('approve', 'approve_with_condition')
+                            OR earlier.decision NOT IN
+                                     ('approve', 'approve_with_condition', 'escalate')
                       )
               )
             ORDER BY r.opened_at

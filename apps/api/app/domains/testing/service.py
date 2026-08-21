@@ -95,15 +95,7 @@ _REVIEW_OUTCOMES: dict[str, str] = {
     "approve_with_condition": "reviewed",
 }
 
-_APPROVAL_OUTCOMES: dict[str, str] = {
-    "approve": "approved",
-    "approve_with_condition": "conditionally_approved",
-    "reject": "rejected",
-}
-
 # The development-side approval permission. Anyone who has decided at this
-# stage is barred from supplying the independent QA approval (ADR-019).
-_DEVELOPMENT_APPROVAL = "development"
 
 
 # ---------------------------------------------------------------------------
@@ -729,43 +721,83 @@ def record_decision(
     # letting a caller name it would restore exactly the bypass §9 forbids.
     approval_state = test["approval_state"]
     if new_state == "reviewed":
-        # 🔴 A RE-REVIEW MUST NOT COLLIDE WITH THE ROUTE IT ALREADY OPENED.
+        # 🔴 A RE-REVIEW MUST NOT COLLIDE WITH THE ROUTE IT ALREADY OPENED,
+        # AND MUST NOT DISCARD ONE THAT IS HEALTHY.
         #
         # `return_for_correction` and `request_retest` leave the route OPEN by
         # design -- "the work comes back, and the route is where it comes back
-        # TO". So a second review reaching `reviewed` used to call `open_route`
-        # unconditionally, hit `approval_routes_one_open_per_entity`, and raise;
-        # `session_scope` then rolled the whole review back, so every retry hit
-        # the identical collision and THE TEST WAS WEDGED PERMANENTLY.
-        # Raised by Codex.
+        # TO". An unconditional `open_route` therefore hit
+        # `approval_routes_one_open_per_entity`, raised, and `session_scope`
+        # rolled the whole review back: every retry hit the identical collision
+        # and the test was WEDGED PERMANENTLY. (Codex.)
         #
-        # The stalled route is superseded rather than reused: its
-        # `return_for_correction` rung already carries a signature and
-        # `decide_step` will never accept a second decision on it, so reusing
-        # the route would leave a ladder with an unclimbable rung. Cancelling
-        # keeps every signature as the record of what happened and starts the
-        # corrected work on a clean ladder.
+        # 🔴 BUT CANCELLING ANY OPEN ROUTE IS WORSE THAN THE WEDGE. A
+        # qualification route waiting on its QA rung already carries three
+        # signatures. Re-running an ordinary review would have thrown all three
+        # away and reset the ladder -- signatures destroyed by an action that
+        # looks like a no-op. So the route is superseded ONLY when it is
+        # actually STALLED: a mandatory rung carrying a decision that does not
+        # advance it, which no further decision can clear because a decision is
+        # a signature and is not revisited. (Supervisor.)
+        #
+        # A healthy in-flight route is left exactly as it is.
         existing = route_for_entity(
             session, organization_id=organization_id, entity_type="test", entity_id=test_id
         )
         if existing is not None:
+            existing_id = existing["route_id"] if "route_id" in existing else existing["id"]
+            stalled = session.execute(
+                text(
+                    """
+                    SELECT count(*) FROM workflow.approval_route_steps
+                    WHERE route_id = :rid AND organization_id = :org
+                      AND is_mandatory
+                      AND decision IS NOT NULL
+                      AND decision NOT IN
+                            ('approve', 'approve_with_condition', 'escalate')
+                    """
+                ),
+                {"rid": existing_id, "org": organization_id},
+            ).scalar_one()
+
+            if not stalled:
+                # Healthy and in flight. Leave it, and leave `approval_state`
+                # where the route put it -- resetting it to `pending` would
+                # move the traffic light backwards over signatures that stand.
+                return {
+                    "test_id": test_id,
+                    "stage": spec.stage,
+                    "decision": spec.decision,
+                    "state": new_state,
+                }
+
             cancel_route(
                 session,
-                route_id=existing["route_id"] if "route_id" in existing else existing["id"],
+                route_id=existing_id,
                 organization_id=organization_id,
                 actor_id=actor_id,
                 reason=f"test {test['test_number']} was re-reviewed after correction",
             )
 
-        open_route(
-            session,
-            organization_id=organization_id,
-            project_id=test["project_id"],
-            entity_type="test",
-            entity_id=test_id,
-            authority_level=test["authority_level"],
-            actor_id=actor_id,
-        )
+        # `open_route` speaks the approval domain's errors. Translated here or
+        # they escape `post_decision` as an opaque 500 on an ordinary review --
+        # `_decide_on_route` translates them for the approval branch and this
+        # branch did not. Raised by the Supervisor.
+        try:
+            open_route(
+                session,
+                organization_id=organization_id,
+                project_id=test["project_id"],
+                entity_type="test",
+                entity_id=test_id,
+                authority_level=test["authority_level"],
+                actor_id=actor_id,
+            )
+        except ApprovalNotFoundError as exc:
+            raise TestStateError(str(exc)) from exc
+        except (ApprovalStateError, ApprovalError) as exc:
+            raise TestStateError(str(exc)) from exc
+
         approval_state = "pending"
 
     session.execute(
@@ -1083,6 +1115,25 @@ def get_test(session: Session, *, test_id: uuid.UUID, organization_id: uuid.UUID
                   ON r.id = s.route_id AND r.organization_id = s.organization_id
                 WHERE r.entity_type = 'test' AND r.entity_id = :tid
                   AND r.organization_id = :org
+                  -- 🔴 ONE ROUTE, NOT ALL OF THEM. A test that was corrected
+                  -- and re-reviewed has a CANCELLED route beside its live one,
+                  -- and both snapshot the same template -- so without this the
+                  -- two ladders interleave with duplicate step numbers and
+                  -- nothing to tell them apart. A screen would show "step 1
+                  -- approved" next to "step 1 undecided". The docstring above
+                  -- said "per-route"; the SQL did not. Raised by the
+                  -- Supervisor.
+                  --
+                  -- The OPEN route if there is one, otherwise the most
+                  -- recently opened -- so a finished test still shows the
+                  -- ladder that decided it.
+                  AND r.id = (
+                        SELECT r2.id FROM workflow.approval_routes r2
+                        WHERE r2.entity_type = 'test' AND r2.entity_id = :tid
+                          AND r2.organization_id = :org
+                        ORDER BY (r2.status = 'open') DESC, r2.opened_at DESC
+                        LIMIT 1
+                  )
                 ORDER BY s.parallel_group, s.step_number
                 """
             ),

@@ -283,3 +283,213 @@ def test_every_independent_qa_step_in_every_template_declares_its_independence(
         "these independent-QA steps do not declare must_differ_from_group, so a "
         f"development approver could also supply the QA signature (ADR-019): {unguarded}"
     )
+
+
+def test_a_controlled_authority_test_can_be_reviewed_and_approved(
+    owner_session: Session,
+    testable: dict[str, uuid.UUID],  # noqa: F811
+) -> None:
+    """SIX AUTHORITY LEVELS, AND ONE OF THEM HAD NO LADDER.
+
+    `controlled` is a valid `authority_level` that migration 020 never gave a
+    template. Wiring approval to the engine turned that from harmless into
+    fatal: review raised, rolled back, and the test could never leave
+    `awaiting_review`. Migration 031 adds CONTROLLED_OVERSIGHT.
+
+    Both of its rungs are mandatory, which is the whole difference from
+    OVERSIGHT_STANDARD -- so this also asserts the test is still YELLOW after
+    the development rung alone.
+    """
+    fx = testable
+    test_id = _ready(owner_session, fx, authority="controlled")
+
+    first = record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["engineer"],
+        held_permissions=DEV,
+        spec=DecisionInput(decision="approve", stage="approval"),
+    )
+    assert first["state"] == "pending", "the lead rung is mandatory at controlled authority"
+
+    second = record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["lead"],
+        held_permissions=LEAD,
+        spec=DecisionInput(decision="approve", stage="approval"),
+    )
+    assert second["state"] == "approved"
+
+
+def test_an_escalation_opens_the_rung_it_escalates_to(
+    owner_session: Session,
+    testable: dict[str, uuid.UUID],  # noqa: F811
+) -> None:
+    """ESCALATION MUST HAVE SOMEWHERE TO LAND — AND MUST NOT APPROVE ANYTHING.
+
+    OVERSIGHT_STANDARD's second rung is optional and exists, in migration
+    020's words, "so an escalation has somewhere to land". `escalate` means
+    "this is above me": it hands the decision UP, so the next rung must open.
+    Treating every non-approving decision as blocking made that rung
+    unreachable — the escalation had nowhere to land after all. Raised by the
+    Supervisor.
+
+    🔴 BUT REACHABLE IS NOT THE SAME AS SETTLED, and the difference is a
+    safety property. An escalated MANDATORY rung carries no signature. If
+    `escalate` also counted as advancing for settlement, a route would reach
+    `approved` on an escalation ALONE — nobody would have approved anything
+    and the test would go GREEN. So it advances reachability and not
+    settlement: the lead's view is recorded, and the route stays open.
+
+    Resolving an escalation therefore goes the same way as a correction: the
+    work is re-reviewed and the stalled ladder is superseded. Clunky, and
+    deliberately not "fixed" by inventing auto-approval semantics for a
+    regulated approval chain. Recorded as TODO I39.
+    """
+    fx = testable
+    test_id = _ready(owner_session, fx)
+
+    escalated = record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["engineer"],
+        held_permissions=DEV,
+        spec=DecisionInput(
+            decision="escalate",
+            stage="approval",
+            rationale="the margin is inside the warning threshold; the lead should see it",
+        ),
+    )
+    assert escalated["state"] == "pending", "an escalation is not a signature"
+
+    # THE RUNG IS REACHABLE — this is what the Supervisor's finding was about.
+    # Before the fix this raised, because the escalated rung read as blocking.
+    landed = record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["lead"],
+        held_permissions=LEAD,
+        spec=DecisionInput(decision="approve", stage="approval"),
+    )
+    assert landed["step_label"] == "Lead approval (on escalation)", (
+        "the escalation rung was not the one offered to the lead"
+    )
+
+    # AND THE ROUTE IS STILL OPEN. The mandatory engineer rung was escalated,
+    # not signed, so nothing has approved this test.
+    assert landed["state"] == "pending", (
+        "the route completed on an escalation - a test would be GREEN with no "
+        "approving signature on its mandatory rung"
+    )
+
+    seen = get_test(owner_session, test_id=test_id, organization_id=fx["org"])
+    assert seen["final_disposition"]["colour"] != "green"
+
+
+def test_a_plain_re_review_does_not_discard_a_healthy_ladder(
+    owner_session: Session,
+    testable: dict[str, uuid.UUID],  # noqa: F811
+) -> None:
+    """🔴 SIGNATURES MUST NOT BE DESTROYED BY SOMETHING THAT LOOKS LIKE A NO-OP.
+
+    The first fix for the wedge cancelled ANY open route on re-review. A
+    qualification route waiting on its QA rung already carries three
+    signatures, and anyone with `test.review` re-submitting an ordinary review
+    would have thrown all three away and reset the ladder. Raised by the
+    Supervisor.
+
+    A route is superseded only when it is actually STALLED.
+    """
+    fx = testable
+    test_id = _ready(owner_session, fx, authority="qualification")
+
+    for actor, perms in ((fx["engineer"], DEV), (fx["chemist"], DEV), (fx["lead"], LEAD)):
+        record_decision(
+            owner_session,
+            test_id=test_id,
+            organization_id=fx["org"],
+            actor_id=actor,
+            held_permissions=perms,
+            spec=DecisionInput(decision="approve", stage="approval"),
+        )
+
+    signed_before = owner_session.execute(
+        text(
+            "SELECT count(*) FROM workflow.approval_route_steps s "
+            "JOIN workflow.approval_routes r ON r.id = s.route_id "
+            "WHERE r.entity_id = :t AND r.status = 'open' AND s.decision IS NOT NULL"
+        ),
+        {"t": test_id},
+    ).scalar_one()
+    assert signed_before == 3
+
+    # An ordinary re-review, on a perfectly healthy in-flight route.
+    _review(owner_session, fx, test_id)
+
+    signed_after = owner_session.execute(
+        text(
+            "SELECT count(*) FROM workflow.approval_route_steps s "
+            "JOIN workflow.approval_routes r ON r.id = s.route_id "
+            "WHERE r.entity_id = :t AND r.status = 'open' AND s.decision IS NOT NULL"
+        ),
+        {"t": test_id},
+    ).scalar_one()
+    assert signed_after == 3, "a re-review discarded signatures from a healthy ladder"
+
+    cancelled = owner_session.execute(
+        text(
+            "SELECT count(*) FROM workflow.approval_routes "
+            "WHERE entity_type = 'test' AND entity_id = :t AND status = 'cancelled'"
+        ),
+        {"t": test_id},
+    ).scalar_one()
+    assert cancelled == 0, "a healthy route was superseded"
+
+
+def test_get_test_shows_one_ladder_not_every_route_the_test_ever_had(
+    owner_session: Session,
+    testable: dict[str, uuid.UUID],  # noqa: F811
+) -> None:
+    """A CANCELLED LADDER MUST NOT INTERLEAVE WITH THE LIVE ONE.
+
+    After a correction the test has a cancelled route and a live one, both
+    snapshotting the same template. Without a route filter their steps merge
+    with duplicate step numbers and nothing to tell them apart — a screen
+    would show "step 1 approved" beside "step 1 undecided". Raised by the
+    Supervisor.
+    """
+    fx = testable
+    test_id = _ready(owner_session, fx)
+
+    record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["lead"],
+        held_permissions=DEV,
+        spec=DecisionInput(
+            decision="return_for_correction",
+            stage="approval",
+            rationale="rework the sample preparation",
+        ),
+    )
+    _review(owner_session, fx, test_id)  # supersedes the stalled route
+
+    seen = get_test(owner_session, test_id=test_id, organization_id=fx["org"])
+    ladder = seen["approval_route"]
+
+    numbers = [s["step_number"] for s in ladder]
+    assert len(numbers) == len(set(numbers)), (
+        f"two ladders were merged - step numbers repeat: {numbers}"
+    )
+    assert all(s["route_status"] == "open" for s in ladder), (
+        "the cancelled ladder is being shown as the live one"
+    )
+    assert all(s["decision"] is None for s in ladder), (
+        "the fresh ladder is carrying decisions from the superseded one"
+    )

@@ -32,6 +32,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.security import PermissionDenied, Principal, get_db, require_permission
@@ -556,6 +557,39 @@ def post_step_decision(
     the step's permission, or holds it and is disqualified by their own
     earlier involvement (ADR-019).
     """
+    # 🔴 A TEST'S ROUTE MAY NOT BE DRIVEN THROUGH HERE (I5).
+    #
+    # Since I5, `testing.tests.approval_state` is DERIVED from the route and
+    # written by exactly one place -- `_decide_on_route` in the testing
+    # service. This endpoint decides a step and does not touch
+    # `testing.tests`, so signing a test's ladder through it would drive the
+    # route to `approved` while the test's own axis stayed `pending` forever.
+    # `confirm_test` requires `approval_state = 'approved'`, so the test would
+    # become UNCONFIRMABLE despite a fully signed ladder -- and the traffic
+    # light would show YELLOW over a completed approval chain.
+    #
+    # Refused rather than synchronised: making a generic engine endpoint write
+    # a specific domain's table is the coupling §9 exists to prevent. The test
+    # module owns its own axis, so decisions on tests go through the test
+    # module. Raised by the Supervisor, which found the desynchronisation this
+    # change had introduced.
+    owner = session.execute(
+        text(
+            "SELECT entity_type FROM workflow.approval_routes "
+            "WHERE id = :rid AND organization_id = :org"
+        ),
+        {"rid": route_id, "org": principal.organization_id},
+    ).scalar_one_or_none()
+    if owner == "test":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "this route belongs to a test; decide it through "
+                "POST /api/tests/{test_id}/decisions so the test's approval state "
+                "stays in step with the route"
+            ),
+        )
+
     try:
         return decide_step(
             session,
