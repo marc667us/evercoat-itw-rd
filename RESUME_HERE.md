@@ -1,249 +1,197 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-**Session 2026-08-20. Read this file, then `TODO.md`.**
+**Session 2026-08-21. Read this file, then `TODO.md`.**
 
-Repository: **https://github.com/marc667us/evercoat-itw-rd** (PUBLIC),
-branch `master`. Tip **`4598fc8`**, working tree clean, pushed.
-**CI 5 of 5 green. Live suite 31 / 0 / 2 against the deployed site.**
+Repository: **https://github.com/marc667us/evercoat-itw-rd** (PUBLIC), branch
+`master`. Tip **`c358625`**, working tree clean, pushed.
+**CI 5 of 5 GREEN.** Local API suite **416 passed / 0 failed / 0 skipped**.
 
 Run `./scripts/handover.sh` first — it prints the repo tip, CI conclusion,
 what production is actually serving, and the next command to run.
 
 ---
 
-## ✅ WHAT SHIPPED TODAY — 12 COMMITS, 5 DEPLOYS, EACH WITH A LIVE SUITE
+## ▶ THE THREE THINGS THAT CHANGED TODAY
+
+### 1. 🔴 THE LOCAL DATABASE WORKS. IT ALWAYS COULD HAVE.
+
+Every previous session recorded *"Docker on this host is WEDGED — nothing
+answers on 5432 or 55432, so every database test's first execution is CI."*
+
+**That was wrong.** Docker Desktop had simply never been started, and it is
+not at the standard path — it is a user-level install at
+`%LOCALAPPDATA%\Programs\DockerDesktop\`. `evercoat-postgres` existed the
+whole time, exited 137 (OOM-killed).
+
+```bash
+"C:/Users/USER/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe" start evercoat-postgres
+```
+
+It comes up healthy on port **55432**. The database is now at migration head.
+To run the db suite:
+
+```bash
+cd apps/api
+TEST_DB_HOST=localhost TEST_DB_PORT=55432 POSTGRES_DB=evercoat_itw_rd \
+TEST_OWNER_USER=evercoat_owner TEST_OWNER_PASSWORD=ci-owner \
+APP_DB_USER=evercoat_app APP_DB_PASSWORD=ci-app \
+DATABASE_URL="postgresql+psycopg://evercoat_app:ci-app@localhost:55432/evercoat_itw_rd" \
+KEYCLOAK_ISSUER="http://127.0.0.1:1/realms/evercoat" \
+python -m pytest tests/ -q --ignore=tests/auth --ignore=tests/integration
+```
+
+The role passwords are set on the container to match CI's (`ci-owner` /
+`ci-app`); the superuser is `postgres` / `dev-superuser-pw`. To migrate:
+`MIGRATION_DATABASE_URL="postgresql+psycopg://postgres:dev-superuser-pw@localhost:55432/evercoat_itw_rd" python -m alembic upgrade head`
+
+⚠️ **Host RAM is 7.92 GB with very little free.** The 7 `aw-*` containers
+auto-start with Docker. A stray `nginxdemos/hello` container
+(`adoring_lederberg`) was stopped to make room — it belongs to nothing.
+**Do not stop any `aw-*` container.**
+
+**This matters more than it sounds.** Three defects found today were found
+*only* because the suite could run locally against a real PostgreSQL — CI had
+been green over all three.
+
+### 2. 🔴 THE DEPLOY BLOCKER IS STRUCTURAL, NOT A WAITING GAME — ADR-027
+
+The operator's rules as of today: **zero cost, strictly**, and **no task may
+be assigned to them** (no signup, no interactive login, no dashboard action).
+Under those two rules:
 
 | | |
 |---|---|
-| `fcc1093` | API security audit — 5 defects fixed |
-| `dc08863` | CI: a test pinned a framework internal; Semgrep blocked an f-string SQL |
-| `9caa774` | Laboratory + Testing screens; a controlled batch mass was shipping as a float |
-| `e3d9ffe` | Two navigation tests named Laboratory as their "unbuilt" example |
-| `26bd487` | **MSD** — agent tier, 4 routes, side panel, migration 026 |
-| `59a7c79` | `formula` vs `formula_version`, made a permanent cross-file invariant |
-| `84733a9` | MSD safety data (§11) + formulation equations (§8/§17) |
-| `24c5917` | **I20** — project membership cannot be self-granted (migration 027) |
-| `a5ac4e0` | That escalation test matched zero rows and could not fail |
-| `42b4cc9` | MSD formula comparison (§9) |
-| `7ca3d1c` | An additive-only Render provisioner |
-| `4598fc8` | I13 measured against the real Render API |
+| **Railway (ADR-026)** | 🔴 **REVERSED.** It has **no free tier** — $5 of credit for 30 days, then $1/month, then Hobby at $5/month minimum for anything with a database. It was never zero-cost compliant. **Do not restart this path.** |
+| **Render free web service** | Re-measured today: `POST /services plan=free` → **400 "free tier usage quota has been exhausted"** |
+| **Render free database** | **400 "cannot have more than ONE active free tier database"** — `autoworkshop-postgres` holds it and expires **2026-09-01**, when a live AutoWorkshop needs it back |
+
+🔴 **The database limit is per WORKSPACE, so waiting for the monthly
+instance-hour reset does not help.** Evercoat can obtain a free Render
+database only by taking the slot another running application depends on.
+Waiting changes *who* is broken, not *whether*.
+
+**Consequence, plainly: under the current rules there is no provider on which
+this app's API and Keycloak can be deployed.** The web tier stays on Render
+as a static site with a working certificate.
+
+Best measured alternative for whenever that constraint changes: **Coolify
+(open source) on Oracle Cloud Always Free** — permanent, 4 ARM cores, 24 GB,
+no deploy cap, no sleep, no cold start. Costs exactly one signup. Full
+compliance matrix (zero cost / no card / no owner action / supports an
+iterative loop) in `Desktop\Evercoat-Hosting-Options-2026-08-21.pdf`.
+
+⚠️ There is **exactly one** Render workspace, `tea-d86fu8mk1jcs7397i70g`
+"My Workspace". Solar, AutoWorkshop and Evercoat's web tier are all already
+in it. The operator's "no new workspace" rule is structurally satisfied.
+
+### 3. THE DIGITAL THREAD'S TWO OPEN ENDS ARE CLOSED — I6 AND I7
+
+Both functions existed, were correct, and **had no caller**.
+
+* **I6** — `open_failure_for_failed_test` is now called from
+  `complete_execution`, the only writer of `calculated_result`. A RED
+  confirmation result opens its Failure Investigation, as §10 has always said.
+* **I7** — `revise_version` now writes `formula_version_drivers`, so §29's
+  *"why was F008 created?"* has an answer. `driver_type` is **required** on
+  the revision endpoint — a **breaking change** to that route, made because §2
+  says a revision must show which failure or objective caused it, and
+  `change_reason` is prose that explains without linking.
 
 ---
 
-## 🔴 FIRST THING NEXT SESSION — I13, NOW RE-TARGETED AT RAILWAY (ADR-026)
+## 🔴 WHAT THE REVIEWERS FOUND — SEVENTH SESSION, NEITHER ALONE WAS ENOUGH
 
-**This is still the only thing between the repository and a working
-product.** Sign-in, Laboratory, Testing and MSD are all built and
-CI-proven against a real PostgreSQL. None of them can do anything on the
-live site, because the deployed artefact is a static export with no API
-and no Keycloak.
+**Codex found the transaction hazard. The Supervisor found five defects Codex
+did not, two of them permanent lockouts.** Run both, every time.
 
-### ▶ THE DECISION — operator, 2026-08-20
+### Codex
 
-> *"we replace render with railway free version for this app"*
+1. **`open_failure` called `session.rollback()`**, which rolls back the
+   TOPMOST transaction and discards nested ones. Once `complete_execution`
+   called it, a duplicate failure code would have destroyed the test
+   completion and its audit event. Now `begin_nested()` — placed **outside**
+   the `try`, because entering it flushes pending state before the savepoint
+   exists.
+2. 🔴 **My own test for that could not fail.** It asserted the session was
+   still usable — but `session.rollback()` leaves a Session perfectly usable,
+   so it would have passed against the broken code. It now asserts the
+   caller's work *survived*, and was **proved by falsification**: the old
+   implementation was temporarily restored and the test fails against it.
+3. **Migration 028 claimed more than it delivers.** `clock_timestamp()` plus a
+   random-UUID tiebreaker is a *stable display order*, not a guaranteed
+   insertion order. The same defect the last two sessions kept finding — a
+   comment stating a stronger rule than the code — this time in my own comment
+   one commit after writing it.
 
-**Render is retired as this app's target for the API, PostgreSQL and
-Keycloak tiers; Railway's free offering is the SELECTED TARGET for them.**
-Recorded as **ADR-026** in `DECISIONS.md`. **The choice is made; the
-migration is not.**
+### Supervisor
 
-This is a **provider change, not an architecture change.** Nothing built
-is Render-specific — `apps/api/Dockerfile`, the shipped realm at
-`services/keycloak/evercoat-realm.json`, the Alembic chain, the seeder
-and the CI suite all move as they are.
+1. `post_completion` didn't map the failure domain's exceptions → **HTTP 500**
+   instead of the 409 its sibling routes give the same condition.
+2. 🔴 **PERMANENT LOCKOUT.** No uniqueness on `(organization_id, test_id)`, and
+   `POST /api/failures` accepts any `test_id` — so two engineers opening an
+   investigation for one test made the link lookup raise
+   `MultipleResultsFound` on **every retry**. That test could never be
+   completed again. Fixed at both layers (service uses `LIMIT 1`; migration
+   029 adds the partial unique index, which **refuses to build** over existing
+   duplicates and names them).
+3. 🔴 **PERMANENT LOCKOUT, second one.** One squatted `FI-<test_number>` code
+   made a test uncompletable forever — `failure_code` has no rename path.
+   `_free_failure_code` now takes the first free suffix.
+4. 🔴 **`list_messages` returned the OLDEST page.** `ORDER BY posted_at ASC …
+   LIMIT 100` with no cursor: past 100 messages a reader was pinned to the
+   opening of the conversation permanently and nothing new was reachable.
+5. 028's `id` tiebreaker made the sort unservable by 022's index → full sort
+   on every channel read. 029 adds a matching index.
 
-🔴 **NOTHING HAS BEEN PROVISIONED. THE WORK HAS NOT STARTED.** Do not read
-the ADR as progress. It is blocked on **one owner action**:
+### And one found by simply running the suite
 
-| What | State |
-|---|---|
-| Railway CLI on this host | **Unauthenticated** — `railway whoami` → `Unauthorized` (v4.66.0, `C:/Users/USER/nodejs/railway`). Needs an interactive `railway login`, which only the owner can complete. |
-| `RAILWAY_TOKEN` repository secret | **Not set.** `RENDER_API_KEY` is still the only repository secret. |
-
-⚠️ **Confirm the free allowance at sign-in, BEFORE creating anything.**
-Railway withdrew its perpetual free tier in 2023 for a one-time trial
-credit with a paid Hobby plan beyond it. If this account has no genuinely
-free allowance, that is an **owner decision under the zero-cost rule** —
-surface it, never assume it.
-
-### The order of work, once authenticated
-
-1. **Leave the web tier on Render.** It is a *static site*, unaffected by
-   the quota that blocks the API, and `itwevercoatrd.aiappinvent.com` is
-   already CNAME'd to it with a working certificate. Moving it is a
-   separate decision with a DNS change attached, and **there are no
-   Namecheap credentials on this machine.**
-2. Postgres → `alembic upgrade head` (as a role that owns
-   `alembic_version`) → API service → Keycloak from the shipped realm.
-3. **Only then** rebuild web with `NEXT_PUBLIC_API_BASE_URL` and
-   `NEXT_PUBLIC_KEYCLOAK_URL` on the Railway hosts. 🔴 **Both are
-   BUILD-time** — setting them on a running service changes nothing.
-4. Keep `render-audit.yml` and `render-provision.yml` until Railway is
-   serving; retire them in the commit that proves the live deploy.
-
-### Why Render was abandoned — measured, not assumed
-
-`render-provision.yml` was run against the real Render API with the
-repository's `RENDER_API_KEY`. Both halves were refused, verbatim:
-
-```
-POST /postgres         -> 400  "cannot have more than one active free tier database"
-POST /services free    -> 400  "free tier usage quota has been exhausted,
-                                new services are not allowed"
-```
-
-🔴 **THE API KEY WORKS. THOSE ARE 400s, NOT 401s.** `GET /owners`
-returned 200 (`tea-d86fu8mk1jcs7397i70g`, `marc667us@yahoo.com`).
-**A new or rotated key produces the identical two errors. Do not spend a
-session rotating credentials.** The workspace is shared with AutoWorkshop
-and Solar and is full: five `standard` web services, `solarpro-postgres`
-on `basic_256mb`, and `autoworkshop-postgres` holding the one free
-database slot.
-
-⚠️ **`autoworkshop-postgres` EXPIRES 2026-09-01.** A different app loses
-its database that day. Same workspace, so it will surface here.
+🔴 **`now()` IS TRANSACTION-START TIME.** `messaging.messages.posted_at`
+defaulted to `now()`, so every message written in one transaction got an
+**identical** timestamp and `ORDER BY posted_at` had nothing to order by. A
+conversation had *no defined order* and a reply could render above the message
+it answered. `test_023_messaging` failed locally while passing in CI — **CI
+had been green on heap luck.** Migration 028.
 
 ---
 
-## 🔴 `TODO.md` WAS DESTROYED BY ITS OWN LAST TWO COMMITS — RECOVERED (I25)
+## ▶ NEXT
 
-Found at session close, and it would have been invisible for weeks.
-
-At tip `945b2fe`, `TODO.md` was **15,794,988 bytes across 63 lines**, with
-single lines up to **1.8 million characters** — the I13 table row
-concatenated into itself roughly 1,369 times. **Every issue except I13
-had been deleted**: I3–I12, I14–I21 and I23 were all gone.
-
-| Commit | `TODO.md` size | State |
-|---|---|---|
-| `84733a9` | 17,815 B | ✅ register intact — I3–I23 |
-| `24c5917` | 11,940 B | 🔴 already damaged — I10–I13, I20, I21 lost |
-| `4598fc8` | 15,794,988 B | 🔴 destroyed |
-
-**Recovered from `84733a9:TODO.md`**, with the I13 and I20 updates
-re-applied by hand. The file is now 20 KB with a longest line of ~1.6 K.
-
-⚠️ **The root cause is NOT established.** It is almost certainly an
-append/rewrite step in the docs-update path that re-emits the whole file
-into a single row. **Find it before the next docs commit or this recurs
-silently.** It is not periodic repetition, so it cannot be undone
-mechanically — `git show <commit>:TODO.md` is the only recovery.
-
-*The lesson is the same one as the rest of the session: a file that is
-committed, pushed and CI-green can still be destroyed. Nothing checks
-documentation.*
-
----
-
-## 🔴 FOUR CONFIDENTIALITY BOUNDARIES CLOSED — ALL THE SAME SHAPE
-
-Every one had a comment stating the correct rule sitting above a schema
-that implemented a weaker one. **The words were less protected than the
-room.**
-
-| Migration | What it closed |
-|---|---|
-| **025** | `messaging.messages` was organization-scoped while `channels` carried the project predicate — and `list_messages` never joined `channels`. Restricted-project conversations **and other people's direct messages** were readable by anyone holding a channel id. |
-| **025, 2nd round** | Found by instructing a reviewer to **refute my own fix**: self-enrolment into `channel_members`, and retyping a channel out of `direct` with one UPDATE. 🔴 **Its proposed fix would have broken direct messages entirely** — a `WITH CHECK` subquery cannot see the row its own command is inserting, so the creator's first membership row is refused. Bootstraps off the channel's immutable `created_by` instead. |
-| **026** | `ai.msd_turns` / `ai.msd_evidence` were organization-scoped while `msd_threads` was owner-scoped. `msd_evidence` stores **500-character excerpts of cited records** — retrieval was filtered before the model saw anything, and the record of what it saw was not. |
-| **027** | `projects.project_members` had `USING` and **no `WITH CHECK`**. One INSERT made `core.is_project_member()` answer TRUE, and **every** project-scoped policy in the database reads `confidentiality='normal' OR is_project_member(p.id)` — so one row opened formulas, batches, tests, failures, approvals and messaging. |
-
-🔴 **On 027 I was wrong, and it cost a day.** I recorded it as unfixable
-without a database because "`projects.projects` has no bootstrap column".
-**`lead_user_id` exists**, and migration 006 already used it for exactly
-that purpose on the read side. I had read that file the same day.
-**Read the adjacent migration before declaring something impossible.**
-
----
-
-## 🔴 THE LESSON OF THE DAY: EVERYTHING WAS HIDING BEHIND GREEN
-
-Six times, twice in my own work:
-
-1. **axe-core reported ZERO violations across an unreadable sidebar.**
-   17 of 26 nav items rendered at `text-slate-300` — **1.48:1**, where AA
-   needs 4.5:1. `isDisabled()` returns true for anything carrying
-   `aria-disabled="true"`, and `color-contrast` skips disabled nodes.
-   *The attribute that correctly described the state silenced the check.*
-2. **A metrics comment promised "route template, not the concrete path"
-   while the code did the opposite** — `scope["route"]` was read BEFORE
-   `call_next`, so the raw-path fallback fired on every request. Anonymous
-   unbounded Prometheus cardinality.
-3. **`Decimal` → float.** `planned_quantity_kg` and `measured_value`
-   (`NUMERIC(18,6)` — a physical measurement) shipped with their scale
-   destroyed. Fixed **generically** rather than with a key list.
-4. **`"weigh"` matched inside `"lightweight"`** — MSD answered a question
-   about lightweight fillers with an explanation of laboratory batches.
-5. **An exit code reported a deploy FAILURE for a deploy that succeeded** —
-   a transient `api.github.com` timeout made `gh run list` return an empty
-   id, so `gh run watch ""` failed.
-6. **My own UPDATE escalation test matched ZERO rows**, so no `WITH CHECK`
-   was ever evaluated. A check that cannot fail, in a test written to catch
-   exactly that. It only surfaced because I used `pytest.raises`.
-
-Each of those is now an instrument that fails if the condition returns.
-
----
-
-## MSD — WHAT IT IS AND WHAT IT REFUSES
-
-§0.2 tier: Root Orchestrator → MSD Conductor → six plain-Python tools.
-Four routes under `/api/msd`, and a side panel on the top-bar control that
-had been a disabled placeholder for four slices.
-
-🔴 **The model may only `rephrase()` an already-composed answer.**
-`LanguageModelPort` has exactly one method and **no method that takes a
-question and returns an answer**, so a model cannot introduce a formula
-code or a measurement. A test asserts the port's shape. MSD therefore
-works identically with **no model at all** — which is what CI runs, what
-the deployed site would run, and what §7's zero-cost rule requires.
-
-The guarantee is stated precisely rather than overclaimed: a badly-behaved
-model *can* corrupt the prose, and a test demonstrates exactly that while
-showing the citations survive intact.
-
-**Capabilities:** application guidance · pending work (delegates to
-`my_work` — a third definition of the inbox was written and deleted) ·
-record search · **material safety (§11, all four founder questions)** ·
-**the formulation equations (§8/§17, delegating to `evaluate_version`)** ·
-**formula comparison (§9)**.
-
-**It refuses to say:** *"there are no formulas like that"* (it sees only
-what the asker can read) · *"you are all caught up"* over an inbox it
-could not fill · *"nothing uses RM-104"* during a recall · anything at all
-without a session.
-
-**Percentages are shown as a PAIR, never a delta** — subtracting two
-percentages is arithmetic, and a number MSD prints is a number a chemist
-may quote. A test asserts no computed difference appears in the output.
-
-**Not built:** test-result explanation (§17 — `replicate_statistics` and
-`derive_disposition` already exist) and knowledge/RAG search (Slice 8,
-needs pgvector). Both are wiring, not new engineering. `TODO.md` I23.
+1. **I5** — `record_decision` writes `testing.test_decisions` directly instead
+   of driving `workflow.approval_routes`. Two approval records for one event;
+   §9 says one shared engine.
+2. **I8** — notifications have no producer outside mentions, so §11's sidebar
+   counts read zero.
+3. 🔴 **I30** — **22 more `session.rollback()` calls inside IntegrityError
+   handlers, across 9 modules.** Full inventory in `TODO.md`. Every one is a
+   latent transaction-destroyer the moment §12's reuse rule composes it into a
+   larger unit of work; two have already bitten. They are also **redundant
+   even standalone** — `session_scope` already rolls back on any exception —
+   so the sweep only removes risk. One reviewed slice with a shared helper.
+4. **I3** — the golden Playwright E2E. Now genuinely reachable for the first
+   time, because a real database is available locally.
 
 ---
 
 ## Constraints that must not be forgotten
 
-- 🔴 **Solar is never part of this app.** Its workflows run on their own
-  cron schedule; activity there has nothing to do with this repository.
+- 🔴 **Zero cost, strictly. And no task may be assigned to the operator** —
+  no signup, no interactive login, no dashboard action. A path whose first
+  step is an owner action is not a path.
+- 🔴 **Solar is never part of this app**, and Solar has **no running Docker
+  container on this machine** — measured. Only a `factory/intelligent-pv-solar`
+  image, exited three months ago. Solar is Render-only.
 - 🔴 **Do not touch any `aw-*` container.** This project's DB is
   `evercoat-postgres` on port **55432**.
-- ⚠️ **Docker on this host is wedged.** Nothing answers on 5432 or 55432,
-  so every database test's first execution is CI. Say that plainly rather
-  than reporting a local pass that did not happen.
 - ⚠️ **CI has a one-run-per-ref concurrency group.** Pushing evicts an
-  in-progress run — a `cancelled` conclusion on the previous commit is
-  usually this, not a failure.
-- ▶ **Render is retired as this app's API/DB/Keycloak target (ADR-026).**
-  Those tiers go to **Railway**, blocked on an interactive `railway login`
-  and a `RAILWAY_TOKEN` secret, neither of which exists yet. The **web**
-  tier deliberately stays on Render for now — it is a static site with a
-  working certificate on `itwevercoatrd.aiappinvent.com`.
-- ⚠️ **Never** use `render-setup.yml` apply mode to force a deploy: it
-  issues `DELETE` against **AutoWorkshop** custom domains. Use
+  in-progress run — a `cancelled` conclusion on the previous commit is usually
+  this, not a failure.
+- ⚠️ **Never** use `render-setup.yml` apply mode to force a deploy: it issues
+  `DELETE` against **AutoWorkshop** custom domains. Use
   `gh workflow run "Deploy web (manual)"`.
-- ⚠️ **CodeRabbit CLI 0.7.5** is installed at
-  `%LOCALAPPDATA%\Programs\coderabbit` and signature-verified, but has
-  **never been authenticated** — it has reviewed none of these 12 commits.
-  `coderabbit auth login` is interactive.
+- ⚠️ **Codex `exec` cannot take a long prompt as an argument on Windows** —
+  the command line is limited to ~8 KB. Pipe it on **stdin** instead:
+  `codex.cmd exec --skip-git-repo-check - < prompt.txt`. That also closes
+  stdin, which is what stops it hanging.
+- ⚠️ **CodeRabbit CLI 0.7.5** is installed and signature-verified but has
+  **never been authenticated**; `coderabbit auth login` is interactive and is
+  therefore blocked by the no-assignment rule.
