@@ -329,6 +329,27 @@ def guarded_write(session: Session) -> Iterator[None]:
                 raise DomainError("a message a human can act on") from exc
             raise
     """
+    # 🔴 THE INVARIANT THE DOCSTRING ABOVE RELIES ON, CHECKED RATHER THAN
+    # ASSUMED. Raised by Codex: because callers enter this helper from INSIDE
+    # their own `try`, a flush triggered by `begin_nested()` would raise where
+    # a handler assumes a savepoint already protected it. That is impossible
+    # only while there is no pending ORM state — so say so, and fail loudly
+    # and immediately if that ever stops being true, rather than mistranslating
+    # a constraint violation months later.
+    #
+    # RuntimeError, deliberately: it is not an IntegrityError, so it passes
+    # straight through every call site's handler instead of being swallowed by
+    # one.
+    if session.new or session.dirty or session.deleted:
+        raise RuntimeError(
+            "guarded_write() was entered with pending ORM state "
+            f"(new={len(session.new)}, dirty={len(session.dirty)}, "
+            f"deleted={len(session.deleted)}). begin_nested() flushes BEFORE the "
+            "SAVEPOINT exists, so that flush is unprotected and its IntegrityError "
+            "would be caught by a handler that assumes otherwise. Flush explicitly "
+            "before calling this, or keep writes as raw session.execute()."
+        )
+
     savepoint = session.begin_nested()
     with savepoint:
         yield
