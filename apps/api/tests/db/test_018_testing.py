@@ -33,6 +33,7 @@ from app.calculations.testing import (
     REVIEW_STATES,
     VALIDITY_STATUSES,
 )
+from app.domains.failures.service import open_failure_for_failed_test
 from app.domains.testing.service import (
     DecisionInput,
     ReplicateInput,
@@ -856,3 +857,134 @@ def test_a_test_cannot_be_repointed_at_a_different_sample(
         )
 
     assert "re-pointed" in str(caught.value.orig)
+
+
+# ---------------------------------------------------------------------------
+# I6 — a RED confirmation result opens its Failure Investigation, automatically
+#
+# CLAUDE.md §10: "A RED confirmation result automatically opens or links a
+# Failure Investigation." `open_failure_for_failed_test` implemented that rule
+# correctly and HAD NO CALLER, so nothing in the product ever ran it. These
+# tests assert the wiring, and — more importantly — assert the two cases where
+# it must NOT fire. A rule that fires on everything is not a rule.
+# ---------------------------------------------------------------------------
+
+
+def _failure_rows_for(session: Session, test_id: uuid.UUID) -> list[dict[str, object]]:
+    """Read the investigations pointing at one test, straight from the table.
+
+    Deliberately not via the return value of `complete_execution` — that is
+    the thing under test, and a test that only reads its own subject's report
+    of itself cannot detect a report that is wrong.
+    """
+    return [
+        dict(r)
+        for r in session.execute(
+            text(
+                "SELECT id, failure_code, status, severity, test_id "
+                "FROM quality.failures WHERE test_id = :t"
+            ),
+            {"t": test_id},
+        ).mappings()
+    ]
+
+
+def test_a_failed_confirmation_automatically_opens_a_failure_investigation(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """§10, end to end: complete a failing confirmation, get an investigation."""
+    fx = testable
+    test_id = _plan(owner_session, fx)
+    _measure(owner_session, fx, test_id, ["2.0", "2.1", "1.9"])  # below the 5.0 minimum
+
+    result = complete_execution(
+        owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+    )
+
+    assert result["calculated_result"] == "fail"
+
+    # Reported to the caller...
+    assert result["failure_investigation"] is not None
+    assert result["failure_investigation"]["status"] == "open"
+
+    # ...and actually in the table.
+    rows = _failure_rows_for(owner_session, test_id)
+    assert len(rows) == 1, f"expected exactly one investigation, found {len(rows)}"
+    assert rows[0]["id"] == result["failure_investigation"]["id"]
+    assert rows[0]["severity"] == "major"
+
+
+def test_a_passing_confirmation_opens_no_investigation(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """The first half of proving the rule can decline.
+
+    Without this, an implementation that opened an investigation for every
+    completed test would satisfy the test above.
+    """
+    fx = testable
+    test_id = _plan(owner_session, fx)
+    _measure(owner_session, fx, test_id, ["11.9", "12.0", "12.1"])  # inside 5.0-20.0
+
+    result = complete_execution(
+        owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+    )
+
+    assert result["calculated_result"] == "pass"
+    assert result["failure_investigation"] is None
+    assert _failure_rows_for(owner_session, test_id) == []
+
+
+def test_a_failed_screening_test_opens_no_investigation(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """🔴 THE DISTINCTION THE RULE ACTUALLY TURNS ON.
+
+    A failed SCREENING test is information, not a verdict on the product:
+    screening is preliminary authority and is never confirmation evidence.
+    The plan's X11 settles that there is no single global RED rule. An
+    implementation keyed on `calculated_result` alone — the obvious reading —
+    passes every other test in this section and fails this one.
+    """
+    fx = testable
+    test_id = _plan(owner_session, fx, test_purpose="screening")
+    _measure(owner_session, fx, test_id, ["2.0", "2.1", "1.9"])  # the same failing values
+
+    result = complete_execution(
+        owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+    )
+
+    assert result["calculated_result"] == "fail", "the values must still compute to fail"
+    assert result["failure_investigation"] is None
+    assert _failure_rows_for(owner_session, test_id) == []
+
+
+def test_the_automatic_open_links_rather_than_opening_a_second(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """ "Opens OR LINKS" — idempotence is part of the rule, not a nicety.
+
+    Two investigations of one failure is two half-answers, and the digital
+    thread then has no single place to record the root cause.
+    """
+    fx = testable
+    test_id = _plan(owner_session, fx)
+    _measure(owner_session, fx, test_id, ["2.0", "2.1", "1.9"])
+
+    first = complete_execution(
+        owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+    )["failure_investigation"]
+    assert first is not None
+
+    # Re-run the helper directly: `complete_execution` refuses a second call,
+    # so the only way to exercise the link branch is to invoke it again here.
+    again = open_failure_for_failed_test(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["technician"],
+    )
+
+    assert again is not None
+    assert again["id"] == first["id"], "a second investigation was opened for one failure"
+    assert len(_failure_rows_for(owner_session, test_id)) == 1

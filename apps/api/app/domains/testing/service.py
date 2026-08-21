@@ -41,6 +41,13 @@ from app.calculations.testing import (
 from app.core.audit import AuditEvent, write_audit
 from app.core.tenancy import require_active_member
 
+# `open_failure_for_failed_test` is imported cross-domain, in the same direction
+# as the existing `formulations -> materials` dependency. Quality does not import
+# testing, so this cannot become a cycle. §10 makes opening the investigation
+# part of what a RED confirmation result MEANS, not a follow-up somebody may
+# forget, so the dependency belongs in the service and not in the route.
+from app.domains.failures.service import open_failure_for_failed_test
+
 __all__ = [
     "DecisionInput",
     "ReplicateInput",
@@ -556,8 +563,38 @@ def complete_execution(
             reason="execution complete; result computed from the raw replicates",
         ),
     )
+    # §10: "A RED confirmation result automatically opens or links a Failure
+    # Investigation." This is the moment such a result comes into existence —
+    # `complete_execution` is the only writer of `calculated_result` — so it is
+    # the only place the rule can be enforced without relying on a caller.
+    #
+    # DELIBERATELY IN THE SAME TRANSACTION, AND DELIBERATELY NOT SWALLOWED.
+    # A completed RED confirmation with no investigation is precisely the state
+    # §10 forbids, so it must not be reachable by committing half of this. If
+    # the open fails, the completion fails with it and says why.
+    #
+    # 🔴 Do NOT "harden" this with a savepoint and a bare except. SQLAlchemy's
+    # `Session.rollback()` always rolls back the TOPMOST transaction and
+    # discards nested ones, and `open_failure` calls it on IntegrityError — so
+    # a savepoint would not protect this completion, it would only hide that it
+    # had already been destroyed.
+    #
+    # Idempotent by construction: the helper returns the existing investigation
+    # when one already points at this test, and returns None for a screening
+    # test or a non-failing result.
+    investigation = open_failure_for_failed_test(
+        session,
+        test_id=test_id,
+        organization_id=organization_id,
+        actor_id=actor_id,
+    )
+
     out = _decimal_strings(row)
     out["evaluation_detail"] = context["evaluation"].detail
+    # Reported rather than left for the caller to discover: a technician who
+    # completes a test needs to see that it opened an investigation, and a
+    # null here means "no investigation was warranted", not "not checked".
+    out["failure_investigation"] = dict(investigation) if investigation else None
     return out
 
 
