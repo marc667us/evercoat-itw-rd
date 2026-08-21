@@ -56,6 +56,7 @@ from app.calculations.formulation import (
     voc_content_g_per_l,
 )
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
 from app.domains.failures.service import DriverInput, record_driver
 from app.domains.materials.service import BLOCKING_STATUSES
@@ -235,60 +236,60 @@ def create_formula(
     )
 
     try:
-        formula_id_or_none: uuid.UUID | None = session.execute(
-            text(
-                """
-                INSERT INTO formulations.formulas
-                    (organization_id, project_id, formula_code, name,
-                     product_family, description, owner_user_id, created_by)
-                SELECT :org, p.id, :code, :name, :family, :description, :owner, :actor
-                FROM projects.projects p
-                WHERE p.id = :pid
-                  AND p.organization_id = :org
-                  AND (p.confidentiality = 'normal' OR core.is_project_member(p.id))
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "pid": project_id,
-                "code": spec.formula_code,
-                "name": spec.name,
-                "family": spec.product_family,
-                "description": spec.description,
-                "owner": owner_id,
-                "actor": actor_id,
-            },
-        ).scalar_one_or_none()
+        with guarded_write(session):
+            formula_id_or_none: uuid.UUID | None = session.execute(
+                text(
+                    """
+                    INSERT INTO formulations.formulas
+                        (organization_id, project_id, formula_code, name,
+                         product_family, description, owner_user_id, created_by)
+                    SELECT :org, p.id, :code, :name, :family, :description, :owner, :actor
+                    FROM projects.projects p
+                    WHERE p.id = :pid
+                      AND p.organization_id = :org
+                      AND (p.confidentiality = 'normal' OR core.is_project_member(p.id))
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "pid": project_id,
+                    "code": spec.formula_code,
+                    "name": spec.name,
+                    "family": spec.product_family,
+                    "description": spec.description,
+                    "owner": owner_id,
+                    "actor": actor_id,
+                },
+            ).scalar_one_or_none()
 
-        if formula_id_or_none is None:
-            # One message for "no such project" and for "a restricted
-            # project you do not belong to". The two must be
-            # indistinguishable, or the error is a way to enumerate other
-            # teams' project ids.
-            raise FormulaNotFoundError("no such project in this organization")
-        formula_id: uuid.UUID = formula_id_or_none
+            if formula_id_or_none is None:
+                # One message for "no such project" and for "a restricted
+                # project you do not belong to". The two must be
+                # indistinguishable, or the error is a way to enumerate other
+                # teams' project ids.
+                raise FormulaNotFoundError("no such project in this organization")
+            formula_id: uuid.UUID = formula_id_or_none
 
-        version_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO formulations.formula_versions
-                    (organization_id, project_id, formula_id, version_number,
-                     version_code, status, created_by)
-                VALUES (:org, :pid, :fid, 1, :vcode, 'draft', :actor)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "pid": project_id,
-                "fid": formula_id,
-                "vcode": f"{spec.formula_code}-V001",
-                "actor": actor_id,
-            },
-        ).scalar_one()
+            version_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO formulations.formula_versions
+                        (organization_id, project_id, formula_id, version_number,
+                         version_code, status, created_by)
+                    VALUES (:org, :pid, :fid, 1, :vcode, 'draft', :actor)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "pid": project_id,
+                    "fid": formula_id,
+                    "vcode": f"{spec.formula_code}-V001",
+                    "actor": actor_id,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         detail = str(exc.orig)
         if "formulas_org_code_key" in detail:
             raise FormulaError(
@@ -453,29 +454,29 @@ def set_components(
     )
 
     try:
-        for c in components:
-            session.execute(
-                text(
-                    """
-                    INSERT INTO formulations.formula_components
-                        (organization_id, project_id, formula_version_id, material_id,
-                         percentage, role_override, display_order, notes)
-                    VALUES (:org, :pid, :vid, :mid, :pct, :role, :order, :notes)
-                    """
-                ),
-                {
-                    "org": organization_id,
-                    "pid": version["project_id"],
-                    "vid": version_id,
-                    "mid": c.material_id,
-                    "pct": c.percentage,
-                    "role": c.role_override,
-                    "order": c.display_order,
-                    "notes": c.notes,
-                },
-            )
+        with guarded_write(session):
+            for c in components:
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO formulations.formula_components
+                            (organization_id, project_id, formula_version_id, material_id,
+                             percentage, role_override, display_order, notes)
+                        VALUES (:org, :pid, :vid, :mid, :pct, :role, :order, :notes)
+                        """
+                    ),
+                    {
+                        "org": organization_id,
+                        "pid": version["project_id"],
+                        "vid": version_id,
+                        "mid": c.material_id,
+                        "pct": c.percentage,
+                        "role": c.role_override,
+                        "order": c.display_order,
+                        "notes": c.notes,
+                    },
+                )
     except IntegrityError as exc:
-        session.rollback()
         detail = str(exc.orig)
         if "formula_components_material_fk" in detail:
             raise FormulationError(
@@ -965,81 +966,81 @@ def revise_version(
     parent = _load_version(session, version_id=version_id, organization_id=organization_id)
 
     try:
-        new_row = (
-            session.execute(
+        with guarded_write(session):
+            new_row = (
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO formulations.formula_versions
+                            (organization_id, project_id, formula_id, version_number,
+                             version_code, parent_version_id, status, change_reason,
+                             technical_hypothesis, expected_effect, total_tolerance_pct,
+                             created_by)
+                        SELECT :org, f.project_id, f.id,
+                               (SELECT COALESCE(max(v.version_number), 0) + 1
+                                  FROM formulations.formula_versions v
+                                 WHERE v.formula_id = f.id AND v.organization_id = :org),
+                               COALESCE(:vcode, f.formula_code || '-V' || lpad(
+                                   ((SELECT COALESCE(max(v.version_number), 0) + 1
+                                       FROM formulations.formula_versions v
+                                      WHERE v.formula_id = f.id
+                                        AND v.organization_id = :org))::text, 3, '0')),
+                               :parent, 'draft', :reason, :hypothesis, :expected,
+                               :tolerance, :actor
+                        FROM formulations.formulas f
+                        WHERE f.id = :fid AND f.organization_id = :org
+                        RETURNING id, version_code, version_number
+                        """
+                    ),
+                    {
+                        "org": organization_id,
+                        "fid": parent["formula_id"],
+                        "parent": version_id,
+                        "vcode": spec.version_code,
+                        "reason": spec.change_reason,
+                        "hypothesis": spec.technical_hypothesis,
+                        "expected": spec.expected_effect,
+                        "tolerance": parent["total_tolerance_pct"],
+                        "actor": actor_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if new_row is None:
+                raise FormulaNotFoundError("the parent version's formula is not visible")
+
+            # Copy the composition. INSERT ... SELECT rather than a read into
+            # Python and a write back: the copy is then atomic with respect to
+            # anything else touching the parent, and no percentage passes
+            # through a Python float on the way.
+            #
+            # COUNTED IN THE DATABASE, in the same statement that writes.
+            #
+            # `.rowcount` is untyped on SQLAlchemy's `Result` (mypy said so) and
+            # the DBAPI documents it as undefined for some statement shapes;
+            # `len(...all())` drags every returned id across the wire for a
+            # number, which Semgrep flagged (`len-all-count`). A CTE around the
+            # INSERT gives the count without either problem.
+            copied = session.execute(
                 text(
                     """
-                    INSERT INTO formulations.formula_versions
-                        (organization_id, project_id, formula_id, version_number,
-                         version_code, parent_version_id, status, change_reason,
-                         technical_hypothesis, expected_effect, total_tolerance_pct,
-                         created_by)
-                    SELECT :org, f.project_id, f.id,
-                           (SELECT COALESCE(max(v.version_number), 0) + 1
-                              FROM formulations.formula_versions v
-                             WHERE v.formula_id = f.id AND v.organization_id = :org),
-                           COALESCE(:vcode, f.formula_code || '-V' || lpad(
-                               ((SELECT COALESCE(max(v.version_number), 0) + 1
-                                   FROM formulations.formula_versions v
-                                  WHERE v.formula_id = f.id
-                                    AND v.organization_id = :org))::text, 3, '0')),
-                           :parent, 'draft', :reason, :hypothesis, :expected,
-                           :tolerance, :actor
-                    FROM formulations.formulas f
-                    WHERE f.id = :fid AND f.organization_id = :org
-                    RETURNING id, version_code, version_number
+                    WITH copied AS (
+                        INSERT INTO formulations.formula_components
+                            (organization_id, project_id, formula_version_id, material_id,
+                             percentage, role_override, display_order, notes)
+                        SELECT c.organization_id, c.project_id, :new_vid, c.material_id,
+                               c.percentage, c.role_override, c.display_order, c.notes
+                        FROM formulations.formula_components c
+                        WHERE c.formula_version_id = :old_vid AND c.organization_id = :org
+                        RETURNING id
+                    )
+                    SELECT count(*) FROM copied
                     """
                 ),
-                {
-                    "org": organization_id,
-                    "fid": parent["formula_id"],
-                    "parent": version_id,
-                    "vcode": spec.version_code,
-                    "reason": spec.change_reason,
-                    "hypothesis": spec.technical_hypothesis,
-                    "expected": spec.expected_effect,
-                    "tolerance": parent["total_tolerance_pct"],
-                    "actor": actor_id,
-                },
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if new_row is None:
-            raise FormulaNotFoundError("the parent version's formula is not visible")
-
-        # Copy the composition. INSERT ... SELECT rather than a read into
-        # Python and a write back: the copy is then atomic with respect to
-        # anything else touching the parent, and no percentage passes
-        # through a Python float on the way.
-        #
-        # COUNTED IN THE DATABASE, in the same statement that writes.
-        #
-        # `.rowcount` is untyped on SQLAlchemy's `Result` (mypy said so) and
-        # the DBAPI documents it as undefined for some statement shapes;
-        # `len(...all())` drags every returned id across the wire for a
-        # number, which Semgrep flagged (`len-all-count`). A CTE around the
-        # INSERT gives the count without either problem.
-        copied = session.execute(
-            text(
-                """
-                WITH copied AS (
-                    INSERT INTO formulations.formula_components
-                        (organization_id, project_id, formula_version_id, material_id,
-                         percentage, role_override, display_order, notes)
-                    SELECT c.organization_id, c.project_id, :new_vid, c.material_id,
-                           c.percentage, c.role_override, c.display_order, c.notes
-                    FROM formulations.formula_components c
-                    WHERE c.formula_version_id = :old_vid AND c.organization_id = :org
-                    RETURNING id
-                )
-                SELECT count(*) FROM copied
-                """
-            ),
-            {"new_vid": new_row["id"], "old_vid": version_id, "org": organization_id},
-        ).scalar_one()
+                {"new_vid": new_row["id"], "old_vid": version_id, "org": organization_id},
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         detail = str(exc.orig)
         if "formula_versions_code_key" in detail:
             raise FormulationError(

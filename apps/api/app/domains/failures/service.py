@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
 
 __all__ = [
@@ -140,34 +141,13 @@ def open_failure(
         session, user_id=actor_id, organization_id=organization_id, role_description="author"
     )
 
-    # 🔴 SAVEPOINT, NOT `session.rollback()`.
-    #
-    # This used to catch IntegrityError and call `session.rollback()`, which
-    # rolls back the TOPMOST transaction and discards every nested one. That is
-    # fine when `open_failure` is the whole request, and destructive when it is
-    # one step inside a larger unit of work: `complete_execution` calls this to
-    # satisfy §10, and a duplicate failure code would have thrown away the test
-    # completion and its audit event along with the failed INSERT.
-    #
-    # `begin_nested()` issues a real SAVEPOINT, so a constraint violation rolls
-    # back to it and leaves the caller's transaction alive and usable. The
-    # caller then decides what the failure means -- which is the caller's
-    # decision to make, not this function's.
-    #
-    # AND `begin_nested()` IS OUTSIDE THE `try`, DELIBERATELY. Entering it
-    # flushes any pending session state BEFORE the SAVEPOINT exists. With the
-    # call inside the `try`, an IntegrityError raised by that flush — from
-    # some unrelated pending write — would be caught by a handler that assumes
-    # a savepoint protected it, misreported as a duplicate failure code if the
-    # message happened to mention the constraint, and returned from with the
-    # outer transaction already dead. Raised by Codex.
-    #
-    # Both halves are proved by
-    # `test_a_duplicate_failure_code_does_not_destroy_the_caller_transaction`,
-    # which was run against the OLD implementation to confirm it fails there.
-    savepoint = session.begin_nested()
+    # `guarded_write` (a SAVEPOINT) rather than a bare try: a duplicate failure
+    # code must refuse THIS insert, not destroy the caller's transaction --
+    # `complete_execution` calls this to satisfy §10 and has already written a
+    # completion and an audit event by the time it gets here. Full reasoning on
+    # the helper (TODO I30).
     try:
-        with savepoint:
+        with guarded_write(session):
             row = (
                 session.execute(
                     text(
@@ -527,27 +507,27 @@ def link_evidence(
         raise FailureError(f"'{relationship}' is not a relationship")
 
     try:
-        link_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO quality.hypothesis_evidence
-                    (organization_id, hypothesis_id, evidence_id, relationship,
-                     note, linked_by)
-                VALUES (:org, :hid, :eid, :rel, :note, :actor)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "hid": hypothesis_id,
-                "eid": evidence_id,
-                "rel": relationship,
-                "note": note,
-                "actor": actor_id,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            link_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO quality.hypothesis_evidence
+                        (organization_id, hypothesis_id, evidence_id, relationship,
+                         note, linked_by)
+                    VALUES (:org, :hid, :eid, :rel, :note, :actor)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "hid": hypothesis_id,
+                    "eid": evidence_id,
+                    "rel": relationship,
+                    "note": note,
+                    "actor": actor_id,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         detail = str(exc.orig)
         if "hypothesis_evidence_pair_key" in detail:
             raise FailureError("this evidence is already linked to that hypothesis") from exc
@@ -586,34 +566,34 @@ def accept_root_cause(
         )
 
     try:
-        row = (
-            session.execute(
-                text(
-                    """
-                    UPDATE quality.failure_hypotheses
-                    SET status = 'accepted',
-                        accepted_by = :actor,
-                        accepted_at = now(),
-                        updated_at = now()
-                    WHERE id = :hid
-                      AND failure_id = :fid
-                      AND organization_id = :org
-                      AND status IN ('proposed','under_review')
-                    RETURNING id, possible_cause, origin
-                    """
-                ),
-                {
-                    "hid": hypothesis_id,
-                    "fid": failure_id,
-                    "org": organization_id,
-                    "actor": actor_id,
-                },
+        with guarded_write(session):
+            row = (
+                session.execute(
+                    text(
+                        """
+                        UPDATE quality.failure_hypotheses
+                        SET status = 'accepted',
+                            accepted_by = :actor,
+                            accepted_at = now(),
+                            updated_at = now()
+                        WHERE id = :hid
+                          AND failure_id = :fid
+                          AND organization_id = :org
+                          AND status IN ('proposed','under_review')
+                        RETURNING id, possible_cause, origin
+                        """
+                    ),
+                    {
+                        "hid": hypothesis_id,
+                        "fid": failure_id,
+                        "org": organization_id,
+                        "actor": actor_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
             )
-            .mappings()
-            .one_or_none()
-        )
     except IntegrityError as exc:
-        session.rollback()
         if "one_accepted" in str(exc.orig):
             existing = session.execute(
                 text(
@@ -813,15 +793,13 @@ def record_driver(
     if version is None:
         raise FailureNotFoundError("no such formula version in this organization")
 
-    # SAVEPOINT, for the same reason as `open_failure` above: `revise_version`
-    # now calls this to satisfy §2's "a new formula revision must show exactly
-    # which failure or improvement objective caused it", so a constraint
-    # violation here must not roll back the version that was just cloned.
-    # `begin_nested()` is outside the `try` so a pre-savepoint flush error is
-    # not caught by a handler that assumes a savepoint protected it.
-    savepoint = session.begin_nested()
+    # `guarded_write` for the same reason as `open_failure` above:
+    # `revise_version` calls this to satisfy §2's "a new formula revision must
+    # show exactly which failure or improvement objective caused it", so a
+    # constraint violation here must refuse the driver, not roll back the
+    # version that was just cloned. Full reasoning on the helper (TODO I30).
     try:
-        with savepoint:
+        with guarded_write(session):
             driver_id: uuid.UUID = session.execute(
                 text(
                     """

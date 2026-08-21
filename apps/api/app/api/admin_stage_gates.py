@@ -42,6 +42,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.logging import log_audit
 from app.core.security import Principal, get_db, require_permission
 
@@ -156,43 +157,43 @@ def create_stage_definition(
 ) -> StageDefinitionRead:
     """Add a stage to the pipeline."""
     try:
-        row = (
-            session.execute(
-                text(
+        with guarded_write(session):
+            row = (
+                session.execute(
+                    text(
+                        """
+                    INSERT INTO workflow.stage_definitions
+                        (organization_id, stage_code, name, sequence, entry_criteria,
+                         required_deliverables, exit_criteria, responsible_role,
+                         requires_approval, approval_role)
+                    VALUES (:org, :code, :name, :seq, :entry, :deliverables, :exit,
+                            :responsible, :requires_approval, :approval_role)
+                    RETURNING id, stage_code, name, sequence, entry_criteria,
+                              required_deliverables, exit_criteria, responsible_role,
+                              requires_approval, approval_role, is_active,
+                              0 AS projects_visited
                     """
-                INSERT INTO workflow.stage_definitions
-                    (organization_id, stage_code, name, sequence, entry_criteria,
-                     required_deliverables, exit_criteria, responsible_role,
-                     requires_approval, approval_role)
-                VALUES (:org, :code, :name, :seq, :entry, :deliverables, :exit,
-                        :responsible, :requires_approval, :approval_role)
-                RETURNING id, stage_code, name, sequence, entry_criteria,
-                          required_deliverables, exit_criteria, responsible_role,
-                          requires_approval, approval_role, is_active,
-                          0 AS projects_visited
-                """
-                ),
-                {
-                    "org": principal.organization_id,
-                    "code": payload.stage_code,
-                    "name": payload.name,
-                    "seq": payload.sequence,
-                    "entry": payload.entry_criteria,
-                    "deliverables": payload.required_deliverables,
-                    "exit": payload.exit_criteria,
-                    "responsible": payload.responsible_role,
-                    "requires_approval": payload.requires_approval,
-                    "approval_role": payload.approval_role,
-                },
+                    ),
+                    {
+                        "org": principal.organization_id,
+                        "code": payload.stage_code,
+                        "name": payload.name,
+                        "seq": payload.sequence,
+                        "entry": payload.entry_criteria,
+                        "deliverables": payload.required_deliverables,
+                        "exit": payload.exit_criteria,
+                        "responsible": payload.responsible_role,
+                        "requires_approval": payload.requires_approval,
+                        "approval_role": payload.approval_role,
+                    },
+                )
+                .mappings()
+                .one()
             )
-            .mappings()
-            .one()
-        )
     except IntegrityError as exc:
         # Both unique constraints land here. The message names which,
         # because "duplicate key" alone sends an administrator hunting
         # through a list for a clash they cannot see.
-        session.rollback()
         detail = (
             f"stage code {payload.stage_code} already exists"
             if "org_code" in str(exc.orig)
@@ -256,44 +257,44 @@ def update_stage_definition(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="stage not found")
 
     try:
-        row = (
-            session.execute(
-                text(
+        with guarded_write(session):
+            row = (
+                session.execute(
+                    text(
+                        """
+                    UPDATE workflow.stage_definitions
+                    SET stage_code = :code, name = :name, sequence = :seq,
+                        entry_criteria = :entry, required_deliverables = :deliverables,
+                        exit_criteria = :exit, responsible_role = :responsible,
+                        requires_approval = :requires_approval,
+                        approval_role = :approval_role
+                    WHERE id = :sid AND organization_id = :org
+                    RETURNING id, stage_code, name, sequence, entry_criteria,
+                              required_deliverables, exit_criteria, responsible_role,
+                              requires_approval, approval_role, is_active,
+                              (SELECT COUNT(DISTINCT ps.project_id)
+                                 FROM workflow.project_stages ps
+                                WHERE ps.stage_definition_id = :sid) AS projects_visited
                     """
-                UPDATE workflow.stage_definitions
-                SET stage_code = :code, name = :name, sequence = :seq,
-                    entry_criteria = :entry, required_deliverables = :deliverables,
-                    exit_criteria = :exit, responsible_role = :responsible,
-                    requires_approval = :requires_approval,
-                    approval_role = :approval_role
-                WHERE id = :sid AND organization_id = :org
-                RETURNING id, stage_code, name, sequence, entry_criteria,
-                          required_deliverables, exit_criteria, responsible_role,
-                          requires_approval, approval_role, is_active,
-                          (SELECT COUNT(DISTINCT ps.project_id)
-                             FROM workflow.project_stages ps
-                            WHERE ps.stage_definition_id = :sid) AS projects_visited
-                """
-                ),
-                {
-                    "sid": stage_id,
-                    "org": principal.organization_id,
-                    "code": payload.stage_code,
-                    "name": payload.name,
-                    "seq": payload.sequence,
-                    "entry": payload.entry_criteria,
-                    "deliverables": payload.required_deliverables,
-                    "exit": payload.exit_criteria,
-                    "responsible": payload.responsible_role,
-                    "requires_approval": payload.requires_approval,
-                    "approval_role": payload.approval_role,
-                },
+                    ),
+                    {
+                        "sid": stage_id,
+                        "org": principal.organization_id,
+                        "code": payload.stage_code,
+                        "name": payload.name,
+                        "seq": payload.sequence,
+                        "entry": payload.entry_criteria,
+                        "deliverables": payload.required_deliverables,
+                        "exit": payload.exit_criteria,
+                        "responsible": payload.responsible_role,
+                        "requires_approval": payload.requires_approval,
+                        "approval_role": payload.approval_role,
+                    },
+                )
+                .mappings()
+                .one()
             )
-            .mappings()
-            .one()
-        )
     except IntegrityError as exc:
-        session.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="stage code or sequence is already taken by another stage",

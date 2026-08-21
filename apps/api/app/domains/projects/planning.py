@@ -40,6 +40,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
 
 __all__ = [
@@ -356,30 +357,31 @@ def create_risk(
         raise RiskDuplicateError(f"risk code {spec.risk_code} already exists")
 
     try:
-        risk_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO projects.risks
-                    (organization_id, project_id, risk_code, title, description,
-                     category, probability, impact, mitigation, owner_user_id)
-                VALUES (:org, :pid, :code, :title, :description, :category,
-                        :probability, :impact, :mitigation, :owner)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "pid": project_id,
-                "code": spec.risk_code,
-                "title": spec.title,
-                "description": spec.description,
-                "category": spec.category,
-                "probability": spec.probability,
-                "impact": spec.impact,
-                "mitigation": spec.mitigation,
-                "owner": spec.owner_user_id,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            risk_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO projects.risks
+                        (organization_id, project_id, risk_code, title, description,
+                         category, probability, impact, mitigation, owner_user_id)
+                    VALUES (:org, :pid, :code, :title, :description, :category,
+                            :probability, :impact, :mitigation, :owner)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "pid": project_id,
+                    "code": spec.risk_code,
+                    "title": spec.title,
+                    "description": spec.description,
+                    "category": spec.category,
+                    "probability": spec.probability,
+                    "impact": spec.impact,
+                    "mitigation": spec.mitigation,
+                    "owner": spec.owner_user_id,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
         constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
         if constraint == "risks_org_code_key":
@@ -445,50 +447,51 @@ def update_risk(
     # clear it between the check and the UPDATE. So the constraint is
     # allowed to fire and its violation is translated.
     try:
-        row = (
-            session.execute(
-                text(
+        with guarded_write(session):
+            row = (
+                session.execute(
+                    text(
+                        """
+                    WITH prev AS (
+                        SELECT id, status, mitigation, probability, impact, owner_user_id
+                        FROM projects.risks
+                        WHERE id = :rid
+                          AND project_id = :pid
+                          AND organization_id = :org
+                        FOR UPDATE
+                    )
+                    UPDATE projects.risks r
+                    SET status        = COALESCE(CAST(:status AS TEXT),      r.status),
+                        mitigation    = COALESCE(CAST(:mitigation AS TEXT),  r.mitigation),
+                        probability   = COALESCE(CAST(:probability AS TEXT), r.probability),
+                        impact        = COALESCE(CAST(:impact AS TEXT),      r.impact),
+                        owner_user_id = COALESCE(CAST(:owner AS UUID),       r.owner_user_id),
+                        updated_at    = now()
+                    FROM prev
+                    WHERE r.id = prev.id
+                    RETURNING prev.status AS old_status,
+                              prev.probability AS old_probability,
+                              prev.impact AS old_impact,
+                              r.status AS new_status,
+                              r.probability AS new_probability,
+                              r.impact AS new_impact,
+                              r.risk_code AS risk_code
                     """
-                WITH prev AS (
-                    SELECT id, status, mitigation, probability, impact, owner_user_id
-                    FROM projects.risks
-                    WHERE id = :rid
-                      AND project_id = :pid
-                      AND organization_id = :org
-                    FOR UPDATE
+                    ),
+                    {
+                        "rid": risk_id,
+                        "pid": project_id,
+                        "org": organization_id,
+                        "status": status,
+                        "mitigation": mitigation,
+                        "probability": probability,
+                        "impact": impact,
+                        "owner": owner_user_id,
+                    },
                 )
-                UPDATE projects.risks r
-                SET status        = COALESCE(CAST(:status AS TEXT),      r.status),
-                    mitigation    = COALESCE(CAST(:mitigation AS TEXT),  r.mitigation),
-                    probability   = COALESCE(CAST(:probability AS TEXT), r.probability),
-                    impact        = COALESCE(CAST(:impact AS TEXT),      r.impact),
-                    owner_user_id = COALESCE(CAST(:owner AS UUID),       r.owner_user_id),
-                    updated_at    = now()
-                FROM prev
-                WHERE r.id = prev.id
-                RETURNING prev.status AS old_status,
-                          prev.probability AS old_probability,
-                          prev.impact AS old_impact,
-                          r.status AS new_status,
-                          r.probability AS new_probability,
-                          r.impact AS new_impact,
-                          r.risk_code AS risk_code
-                """
-                ),
-                {
-                    "rid": risk_id,
-                    "pid": project_id,
-                    "org": organization_id,
-                    "status": status,
-                    "mitigation": mitigation,
-                    "probability": probability,
-                    "impact": impact,
-                    "owner": owner_user_id,
-                },
+                .mappings()
+                .one_or_none()
             )
-            .mappings()
-            .one_or_none()
-        )
     except IntegrityError as exc:
         constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
         if constraint == "risks_mitigating_states_the_mitigation":

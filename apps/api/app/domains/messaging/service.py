@@ -37,6 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
 
 __all__ = [
@@ -830,44 +831,44 @@ def promote_message(
         )
 
     try:
-        task_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO workflow.tasks
-                    (organization_id, project_id, task_type, title, description,
-                     assigned_user_id, assigned_role, source_event, entity_type,
-                     entity_id)
-                -- `assigned_role` fills in when no user is named, because
-                -- `tasks_has_an_owner` requires one of the two: a task
-                -- nobody owns is a task nobody does.
-                --
-                -- There is no `created_by` column on workflow.tasks. An
-                -- earlier version of this INSERT named one; the schema was
-                -- read, not assumed, and it is not there. The promoter is
-                -- recorded in the audit event instead, which is where the
-                -- rest of this application looks for "who did this".
-                VALUES (:org, :pid, :ttype, :title, :description, :assignee,
-                        CASE WHEN CAST(:assignee AS uuid) IS NULL
-                             THEN 'product_development_lead' END,
-                        'message.promoted', 'message', :mid)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "pid": message["project_id"],
-                "ttype": task_type,
-                "title": title,
-                "description": message["body"][:2000],
-                "assignee": assigned_user_id,
-                "mid": message_id,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            task_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO workflow.tasks
+                        (organization_id, project_id, task_type, title, description,
+                         assigned_user_id, assigned_role, source_event, entity_type,
+                         entity_id)
+                    -- `assigned_role` fills in when no user is named, because
+                    -- `tasks_has_an_owner` requires one of the two: a task
+                    -- nobody owns is a task nobody does.
+                    --
+                    -- There is no `created_by` column on workflow.tasks. An
+                    -- earlier version of this INSERT named one; the schema was
+                    -- read, not assumed, and it is not there. The promoter is
+                    -- recorded in the audit event instead, which is where the
+                    -- rest of this application looks for "who did this".
+                    VALUES (:org, :pid, :ttype, :title, :description, :assignee,
+                            CASE WHEN CAST(:assignee AS uuid) IS NULL
+                                 THEN 'product_development_lead' END,
+                            'message.promoted', 'message', :mid)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "pid": message["project_id"],
+                    "ttype": task_type,
+                    "title": title,
+                    "description": message["body"][:2000],
+                    "assignee": assigned_user_id,
+                    "mid": message_id,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
         # The raw driver message is NOT returned to the caller. It names
         # tables, columns and constraint names, and this path is reachable
         # by anyone who can post a message.
-        session.rollback()
         raise MessagingError(
             "the task could not be created from this message; check that the "
             "channel belongs to a project you can write to"

@@ -47,6 +47,7 @@ __all__ = [
     "SessionLocal",
     "apply_context",
     "get_engine",
+    "guarded_write",
     "session_scope",
     "set_local",
     "unscoped_session_scope",
@@ -255,3 +256,79 @@ def unscoped_session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+@contextmanager
+def guarded_write(session: Session) -> Iterator[None]:
+    """Run a write inside a SAVEPOINT, so a constraint violation refuses the
+    write instead of destroying the caller's transaction.
+
+    ─────────────────────────────────────────────────────────────────────
+    WHY THIS EXISTS — TODO I30
+    ─────────────────────────────────────────────────────────────────────
+
+    Twenty-four places in this codebase caught ``IntegrityError`` and called
+    ``session.rollback()`` to leave the session usable. That is correct when
+    the function IS the whole request, and destructive the moment it is not:
+
+    🔴 ``Session.rollback()`` ALWAYS ROLLS BACK THE **TOPMOST** TRANSACTION
+    AND DISCARDS ANY NESTED ONES. It is not scoped to the statement that
+    failed, and a SAVEPOINT around the call does not protect you from it.
+
+    §12 pushes this codebase toward exactly the composition that makes it
+    dangerous — "do not rebuild infrastructure per module, reuse these,
+    always". Two had already bitten by the time this helper was written:
+
+    * ``open_failure``, once ``complete_execution`` called it to satisfy §10,
+      would have discarded a completed test and its audit event over a
+      duplicate failure code.
+    * ``record_driver``, once ``revise_version`` called it to satisfy §29,
+      would have discarded a freshly cloned formula version.
+
+    Neither was found by reading. Both were found by a reviewer looking at
+    the call that introduced the composition.
+
+    ─────────────────────────────────────────────────────────────────────
+    WHAT IT DOES, AND WHAT IT DELIBERATELY DOES NOT DO
+    ─────────────────────────────────────────────────────────────────────
+
+    ``begin_nested()`` issues a real SAVEPOINT. Leaving the ``with`` block on
+    an exception issues ``ROLLBACK TO SAVEPOINT``, which undoes the failed
+    statement and **leaves the enclosing transaction alive and usable**. The
+    exception then propagates, and the caller decides what it means — which
+    is the caller's decision to make, not this helper's.
+
+    It does NOT swallow. A refusal that reaches nobody is worse than a
+    crash, and every existing call site translates ``IntegrityError`` into a
+    domain error whose message names the constraint in human terms.
+
+    It does NOT call ``session.rollback()``. Removing that call is the whole
+    point. Note also that it was **redundant even standalone**:
+    :func:`session_scope` already rolls the request back on any exception,
+    so nothing was gained by it in the single-function case either.
+
+    ─────────────────────────────────────────────────────────────────────
+    THE ONE SHARP EDGE
+    ─────────────────────────────────────────────────────────────────────
+
+    ``begin_nested()`` flushes pending session state BEFORE the savepoint
+    exists, so in principle an ``IntegrityError`` raised by that flush would
+    reach a caller's handler that assumes a savepoint protected it. That
+    cannot happen here: every write in this application is a raw
+    ``session.execute(text(...))``, so there is never pending ORM state to
+    flush. If that ever stops being true, this docstring is the warning.
+
+    Usage — the ``try`` goes OUTSIDE, exactly as before, and the only
+    change at a call site is the ``with`` line and the deleted rollback::
+
+        try:
+            with guarded_write(session):
+                row = session.execute(text("INSERT ...")).mappings().one()
+        except IntegrityError as exc:
+            if "some_constraint" in str(exc.orig):
+                raise DomainError("a message a human can act on") from exc
+            raise
+    """
+    savepoint = session.begin_nested()
+    with savepoint:
+        yield

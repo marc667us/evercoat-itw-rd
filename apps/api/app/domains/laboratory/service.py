@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 
 from app.calculations.formulation import Component, mass_deviation, scale_to_batch
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
 
 __all__ = [
@@ -198,42 +199,42 @@ def create_batch(
     tolerance = spec.tolerance_percent
 
     try:
-        batch = (
-            session.execute(
-                text(
-                    """
-                    INSERT INTO laboratory.batches
-                        (organization_id, project_id, formula_version_id, batch_number,
-                         planned_quantity_kg, tolerance_percent, purpose,
-                         mixing_procedure, notes, created_by)
-                    SELECT :org, v.project_id, v.id, :number,
-                           :quantity,
-                           COALESCE(CAST(:tolerance AS NUMERIC), 1.0), :purpose,
-                           :procedure, :notes, :actor
-                    FROM formulations.formula_versions v
-                    WHERE v.id = :vid
-                      AND v.organization_id = :org
-                      AND v.status = 'approved'
-                    RETURNING id, project_id, batch_number
-                    """
-                ),
-                {
-                    "org": organization_id,
-                    "vid": formula_version_id,
-                    "number": spec.batch_number,
-                    "quantity": spec.planned_quantity_kg,
-                    "tolerance": tolerance,
-                    "purpose": spec.purpose,
-                    "procedure": spec.mixing_procedure,
-                    "notes": spec.notes,
-                    "actor": actor_id,
-                },
+        with guarded_write(session):
+            batch = (
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO laboratory.batches
+                            (organization_id, project_id, formula_version_id, batch_number,
+                             planned_quantity_kg, tolerance_percent, purpose,
+                             mixing_procedure, notes, created_by)
+                        SELECT :org, v.project_id, v.id, :number,
+                               :quantity,
+                               COALESCE(CAST(:tolerance AS NUMERIC), 1.0), :purpose,
+                               :procedure, :notes, :actor
+                        FROM formulations.formula_versions v
+                        WHERE v.id = :vid
+                          AND v.organization_id = :org
+                          AND v.status = 'approved'
+                        RETURNING id, project_id, batch_number
+                        """
+                    ),
+                    {
+                        "org": organization_id,
+                        "vid": formula_version_id,
+                        "number": spec.batch_number,
+                        "quantity": spec.planned_quantity_kg,
+                        "tolerance": tolerance,
+                        "purpose": spec.purpose,
+                        "procedure": spec.mixing_procedure,
+                        "notes": spec.notes,
+                        "actor": actor_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
             )
-            .mappings()
-            .one_or_none()
-        )
     except IntegrityError as exc:
-        session.rollback()
         detail = str(exc.orig)
         if "batches_org_number_key" in detail:
             raise BatchError(
@@ -560,33 +561,33 @@ def record_weighing(
             )
 
     try:
-        row = (
-            session.execute(
-                text(
-                    """
-                    UPDATE laboratory.batch_components
-                    SET actual_mass_kg = :actual,
-                        material_lot_id = COALESCE(CAST(:lot AS UUID), material_lot_id),
-                        weighed_by = :actor,
-                        weighed_at = now()
-                    WHERE id = :cid AND batch_id = :bid AND organization_id = :org
-                    RETURNING id, material_id, planned_mass_kg, actual_mass_kg
-                    """
-                ),
-                {
-                    "cid": component_id,
-                    "bid": batch_id,
-                    "org": organization_id,
-                    "actual": actual_mass_kg,
-                    "lot": material_lot_id,
-                    "actor": actor_id,
-                },
+        with guarded_write(session):
+            row = (
+                session.execute(
+                    text(
+                        """
+                        UPDATE laboratory.batch_components
+                        SET actual_mass_kg = :actual,
+                            material_lot_id = COALESCE(CAST(:lot AS UUID), material_lot_id),
+                            weighed_by = :actor,
+                            weighed_at = now()
+                        WHERE id = :cid AND batch_id = :bid AND organization_id = :org
+                        RETURNING id, material_id, planned_mass_kg, actual_mass_kg
+                        """
+                    ),
+                    {
+                        "cid": component_id,
+                        "bid": batch_id,
+                        "org": organization_id,
+                        "actual": actual_mass_kg,
+                        "lot": material_lot_id,
+                        "actor": actor_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
             )
-            .mappings()
-            .one_or_none()
-        )
     except IntegrityError as exc:
-        session.rollback()
         if "batch_components_lot_fk" in str(exc.orig):
             raise BatchStateError(
                 "that lot is not a lot of the material this line calls for"
@@ -896,31 +897,31 @@ def create_sample(
         )
 
     try:
-        sample_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO laboratory.samples
-                    (organization_id, project_id, batch_id, sample_number, quantity_g,
-                     purpose, storage_location, notes, taken_by)
-                VALUES (:org, :pid, :bid, :number, :quantity, :purpose, :location,
-                        :notes, :actor)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "pid": batch["project_id"],
-                "bid": batch_id,
-                "number": spec.sample_number,
-                "quantity": spec.quantity_g,
-                "purpose": spec.purpose,
-                "location": spec.storage_location,
-                "notes": spec.notes,
-                "actor": actor_id,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            sample_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO laboratory.samples
+                        (organization_id, project_id, batch_id, sample_number, quantity_g,
+                         purpose, storage_location, notes, taken_by)
+                    VALUES (:org, :pid, :bid, :number, :quantity, :purpose, :location,
+                            :notes, :actor)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "pid": batch["project_id"],
+                    "bid": batch_id,
+                    "number": spec.sample_number,
+                    "quantity": spec.quantity_g,
+                    "purpose": spec.purpose,
+                    "location": spec.storage_location,
+                    "notes": spec.notes,
+                    "actor": actor_id,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         if "samples_org_number_key" in str(exc.orig):
             raise BatchError(
                 f"sample number '{spec.sample_number}' is already used in this organization"

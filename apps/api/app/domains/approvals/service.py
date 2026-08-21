@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 
 __all__ = [
     "ApprovalError",
@@ -126,27 +127,27 @@ def open_route(
         )
 
     try:
-        route_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO workflow.approval_routes
-                    (organization_id, project_id, entity_type, entity_id,
-                     template_id, template_code)
-                VALUES (:org, :pid, :etype, :eid, :tid, :tcode)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "pid": project_id,
-                "etype": entity_type,
-                "eid": entity_id,
-                "tid": template["id"],
-                "tcode": template["template_code"],
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            route_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO workflow.approval_routes
+                        (organization_id, project_id, entity_type, entity_id,
+                         template_id, template_code)
+                    VALUES (:org, :pid, :etype, :eid, :tid, :tcode)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "pid": project_id,
+                    "etype": entity_type,
+                    "eid": entity_id,
+                    "tid": template["id"],
+                    "tcode": template["template_code"],
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         if "one_open_per_entity" in str(exc.orig):
             raise ApprovalStateError(
                 "an approval route is already open for this record; close it before opening another"

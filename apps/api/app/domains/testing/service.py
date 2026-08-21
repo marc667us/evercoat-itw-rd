@@ -39,6 +39,7 @@ from app.calculations.testing import (
     replicate_statistics,
 )
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
 
 # `open_failure_for_failed_test` is imported cross-domain, in the same direction
@@ -209,51 +210,51 @@ def create_test(
     )
 
     try:
-        row = (
-            session.execute(
-                text(
-                    """
-                    INSERT INTO testing.tests
-                        (organization_id, project_id, test_number, sample_id, method_id,
-                         method_version_id, equipment_id, requirement_id, test_purpose,
-                         authority_level, supersedes_test_id, planned_for, notes,
-                         created_by)
-                    SELECT :org, s.project_id, :number, s.id, :method,
-                           :method_version, :equipment, :requirement, :purpose,
-                           :authority, :supersedes, CAST(:planned AS DATE), :notes,
-                           :actor
-                    FROM laboratory.samples s
-                    WHERE s.id = :sample AND s.organization_id = :org
-                      -- A consumed or discarded sample has no material left
-                      -- to test. DATA_MODEL.md §3.5 makes this the guard on
-                      -- starting execution; it is applied at planning too,
-                      -- because planning a test nobody can perform just
-                      -- moves the disappointment later.
-                      AND s.status IN ('available', 'in_test')
-                    RETURNING id, test_number, project_id
-                    """
-                ),
-                {
-                    "org": organization_id,
-                    "number": spec.test_number,
-                    "sample": spec.sample_id,
-                    "method": spec.method_id,
-                    "method_version": spec.method_version_id,
-                    "equipment": spec.equipment_id,
-                    "requirement": spec.requirement_id,
-                    "purpose": spec.test_purpose,
-                    "authority": spec.authority_level,
-                    "supersedes": spec.supersedes_test_id,
-                    "planned": spec.planned_for,
-                    "notes": spec.notes,
-                    "actor": actor_id,
-                },
+        with guarded_write(session):
+            row = (
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO testing.tests
+                            (organization_id, project_id, test_number, sample_id, method_id,
+                             method_version_id, equipment_id, requirement_id, test_purpose,
+                             authority_level, supersedes_test_id, planned_for, notes,
+                             created_by)
+                        SELECT :org, s.project_id, :number, s.id, :method,
+                               :method_version, :equipment, :requirement, :purpose,
+                               :authority, :supersedes, CAST(:planned AS DATE), :notes,
+                               :actor
+                        FROM laboratory.samples s
+                        WHERE s.id = :sample AND s.organization_id = :org
+                          -- A consumed or discarded sample has no material left
+                          -- to test. DATA_MODEL.md §3.5 makes this the guard on
+                          -- starting execution; it is applied at planning too,
+                          -- because planning a test nobody can perform just
+                          -- moves the disappointment later.
+                          AND s.status IN ('available', 'in_test')
+                        RETURNING id, test_number, project_id
+                        """
+                    ),
+                    {
+                        "org": organization_id,
+                        "number": spec.test_number,
+                        "sample": spec.sample_id,
+                        "method": spec.method_id,
+                        "method_version": spec.method_version_id,
+                        "equipment": spec.equipment_id,
+                        "requirement": spec.requirement_id,
+                        "purpose": spec.test_purpose,
+                        "authority": spec.authority_level,
+                        "supersedes": spec.supersedes_test_id,
+                        "planned": spec.planned_for,
+                        "notes": spec.notes,
+                        "actor": actor_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
             )
-            .mappings()
-            .one_or_none()
-        )
     except IntegrityError as exc:
-        session.rollback()
         detail = str(exc.orig)
         if "tests_org_number_key" in detail:
             raise TestError(
@@ -395,29 +396,29 @@ def record_replicate(
         )
 
     try:
-        replicate_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO testing.test_replicates
-                    (organization_id, project_id, test_id, replicate_number,
-                     measured_value, unit, notes, recorded_by)
-                VALUES (:org, :pid, :tid, :number, :value, :unit, :notes, :actor)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "pid": test["project_id"],
-                "tid": test_id,
-                "number": spec.replicate_number,
-                "value": spec.measured_value,
-                "unit": spec.unit,
-                "notes": spec.notes,
-                "actor": actor_id,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            replicate_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO testing.test_replicates
+                        (organization_id, project_id, test_id, replicate_number,
+                         measured_value, unit, notes, recorded_by)
+                    VALUES (:org, :pid, :tid, :number, :value, :unit, :notes, :actor)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "pid": test["project_id"],
+                    "tid": test_id,
+                    "number": spec.replicate_number,
+                    "value": spec.measured_value,
+                    "unit": spec.unit,
+                    "notes": spec.notes,
+                    "actor": actor_id,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         if "test_replicates_number_key" in str(exc.orig):
             raise TestError(
                 f"replicate {spec.replicate_number} has already been recorded for this "

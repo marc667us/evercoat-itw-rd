@@ -41,6 +41,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.security import Principal, get_db, require_permission
 
 router = APIRouter()
@@ -157,25 +158,25 @@ def post_unit(
     session: Session = Depends(get_db),
 ) -> dict[str, str]:
     try:
-        unit_id = session.execute(
-            text(
-                """
-                INSERT INTO materials.units
-                    (organization_id, code, name, quantity_kind, display_order)
-                VALUES (:org, :code, :name, :kind, :order)
-                RETURNING id
-                """
-            ),
-            {
-                "org": principal.organization_id,
-                "code": payload.code,
-                "name": payload.name,
-                "kind": payload.quantity_kind,
-                "order": payload.display_order,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            unit_id = session.execute(
+                text(
+                    """
+                    INSERT INTO materials.units
+                        (organization_id, code, name, quantity_kind, display_order)
+                    VALUES (:org, :code, :name, :kind, :order)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": principal.organization_id,
+                    "code": payload.code,
+                    "name": payload.name,
+                    "kind": payload.quantity_kind,
+                    "order": payload.display_order,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         if "units_org_code_key" in str(exc.orig):
             raise _conflict(f"unit '{payload.code}' already exists") from exc
         raise _conflict(str(exc.orig)) from exc
@@ -222,25 +223,25 @@ def post_product_family(
     session: Session = Depends(get_db),
 ) -> dict[str, str]:
     try:
-        family_id = session.execute(
-            text(
-                """
-                INSERT INTO materials.product_families
-                    (organization_id, code, name, description, display_order)
-                VALUES (:org, :code, :name, :description, :order)
-                RETURNING id
-                """
-            ),
-            {
-                "org": principal.organization_id,
-                "code": payload.code,
-                "name": payload.name,
-                "description": payload.description,
-                "order": payload.display_order,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            family_id = session.execute(
+                text(
+                    """
+                    INSERT INTO materials.product_families
+                        (organization_id, code, name, description, display_order)
+                    VALUES (:org, :code, :name, :description, :order)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": principal.organization_id,
+                    "code": payload.code,
+                    "name": payload.name,
+                    "description": payload.description,
+                    "order": payload.display_order,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         if "product_families_org_code_key" in str(exc.orig):
             raise _conflict(f"product family '{payload.code}' already exists") from exc
         raise _conflict(str(exc.orig)) from exc

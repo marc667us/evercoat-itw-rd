@@ -58,6 +58,7 @@ from sqlalchemy.orm import Session
 
 from app.calculations.formulation import fraction_to_percent
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
 
 __all__ = [
@@ -329,46 +330,46 @@ def create_material(
     )
 
     try:
-        material_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO materials.materials
-                    (organization_id, material_code, name, category, role, status,
-                     description, cas_number, density_g_cm3, solids_fraction,
-                     voc_fraction, cost_per_kg, epoxy_equivalent_weight,
-                     amine_hydrogen_equivalent_weight, hazard_summary,
-                     requires_sds, notes, created_by)
-                VALUES
-                    (:org, :code, :name, :category, :role, 'development',
-                     :description, :cas, :density, :solids,
-                     :voc, :cost, :eew,
-                     :ahew, :hazard,
-                     :requires_sds, :notes, :actor)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "code": spec.material_code,
-                "name": spec.name,
-                "category": spec.category,
-                "role": spec.role,
-                "description": spec.description,
-                "cas": spec.cas_number,
-                "density": spec.density_g_cm3,
-                "solids": spec.solids_fraction,
-                "voc": spec.voc_fraction,
-                "cost": spec.cost_per_kg,
-                "eew": spec.epoxy_equivalent_weight,
-                "ahew": spec.amine_hydrogen_equivalent_weight,
-                "hazard": spec.hazard_summary,
-                "requires_sds": spec.requires_sds,
-                "notes": spec.notes,
-                "actor": actor_id,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            material_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO materials.materials
+                        (organization_id, material_code, name, category, role, status,
+                         description, cas_number, density_g_cm3, solids_fraction,
+                         voc_fraction, cost_per_kg, epoxy_equivalent_weight,
+                         amine_hydrogen_equivalent_weight, hazard_summary,
+                         requires_sds, notes, created_by)
+                    VALUES
+                        (:org, :code, :name, :category, :role, 'development',
+                         :description, :cas, :density, :solids,
+                         :voc, :cost, :eew,
+                         :ahew, :hazard,
+                         :requires_sds, :notes, :actor)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "code": spec.material_code,
+                    "name": spec.name,
+                    "category": spec.category,
+                    "role": spec.role,
+                    "description": spec.description,
+                    "cas": spec.cas_number,
+                    "density": spec.density_g_cm3,
+                    "solids": spec.solids_fraction,
+                    "voc": spec.voc_fraction,
+                    "cost": spec.cost_per_kg,
+                    "eew": spec.epoxy_equivalent_weight,
+                    "ahew": spec.amine_hydrogen_equivalent_weight,
+                    "hazard": spec.hazard_summary,
+                    "requires_sds": spec.requires_sds,
+                    "notes": spec.notes,
+                    "actor": actor_id,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         raise _translate_material_integrity_error(exc, spec.material_code) from exc
 
     write_audit(
@@ -417,65 +418,65 @@ def update_material(
     )
 
     try:
-        row = (
-            session.execute(
-                text(
+        with guarded_write(session):
+            row = (
+                session.execute(
+                    text(
+                        """
+                    WITH prev AS (
+                        SELECT id, name, category, role, density_g_cm3, cost_per_kg
+                        FROM materials.materials
+                        WHERE id = :mid AND organization_id = :org
+                        FOR UPDATE
+                    )
+                    UPDATE materials.materials m
+                    SET name            = :name,
+                        category        = :category,
+                        role            = :role,
+                        description     = :description,
+                        cas_number      = :cas,
+                        density_g_cm3   = :density,
+                        solids_fraction = :solids,
+                        voc_fraction    = :voc,
+                        cost_per_kg     = :cost,
+                        epoxy_equivalent_weight = :eew,
+                        amine_hydrogen_equivalent_weight = :ahew,
+                        hazard_summary  = :hazard,
+                        requires_sds    = :requires_sds,
+                        notes           = :notes,
+                        updated_at      = now()
+                    FROM prev
+                    WHERE m.id = prev.id
+                    RETURNING m.id, m.material_code, m.name, m.status,
+                              prev.name AS prev_name,
+                              prev.role AS prev_role,
+                              prev.density_g_cm3 AS prev_density,
+                              prev.cost_per_kg AS prev_cost
                     """
-                WITH prev AS (
-                    SELECT id, name, category, role, density_g_cm3, cost_per_kg
-                    FROM materials.materials
-                    WHERE id = :mid AND organization_id = :org
-                    FOR UPDATE
+                    ),
+                    {
+                        "mid": material_id,
+                        "org": organization_id,
+                        "name": spec.name,
+                        "category": spec.category,
+                        "role": spec.role,
+                        "description": spec.description,
+                        "cas": spec.cas_number,
+                        "density": spec.density_g_cm3,
+                        "solids": spec.solids_fraction,
+                        "voc": spec.voc_fraction,
+                        "cost": spec.cost_per_kg,
+                        "eew": spec.epoxy_equivalent_weight,
+                        "ahew": spec.amine_hydrogen_equivalent_weight,
+                        "hazard": spec.hazard_summary,
+                        "requires_sds": spec.requires_sds,
+                        "notes": spec.notes,
+                    },
                 )
-                UPDATE materials.materials m
-                SET name            = :name,
-                    category        = :category,
-                    role            = :role,
-                    description     = :description,
-                    cas_number      = :cas,
-                    density_g_cm3   = :density,
-                    solids_fraction = :solids,
-                    voc_fraction    = :voc,
-                    cost_per_kg     = :cost,
-                    epoxy_equivalent_weight = :eew,
-                    amine_hydrogen_equivalent_weight = :ahew,
-                    hazard_summary  = :hazard,
-                    requires_sds    = :requires_sds,
-                    notes           = :notes,
-                    updated_at      = now()
-                FROM prev
-                WHERE m.id = prev.id
-                RETURNING m.id, m.material_code, m.name, m.status,
-                          prev.name AS prev_name,
-                          prev.role AS prev_role,
-                          prev.density_g_cm3 AS prev_density,
-                          prev.cost_per_kg AS prev_cost
-                """
-                ),
-                {
-                    "mid": material_id,
-                    "org": organization_id,
-                    "name": spec.name,
-                    "category": spec.category,
-                    "role": spec.role,
-                    "description": spec.description,
-                    "cas": spec.cas_number,
-                    "density": spec.density_g_cm3,
-                    "solids": spec.solids_fraction,
-                    "voc": spec.voc_fraction,
-                    "cost": spec.cost_per_kg,
-                    "eew": spec.epoxy_equivalent_weight,
-                    "ahew": spec.amine_hydrogen_equivalent_weight,
-                    "hazard": spec.hazard_summary,
-                    "requires_sds": spec.requires_sds,
-                    "notes": spec.notes,
-                },
+                .mappings()
+                .one_or_none()
             )
-            .mappings()
-            .one_or_none()
-        )
     except IntegrityError as exc:
-        session.rollback()
         raise MaterialInvalidError(str(exc.orig)) from exc
 
     if row is None:
@@ -817,32 +818,32 @@ def create_supplier(
     )
 
     try:
-        supplier_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO materials.suppliers
-                    (organization_id, supplier_code, name, country, status,
-                     quality_rating, contact_name, contact_email, notes, created_by)
-                VALUES
-                    (:org, :code, :name, :country, 'pending',
-                     :rating, :contact_name, :contact_email, :notes, :actor)
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "code": spec.supplier_code,
-                "name": spec.name,
-                "country": spec.country,
-                "rating": spec.quality_rating,
-                "contact_name": spec.contact_name,
-                "contact_email": spec.contact_email,
-                "notes": spec.notes,
-                "actor": actor_id,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            supplier_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO materials.suppliers
+                        (organization_id, supplier_code, name, country, status,
+                         quality_rating, contact_name, contact_email, notes, created_by)
+                    VALUES
+                        (:org, :code, :name, :country, 'pending',
+                         :rating, :contact_name, :contact_email, :notes, :actor)
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "code": spec.supplier_code,
+                    "name": spec.name,
+                    "country": spec.country,
+                    "rating": spec.quality_rating,
+                    "contact_name": spec.contact_name,
+                    "contact_email": spec.contact_email,
+                    "notes": spec.notes,
+                    "actor": actor_id,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         if "suppliers_org_code_key" in str(exc.orig):
             raise SupplierDuplicateError(
                 f"supplier code '{spec.supplier_code}' is already used in this organization"
@@ -986,50 +987,50 @@ def link_supplier(
         )
 
     try:
-        link_id: uuid.UUID = session.execute(
-            text(
-                """
-                INSERT INTO materials.material_suppliers
-                    (organization_id, material_id, supplier_id, supplier_part_code,
-                     is_primary, lead_time_days, quoted_price_per_kg, currency,
-                     qualified_on, notes)
-                VALUES
-                    (:org, :mid, :sid, :part_code,
-                     COALESCE(CAST(:is_primary AS BOOLEAN), FALSE),
-                     :lead_time, :price, :currency,
-                     :qualified_on, :notes)
-                ON CONFLICT (organization_id, material_id, supplier_id) DO UPDATE
-                SET supplier_part_code  = EXCLUDED.supplier_part_code,
-                    -- COALESCE, not EXCLUDED: a NULL means the caller
-                    -- did not mention the flag, and an upsert must not
-                    -- demote the primary supplier as a side effect of
-                    -- someone editing a lead time.
-                    is_primary          = COALESCE(EXCLUDED.is_primary,
-                                                   materials.material_suppliers.is_primary),
-                    lead_time_days      = EXCLUDED.lead_time_days,
-                    quoted_price_per_kg = EXCLUDED.quoted_price_per_kg,
-                    currency            = EXCLUDED.currency,
-                    qualified_on        = EXCLUDED.qualified_on,
-                    notes               = EXCLUDED.notes,
-                    updated_at          = now()
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "mid": material_id,
-                "sid": spec.supplier_id,
-                "part_code": spec.supplier_part_code,
-                "is_primary": spec.is_primary,
-                "lead_time": spec.lead_time_days,
-                "price": spec.quoted_price_per_kg,
-                "currency": spec.currency,
-                "qualified_on": spec.qualified_on,
-                "notes": spec.notes,
-            },
-        ).scalar_one()
+        with guarded_write(session):
+            link_id: uuid.UUID = session.execute(
+                text(
+                    """
+                    INSERT INTO materials.material_suppliers
+                        (organization_id, material_id, supplier_id, supplier_part_code,
+                         is_primary, lead_time_days, quoted_price_per_kg, currency,
+                         qualified_on, notes)
+                    VALUES
+                        (:org, :mid, :sid, :part_code,
+                         COALESCE(CAST(:is_primary AS BOOLEAN), FALSE),
+                         :lead_time, :price, :currency,
+                         :qualified_on, :notes)
+                    ON CONFLICT (organization_id, material_id, supplier_id) DO UPDATE
+                    SET supplier_part_code  = EXCLUDED.supplier_part_code,
+                        -- COALESCE, not EXCLUDED: a NULL means the caller
+                        -- did not mention the flag, and an upsert must not
+                        -- demote the primary supplier as a side effect of
+                        -- someone editing a lead time.
+                        is_primary          = COALESCE(EXCLUDED.is_primary,
+                                                       materials.material_suppliers.is_primary),
+                        lead_time_days      = EXCLUDED.lead_time_days,
+                        quoted_price_per_kg = EXCLUDED.quoted_price_per_kg,
+                        currency            = EXCLUDED.currency,
+                        qualified_on        = EXCLUDED.qualified_on,
+                        notes               = EXCLUDED.notes,
+                        updated_at          = now()
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "mid": material_id,
+                    "sid": spec.supplier_id,
+                    "part_code": spec.supplier_part_code,
+                    "is_primary": spec.is_primary,
+                    "lead_time": spec.lead_time_days,
+                    "price": spec.quoted_price_per_kg,
+                    "currency": spec.currency,
+                    "qualified_on": spec.qualified_on,
+                    "notes": spec.notes,
+                },
+            ).scalar_one()
     except IntegrityError as exc:
-        session.rollback()
         detail = str(exc.orig)
         if "material_suppliers_material_fk" in detail:
             raise MaterialNotFoundError("no such material in this organization") from exc
@@ -1095,38 +1096,38 @@ def register_document(
         raise MaterialInvalidError(f"'{spec.document_type}' is not a document type")
 
     try:
-        document_id: uuid.UUID | None = session.execute(
-            text(
-                """
-                INSERT INTO materials.material_documents
-                    (organization_id, material_id, document_type, title, storage_key,
-                     content_type, byte_size, checksum_sha256, issued_on, expires_on,
-                     supersedes_id, uploaded_by)
-                SELECT :org, m.id, :dtype, :title, :key,
-                       :content_type, :size, :checksum, :issued, :expires,
-                       :supersedes, :actor
-                FROM materials.materials m
-                WHERE m.id = :mid AND m.organization_id = :org
-                RETURNING id
-                """
-            ),
-            {
-                "org": organization_id,
-                "mid": material_id,
-                "dtype": spec.document_type,
-                "title": spec.title,
-                "key": spec.storage_key,
-                "content_type": spec.content_type,
-                "size": spec.byte_size,
-                "checksum": spec.checksum_sha256,
-                "issued": spec.issued_on,
-                "expires": spec.expires_on,
-                "supersedes": spec.supersedes_id,
-                "actor": actor_id,
-            },
-        ).scalar_one_or_none()
+        with guarded_write(session):
+            document_id: uuid.UUID | None = session.execute(
+                text(
+                    """
+                    INSERT INTO materials.material_documents
+                        (organization_id, material_id, document_type, title, storage_key,
+                         content_type, byte_size, checksum_sha256, issued_on, expires_on,
+                         supersedes_id, uploaded_by)
+                    SELECT :org, m.id, :dtype, :title, :key,
+                           :content_type, :size, :checksum, :issued, :expires,
+                           :supersedes, :actor
+                    FROM materials.materials m
+                    WHERE m.id = :mid AND m.organization_id = :org
+                    RETURNING id
+                    """
+                ),
+                {
+                    "org": organization_id,
+                    "mid": material_id,
+                    "dtype": spec.document_type,
+                    "title": spec.title,
+                    "key": spec.storage_key,
+                    "content_type": spec.content_type,
+                    "size": spec.byte_size,
+                    "checksum": spec.checksum_sha256,
+                    "issued": spec.issued_on,
+                    "expires": spec.expires_on,
+                    "supersedes": spec.supersedes_id,
+                    "actor": actor_id,
+                },
+            ).scalar_one_or_none()
     except IntegrityError as exc:
-        session.rollback()
         detail = str(exc.orig)
         if "material_documents_storage_key_unique" in detail:
             raise MaterialInvalidError(
