@@ -47,6 +47,18 @@ from app.core.tenancy import require_active_member
 # testing, so this cannot become a cycle. §10 makes opening the investigation
 # part of what a RED confirmation result MEANS, not a follow-up somebody may
 # forget, so the dependency belongs in the service and not in the route.
+from app.domains.approvals.service import (
+    ApprovalError,
+    ApprovalNotFoundError,
+    ApprovalStateError,
+    IncompatibleDutyError,
+    decide_step,
+    next_step_for,
+    open_route,
+    route_for_entity,
+    route_outcome,
+)
+from app.domains.approvals.service import DecisionInput as RouteDecision
 from app.domains.failures.service import open_failure_for_failed_test
 
 __all__ = [
@@ -614,6 +626,7 @@ def record_decision(
     test_id: uuid.UUID,
     organization_id: uuid.UUID,
     actor_id: uuid.UUID,
+    held_permissions: frozenset[str] = frozenset(),
     spec: DecisionInput,
 ) -> dict[str, Any]:
     """Record one review or approval decision, and move the axes.
@@ -652,15 +665,26 @@ def record_decision(
                 f"test {test['test_number']} has not completed technical review; "
                 "approval follows review"
             )
-        new_state = _APPROVAL_OUTCOMES.get(spec.decision)
-        if new_state is None:
-            raise TestError(f"'{spec.decision}' is not an approval decision")
-        _refuse_conflicted_approver(
+        # 🔴 I5 -- APPROVAL IS THE ENGINE'S, NOT THIS MODULE'S.
+        #
+        # This branch used to write `testing.test_decisions` and move
+        # `approval_state` itself, so a SINGLE call approved a test at whatever
+        # authority the caller named -- bypassing §9's template ladder entirely.
+        # A qualification-authority test could be approved with one signature
+        # where QUALIFICATION_CONFIRMATION requires four, and two approval
+        # records existed for the same event with nothing able to say which
+        # governed.
+        #
+        # §9: "One shared approval engine. Never re-implement approval inside
+        # Formula, Test, Validation, Pilot, Qualification or Release."
+        return _decide_on_route(
             session,
+            test=test,
             test_id=test_id,
             organization_id=organization_id,
             actor_id=actor_id,
-            authority_level=spec.authority_level,
+            held_permissions=held_permissions,
+            spec=spec,
         )
     else:
         raise TestError(f"'{spec.stage}' is not a decision stage")
@@ -694,44 +718,42 @@ def record_decision(
         },
     )
 
-    if spec.stage == "review":
-        # Reaching `reviewed` opens the approval chain. DATA_MODEL.md
-        # §3.5: `not_required -> pending` is a SYS transition made when
-        # review completes.
-        approval_state = "pending" if new_state == "reviewed" else test["approval_state"]
-        session.execute(
-            text(
-                """
-                UPDATE testing.tests
-                SET review_state = :review, approval_state = :approval, updated_at = now()
-                WHERE id = :tid AND organization_id = :org
-                """
-            ),
-            {
-                "review": new_state,
-                "approval": approval_state,
-                "tid": test_id,
-                "org": organization_id,
-            },
+    # Reaching `reviewed` OPENS THE APPROVAL ROUTE. DATA_MODEL.md §3.5:
+    # `not_required -> pending` is a SYS transition made when review
+    # completes -- and now it is the route being opened that makes it true,
+    # rather than a string this module assigns to itself.
+    #
+    # The route is keyed on the TEST's `authority_level`, not on anything the
+    # reviewer supplies: which ladder applies is a property of the test, and
+    # letting a caller name it would restore exactly the bypass §9 forbids.
+    approval_state = test["approval_state"]
+    if new_state == "reviewed":
+        open_route(
+            session,
+            organization_id=organization_id,
+            project_id=test["project_id"],
+            entity_type="test",
+            entity_id=test_id,
+            authority_level=test["authority_level"],
+            actor_id=actor_id,
         )
-    else:
-        session.execute(
-            text(
-                """
-                UPDATE testing.tests
-                SET approval_state = :approval,
-                    approval_condition = :condition,
-                    updated_at = now()
-                WHERE id = :tid AND organization_id = :org
-                """
-            ),
-            {
-                "approval": new_state,
-                "condition": spec.condition_text,
-                "tid": test_id,
-                "org": organization_id,
-            },
-        )
+        approval_state = "pending"
+
+    session.execute(
+        text(
+            """
+            UPDATE testing.tests
+            SET review_state = :review, approval_state = :approval, updated_at = now()
+            WHERE id = :tid AND organization_id = :org
+            """
+        ),
+        {
+            "review": new_state,
+            "approval": approval_state,
+            "tid": test_id,
+            "org": organization_id,
+        },
+    )
 
     write_audit(
         session,
@@ -748,51 +770,140 @@ def record_decision(
     return {"test_id": test_id, "stage": spec.stage, "decision": spec.decision, "state": new_state}
 
 
-def _refuse_conflicted_approver(
+def _decide_on_route(
     session: Session,
     *,
+    test: RowMapping | dict[str, Any],
     test_id: uuid.UUID,
     organization_id: uuid.UUID,
     actor_id: uuid.UUID,
-    authority_level: str | None,
-) -> None:
-    """ADR-019, enforced against the decision record.
+    held_permissions: frozenset[str],
+    spec: DecisionInput,
+) -> dict[str, Any]:
+    """Take one approval decision THROUGH the shared engine (§9, I5).
 
-    Independent QA approval must be INDEPENDENT. Somebody who already
-    supplied a development-side approval on this test has formed a view;
-    letting them also supply the QA approval turns a two-signature control
-    into one person signing twice.
+    This module's job here is translation, not approval: find the route, ask
+    the engine which step this caller may decide, hand the decision to the
+    engine, and reflect the engine's outcome onto the test's own axis.
 
-    Read from `test_decisions` rather than from role names, because the
-    constraint is about who decided on THIS test, which no role can say.
+    🔴 `approval_state` STAYS A STORED COLUMN, and this is the only writer of
+    it after review. §10's ordered algorithm reads it at rules 3, 11 and 12,
+    and deriving it on read would put a second implementation of the mapping
+    next to the first -- the two-literals-in-two-files defect, applied to the
+    field a chemist most needs to trust. One writer, one meaning.
     """
-    if authority_level not in {"qualification", "release"}:
-        return
+    route = route_for_entity(
+        session, organization_id=organization_id, entity_type="test", entity_id=test_id
+    )
+    if route is None:
+        raise TestStateError(
+            f"test {test['test_number']} has no open approval route; a route is opened "
+            "when technical review completes"
+        )
+    route_id = route["route_id"] if "route_id" in route else route["id"]
 
-    already = session.execute(
+    step = next_step_for(
+        session,
+        route_id=route_id,
+        organization_id=organization_id,
+        held_permissions=held_permissions,
+    )
+    if step is None:
+        # Deliberately one message for several causes -- no permission, not
+        # your turn, nothing left. Enumerating which would tell a caller the
+        # shape of an approval chain they are not part of.
+        raise SegregationOfDutiesError(
+            "you have no approval step to decide on this test: either the step's "
+            "permission is not one you hold, an earlier mandatory step has not been "
+            "decided, or you have already decided every step that is yours"
+        )
+
+    try:
+        outcome = decide_step(
+            session,
+            route_id=route_id,
+            step_id=step["step_id"],
+            organization_id=organization_id,
+            actor_id=actor_id,
+            held_permissions=held_permissions,
+            spec=RouteDecision(
+                decision=spec.decision,
+                condition_text=spec.condition_text,
+                rationale=spec.rationale,
+            ),
+        )
+    except IncompatibleDutyError as exc:
+        # ADR-019 refusals keep the type this module has always raised, so the
+        # route still answers 403 and callers do not learn a new exception for
+        # a rule that has not changed.
+        raise SegregationOfDutiesError(str(exc)) from exc
+    except ApprovalNotFoundError as exc:
+        raise TestNotFoundError(str(exc)) from exc
+    except (ApprovalStateError, ApprovalError) as exc:
+        raise TestStateError(str(exc)) from exc
+
+    # Reflect the ENGINE's outcome onto the test's axis. Note the mapping is
+    # from the ROUTE, not from this decision: one approving signature on a
+    # five-step ladder leaves the test `pending`, which is the whole point.
+    settled = route_outcome(session, route_id=route_id, organization_id=organization_id)
+    if settled["status"] == "rejected":
+        approval_state = "rejected"
+    elif settled["status"] == "approved":
+        # §9: a conditional approval anywhere in the chain yields YELLOW and
+        # the limitation is preserved. A route that completed with a condition
+        # is NOT a clean approval.
+        approval_state = "conditionally_approved" if settled["conditional_steps"] else "approved"
+    else:
+        approval_state = "pending"
+
+    session.execute(
         text(
             """
-            SELECT count(*) FROM testing.test_decisions
-            WHERE test_id = :tid
-              AND organization_id = :org
-              AND decided_by = :actor
-              AND decision_stage = 'approval'
-              AND authority_level = :development
+            UPDATE testing.tests
+            SET approval_state = :approval,
+                approval_condition = :condition,
+                updated_at = now()
+            WHERE id = :tid AND organization_id = :org
             """
         ),
         {
+            "approval": approval_state,
+            "condition": settled["condition_text"],
             "tid": test_id,
             "org": organization_id,
-            "actor": actor_id,
-            "development": _DEVELOPMENT_APPROVAL,
         },
-    ).scalar_one()
+    )
 
-    if already:
-        raise SegregationOfDutiesError(
-            "you supplied a development-side approval on this test, so you may not "
-            "also supply the independent approval at this authority (ADR-019)"
-        )
+    write_audit(
+        session,
+        AuditEvent(
+            action=f"test.approval_{spec.decision}",
+            entity_type="test",
+            entity_id=str(test_id),
+            organization_id=organization_id,
+            user_id=actor_id,
+            new_state={
+                "step": step["step_number"],
+                "label": step["step_label"],
+                "route_status": outcome["route_status"],
+                "approval_state": approval_state,
+            },
+            reason=spec.rationale or spec.condition_text or step["step_label"],
+        ),
+    )
+
+    return {
+        "test_id": test_id,
+        "stage": "approval",
+        "decision": spec.decision,
+        "state": approval_state,
+        # Reported so a caller can see the ladder rather than infer it from a
+        # state that has not moved: "approved but still pending" is otherwise
+        # indistinguishable from "your approval did nothing".
+        "step_number": step["step_number"],
+        "step_label": step["step_label"],
+        "route_status": outcome["route_status"],
+    }
 
 
 def confirm_test(
@@ -911,6 +1022,39 @@ def get_test(session: Session, *, test_id: uuid.UUID, organization_id: uuid.UUID
                 FROM testing.test_decisions
                 WHERE test_id = :tid AND organization_id = :org
                 ORDER BY decided_at
+                """
+            ),
+            {"tid": test_id, "org": organization_id},
+        ).mappings()
+    ]
+
+    # 🔴 I5 -- `decisions` NOW HOLDS REVIEW DECISIONS ONLY, so the approval
+    # ladder must be returned beside it or this endpoint would silently stop
+    # reporting approvals altogether. Approval decisions live on the route's
+    # steps, which is the point of the change; a caller reading only
+    # `decisions` would see a test move from `pending` to `approved` with
+    # nothing recorded in between.
+    #
+    # Every step is returned, decided or not: §11 requires a screen to answer
+    # "what requires action?", and an undecided step IS the answer. The
+    # snapshot is per-route, so this shows the ladder as it stood when the
+    # route opened rather than the template as it is today.
+    test["approval_route"] = [
+        dict(r)
+        for r in session.execute(
+            text(
+                """
+                SELECT s.step_number, s.parallel_group, s.step_label,
+                       s.permission_required, s.is_mandatory, s.must_differ_from_group,
+                       s.decision, s.condition_text, s.rationale,
+                       s.decided_by, s.decided_at,
+                       r.template_code, r.status AS route_status
+                FROM workflow.approval_route_steps s
+                JOIN workflow.approval_routes r
+                  ON r.id = s.route_id AND r.organization_id = s.organization_id
+                WHERE r.entity_type = 'test' AND r.entity_id = :tid
+                  AND r.organization_id = :org
+                ORDER BY s.parallel_group, s.step_number
                 """
             ),
             {"tid": test_id, "org": organization_id},

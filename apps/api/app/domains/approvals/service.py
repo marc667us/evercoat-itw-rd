@@ -44,9 +44,11 @@ __all__ = [
     "IncompatibleDutyError",
     "decide_step",
     "get_route",
+    "next_step_for",
     "open_route",
     "pending_steps_for",
     "route_for_entity",
+    "route_outcome",
 ]
 
 # Decisions that advance a step. Everything else stops the route.
@@ -505,6 +507,115 @@ def route_for_entity(
     if row is None:
         return None
     return get_route(session, route_id=row["id"], organization_id=organization_id)
+
+
+def next_step_for(
+    session: Session,
+    *,
+    route_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    held_permissions: frozenset[str],
+) -> dict[str, Any] | None:
+    """The step on THIS route that this caller may decide next, or None.
+
+    `pending_steps_for` answers "what is in my queue?" across the whole
+    organization. This answers "I am deciding on this record — which step is
+    that?", which is what a domain module needs when its own endpoint takes a
+    decision on a record rather than on a step id.
+
+    🔴 WHY A DOMAIN MODULE MUST NOT PICK THE STEP ITSELF. The ordering rules —
+    earlier mandatory groups first, the permission the STEP names rather than
+    one the caller chose, incompatible duties from the snapshot — are the
+    route's, and §9 says they are implemented once. A module that resolved
+    "the next step" with its own query would be re-implementing the engine's
+    sequencing, which is the defect this function exists to avoid.
+
+    Returns the LOWEST-numbered undecided step in the earliest reachable group
+    whose required permission the caller holds. Returns None when the caller
+    has nothing to decide here — which is not an error, because "it is not
+    your turn" and "this is not your approval" are ordinary states.
+
+    Selecting a step does NOT authorize deciding it: `decide_step` re-checks
+    every rule, including ADR-019's independence, which cannot be evaluated
+    without knowing who is deciding.
+    """
+    if not held_permissions:
+        return None
+
+    row = (
+        session.execute(
+            text(
+                """
+                SELECT s.id AS step_id, s.step_number, s.parallel_group,
+                       s.step_label, s.permission_required, s.is_mandatory
+                FROM workflow.approval_route_steps s
+                JOIN workflow.approval_routes r
+                  ON r.id = s.route_id AND r.organization_id = s.organization_id
+                WHERE s.route_id = :rid
+                  AND s.organization_id = :org
+                  AND r.status = 'open'
+                  AND s.decision IS NULL
+                  AND s.permission_required = ANY(CAST(:permissions AS TEXT[]))
+                  AND NOT EXISTS (
+                        SELECT 1 FROM workflow.approval_route_steps earlier
+                        WHERE earlier.route_id = s.route_id
+                          AND earlier.parallel_group < s.parallel_group
+                          AND earlier.is_mandatory
+                          AND earlier.decision IS NULL
+                  )
+                ORDER BY s.parallel_group, s.step_number
+                LIMIT 1
+                """
+            ),
+            {
+                "rid": route_id,
+                "org": organization_id,
+                "permissions": sorted(held_permissions),
+            },
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return dict(row) if row is not None else None
+
+
+def route_outcome(
+    session: Session, *, route_id: uuid.UUID, organization_id: uuid.UUID
+) -> dict[str, Any]:
+    """The route's status, and whether any approval carried a condition.
+
+    §9: "Conditional approval yields YELLOW, and the stated limitation is
+    preserved." A route that is `approved` with a conditional step among its
+    decisions is NOT a clean approval, and a caller mapping route status onto
+    its own axis needs to know the difference — otherwise the condition is
+    silently discarded at exactly the point it starts to matter.
+    """
+    row = (
+        session.execute(
+            text(
+                """
+                SELECT r.status,
+                       count(*) FILTER (
+                           WHERE s.decision = 'approve_with_condition'
+                       ) AS conditional_steps,
+                       max(s.condition_text) FILTER (
+                           WHERE s.decision = 'approve_with_condition'
+                       ) AS condition_text
+                FROM workflow.approval_routes r
+                LEFT JOIN workflow.approval_route_steps s
+                  ON s.route_id = r.id AND s.organization_id = r.organization_id
+                WHERE r.id = :rid AND r.organization_id = :org
+                GROUP BY r.status
+                """
+            ),
+            {"rid": route_id, "org": organization_id},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise ApprovalNotFoundError("no such approval route in this organization")
+    return dict(row)
 
 
 def pending_steps_for(

@@ -82,14 +82,25 @@ __all__ = ["router"]
 # and `controlled` are development-side; `validation` and above escalate.
 # Read it against §9's five templates: SCREENING_SIMPLE stops at the
 # Chemist/Engineer, RELEASE_CRITICAL runs to the Director.
-APPROVAL_PERMISSION: dict[str, str] = {
-    "preliminary": "test.approve_development",
-    "development": "test.approve_development",
-    "controlled": "test.approve_lead",
-    "validation": "test.approve_lead",
-    "qualification": "test.approve_qa",
-    "release": "test.approve_director",
-}
+# 🔴 REPLACED BY THE ROUTE'S OWN STEPS (I5). This used to map a
+# CALLER-SUPPLIED authority level to the permission required, which is now
+# actively WRONG: the approval route's STEP names the permission, and the two
+# disagree constantly. A test at `qualification` authority opens
+# QUALIFICATION_CONFIRMATION, whose FIRST rung requires
+# `test.approve_development` -- so a caller naming `qualification` was checked
+# against `test.approve_qa` and refused for a step that was never theirs.
+#
+# What remains is a coarse gate: hold SOME approval permission, or you have no
+# business on this endpoint at all. Which step is yours is the engine's
+# decision, made against the route rather than against a string in the request.
+APPROVAL_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        "test.approve_development",
+        "test.approve_lead",
+        "test.approve_qa",
+        "test.approve_director",
+    }
+)
 
 
 class TestCreate(BaseModel):
@@ -360,17 +371,26 @@ def post_decision(
     test by their own earlier involvement (ADR-019).
     """
     if payload.stage == "review":
-        required = "test.review"
+        if not principal.has("test.review"):
+            raise PermissionDenied()
     else:
-        authority = payload.authority_level
-        if authority is None:
+        # 🔴 REFUSED, NOT IGNORED. `authority_level` no longer selects
+        # anything: the route was opened at the TEST's authority when review
+        # completed, and each rung names its own permission. Accepting the
+        # field and quietly disregarding it would let a caller believe they had
+        # chosen the authority their signature carries -- a field that claims
+        # more than the code does, which is this codebase's most repeated
+        # defect. So say so.
+        if payload.authority_level is not None:
             raise _invalid(
-                TestError("an approval decision must state the authority level it is given at")
+                TestError(
+                    "an approval decision no longer names its authority level: the "
+                    "route was opened at the test's authority when review completed, "
+                    "and each step carries the permission it requires (§9)"
+                )
             )
-        required = APPROVAL_PERMISSION[authority]
-
-    if not principal.has(required):
-        raise PermissionDenied()
+        if not (principal.permissions & APPROVAL_PERMISSIONS):
+            raise PermissionDenied()
 
     try:
         return record_decision(
@@ -378,6 +398,12 @@ def post_decision(
             test_id=test_id,
             organization_id=principal.organization_id,
             actor_id=principal.user_id,
+            # 🔴 THE CALLER'S PERMISSIONS, PASSED THROUGH (I5). An approval
+            # step names the permission it requires, and the engine checks the
+            # STEP's permission rather than one this route chose. Without this
+            # the service could not tell which step is the caller's, and the
+            # ladder would be unenforceable.
+            held_permissions=principal.permissions,
             spec=DecisionInput(
                 decision=payload.decision,
                 stage=payload.stage,

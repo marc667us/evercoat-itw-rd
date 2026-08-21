@@ -152,10 +152,13 @@ def test_the_database_vocabularies_match_the_engine_exactly() -> None:
 def testable(owner_session: Session) -> dict[str, uuid.UUID]:
     """A sample ready to test, a method, a requirement, and three people.
 
-    Three users because two of this module's rules are about identity:
-    the reviewer may not be the executor, and the independent approver
-    may not be somebody who already approved on the development side.
-    A fixture with fewer could not tell a working rule from a broken one.
+    FIVE users, because the rules here are about identity and the approval
+    LADDER now has real steps (I5). The reviewer may not be the executor; the
+    independent QA approver may not be anyone who approved on the development
+    side; and QUALIFICATION_CONFIRMATION has two parallel development steps
+    before the lead and QA rungs, so a fixture with fewer people simply cannot
+    walk it. A fixture too small to reach a rule cannot tell a working rule
+    from a broken one.
     """
     suffix = uuid.uuid4().hex[:8]
     org = owner_session.execute(
@@ -164,7 +167,7 @@ def testable(owner_session: Session) -> dict[str, uuid.UUID]:
     ).scalar_one()
 
     users: dict[str, uuid.UUID] = {}
-    for label in ("technician", "engineer", "lead"):
+    for label in ("technician", "engineer", "lead", "chemist", "qa"):
         uid = owner_session.execute(
             text(
                 """
@@ -582,17 +585,25 @@ def test_the_executor_may_not_review_their_own_test(
 def test_a_development_approver_may_not_also_give_the_qa_approval(
     owner_session: Session, testable: dict[str, uuid.UUID]
 ) -> None:
-    """🔴 ADR-019, AND THE REASON AUTHORIZATION IS ON PERMISSIONS.
+    """🔴 ADR-019, NOW ENFORCED BY THE ROUTE RATHER THAN BY THIS MODULE.
 
-    "QA approval may never come from anyone who supplied a
-    development-side approval on the same test." That constraint depends
-    on per-test identity, so NO ROLE CHECK CAN EXPRESS IT — the rule is
-    enforced by reading the decision record and asking who has already
-    decided.
-
-    Independent means independent: somebody who has already formed and
-    recorded a view is not a second signature, they are the same
+    Independent QA approval must be INDEPENDENT: somebody who has already
+    formed and recorded a view is not a second signature, they are the same
     signature twice.
+
+    The rule used to be a query in `testing/service.py` against
+    `test_decisions`. It is now carried as DATA on the template step —
+    `must_differ_from_group = 1` on QUALIFICATION_CONFIRMATION's QA rung — and
+    enforced by the engine against the route's own snapshot. That matters
+    beyond tidiness: the same rule now applies to every module that routes an
+    approval, instead of to whichever one remembered to re-implement it.
+
+    🔴 AND THIS TEST WALKS THE REAL LADDER. Before I5 a single call approved a
+    qualification-authority test outright. QUALIFICATION_CONFIRMATION has FOUR
+    mandatory rungs — engineer and chemist in parallel (group 1), then the lead
+    (group 2), then independent QA (group 3) — and the test asserts the route
+    is still `pending` until the last of them, which is the bypass it exists to
+    prevent.
     """
     fx = testable
     test_id = _plan(owner_session, fx, authority_level="qualification")
@@ -607,36 +618,137 @@ def test_a_development_approver_may_not_also_give_the_qa_approval(
         actor_id=fx["engineer"],
         spec=DecisionInput(decision="approve", stage="review"),
     )
-    # The engineer approves at development authority.
-    record_decision(
+
+    # Group 1, both rungs: two DIFFERENT people at development authority.
+    first = record_decision(
         owner_session,
         test_id=test_id,
         organization_id=fx["org"],
         actor_id=fx["engineer"],
-        spec=DecisionInput(decision="approve", stage="approval", authority_level="development"),
+        held_permissions=DEV,
+        spec=DecisionInput(decision="approve", stage="approval"),
+    )
+    assert first["state"] == "pending", (
+        "one development approval completed a four-rung qualification ladder — "
+        "this is exactly the bypass I5 closed"
     )
 
-    # And is then barred from the qualification-authority approval.
+    record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["chemist"],
+        held_permissions=DEV,
+        spec=DecisionInput(decision="approve", stage="approval"),
+    )
+    # Group 2: the lead.
+    record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["lead"],
+        held_permissions=LEAD,
+        spec=DecisionInput(decision="approve", stage="approval"),
+    )
+
+    # Group 3: the ENGINEER holds QA permission too, and is barred — they
+    # decided in group 1, which is the group the QA rung must differ from.
     with pytest.raises(SegregationOfDutiesError, match="ADR-019"):
         record_decision(
             owner_session,
             test_id=test_id,
             organization_id=fx["org"],
             actor_id=fx["engineer"],
-            spec=DecisionInput(
-                decision="approve", stage="approval", authority_level="qualification"
-            ),
+            held_permissions=QA,
+            spec=DecisionInput(decision="approve", stage="approval"),
         )
 
-    # Somebody who has not decided before can.
+    # Somebody who has not decided before can, and THAT completes the route.
     result = record_decision(
         owner_session,
         test_id=test_id,
         organization_id=fx["org"],
-        actor_id=fx["lead"],
-        spec=DecisionInput(decision="approve", stage="approval", authority_level="qualification"),
+        actor_id=fx["qa"],
+        held_permissions=QA,
+        spec=DecisionInput(decision="approve", stage="approval"),
     )
     assert result["state"] == "approved"
+    assert result["route_status"] == "approved"
+
+
+def test_one_approval_does_not_complete_a_multi_rung_ladder(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """🔴 THE DEFECT I5 CLOSED, ASSERTED DIRECTLY.
+
+    Before I5 `record_decision` wrote `testing.test_decisions` and moved
+    `approval_state` itself, so ONE call naming any authority level approved
+    the test — §9's ladder was advisory. This asserts the test stays YELLOW
+    after a single rung of a four-rung route, which is the observable
+    difference between the two implementations.
+    """
+    fx = testable
+    test_id = _plan(owner_session, fx, authority_level="qualification")
+    _measure(owner_session, fx, test_id, ["12.0", "12.0", "12.0"])
+    complete_execution(
+        owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+    )
+    record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["engineer"],
+        spec=DecisionInput(decision="approve", stage="review"),
+    )
+    record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["engineer"],
+        held_permissions=DEV,
+        spec=DecisionInput(decision="approve", stage="approval"),
+    )
+
+    seen = get_test(owner_session, test_id=test_id, organization_id=fx["org"])
+    assert seen["final_disposition"]["colour"] == "yellow"
+    # And the ladder is visible rather than inferred: four rungs, one decided.
+    assert len(seen["approval_route"]) == 4
+    assert sum(1 for s in seen["approval_route"] if s["decision"]) == 1
+
+
+def test_an_approver_without_the_step_permission_is_refused(
+    owner_session: Session, testable: dict[str, uuid.UUID]
+) -> None:
+    """The step names the permission; the caller does not choose it.
+
+    `DecisionInput.authority_level` is no longer consulted for approvals, so a
+    caller cannot promote themselves by naming a level. Holding no approval
+    permission at all must be refused — otherwise every check above passes for
+    the wrong reason.
+    """
+    fx = testable
+    test_id = _plan(owner_session, fx)
+    _measure(owner_session, fx, test_id, ["12.0", "12.0", "12.0"])
+    complete_execution(
+        owner_session, test_id=test_id, organization_id=fx["org"], actor_id=fx["technician"]
+    )
+    record_decision(
+        owner_session,
+        test_id=test_id,
+        organization_id=fx["org"],
+        actor_id=fx["engineer"],
+        spec=DecisionInput(decision="approve", stage="review"),
+    )
+
+    with pytest.raises(SegregationOfDutiesError):
+        record_decision(
+            owner_session,
+            test_id=test_id,
+            organization_id=fx["org"],
+            actor_id=fx["technician"],
+            held_permissions=frozenset(),
+            spec=DecisionInput(decision="approve", stage="approval"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +756,26 @@ def test_a_development_approver_may_not_also_give_the_qa_approval(
 # ---------------------------------------------------------------------------
 
 
+# The permissions §9's templates name on their steps. Written out because a
+# test that passes `frozenset()` would be refused for the right reason by
+# accident, and one that passes every permission could not tell a correctly
+# gated step from an ungated one.
+DEV = frozenset({"test.approve_development"})
+LEAD = frozenset({"test.approve_lead"})
+QA = frozenset({"test.approve_qa"})
+
+
 def _approve(session: Session, fx: dict[str, uuid.UUID], test_id: uuid.UUID, **over: str) -> None:
+    """Review, then walk the approval ladder to completion.
+
+    🔴 THIS IS NOW A LADDER, NOT A SWITCH (I5). It used to be one call naming
+    an authority level, which approved the test outright — bypassing §9's
+    template entirely. Approval decisions now go through the shared engine, so
+    this walks the route that `_plan`'s default `development` authority opens:
+    OVERSIGHT_STANDARD, whose single MANDATORY step is a development approval.
+    Its second rung (the lead, on escalation) is optional and does not hold the
+    route open, which is what makes it optional rather than merely labelled so.
+    """
     record_decision(
         session,
         test_id=test_id,
@@ -657,10 +788,10 @@ def _approve(session: Session, fx: dict[str, uuid.UUID], test_id: uuid.UUID, **o
         test_id=test_id,
         organization_id=fx["org"],
         actor_id=fx["lead"],
+        held_permissions=DEV,
         spec=DecisionInput(
             decision=over.get("decision", "approve"),
             stage="approval",
-            authority_level="development",
             condition_text=over.get("condition_text"),
         ),
     )
