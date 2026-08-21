@@ -7,11 +7,19 @@ Chemist, Engineer, Lead, Director — the panels the source names for each
 THE FOUR RULES THESE ARE BUILT TO
 ═══════════════════════════════════════════════════════════════════════════
 
-**1. EVERY ROW CARRIES ITS SOURCE RECORD'S ID.** §2: "Dashboards must drill
-down to real source records." A tile showing "7 failed tests" that a chemist
-cannot click is a number they then have to go and find by hand, which is
-worse than no tile — it tells them there is a problem and not which one. Every
-panel returns rows with an `id` and the human-readable code beside it.
+**1. EVERY RECORD PANEL CARRIES ITS SOURCE RECORD'S ID.** §2: "Dashboards
+must drill down to real source records." A tile showing "7 failed tests" that
+a chemist cannot click is a number they then have to go and find by hand,
+which is worse than no tile — it tells them there is a problem and not which
+one.
+
+🔴 THREE PANELS ARE FACETS, NOT RECORDS, AND SAY SO. `pipeline_status`,
+`rd_portfolio` and `innovation_pipeline` are GROUPED COUNTS — "how many
+projects at each stage" has no single source record to point at. They carry no
+`id` and cannot, which is a different thing from having forgotten one. An
+earlier version of this paragraph claimed *every* row carried an id while
+three panels did not, which is exactly the overclaiming comment this codebase
+keeps finding in its own source. Raised by Codex.
 
 **2. COUNTS ARE OF ACTIONABLE ITEMS, NOT OF ROWS.** §11 says so about the
 sidebar and it is the same discipline here. "Pending approvals: 12" that
@@ -55,6 +63,8 @@ from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from app.domains.approvals.service import pending_steps_for
 
 __all__ = [
     "ROLE_DASHBOARDS",
@@ -104,7 +114,11 @@ def _rows(session: Session, sql: str, params: dict[str, Any]) -> list[dict[str, 
 
 
 def chemist_dashboard(
-    session: Session, *, user_id: uuid.UUID, organization_id: uuid.UUID
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    held_permissions: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """My formulations, my results, and what came back failed."""
     p = {"uid": user_id, "org": organization_id}
@@ -129,8 +143,16 @@ def chemist_dashboard(
         p,
     )
 
-    # Lab work in flight on MY formulas -- the chemist did not run the batch,
+    # Lab work IN FLIGHT on MY formulas -- the chemist did not run the batch,
     # so scoping this by who created the BATCH would show them nothing.
+    #
+    # ⚠️ THIS IS A BATCH-STATE PANEL AND THE NAME OVERSELLS IT (Codex finding
+    # 8). It answers "what of mine is in the lab right now", not "which
+    # results are outstanding" -- a draft batch with no tests appears, and a
+    # COMPLETED batch whose test has not been run does not. Answering the
+    # narrower question needs a test-state join that would double this
+    # panel's cost, and the broader one is what a chemist checking on their
+    # own work actually wants. Stated rather than quietly approximated.
     pending_lab = _rows(
         session,
         """
@@ -152,6 +174,16 @@ def chemist_dashboard(
     # recorded against it is being dealt with; leaving it here would make the
     # panel a list of everything that has ever gone wrong rather than a list
     # of what needs a chemist today (rule 2).
+    #
+    # THE LEFT JOIN AND ITS NULL BEHAVIOUR ARE DELIBERATE, and Codex was right
+    # to ask. A failed test with NO investigation gives `fl.id IS NULL`, the
+    # correlated NOT EXISTS is trivially true, and the row is INCLUDED with a
+    # null `failure_id`. That is the intent: a RED result nobody opened an
+    # investigation for is the MOST actionable row on this panel, and an inner
+    # join would have hidden precisely it.
+    #
+    # It cannot fan out: migration 029 added a partial unique index on
+    # `(organization_id, test_id)`, so at most one investigation names a test.
     failed = _rows(
         session,
         """
@@ -202,8 +234,12 @@ def chemist_dashboard(
     candidates = _rows(
         session,
         """
-        SELECT DISTINCT v.id, v.version_code, f.formula_code, v.project_id,
-               t.test_number
+        -- 🔴 ONE ROW PER VERSION (Codex finding 6). `DISTINCT` including
+        -- `t.test_number` meant two approved confirmation tests on one
+        -- version produced TWO candidates, and the panel counted a single
+        -- formula twice. The actionable entity is the version.
+        SELECT v.id, v.version_code, f.formula_code, v.project_id,
+               count(*) AS confirming_tests
         FROM testing.tests t
         JOIN laboratory.samples s ON s.id = t.sample_id
         JOIN laboratory.batches b ON b.id = s.batch_id
@@ -214,6 +250,7 @@ def chemist_dashboard(
           AND t.test_purpose = 'confirmation'
           AND t.approval_state = 'approved'
           AND t.calculated_result = 'pass'
+        GROUP BY v.id, v.version_code, f.formula_code, v.project_id
         ORDER BY v.version_code
         """,
         p,
@@ -238,7 +275,11 @@ def chemist_dashboard(
 
 
 def engineer_dashboard(
-    session: Session, *, user_id: uuid.UUID, organization_id: uuid.UUID
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    held_permissions: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Tests waiting to be run, results waiting to be reviewed."""
     p = {"uid": user_id, "org": organization_id}
@@ -262,36 +303,57 @@ def engineer_dashboard(
     # caller EXECUTED it -- DATA_MODEL.md §3.5 bars the executor from
     # reviewing their own measurements, so listing it here would offer work
     # the service will refuse. Rule 2: a count nobody can act on is noise.
-    reviews = _rows(
-        session,
-        """
-        SELECT t.id, t.test_number, t.calculated_result, t.executed_at,
-               t.project_id
-        FROM testing.tests t
-        WHERE t.organization_id = :org
-          AND t.execution_status = 'complete'
-          AND t.review_state = 'awaiting_review'
-          AND (t.executed_by IS NULL OR t.executed_by <> :uid)
-        ORDER BY t.executed_at NULLS LAST
-        """,
-        p,
+    # 🔴 THE PERMISSION, NOT JUST THE IDENTITY (Codex finding 3). Excluding
+    # the executor is necessary and not sufficient: someone without
+    # `test.review` cannot review anything, so listing the work for them
+    # inflates a count §11 requires to be of ACTIONABLE items. Visibility is
+    # RLS's answer; actionability is this one.
+    reviews = (
+        _rows(
+            session,
+            """
+            SELECT t.id, t.test_number, t.calculated_result, t.executed_at,
+                   t.project_id
+            FROM testing.tests t
+            WHERE t.organization_id = :org
+              AND t.execution_status = 'complete'
+              AND t.review_state = 'awaiting_review'
+              -- DATA_MODEL.md §3.5 bars the executor from reviewing their own
+              -- measurements, so offering it here would be work the service
+              -- refuses.
+              AND (t.executed_by IS NULL OR t.executed_by <> :uid)
+            ORDER BY t.executed_at NULLS LAST
+            """,
+            p,
+        )
+        if "test.review" in held_permissions
+        else []
     )
 
     # Process deviations still open. `resolved_at IS NULL` is the whole
     # filter: a resolved deviation is a record, not an action.
-    deviations = _rows(
-        session,
-        """
+    #
+    # Gated on `batch.review` for the same reason as the reviews panel: RLS
+    # decides what is VISIBLE, a permission decides what is ACTIONABLE, and
+    # §11 counts the second. Raised by Codex.
+    deviations = (
+        _rows(
+            session,
+            """
         SELECT d.id, d.description, d.severity, d.raised_at,
                b.batch_number, d.batch_id, d.project_id
         FROM laboratory.batch_deviations d
         JOIN laboratory.batches b ON b.id = d.batch_id
         WHERE d.organization_id = :org AND d.resolved_at IS NULL
         ORDER BY
-            CASE d.severity WHEN 'critical' THEN 0 WHEN 'major' THEN 1 ELSE 2 END,
-            d.raised_at
-        """,
-        p,
+                CASE d.severity WHEN 'critical' THEN 0 WHEN 'major' THEN 1
+                     WHEN 'minor' THEN 2 ELSE -1 END,
+                d.raised_at
+            """,
+            p,
+        )
+        if "batch.review" in held_permissions
+        else []
     )
 
     return {
@@ -313,7 +375,11 @@ def engineer_dashboard(
 
 
 def lead_dashboard(
-    session: Session, *, user_id: uuid.UUID, organization_id: uuid.UUID
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    held_permissions: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Assigned projects, what is stuck, and what is waiting on a signature."""
     p = {"uid": user_id, "org": organization_id}
@@ -326,7 +392,14 @@ def lead_dashboard(
         FROM projects.projects p
         WHERE p.organization_id = :org AND p.lead_user_id = :uid
         ORDER BY
-            CASE p.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
+            CASE p.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                            WHEN 'medium' THEN 2 WHEN 'low' THEN 3
+                            -- An unknown or NULL priority sorts FIRST, not
+                            -- last: a value the vocabulary does not contain
+                            -- is a data defect, and burying it at the bottom
+                            -- with the low-priority work is how it stays
+                            -- unnoticed. Raised by Codex.
+                            ELSE -1 END,
             p.target_release_date NULLS LAST
         """,
         p,
@@ -344,79 +417,72 @@ def lead_dashboard(
         p,
     )
 
-    # BLOCKED means something is stopping it, and the panel says WHICH thing:
-    # an open critical risk, or a milestone whose date has gone. A tile that
-    # says "3 blocked" without saying why sends somebody to open three
-    # projects and read them.
+    # 🔴 ONE ROW PER PROJECT, NOT PER BLOCKER (Codex finding 5).
+    #
+    # The first version UNION ALL'd risks and milestones, so a project with
+    # three risks and two overdue milestones produced FIVE rows and a panel
+    # named "blocked projects" reported `count: 5` for ONE blocked project.
+    # The single-record tests could never have caught it.
+    #
+    # The reasons are aggregated onto the project instead, so the panel still
+    # says WHY -- a tile reading "3 blocked" that does not say what is
+    # stopping them sends somebody to open three projects and read them.
     blocked = _rows(
         session,
         """
-        SELECT p.id, p.project_code, p.name, 'high-impact risk' AS blocked_by,
-               r.title AS detail
-        FROM projects.projects p
-        JOIN projects.risks r
-          ON r.project_id = p.id AND r.organization_id = p.organization_id
-        WHERE p.organization_id = :org AND p.lead_user_id = :uid
-          -- 🔴 `impact` is low|medium|high. There is NO 'critical' -- that
-          -- vocabulary belongs to `criticality` on requirements and to
-          -- `priority` on projects. Filtering on 'critical' here would have
-          -- matched NOTHING and the panel would have read "no blocked
-          -- projects" forever, which is the worst possible way to be wrong.
-          AND r.status IN ('open', 'mitigating') AND r.impact = 'high'
-        UNION ALL
-        SELECT p.id, p.project_code, p.name, 'overdue milestone' AS blocked_by,
-               m.name AS detail
-        FROM projects.projects p
-        JOIN projects.milestones m
-          ON m.project_id = p.id AND m.organization_id = p.organization_id
-        WHERE p.organization_id = :org AND p.lead_user_id = :uid
-          -- 'met' and 'missed' are the CLOSED states (migration 003's
-          -- vocabulary is planned|in_progress|met|missed|cancelled). There is
-          -- no 'complete'; the first draft of this file invented one, which
-          -- would have made every milestone look overdue.
-          AND m.status IN ('planned', 'in_progress')
-          AND m.planned_date < CURRENT_DATE
+        WITH blockers AS (
+            SELECT p.id, p.project_code, p.name, 'high-impact risk' AS blocked_by,
+                   r.title AS detail
+            FROM projects.projects p
+            JOIN projects.risks r
+              ON r.project_id = p.id AND r.organization_id = p.organization_id
+            WHERE p.organization_id = :org AND p.lead_user_id = :uid
+              AND r.status IN ('open', 'mitigating') AND r.impact = 'high'
+            UNION ALL
+            SELECT p.id, p.project_code, p.name, 'overdue milestone' AS blocked_by,
+                   m.name AS detail
+            FROM projects.projects p
+            JOIN projects.milestones m
+              ON m.project_id = p.id AND m.organization_id = p.organization_id
+            WHERE p.organization_id = :org AND p.lead_user_id = :uid
+              AND m.status IN ('planned', 'in_progress')
+              AND m.planned_date < CURRENT_DATE
+        )
+        SELECT id, project_code, name,
+               count(*)                             AS blocker_count,
+               array_agg(DISTINCT blocked_by)       AS blocked_by,
+               array_agg(detail ORDER BY detail)    AS reasons
+        FROM blockers
+        GROUP BY id, project_code, name
         ORDER BY project_code
         """,
         p,
     )
 
-    # 🔴 APPROVALS THIS PERSON MUST SIGN, not every open route. The step's
-    # own permission decides, and an earlier mandatory rung that has not
-    # ADVANCED means this rung's turn has not come -- the same predicate the
-    # engine enforces, so the dashboard cannot offer work `decide_step` would
-    # refuse. Duplicated here rather than shared because a dashboard must
-    # never call an engine that writes.
-    approvals = _rows(
-        session,
-        """
-        SELECT s.id AS step_id, s.step_label, s.permission_required,
-               r.id AS route_id, r.entity_type, r.entity_id, r.template_code,
-               r.project_id, r.opened_at
-        FROM workflow.approval_route_steps s
-        JOIN workflow.approval_routes r
-          ON r.id = s.route_id AND r.organization_id = s.organization_id
-        JOIN projects.projects p
-          ON p.id = r.project_id AND p.organization_id = r.organization_id
-        WHERE s.organization_id = :org
-          AND r.status = 'open'
-          AND s.decision IS NULL
-          AND p.lead_user_id = :uid
-          AND NOT EXISTS (
-                SELECT 1 FROM workflow.approval_route_steps earlier
-                WHERE earlier.route_id = s.route_id
-                  AND earlier.parallel_group < s.parallel_group
-                  AND earlier.is_mandatory
-                  AND (
-                        earlier.decision IS NULL
-                        OR earlier.decision NOT IN
-                             ('approve', 'approve_with_condition', 'escalate')
-                  )
-          )
-        ORDER BY r.opened_at
-        """,
-        p,
-    )
+    # 🔴 FINDINGS 1 AND 2 (Codex): THIS WAS BOTH UNAUTHORIZED AND DUPLICATED.
+    #
+    # It re-implemented the engine's sequencing rules and filtered on
+    # `p.lead_user_id = :uid` -- which is not a permission. So it showed a
+    # lead every open step INCLUDING ones they cannot decide (a QA rung is not
+    # theirs), and showed an authorized non-lead NOTHING. §6: authorization is
+    # on permissions, never on a role or a column that stands in for one.
+    #
+    # And re-implementing reachability guarantees eventual divergence: the
+    # engine's rule changed twice in one day this session -- once for returned
+    # rungs, once for escalation -- and a copy would have silently disagreed
+    # with `decide_step` in both directions.
+    #
+    # `pending_steps_for` is the engine's own read-only queue and answers
+    # exactly this question. It is a READ, so calling it from a dashboard does
+    # not couple a view to something that writes.
+    approvals = [
+        dict(step)
+        for step in pending_steps_for(
+            session,
+            organization_id=organization_id,
+            held_permissions=held_permissions,
+        )
+    ]
 
     risks = _rows(
         session,
@@ -432,7 +498,8 @@ def lead_dashboard(
           -- worked, which are the ones a lead most needs to see.
           AND r.status IN ('open', 'mitigating')
         ORDER BY
-            CASE r.impact WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END
+            CASE r.impact WHEN 'high' THEN 0 WHEN 'medium' THEN 1
+                 WHEN 'low' THEN 2 ELSE -1 END
         """,
         p,
     )
@@ -472,7 +539,11 @@ def lead_dashboard(
 
 
 def director_dashboard(
-    session: Session, *, user_id: uuid.UUID, organization_id: uuid.UUID
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    held_permissions: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Portfolio oversight.
 
@@ -537,9 +608,15 @@ def director_dashboard(
                o.created_at
         FROM innovation.opportunities o
         WHERE o.organization_id = :org
-          AND o.status IN ('awaiting_decision', 'feasibility', 'on_hold')
+          -- 🔴 `awaiting_decision` ONLY (Codex finding 4). `feasibility`
+          -- means somebody is still doing the work, and `on_hold` is the
+          -- explicit statement that a decision is NOT being asked for. Both
+          -- were in the first version, which turned a Director's decision
+          -- queue into a list of everything not yet finished.
+          AND o.status = 'awaiting_decision'
         ORDER BY
-            CASE o.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
+            CASE o.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE -1 END,
             o.created_at
         """,
         p,

@@ -68,4 +68,10 @@ def get_role_dashboard(
         session,
         user_id=principal.user_id,
         organization_id=principal.organization_id,
+        # 🔴 THE CALLER'S PERMISSIONS, because §11's counts are of ACTIONABLE
+        # items and RLS cannot answer that question. RLS says what may be
+        # SEEN; a permission says what may be DONE. Without this the approvals
+        # panel offered steps the engine would refuse and the reviews panel
+        # counted work the caller cannot perform. Raised by Codex.
+        held_permissions=principal.permissions,
     )

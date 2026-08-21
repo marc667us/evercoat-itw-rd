@@ -37,6 +37,13 @@ from app.domains.dashboards.service import (
     lead_dashboard,
 )
 
+# The permissions each panel gates on. §11 counts ACTIONABLE items, so a
+# dashboard built with an empty permission set must show an empty queue --
+# which is asserted below, because "shows nothing" is the failure mode a
+# permission check introduces.
+ENGINEER_PERMS = frozenset({"test.review", "batch.review"})
+LEAD_PERMS = frozenset({"test.approve_development", "test.approve_lead"})
+
 
 def _org_and_people(session: Session) -> dict[str, Any]:
     suffix = uuid.uuid4().hex[:8]
@@ -198,7 +205,12 @@ def test_a_high_impact_risk_blocks_the_lead_dashboard_project(
     )
     owner_session.flush()
 
-    board = lead_dashboard(owner_session, user_id=fx["lead"], organization_id=fx["org"])
+    board = lead_dashboard(
+        owner_session,
+        user_id=fx["lead"],
+        organization_id=fx["org"],
+        held_permissions=LEAD_PERMS,
+    )
 
     blocked = board["panels"]["blocked_projects"]
     assert blocked["count"] >= 1, (
@@ -206,7 +218,7 @@ def test_a_high_impact_risk_blocks_the_lead_dashboard_project(
         "the panel is almost certainly filtering on a value the vocabulary "
         "does not contain"
     )
-    assert any(r["blocked_by"] == "high-impact risk" for r in blocked["rows"])
+    assert "high-impact risk" in blocked["rows"][0]["blocked_by"]
 
     risks = board["panels"]["risks"]
     assert risks["count"] == 1
@@ -235,11 +247,18 @@ def test_an_overdue_milestone_blocks_the_lead_dashboard_project(
     )
     owner_session.flush()
 
-    board = lead_dashboard(owner_session, user_id=fx["lead"], organization_id=fx["org"])
+    board = lead_dashboard(
+        owner_session,
+        user_id=fx["lead"],
+        organization_id=fx["org"],
+        held_permissions=LEAD_PERMS,
+    )
 
-    assert any(
-        r["blocked_by"] == "overdue milestone" for r in board["panels"]["blocked_projects"]["rows"]
-    ), "an overdue milestone is not blocking its project"
+    blocked = board["panels"]["blocked_projects"]
+    assert blocked["count"] == 1
+    assert "overdue milestone" in blocked["rows"][0]["blocked_by"], (
+        "an overdue milestone is not blocking its project"
+    )
     assert board["panels"]["milestones"]["count"] == 1
 
 
@@ -263,7 +282,12 @@ def test_a_met_milestone_does_not_block_anything(owner_session: Session) -> None
     )
     owner_session.flush()
 
-    board = lead_dashboard(owner_session, user_id=fx["lead"], organization_id=fx["org"])
+    board = lead_dashboard(
+        owner_session,
+        user_id=fx["lead"],
+        organization_id=fx["org"],
+        held_permissions=LEAD_PERMS,
+    )
     assert board["panels"]["blocked_projects"]["rows"] == []
     assert board["panels"]["milestones"]["rows"] == []
 
@@ -347,7 +371,12 @@ def test_an_open_deviation_reaches_the_engineer(owner_session: Session) -> None:
     )
     owner_session.flush()
 
-    board = engineer_dashboard(owner_session, user_id=fx["engineer"], organization_id=fx["org"])
+    board = engineer_dashboard(
+        owner_session,
+        user_id=fx["engineer"],
+        organization_id=fx["org"],
+        held_permissions=ENGINEER_PERMS,
+    )
     deviations = board["panels"]["process_deviations"]
     assert deviations["count"] == 1
     assert deviations["rows"][0]["severity"] == "major"
@@ -460,3 +489,115 @@ def test_an_unbuilt_panel_says_which_slice_will_build_it(owner_session: Session)
 
     assert doe["available"] is False
     assert "Slice 12" in doe["reason"]
+
+
+def test_a_panel_gated_on_a_permission_is_empty_without_it(
+    owner_session: Session,
+) -> None:
+    """🔴 THE NEGATIVE THAT MAKES THE PERMISSION CHECK MEAN SOMETHING.
+
+    Codex found that `engineering_reviews`, `process_deviations` and
+    `pending_approvals` counted work the caller cannot perform — RLS says
+    what may be SEEN, a permission says what may be DONE, and §11 counts the
+    second.
+
+    Without this test a check that silently did nothing would pass every
+    other test in this file, because they all supply the permission.
+    """
+    fx = _org_and_people(owner_session)
+
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO projects.risks
+                (organization_id, project_id, risk_code, title, category,
+                 probability, impact, status, owner_user_id)
+            VALUES (:o, :p, :c, 'Something', 'supply', 'high', 'high', 'open', :u)
+            """
+        ),
+        {"o": fx["org"], "p": fx["project"], "c": f"RSK-N-{fx['suffix']}", "u": fx["lead"]},
+    )
+    owner_session.flush()
+
+    # No permissions at all.
+    board = lead_dashboard(
+        owner_session,
+        user_id=fx["lead"],
+        organization_id=fx["org"],
+        held_permissions=frozenset(),
+    )
+
+    assert board["panels"]["pending_approvals"]["rows"] == [], (
+        "a caller holding no approval permission was offered approval work"
+    )
+    # ...but the panels that are about VISIBILITY rather than action still
+    # answer. A dashboard that went blank without permissions would be a
+    # different defect.
+    assert board["panels"]["risks"]["count"] == 1
+    assert board["panels"]["assigned_projects"]["count"] == 1
+
+    engineer = engineer_dashboard(
+        owner_session,
+        user_id=fx["engineer"],
+        organization_id=fx["org"],
+        held_permissions=frozenset(),
+    )
+    assert engineer["panels"]["engineering_reviews"]["rows"] == []
+    assert engineer["panels"]["process_deviations"]["rows"] == []
+
+
+def test_blocked_projects_counts_projects_not_blockers(owner_session: Session) -> None:
+    """🔴 ONE PROJECT WITH THREE BLOCKERS IS ONE BLOCKED PROJECT.
+
+    Codex finding 5: the first version UNION ALL'd risks and milestones, so a
+    project with three risks and two overdue milestones reported `count: 5`
+    on a panel named "blocked projects". Every other test here seeds ONE
+    blocker, so none of them could have caught it.
+    """
+    fx = _org_and_people(owner_session)
+
+    for n in range(3):
+        owner_session.execute(
+            text(
+                """
+                INSERT INTO projects.risks
+                    (organization_id, project_id, risk_code, title, category,
+                     probability, impact, status, owner_user_id)
+                VALUES (:o, :p, :c, :t, 'supply', 'high', 'high', 'open', :u)
+                """
+            ),
+            {
+                "o": fx["org"],
+                "p": fx["project"],
+                "c": f"RSK-M{n}-{fx['suffix']}",
+                "t": f"Risk {n}",
+                "u": fx["lead"],
+            },
+        )
+    for n in range(2):
+        owner_session.execute(
+            text(
+                """
+                INSERT INTO projects.milestones
+                    (organization_id, project_id, name, planned_date, status)
+                VALUES (:o, :p, :n, CURRENT_DATE - 3, 'planned')
+                """
+            ),
+            {"o": fx["org"], "p": fx["project"], "n": f"Milestone {n}"},
+        )
+    owner_session.flush()
+
+    board = lead_dashboard(
+        owner_session,
+        user_id=fx["lead"],
+        organization_id=fx["org"],
+        held_permissions=LEAD_PERMS,
+    )
+    blocked = board["panels"]["blocked_projects"]
+
+    assert blocked["count"] == 1, (
+        f"five blockers on one project reported as {blocked['count']} blocked projects"
+    )
+    row = blocked["rows"][0]
+    assert row["blocker_count"] == 5
+    assert sorted(row["blocked_by"]) == ["high-impact risk", "overdue milestone"]
