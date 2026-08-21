@@ -150,7 +150,7 @@ Consequences, stated plainly:
 
 ### ADR-026 — Railway free tier replaces Render as this app's deployment target · Accepted (operator decision, 2026-08-20)
 
-**Decision: the API, PostgreSQL and Keycloak tiers of EvercoatITWRD APP are deployed to Railway's free offering. Render is retired as the target for this app.** Operator, 2026-08-20, verbatim: *"we replace render with railway free version for this app"*.
+**Decision: Railway's free offering is the SELECTED TARGET for the API, PostgreSQL and Keycloak tiers of EvercoatITWRD APP; Render is retired as the target for this app. Nothing is deployed there yet — this ADR records the choice, not an accomplished migration.** Operator, 2026-08-20, verbatim: *"we replace render with railway free version for this app"*.
 
 **This is a provider change, not an architecture change.** Every technical prerequisite already exists and none of it is Render-specific: `apps/api/Dockerfile`, `services/keycloak/evercoat-realm.json`, the Alembic migration chain, the seeder, and a CI suite that already proves all of it against a real PostgreSQL and a real Keycloak. What changes is where the containers run.
 

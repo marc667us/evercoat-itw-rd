@@ -43,8 +43,9 @@ and no Keycloak.
 > *"we replace render with railway free version for this app"*
 
 **Render is retired as this app's target for the API, PostgreSQL and
-Keycloak tiers. They go to Railway's free offering.** Recorded as
-**ADR-026** in `DECISIONS.md`.
+Keycloak tiers; Railway's free offering is the SELECTED TARGET for them.**
+Recorded as **ADR-026** in `DECISIONS.md`. **The choice is made; the
+migration is not.**
 
 This is a **provider change, not an architecture change.** Nothing built
 is Render-specific — `apps/api/Dockerfile`, the shipped realm at
