@@ -30,17 +30,60 @@ what production is actually serving, and the next command to run.
 
 ---
 
-## 🔴 FIRST THING NEXT SESSION — I13, AND IT IS NOW MEASURED
+## 🔴 FIRST THING NEXT SESSION — I13, NOW RE-TARGETED AT RAILWAY (ADR-026)
 
-**This is the only thing between the repository and a working product.**
-Sign-in, Laboratory, Testing and MSD are all built and CI-proven against a
-real PostgreSQL. None of them can do anything on the live site, because
-the deployed artefact is a static export with no API and no Keycloak.
+**This is still the only thing between the repository and a working
+product.** Sign-in, Laboratory, Testing and MSD are all built and
+CI-proven against a real PostgreSQL. None of them can do anything on the
+live site, because the deployed artefact is a static export with no API
+and no Keycloak.
 
-I built `.github/workflows/render-provision.yml` — POST/GET only, no
-DELETE anywhere, name-scoped to `evercoat-itw-rd-*`, and it refuses rather
-than overwrites — and **ran it against the real Render API**. Both halves
-were refused, verbatim:
+### ▶ THE DECISION — operator, 2026-08-20
+
+> *"we replace render with railway free version for this app"*
+
+**Render is retired as this app's target for the API, PostgreSQL and
+Keycloak tiers. They go to Railway's free offering.** Recorded as
+**ADR-026** in `DECISIONS.md`.
+
+This is a **provider change, not an architecture change.** Nothing built
+is Render-specific — `apps/api/Dockerfile`, the shipped realm at
+`services/keycloak/evercoat-realm.json`, the Alembic chain, the seeder
+and the CI suite all move as they are.
+
+🔴 **NOTHING HAS BEEN PROVISIONED. THE WORK HAS NOT STARTED.** Do not read
+the ADR as progress. It is blocked on **one owner action**:
+
+| What | State |
+|---|---|
+| Railway CLI on this host | **Unauthenticated** — `railway whoami` → `Unauthorized` (v4.66.0, `C:/Users/USER/nodejs/railway`). Needs an interactive `railway login`, which only the owner can complete. |
+| `RAILWAY_TOKEN` repository secret | **Not set.** `RENDER_API_KEY` is still the only repository secret. |
+
+⚠️ **Confirm the free allowance at sign-in, BEFORE creating anything.**
+Railway withdrew its perpetual free tier in 2023 for a one-time trial
+credit with a paid Hobby plan beyond it. If this account has no genuinely
+free allowance, that is an **owner decision under the zero-cost rule** —
+surface it, never assume it.
+
+### The order of work, once authenticated
+
+1. **Leave the web tier on Render.** It is a *static site*, unaffected by
+   the quota that blocks the API, and `itwevercoatrd.aiappinvent.com` is
+   already CNAME'd to it with a working certificate. Moving it is a
+   separate decision with a DNS change attached, and **there are no
+   Namecheap credentials on this machine.**
+2. Postgres → `alembic upgrade head` (as a role that owns
+   `alembic_version`) → API service → Keycloak from the shipped realm.
+3. **Only then** rebuild web with `NEXT_PUBLIC_API_BASE_URL` and
+   `NEXT_PUBLIC_KEYCLOAK_URL` on the Railway hosts. 🔴 **Both are
+   BUILD-time** — setting them on a running service changes nothing.
+4. Keep `render-audit.yml` and `render-provision.yml` until Railway is
+   serving; retire them in the commit that proves the live deploy.
+
+### Why Render was abandoned — measured, not assumed
+
+`render-provision.yml` was run against the real Render API with the
+repository's `RENDER_API_KEY`. Both halves were refused, verbatim:
 
 ```
 POST /postgres         -> 400  "cannot have more than one active free tier database"
@@ -48,42 +91,46 @@ POST /services free    -> 400  "free tier usage quota has been exhausted,
                                 new services are not allowed"
 ```
 
-🔴 **THE API KEY WORKS. THOSE ARE 400s, NOT 401s.** `GET /owners` returned
-200 (`tea-d86fu8mk1jcs7397i70g`, `marc667us@yahoo.com`), `GET /services`
-and `GET /postgres` both 200. Render authenticated the request and then
-refused on a workspace quota. **A new or rotated key produces the identical
-two errors.** Do not spend a session rotating credentials.
+🔴 **THE API KEY WORKS. THOSE ARE 400s, NOT 401s.** `GET /owners`
+returned 200 (`tea-d86fu8mk1jcs7397i70g`, `marc667us@yahoo.com`).
+**A new or rotated key produces the identical two errors. Do not spend a
+session rotating credentials.** The workspace is shared with AutoWorkshop
+and Solar and is full: five `standard` web services, `solarpro-postgres`
+on `basic_256mb`, and `autoworkshop-postgres` holding the one free
+database slot.
 
-**Credential inventory — this decides what is possible:**
+⚠️ **`autoworkshop-postgres` EXPIRES 2026-09-01.** A different app loses
+its database that day. Same workspace, so it will surface here.
 
-| Credential | State |
-|---|---|
-| `RENDER_API_KEY` | **The only repository secret.** Works. |
-| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | Referenced by `deploy-cloudflare-pages.yml`, **NOT set** — that workflow cannot run |
-| Railway CLI (installed on the dev host) | **Unauthenticated** (`railway whoami` → Unauthorized) |
+---
 
-**Workspace as it stands:** five `standard` web services (3 AutoWorkshop,
-2 Solar) + the Evercoat static site; `solarpro-postgres` on
-`basic_256mb`; `autoworkshop-postgres` on `free`.
+## 🔴 `TODO.md` WAS DESTROYED BY ITS OWN LAST TWO COMMITS — RECOVERED (I25)
 
-**One command from done, once there is capacity:**
+Found at session close, and it would have been invisible for weeks.
 
-```bash
-gh workflow run render-provision.yml \
-  -f resource=postgres    -f plan=<paid plan> -f confirm=CREATE
-gh workflow run render-provision.yml \
-  -f resource=api-service -f plan=<paid plan> -f confirm=CREATE
-```
+At tip `945b2fe`, `TODO.md` was **15,794,988 bytes across 63 lines**, with
+single lines up to **1.8 million characters** — the I13 table row
+concatenated into itself roughly 1,369 times. **Every issue except I13
+had been deleted**: I3–I12, I14–I21 and I23 were all gone.
 
-Then: `DATABASE_URL` on the non-superuser app role, `alembic upgrade head`
-as a role that owns `alembic_version`, a Keycloak service from
-`services/keycloak/evercoat-realm.json`, and a web rebuild with
-`NEXT_PUBLIC_API_BASE_URL` + `NEXT_PUBLIC_KEYCLOAK_URL` — both are
-**BUILD-time**, so setting them on a running service changes nothing.
+| Commit | `TODO.md` size | State |
+|---|---|---|
+| `84733a9` | 17,815 B | ✅ register intact — I3–I23 |
+| `24c5917` | 11,940 B | 🔴 already damaged — I10–I13, I20, I21 lost |
+| `4598fc8` | 15,794,988 B | 🔴 destroyed |
 
-⚠️ **`autoworkshop-postgres` is the free-tier database and EXPIRES
-2026-09-01.** A different app loses its database that day unless it moves
-to a paid plan first. Same workspace, so it will surface here.
+**Recovered from `84733a9:TODO.md`**, with the I13 and I20 updates
+re-applied by hand. The file is now 20 KB with a longest line of ~1.6 K.
+
+⚠️ **The root cause is NOT established.** It is almost certainly an
+append/rewrite step in the docs-update path that re-emits the whole file
+into a single row. **Find it before the next docs commit or this recurs
+silently.** It is not periodic repetition, so it cannot be undone
+mechanically — `git show <commit>:TODO.md` is the only recovery.
+
+*The lesson is the same one as the rest of the session: a file that is
+committed, pushed and CI-green can still be destroyed. Nothing checks
+documentation.*
 
 ---
 
@@ -187,6 +234,11 @@ needs pgvector). Both are wiring, not new engineering. `TODO.md` I23.
 - ⚠️ **CI has a one-run-per-ref concurrency group.** Pushing evicts an
   in-progress run — a `cancelled` conclusion on the previous commit is
   usually this, not a failure.
+- ▶ **Render is retired as this app's API/DB/Keycloak target (ADR-026).**
+  Those tiers go to **Railway**, blocked on an interactive `railway login`
+  and a `RAILWAY_TOKEN` secret, neither of which exists yet. The **web**
+  tier deliberately stays on Render for now — it is a static site with a
+  working certificate on `itwevercoatrd.aiappinvent.com`.
 - ⚠️ **Never** use `render-setup.yml` apply mode to force a deploy: it
   issues `DELETE` against **AutoWorkshop** custom domains. Use
   `gh workflow run "Deploy web (manual)"`.

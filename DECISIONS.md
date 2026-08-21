@@ -147,3 +147,35 @@ Consequences, stated plainly:
 - **The redirect URI is a real page in the export** (`/auth/callback/`), not a route handler. The realm's `redirectUris` and `webOrigins` change with it, and must list every deployed origin — a static export cannot compute them at runtime.
 - **`next-auth` is removed from `package.json`.** A dependency that is imported by nothing and cannot work in this build is a trap for the next reader, and it is the reason S1 was scheduled wrongly in the first place.
 - **This does not by itself put sign-in on the deployed site.** Keycloak still has no public URL, because deploying it needs a web service. What this changes is that the blocker is now **one configuration value**, not an architecture, and the flow is provable in CI against the real Keycloak that already runs there.
+
+### ADR-026 — Railway free tier replaces Render as this app's deployment target · Accepted (operator decision, 2026-08-20)
+
+**Decision: the API, PostgreSQL and Keycloak tiers of EvercoatITWRD APP are deployed to Railway's free offering. Render is retired as the target for this app.** Operator, 2026-08-20, verbatim: *"we replace render with railway free version for this app"*.
+
+**This is a provider change, not an architecture change.** Every technical prerequisite already exists and none of it is Render-specific: `apps/api/Dockerfile`, `services/keycloak/evercoat-realm.json`, the Alembic migration chain, the seeder, and a CI suite that already proves all of it against a real PostgreSQL and a real Keycloak. What changes is where the containers run.
+
+**Why — and it was measured, not assumed (I13).** `render-provision.yml` was run against the real Render API with the repository's `RENDER_API_KEY`. Render refused both halves, verbatim:
+
+```
+POST /postgres        -> 400  "cannot have more than one active free tier database"
+POST /services free   -> 400  "free tier usage quota has been exhausted,
+                               new services are not allowed"
+```
+
+🔴 **The key works — those are 400s, not 401s.** `GET /owners` returned 200. **A new or rotated key produces the identical errors.** The Render workspace is shared with AutoWorkshop and Solar and is full: five `standard` web services, `solarpro-postgres` on `basic_256mb`, and `autoworkshop-postgres` holding the single free database slot. This is a plan/billing boundary, and no amount of engineering on this repository moves it.
+
+**What is NOT yet done, stated plainly so it is not mistaken for progress.** Nothing has been provisioned on Railway. The work has not started. It is blocked on one owner action:
+
+- The Railway CLI on the dev host is **unauthenticated** — `railway whoami` → `Unauthorized` (v4.66.0, `C:/Users/USER/nodejs/railway`). It needs an interactive `railway login`, which only the owner can complete.
+- There is **no `RAILWAY_TOKEN` repository secret**. `RENDER_API_KEY` remains the only one.
+
+⚠️ **Verify the free allowance before provisioning anything.** Railway withdrew its perpetual free tier in 2023 in favour of a one-time trial credit, with a paid Hobby plan beyond it. Whether a genuinely free allowance exists on this account must be confirmed **at sign-in, before any resource is created** — not discovered afterwards. If it turns out to require payment, that is an owner decision under the standing zero-cost rule and must be surfaced, never assumed.
+
+**Sequencing — do not retire Render early.**
+
+1. The web front end stays on Render for now. It is a **static site**, it is unaffected by the quota that blocks the API, and `itwevercoatrd.aiappinvent.com` is already CNAME'd to it with a working certificate. Moving it is a separate decision with a DNS change attached, and there are no Namecheap credentials on this machine.
+2. Provision Postgres → run `alembic upgrade head` → API service → Keycloak from the shipped realm, on Railway.
+3. Only then rebuild the web tier with `NEXT_PUBLIC_API_BASE_URL` and `NEXT_PUBLIC_KEYCLOAK_URL` pointing at the Railway hosts. 🔴 **Both are BUILD-time** — setting them on a running service changes nothing.
+4. Keep `render-audit.yml` and `render-provision.yml` in the repository until Railway is serving. They are read-mostly and `render-provision.yml` has no DELETE path. Retire them in the same commit that proves the Railway deploy live.
+
+**Supersedes ADR-009** ("Render is optional demo staging only") only as to which provider hosts this app's runtime tiers. ADR-009's substantive point — that the deployed instance is demonstration staging and not production — is unchanged.
