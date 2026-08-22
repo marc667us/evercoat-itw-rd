@@ -15,6 +15,7 @@ a row-visibility one and the owner is subject to it identically.
 
 from __future__ import annotations
 
+import pathlib
 import uuid
 from collections.abc import Iterator
 
@@ -493,7 +494,11 @@ def test_a_material_requiring_an_sds_blocks_submission_until_one_is_registered(
     fire, AND registering the document must clear it. Either half alone
     would have passed against the broken version.
     """
-    from app.domains.materials.service import DocumentInput, register_document
+    import tempfile
+
+    from app.core.malware import AlwaysCleanScanner
+    from app.core.object_storage import FilesystemObjectStore
+    from app.domains.materials.service import DocumentInput, store_document
 
     org, actor = org_and_actor
     material_id = create_material(
@@ -509,10 +514,17 @@ def test_a_material_requiring_an_sds_blocks_submission_until_one_is_registered(
     )
 
     def sds_rows() -> int:
+        # 🔴 COUNTS `usable_documents`, NOT `material_documents`.
+        #
+        # This is the difference I41 turned on. The old version counted raw
+        # rows, which is exactly what the submission gate did -- so the test
+        # agreed with the defect and could never have caught it. A row now has
+        # to carry bytes the store actually wrote and a clean scan before it
+        # counts as hazard documentation.
         return owner_session.execute(
             text(
                 """
-                SELECT count(*) FROM materials.material_documents
+                SELECT count(*) FROM materials.usable_documents
                 WHERE material_id = :m AND document_type = 'SDS'
                 """
             ),
@@ -521,16 +533,39 @@ def test_a_material_requiring_an_sds_blocks_submission_until_one_is_registered(
 
     assert sds_rows() == 0
 
-    register_document(
+    store_document(
         owner_session,
         material_id=material_id,
         organization_id=org,
         actor_id=actor,
-        spec=DocumentInput(
-            document_type="SDS",
-            title="SDS rev 4",
-            storage_key=f"sds/{uuid.uuid4().hex}.pdf",
-        ),
+        spec=DocumentInput(document_type="SDS", title="SDS rev 4"),
+        data=b"%PDF-1.4\n% synthetic safety data sheet for a service-rule test\n",
+        filename="SDS rev 4.pdf",
+        store=FilesystemObjectStore(pathlib.Path(tempfile.gettempdir()) / "evercoat-test-docs"),
+        scanner=AlwaysCleanScanner(),
     )
 
     assert sds_rows() == 1, "the document register still has no writer"
+
+    # 🔴 AND THE HALF THAT DID NOT EXIST BEFORE: a row without bytes must NOT
+    # count. Without this, the test above passes against a `usable_documents`
+    # definition that simply selects everything -- which is the state the
+    # application was in for six slices.
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO materials.material_documents
+                (organization_id, material_id, document_type, title, storage_key,
+                 uploaded_by, status, scan_status)
+            VALUES (:o, :m, 'SDS', 'A claim with no file', :k, :u,
+                    'legacy_unverified', 'not_scanned')
+            """
+        ),
+        {"o": org, "m": material_id, "k": f"sds/{uuid.uuid4().hex}.pdf", "u": actor},
+    )
+    owner_session.flush()
+
+    assert sds_rows() == 1, (
+        "a document row carrying no bytes was counted as hazard documentation. "
+        "That is I41: the safety gate counting rows rather than files."
+    )

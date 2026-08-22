@@ -59,11 +59,11 @@ def material_safety(
             """
             SELECT m.material_code, m.name, m.category, m.status,
                    m.restriction_reason, m.hazard_summary, m.requires_sds,
-                   (SELECT count(*) FROM materials.material_documents d
+                   (SELECT count(*) FROM materials.usable_documents d
                      WHERE d.material_id = m.id
                        AND d.organization_id = m.organization_id
                        AND d.document_type = 'SDS') AS sds_count,
-                   (SELECT max(d.issued_on) FROM materials.material_documents d
+                   (SELECT max(d.issued_on) FROM materials.usable_documents d
                      WHERE d.material_id = m.id
                        AND d.organization_id = m.organization_id
                        AND d.document_type = 'SDS') AS sds_issued_on
@@ -100,7 +100,7 @@ def formula_safety(
             """
             SELECT m.material_code, m.name, m.status, m.restriction_reason,
                    m.requires_sds, c.percentage,
-                   (SELECT count(*) FROM materials.material_documents d
+                   (SELECT count(*) FROM materials.usable_documents d
                      WHERE d.material_id = m.id
                        AND d.organization_id = m.organization_id
                        AND d.document_type = 'SDS') AS sds_count

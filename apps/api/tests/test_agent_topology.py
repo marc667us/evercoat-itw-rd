@@ -21,6 +21,7 @@ So this reads the source. It needs no database, no network and no model.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -140,13 +141,60 @@ def test_no_paid_ai_sdk_is_imported_anywhere() -> None:
     security property first and a cost property second."
     """
     banned = ("openai", "anthropic", "google", "cohere", "mistralai", "boto3")
+
+    # 🔴 ONE NAMED EXCEPTION, AND IT IS NARROWED RATHER THAN WAIVED.
+    #
+    # `boto3` is the AWS SDK, so it was banned outright -- Bedrock is paid AI
+    # and AWS S3 is on §E's forbidden list. But boto3 is also the ordinary
+    # client for the S3 PROTOCOL, which is what Garage and Oracle Object
+    # Storage speak, and ADR-004 chose an S3-compatible store precisely so the
+    # same adapter serves both.
+    #
+    # So the rule this test means is not "boto3 is absent". It is "no data
+    # leaves the organization's infrastructure". The thing that decides which
+    # of those is true is `endpoint_url`: WITHOUT it, boto3 resolves to AWS.
+    # A ban on the name would have been satisfied by importing `botocore`
+    # instead, while an adapter that forgot `endpoint_url` would ship
+    # formulation documents to Amazon and pass.
+    #
+    # The exception is therefore one file, and that file is then held to two
+    # assertions the blanket ban never made.
+    s3_adapter = API_ROOT / "app" / "core" / "object_storage.py"
+
     offenders: list[str] = []
     for path in sorted((API_ROOT / "app").rglob("*.py")):
         for module in _imports(path):
-            if module.split(".")[0] in banned:
-                offenders.append(f"{path.relative_to(API_ROOT)} imports {module}")
+            if module.split(".")[0] not in banned:
+                continue
+            if module.split(".")[0] == "boto3" and path == s3_adapter:
+                continue
+            offenders.append(f"{path.relative_to(API_ROOT)} imports {module}")
 
     assert not offenders, (
         "a paid/hosted AI SDK is imported; formulation data must not leave "
         "the organization's infrastructure:\n  " + "\n  ".join(offenders)
     )
+
+    source = s3_adapter.read_text(encoding="utf-8")
+
+    # Every client must be pinned to our own endpoint. This is the assertion
+    # that actually enforces the rule; the import location above is only what
+    # keeps the surface to one reviewable file.
+    for call in re.finditer(r"boto3\.client\(", source):
+        tail = source[call.end() : call.end() + 400]
+        assert "endpoint_url" in tail, (
+            "a boto3 client is constructed without an explicit endpoint_url in "
+            "app/core/object_storage.py. Without one, boto3 resolves to AWS "
+            "and proprietary formulation documents would be uploaded to a "
+            "commercial provider on §E's forbidden list."
+        )
+
+    # And nothing in that file may reach an AI service. boto3 is one import
+    # away from Bedrock, which is exactly what the blanket ban was protecting
+    # against.
+    for forbidden_service in ("bedrock", "comprehend", "textract", "rekognition"):
+        assert forbidden_service not in source.lower(), (
+            f"app/core/object_storage.py references {forbidden_service!r}. The "
+            "boto3 exception is for S3-compatible OBJECT STORAGE only; a paid "
+            "AI or document service is precisely what §7 forbids."
+        )

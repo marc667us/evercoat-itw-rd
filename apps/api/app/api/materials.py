@@ -21,10 +21,15 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.core.audit import AuditEvent, write_audit
+from app.core.documents import get_object_store, get_scanner
+from app.core.file_types import FileTypeRejectedError
+from app.core.malware import MalwareFoundError, MalwareScannerPort, MalwareScanUnavailableError
+from app.core.object_storage import ObjectStorageError, ObjectStoragePort
 from app.core.security import PermissionDenied, Principal, get_db, get_principal, require_permission
 from app.core.tenancy import CrossTenantReferenceError
 from app.domains.materials.service import (
@@ -48,9 +53,9 @@ from app.domains.materials.service import (
     list_materials,
     list_suppliers,
     material_usage,
-    register_document,
     set_material_status,
     set_supplier_status,
+    store_document,
     update_material,
 )
 
@@ -355,36 +360,114 @@ def get_material_documents(
 
 
 @router.post("/{material_id}/documents", status_code=status.HTTP_201_CREATED, tags=["materials"])
-def post_material_document(
+async def post_material_document(
     material_id: uuid.UUID,
-    payload: DocumentCreate,
+    file: UploadFile = File(..., description="The document itself. Required."),
+    document_type: str = Form(..., description="TDS | SDS | CoA | regulatory | other"),
+    title: str = Form(...),
+    issued_on: dt.date | None = Form(None),
+    expires_on: dt.date | None = Form(None),
+    supersedes_id: uuid.UUID | None = Form(None),
     principal: Principal = Depends(require_permission("material.edit", "supplier.manage")),
     session: Session = Depends(get_db),
+    # 🔴 INJECTED, NOT CALLED. Written first as plain calls to
+    # `get_object_store()` / `get_scanner()` inside the body, which works and is
+    # untestable: `app.dependency_overrides` only reaches `Depends`, so a route
+    # test could not have substituted a temporary store or an unavailable
+    # scanner. The 503-on-no-scanner assertion is the one that matters most and
+    # is precisely the one that would have been impossible to write.
+    store: ObjectStoragePort = Depends(get_object_store),
+    scanner: MalwareScannerPort = Depends(get_scanner),
 ) -> dict[str, str]:
-    """Register a controlled document against a material.
+    """Upload a controlled document against a material.
 
-    🔴 THE ROUTE WITHOUT WHICH NO FORMULA COULD EVER BE SUBMITTED.
-    `materials.material_documents` had no writer anywhere, while the
-    formulation safety check counts SDS rows and `requires_sds` defaults to
-    TRUE -- so every submission was blocked, permanently. See
-    `register_document`.
+    🔴 THIS ROUTE USED TO TAKE JSON AND A `storage_key`, AND THAT WAS I41.
+
+    It registered a row describing a file, and nothing anywhere stored one. The
+    formulation safety check counts SDS ROWS, so any holder of `material.edit`
+    satisfied the hazard-documentation control the golden scenario exists to
+    demonstrate by posting `{"storage_key": "sds/anything.pdf"}`. The row WAS
+    the safety evidence.
+
+    It now takes multipart with the file itself. The contract is REPLACED, not
+    extended -- a JSON path left alongside would be the I5/I36 shape this
+    codebase has logged twice, where the weaker of two implementations stays
+    reachable.
 
     Either permission: the Chemist who owns the material's data and the
     Procurement Specialist who owns its documentation are both legitimate
     authors of this record.
+
+    STATUS CODES, and each is a different statement:
+      201 stored, scanned clean, usable as safety evidence
+      400 the file is not an accepted type, or its bytes contradict its name
+      404 no such material in this organization
+      422 the malware scanner found something
+      503 no verdict could be obtained -- NOT "clean". See MalwareScannerPort
     """
+    data = await file.read()
     try:
-        document_id = register_document(
+        document_id = store_document(
             session,
             material_id=material_id,
             organization_id=principal.organization_id,
             actor_id=principal.user_id,
-            spec=payload.to_input(),
+            spec=DocumentInput(
+                document_type=document_type,
+                title=title,
+                content_type=file.content_type,
+                issued_on=issued_on,
+                expires_on=expires_on,
+                supersedes_id=supersedes_id,
+            ),
+            data=data,
+            filename=file.filename or "document",
+            store=store,
+            scanner=scanner,
         )
     except MaterialNotFoundError as exc:
         raise _missing(exc) from exc
     except MaterialInvalidError as exc:
         raise _invalid(exc) from exc
+    except FileTypeRejectedError as exc:
+        # 400, not 422: the request carried something this endpoint does not
+        # accept. 422 is reserved for the scanner's verdict below, so a client
+        # can tell "send a PDF instead" from "that file was hostile".
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except MalwareFoundError as exc:
+        # The upload is refused and the signature is recorded. The file was
+        # never stored -- store.put runs only after a clean verdict -- so there
+        # is nothing to quarantine and nothing to clean up.
+        write_audit(
+            session,
+            AuditEvent(
+                action="material.document_rejected_malware",
+                entity_type="material",
+                entity_id=str(material_id),
+                organization_id=principal.organization_id,
+                user_id=principal.user_id,
+                new_state={"signature": exc.signature, "filename": file.filename},
+                reason="a malware scanner identified an uploaded document",
+            ),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"the uploaded file was identified as malware: {exc.signature}",
+        ) from exc
+    except MalwareScanUnavailableError as exc:
+        # 🔴 503, NOT 201. An upload that cannot be scanned is not accepted.
+        # Mapping this to success is precisely the defect the port exists to
+        # prevent, and it would be invisible: every file admitted, nothing in
+        # the logs, the control simply absent.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(f"uploads are unavailable because no malware scan could be performed: {exc}"),
+        ) from exc
+    except ObjectStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"the document store is unavailable: {exc}",
+        ) from exc
     return {"id": str(document_id)}
 
 

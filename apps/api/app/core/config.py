@@ -62,6 +62,27 @@ class Settings(BaseSettings):
     # through an authorization-checking proxy instead.
     signed_url_ttl_seconds: int = 120
 
+    # Which ObjectStoragePort adapter to build. "filesystem" is the supported
+    # configuration for development and CI -- not a test double: running Garage
+    # costs memory this host does not have (measured 1.8 GB free of 7.9 GB on
+    # 2026-08-22). "s3" reaches Garage locally and Oracle Object Storage in
+    # production, which is the same API by ADR-004.
+    object_store_backend: str = "filesystem"
+    object_store_root: str = "/var/lib/evercoat/documents"
+
+    # --- Malware scanning ------------------------------------------------
+    # 🔴 THE DEFAULT REFUSES. There is deliberately no "scanning disabled"
+    # value: a deployment that has not configured a scanner gets a 503 on
+    # upload rather than a document store quietly filling with unscanned
+    # files. See app/core/malware.py.
+    malware_scanner_backend: str = "unavailable"
+    clamav_host: str = "clamav"
+    clamav_port: int = 3310
+    # Gates the AlwaysCleanScanner, which admits every file. Separate from the
+    # backend name so "always-clean" cannot be reached by setting one variable
+    # on a real deployment.
+    allow_test_scanner: bool = False
+
     # --- AI (Slice 7 onward) --------------------------------------------
     # Local runtime only. The zero-cost rule forbids an essential paid AI
     # API, and proprietary formulations must not leave the organization's

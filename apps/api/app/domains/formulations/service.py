@@ -1208,7 +1208,7 @@ def _load_components(
                    COALESCE(c.role_override, m.role) AS effective_role,
                    m.density_g_cm3, m.solids_fraction, m.voc_fraction,
                    m.cost_per_kg, m.requires_sds,
-                   (SELECT count(*) FROM materials.material_documents d
+                   (SELECT count(*) FROM materials.usable_documents d
                      WHERE d.material_id = m.id AND d.document_type = 'SDS') AS sds_count
             FROM formulations.formula_components c
             JOIN materials.materials m

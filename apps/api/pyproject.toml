@@ -117,6 +117,16 @@ ignore_missing_imports = true
 module = ["app.worker.celery_app"]
 disallow_untyped_decorators = false
 
+# boto3 ships no type stubs either (the typed distribution is a separate
+# package, boto3-stubs, which pulls in a large dependency for one adapter).
+# Scoped the same way as celery, for the same reason: a global relaxation
+# would silently cover every future untyped dependency as well. The import
+# is inside S3ObjectStore.__init__ rather than at module scope, so this
+# override applies to exactly one class in one file.
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Auth tests are async because _decode awaits the JWKS fetch.

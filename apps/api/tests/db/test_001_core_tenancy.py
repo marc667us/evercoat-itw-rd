@@ -47,8 +47,22 @@ def test_every_tenant_table_has_composite_candidate_key(owner_session):
             """
             SELECT c.table_schema, c.table_name
             FROM information_schema.columns c
+            JOIN information_schema.tables t
+              ON t.table_schema = c.table_schema
+             AND t.table_name   = c.table_name
             WHERE c.column_name = 'organization_id'
               AND c.table_schema NOT IN ('pg_catalog', 'information_schema')
+              -- 🔴 BASE TABLES ONLY. `information_schema.columns` includes
+              -- VIEWS, and a view cannot carry a UNIQUE constraint -- so any
+              -- view exposing `organization_id` would be reported as missing
+              -- one, forever, with no possible fix.
+              --
+              -- This guard was correct only by accident until 2026-08-22: no
+              -- view had ever exposed the column. `materials.usable_documents`
+              -- (migration 037) is the first, and it selects from a base table
+              -- that HAS the key -- so the tenancy property it is really
+              -- asserting still holds, one level down.
+              AND t.table_type = 'BASE TABLE'
               AND NOT EXISTS (
                   SELECT 1
                   FROM information_schema.table_constraints tc

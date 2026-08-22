@@ -47,6 +47,7 @@ history.
 from __future__ import annotations
 
 import datetime as dt
+import io
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
@@ -59,6 +60,9 @@ from sqlalchemy.orm import Session
 from app.calculations.formulation import fraction_to_percent
 from app.core.audit import AuditEvent, write_audit
 from app.core.db import guarded_write
+from app.core.file_types import validate_upload
+from app.core.malware import MalwareFoundError, MalwareScannerPort
+from app.core.object_storage import ObjectStoragePort, new_object_key
 from app.core.tenancy import require_active_member
 
 __all__ = [
@@ -85,9 +89,9 @@ __all__ = [
     "list_materials",
     "list_suppliers",
     "material_usage",
-    "register_document",
     "set_material_status",
     "set_supplier_status",
+    "store_document",
     "update_material",
 ]
 
@@ -249,25 +253,32 @@ class MaterialInput:
 
 @dataclass(frozen=True, slots=True)
 class DocumentInput:
-    """A controlled document REGISTERED against a material.
+    """The METADATA a caller supplies about a controlled document.
 
-    Metadata and an object-storage key -- never bytes. SECURITY.md section
-    6 forbids file content in database rows.
+    🔴 `storage_key`, `byte_size` and `checksum_sha256` ARE NO LONGER HERE, AND
+    THAT IS THE POINT OF I41.
 
-    **The object store is not wired yet** (Garage is in the Slice 1 compose
-    stack and has no service or port implementation). That does not make
-    this record premature: the ROW is the controlled fact the safety check
-    reads, and the file is the attachment. Registering "SDS-2026-014,
-    issued 2026-03-11, sha256 ..." is a real statement about the material
-    whether or not the PDF has been uploaded to this deployment yet.
+    This docstring used to argue: *"Registering 'SDS-2026-014, issued
+    2026-03-11, sha256 ...' is a real statement about the material whether or
+    not the PDF has been uploaded to this deployment yet."*
+
+    It reads reasonably and it was wrong, because of what the row is USED for.
+    `formulations._safety_checks` blocks formula submission on
+    `requires_sds AND sds_count = 0` -- it COUNTS ROWS. So the row was not a
+    bibliographic note; it was the evidence a hazard document exists, and a
+    caller could mint that evidence with `storage_key = 'sds/anything.pdf'`.
+
+    Those three fields now come from `ObjectStoragePort`, which computes them
+    while writing the bytes and returns them. A caller cannot supply them, so a
+    row cannot claim a file the store does not hold.
+
+    The file content still never touches a database row -- SECURITY.md section
+    6 is unchanged. What changed is that the KEY now has to point at something.
     """
 
     document_type: str
     title: str
-    storage_key: str
     content_type: str | None = None
-    byte_size: int | None = None
-    checksum_sha256: str | None = None
     issued_on: dt.date | None = None
     expires_on: dt.date | None = None
     supersedes_id: uuid.UUID | None = None
@@ -1058,43 +1069,73 @@ def link_supplier(
 # ---------------------------------------------------------------------------
 
 
-def register_document(
+def store_document(
     session: Session,
     *,
     material_id: uuid.UUID,
     organization_id: uuid.UUID,
     actor_id: uuid.UUID,
     spec: DocumentInput,
+    data: bytes,
+    filename: str,
+    store: ObjectStoragePort,
+    scanner: MalwareScannerPort,
 ) -> uuid.UUID:
-    """Register a controlled document against a material.
+    """Store a controlled document: validate, scan, write bytes, then the row.
 
-    🔴 WHY THIS EXISTS, AND WHY ITS ABSENCE WAS A HARD DEADLOCK.
+    🔴 THIS REPLACES `register_document`, IT DOES NOT SIT BESIDE IT.
 
-    `materials.material_documents` was created by migration 015 and had
-    exactly ONE reference in the entire codebase: the SDS count that
-    `formulations._safety_checks` reads. No writer -- not a route, not a
-    service, not a seed script, not a test.
+    A second entry point would be the I5/I36 shape this codebase has already
+    logged twice -- two implementations of one thing, where the older, weaker
+    one keeps being reachable. `register_document` accepted a `storage_key` and
+    wrote a row; there is no longer any way to do that.
 
-    `requires_sds` defaults to TRUE in the DDL, in `MaterialInput` and in
-    the API schema. So every material required an SDS, no SDS could ever
-    be recorded, `validate_for_submission` always returned a failed safety
-    check, and `POST /formulations/versions/{id}/submission` would have
-    returned 422 **forever, for every formula ever built through the
-    API**. A safety control whose only possible outcome is "blocked" is
-    not a safety control; it is an outage with a reassuring name.
+    THE ORDER IS THE CONTROL, and each step is refused rather than repaired:
 
-    Raised by the Supervisor. It is the same table-with-no-writer defect
-    that migration 016 and `test_002_roles_permissions.py` were written in
-    this very change to prevent -- reintroduced two files away, which is
-    the honest measure of how easily this class of thing survives.
+      1. `validate_upload` -- size, extension, MAGIC BYTES, declared type. The
+         extension and the content type are both claims by the uploader.
+      2. `scanner.scan`   -- and an UNAVAILABLE scanner raises. It is never
+         read as clean; that is the whole design of `MalwareScannerPort`.
+      3. `store.put`      -- returns the checksum and size IT observed.
+      4. the row          -- `approved`, carrying that evidence plus the
+         scanner's name and version.
 
-    The `supersedes_id` link is what makes a document register rather than
-    a pile: an SDS revision points at the one it replaces, so "which SDS
-    was current when this batch was made" stays answerable.
+    Nothing is written to the database before the scan, so a quarantine state
+    is not needed for the happy path: a file that fails is simply never stored.
+    `quarantined` remains in the schema for the asynchronous pipeline the
+    Research Center will need (E10), where ingestion and verdict are separated
+    in time.
+
+    ⚠️ THE BYTES ARE HELD IN MEMORY. That is why `MAX_UPLOAD_BYTES` is 25 MB and
+    is checked FIRST. A streaming scan-then-store would avoid it, but clamd's
+    INSTREAM wants the content and the checksum must describe what was stored,
+    so a bounded buffer is the honest trade at this size.
     """
     if spec.document_type not in ("TDS", "SDS", "CoA", "regulatory", "other"):
         raise MaterialInvalidError(f"'{spec.document_type}' is not a document type")
 
+    # 1. What is it, really?
+    # Deliberately NOT wrapped in MaterialInvalidError. That would map to 422
+    # through `_invalid`, the same status the route gives a file the SCANNER
+    # condemned -- and those are different things a client must be able to tell
+    # apart: one means "send a different file", the other means "this file is
+    # hostile and the attempt was recorded".
+    content_type, display_name = validate_upload(
+        data=data, filename=filename, declared_content_type=spec.content_type
+    )
+
+    # 2. Is it safe? An unavailable scanner propagates -- see MalwareScannerPort.
+    verdict = scanner.scan(data)
+    if not verdict.clean:
+        # Recorded, then refused. The signature is on the exception so the
+        # route can audit WHAT was found rather than only that something was.
+        raise MalwareFoundError(verdict.signature or "unknown")
+
+    # 3. Write the bytes, and learn what was actually written.
+    key = new_object_key(organization_id, spec.document_type)
+    stored = store.put(key, io.BytesIO(data), content_type)
+
+    # 4. Only now does a row exist, and it carries the store's own evidence.
     try:
         with guarded_write(session):
             document_id: uuid.UUID | None = session.execute(
@@ -1103,10 +1144,12 @@ def register_document(
                     INSERT INTO materials.material_documents
                         (organization_id, material_id, document_type, title, storage_key,
                          content_type, byte_size, checksum_sha256, issued_on, expires_on,
-                         supersedes_id, uploaded_by)
+                         supersedes_id, uploaded_by, original_filename,
+                         status, scan_status, scanner_name, scanner_version, scanned_at)
                     SELECT :org, m.id, :dtype, :title, :key,
                            :content_type, :size, :checksum, :issued, :expires,
-                           :supersedes, :actor
+                           :supersedes, :actor, :original,
+                           'approved', 'clean', :scanner, :scanner_version, now()
                     FROM materials.materials m
                     WHERE m.id = :mid AND m.organization_id = :org
                     RETURNING id
@@ -1117,17 +1160,21 @@ def register_document(
                     "mid": material_id,
                     "dtype": spec.document_type,
                     "title": spec.title,
-                    "key": spec.storage_key,
-                    "content_type": spec.content_type,
-                    "size": spec.byte_size,
-                    "checksum": spec.checksum_sha256,
+                    "key": stored.key,
+                    "content_type": content_type,
+                    "size": stored.byte_size,
+                    "checksum": stored.checksum_sha256,
                     "issued": spec.issued_on,
                     "expires": spec.expires_on,
                     "supersedes": spec.supersedes_id,
                     "actor": actor_id,
+                    "original": display_name,
+                    "scanner": verdict.scanner,
+                    "scanner_version": verdict.version,
                 },
             ).scalar_one_or_none()
     except IntegrityError as exc:
+        store.delete(stored.key)
         detail = str(exc.orig)
         if "material_documents_storage_key_unique" in detail:
             raise MaterialInvalidError(
@@ -1138,20 +1185,31 @@ def register_document(
         raise MaterialInvalidError(detail) from exc
 
     if document_id is None:
-        # INSERT ... SELECT with no source row: the material is not visible
-        # to this caller. Same message either way, for the usual reason.
+        # INSERT ... SELECT with no source row: the material is not visible to
+        # this caller. The bytes are removed rather than orphaned -- a stored
+        # object no row references is invisible to every quota, retention and
+        # deletion path in the system (I49).
+        store.delete(stored.key)
         raise MaterialNotFoundError("no such material in this organization")
 
     write_audit(
         session,
         AuditEvent(
-            action="material.document_registered",
+            action="material.document_stored",
             entity_type="material",
             entity_id=str(material_id),
             organization_id=organization_id,
             user_id=actor_id,
-            new_state={"document_type": spec.document_type, "title": spec.title},
-            reason="controlled document registered against a material",
+            new_state={
+                "document_type": spec.document_type,
+                "title": spec.title,
+                # The evidence, in the audit trail, because "which scanner
+                # cleared this SDS" is a question a regulated audit asks.
+                "checksum_sha256": stored.checksum_sha256,
+                "byte_size": stored.byte_size,
+                "scanner": f"{verdict.scanner} {verdict.version}",
+            },
+            reason="controlled document stored, scanned and approved",
         ),
     )
     return document_id

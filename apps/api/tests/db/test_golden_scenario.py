@@ -53,12 +53,15 @@ checked is what a screen would show, not what this test computed.
 
 from __future__ import annotations
 
+import io
+import pathlib
 import uuid
 from decimal import Decimal
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.object_storage import FilesystemObjectStore, new_object_key
 from app.domains.formulations.service import (
     ComponentInput,
     RevisionInput,
@@ -100,6 +103,20 @@ from app.domains.testing.service import (
 )
 
 DEV = frozenset({"test.approve_development"})
+
+
+def _document_store() -> FilesystemObjectStore:
+    """A throwaway store for the scenario's documents.
+
+    Under `tmp/` rather than the API's configured root: the scenario is a test
+    and must not deposit files into whatever store a developer's API happens to
+    be pointed at. The bytes only need to exist and hash consistently -- the
+    row's checksum has to describe something real, which is the whole point of
+    I41.
+    """
+    import tempfile
+
+    return FilesystemObjectStore(pathlib.Path(tempfile.gettempdir()) / "evercoat-golden-docs")
 
 
 def _people(session: Session, org: uuid.UUID, suffix: str) -> dict[str, uuid.UUID]:
@@ -230,16 +247,43 @@ def test_the_golden_scenario_runs_end_to_end(owner_session: Session) -> None:
     # `requires_sds = false` to get this scenario moving would have quietly
     # disabled the exact control the scenario is supposed to demonstrate
     # working. A real chemist files the sheet.
+    #
+    # ⚠️ AND UNTIL I41 THIS INSERT WAS ITSELF THE DEFECT IN MINIATURE.
+    #
+    # It wrote a row naming `sds/<suffix>.pdf` and stored nothing, because
+    # nothing could store anything. So the acceptance scenario -- the artefact
+    # that decides whether MVP-1 is done -- POSITIVELY CANONISED the broken
+    # evidence model: it proved the gate could be satisfied by a row, which is
+    # exactly what made the gate worthless. Codex named this while reviewing
+    # the extension plan.
+    #
+    # The scenario now stores real bytes through the real port, so the arrow it
+    # asserts is the one the application actually requires. `usable_documents`
+    # (migration 037) refuses anything less.
+    sds_bytes = b"%PDF-1.4\n% golden scenario synthetic safety data sheet\n"
+    stored = _document_store().put(
+        new_object_key(org, "SDS"), io.BytesIO(sds_bytes), "application/pdf"
+    )
     s.execute(
         text(
             """
             INSERT INTO materials.material_documents
                 (organization_id, material_id, document_type, title, storage_key,
-                 uploaded_by)
-            VALUES (:o, :m, 'SDS', 'Safety data sheet', :k, :u)
+                 uploaded_by, content_type, byte_size, checksum_sha256,
+                 status, scan_status, scanner_name, scanner_version, scanned_at)
+            VALUES (:o, :m, 'SDS', 'Safety data sheet', :k, :u,
+                    'application/pdf', :size, :checksum,
+                    'approved', 'clean', 'golden-scenario', 'n/a', now())
             """
         ),
-        {"o": org, "m": material, "k": f"sds/{suffix}.pdf", "u": who["chemist"]},
+        {
+            "o": org,
+            "m": material,
+            "k": stored.key,
+            "u": who["chemist"],
+            "size": stored.byte_size,
+            "checksum": stored.checksum_sha256,
+        },
     )
     s.flush()
 
