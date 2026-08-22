@@ -441,6 +441,45 @@ jobs:
             test-results/
           retention-days: 7
 
+  api-image:
+    name: API — the deployment artifact actually builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, resolved 2026-08-18
+
+      # 🔴 THIS JOB EXISTS BECAUSE THE IMAGE HAD NEVER BUILT, EVER.
+      #
+      # `apps/api/Dockerfile` is the artifact Render deploys
+      # (`render-provision.yml` names it), and NOTHING built it: this workflow
+      # runs pytest and uvicorn directly, compose was never brought up on the
+      # development host, and the Render service has never been created. So the
+      # runtime stage's `pip install --no-index ... -e .` had been failing on a
+      # missing build backend for the entire life of the project, and the first
+      # thing that would have discovered it is the deploy.
+      #
+      # Building it here costs a few minutes and converts "the deploy failed at
+      # 2am" into a red check on the commit that broke it.
+      #
+      # ⚠️ BUILD ONLY, DELIBERATELY. Running the container needs a database and
+      # an issuer, which `api` and `e2e` already cover against real services.
+      # What was missing was proof the IMAGE ASSEMBLES, and that is what this
+      # asserts. A `docker run` here would duplicate the other jobs and add a
+      # second place for their fixtures to drift.
+      - name: Build the API image
+        run: docker build -t evercoat-api:ci apps/api
+
+      # A build that produces an image which cannot start is still a broken
+      # artifact. This is the cheapest possible liveness proof: no database, no
+      # network, just "does the interpreter come up and can it import the app".
+      - name: The image can import the application
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e DATABASE_URL="postgresql+psycopg://u:p@127.0.0.1:1/x" \
+            -e KEYCLOAK_ISSUER="http://127.0.0.1:1/realms/evercoat" \
+            --entrypoint python evercoat-api:ci \
+            -c "import app.main; print('app.main imported inside the image')"
+
   security:
     name: Security scan
     runs-on: ubuntu-latest

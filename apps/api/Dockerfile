@@ -14,6 +14,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 COPY pyproject.toml ./
+# 🔴 THE BUILD BACKEND MUST BE IN /wheels TOO.
+#
+# The runtime stage installs with `--no-index`, and an EDITABLE install runs
+# the build backend at install time. `pip wheel -e .` produces wheels for the
+# DEPENDENCIES and never for `hatchling`, which it fetched from the index and
+# then discarded -- so the runtime stage failed with
+#
+#     ERROR: Could not find a version that satisfies the requirement hatchling
+#            (from versions: none)
+#
+# THIS IMAGE HAD NEVER BUILT. Nothing built it: CI runs pytest and uvicorn
+# directly, and the only consumer of this Dockerfile is `render-provision.yml`,
+# which has never been run. The deployment artifact was broken for the entire
+# life of the project, and the first thing that would have discovered it is the
+# deploy. `ci.yml` now builds this image on every run.
+# `editables` too: hatchling pulls it only for the build_editable hook, so
+# wheeling hatchling alone got one step further and then failed on
+# `editables~=0.3`. Both are build-time requirements of an EDITABLE install,
+# and the runtime stage does one.
+RUN pip wheel --wheel-dir /wheels hatchling editables
+
 # Dependency layer is cached separately from source, so an edit to a
 # handler does not rebuild the scientific stack.
 RUN pip wheel --wheel-dir /wheels -e . 2>/dev/null || \
