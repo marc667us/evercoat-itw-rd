@@ -42,14 +42,17 @@ def upgrade() -> None:
 #  the database in a state 002 could not restore, which is worse than not being
 #  reversible at all: `alembic downgrade` would have SUCCEEDED and silently
 #  taken three roles' pre-existing access with it.
-_VIEW_ADDED = (
-    "product_development_director",
-    "qa_compliance_officer",
-    "administrator",
-    "laboratory_technician",
-    "production_engineer",
-    "executive_viewer",
-)
+#  🔴 ONE ROLE, NOT SIX -- THE SAME DEFECT AS ABOVE, ONE LAYER IN.
+#
+#  This first listed the six roles the .sql file names in its `knowledge.view`
+#  grants. But migration 002 had ALREADY granted five of them; only
+#  `executive_viewer` is genuinely new here. Removing all six on downgrade
+#  would have stripped 002's grants from the Director, QA, the Administrator,
+#  the Laboratory Technician and the Production Engineer -- undoing work this
+#  migration never did, which is exactly the failure the paragraph above was
+#  written about. Restating an existing grant is idempotent; REVOKING one is
+#  not.
+_VIEW_ADDED = ("executive_viewer",)
 _INGEST_ADDED = (
     "product_development_lead",
     "product_development_director",

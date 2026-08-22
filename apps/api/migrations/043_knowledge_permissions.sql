@@ -31,9 +31,18 @@
 -- database that has run 002 -- kept only so this file is self-contained on a
 -- fresh one. What was actually missing was HOLDERS:
 --
---   * `knowledge.view` was granted by 002 to the Chemist, Engineer and Lead
---     only. This adds the Director, QA, Laboratory Technician, Production
---     Engineer and Executive Viewer.
+--   * `knowledge.view` was ALREADY granted by 002 to NINE of the ten roles --
+--     every one except `executive_viewer`. This migration adds that one, and
+--     re-states the other grants harmlessly (`_grant` is idempotent).
+--
+--     🔴 A SECOND CORRECTION, AND CI IS WHAT FOUND IT. This paragraph first
+--     said 002 granted it "to the Chemist, Engineer and Lead only", and the
+--     block below claimed `procurement_specialist` was a deliberate exclusion
+--     with a reasoned justification. Both were false. The reasoning was
+--     written against the LOCAL development database, which is long-lived and
+--     had drifted; CI builds from the migrations every run and reported ten
+--     holders where the test asserted nine. The database in front of you is
+--     not the schema -- the migrations are.
 --   * `knowledge.ingest` WAS GRANTED TO NOBODY. It was a known, deliberately
 --     allowlisted orphan in `tests/db/test_002_roles_permissions.py`, carrying
 --     the note "Slice 8 -- Knowledge Library and RAG" and waiting for exactly
@@ -49,10 +58,10 @@
 -- permission landing without its consumer is how 016's defect was created.
 --
 -- ---------------------------------------------------------------------
--- WHY `knowledge.view` IS GRANTED BROADLY, STATED RATHER THAN HIDDEN
+-- WHY `knowledge.view` IS HELD BROADLY, STATED RATHER THAN HIDDEN
 -- ---------------------------------------------------------------------
 --
--- Nine of the ten seeded roles get it, and that is deliberate: for the
+-- All ten seeded roles hold it, and that is deliberate: for the
 -- knowledge library the permission is not what separates one reader from
 -- another. RLS on `knowledge.chunks` does that -- every chunk carries its own
 -- organization and project, and a search is filtered by PostgreSQL before it
@@ -96,10 +105,20 @@
 -- is why `knowledge.ingest` is narrow, and why the screen must not present
 -- the chip as though it were a lock.
 --
--- `procurement_specialist` is the one exclusion. Its business is suppliers and
--- lots; it holds no `formula.view` and no `project.view`, so a technical
--- document library is outside the work it does. It can be added the day
--- somebody names a task that needs it.
+-- ⚠️ THERE IS NO EXCLUSION. All ten roles end up holding `knowledge.view`.
+--
+-- An earlier draft of this file argued at length that `procurement_specialist`
+-- was deliberately left out, on the grounds that suppliers and lots are its
+-- business and a technical library is not. That argument was invented to
+-- justify a state the local database happened to be in: 002 has granted
+-- procurement `knowledge.view` since the beginning, alongside `msd.use`, which
+-- makes sense -- supplier hazard sheets and technical datasheets are exactly
+-- the `material_document` source this library holds.
+--
+-- `executive_viewer` is the only role this migration actually adds to, and it
+-- gets it for the ordinary reason a read-only oversight role gets a read
+-- permission. What separates one reader from another here is project
+-- membership, not this grant.
 --
 -- ---------------------------------------------------------------------
 -- WHY `knowledge.ingest` IS NARROW

@@ -26,10 +26,19 @@ INGEST_HOLDERS = {
     "administrator",
 }
 
+# 🔴 ALL TEN. Migration 002 granted `knowledge.view` to NINE of them from the
+# beginning -- every role except `executive_viewer` -- and 043 adds that one.
+#
+# This set said nine and CI said ten. The missing name was
+# `procurement_specialist`, and the local development database was simply
+# WRONG: it is long-lived and had drifted, while CI builds from the migrations
+# every run. The set below is derived from what 002 and 043 actually grant, not
+# from what the local database happened to contain.
 VIEW_HOLDERS = INGEST_HOLDERS | {
     "product_development_chemist",
     "product_development_engineer",
     "laboratory_technician",
+    "procurement_specialist",
     "production_engineer",
     "executive_viewer",
 }
