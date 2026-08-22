@@ -10,6 +10,60 @@
 
 ## 0. Blocking — do these before anything else
 
+### ⏳ D1 — DEPLOY THE API. Waits for 2026-09-01, then it is ~20 minutes.
+
+**Owner decision, 2026-08-22: stay at $0 and wait.** Everything that does not
+depend on the wait is already done.
+
+**Why it waits.** Render answered the provisioning attempt exactly:
+
+```
+POST /postgres  plan=free  ->  400
+{"message": "cannot have more than one active free tier database"}
+```
+
+The one free-tier slot is held by **`autoworkshop-postgres`**, which Render
+**deletes on 2026-09-01**. The API cannot start without a database:
+`database_url` is `Field(...)` in `app/core/config.py`, not optional.
+
+🔴 **DO NOT free the slot early by deleting `autoworkshop-postgres`.**
+AutoWorkshop's 8 Keycloak users are archived and verified; **its APP DATA IS
+NOT**, and the retirement is flagged BLOCKED. It expires on its own in days.
+
+**On or after 2026-09-01, in order:**
+
+1. `gh workflow run render-provision.yml -f resource=postgres -f confirm=CREATE`
+   (plan defaults to `free`). Confirm a 201, not another 400.
+2. `gh workflow run render-provision.yml -f resource=api-service -f plan=free -f confirm=CREATE`
+   — docker env, `rootDir: apps/api`, health check `/health/live`,
+   `autoDeploy: no`.
+3. Set `DATABASE_URL` (the new database's internal URL) and `KEYCLOAK_ISSUER`
+   on the service, then deploy it.
+4. Run migrations against the new database — `alembic upgrade head`, currently
+   head `e7000`.
+5. **Run the live suite with the `full` profile**, not `web`:
+   `./scripts/live-suite.sh <api-url> full`. Report **three numbers**. The two
+   skips that profile `web` reports today are precisely the API coverage this
+   step is meant to convert into real results.
+
+**✅ The artifact is ready and PROVEN.** `apps/api/Dockerfile` had **never
+built** — the runtime stage's `--no-index` editable install could not reach
+`hatchling`, then `editables`. Fixed 2026-08-22 and verified by running the
+image against the real database: `/health/live` 200, `/health/ready`
+`{"database":"ok","migrations":"ok"}`, `/api/knowledge/documents` 401
+anonymous, `/docs` 200. CI job **`api-image`** now builds it on every run, so
+this cannot rot again before 09-01.
+
+⚠️ **AUTHENTICATION WILL STILL NOT WORK, AND THAT IS A SEPARATE DECISION.**
+`keycloak_issuer` is also required, and Keycloak 26 is **measured** on this
+platform at **451.6/512 MiB, OOM-killed (exit 137)** on Render free. Render has
+nothing between Starter $7 and Standard $25. So step 3 gives an API that
+serves `/health`, `/docs` and correct 401s, and **no authenticated route** —
+which means the RAG still is not usable end to end. Deciding that is the
+owner's: see [[feedback_zero_cost_no_spend_decisions]]. **Do not describe the
+API as "deployed and working" after step 5 without saying this.**
+
+
 | # | Task | Why it blocks |
 |---|---|---|
 | ~~B1~~ | ~~Read the `bash -x` trace in the Auth job.~~ | ✅ **CLOSED 2026-08-19.** A literal `\n` became a bare word `n`, which curl read as a second URL — exit 6, status `204000`. Four more defects sat behind it. **Auth is now green: passed=7 failed=0 skipped=0.** |
