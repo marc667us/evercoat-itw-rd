@@ -49,13 +49,23 @@ function allCaptured(text: string, pattern: RegExp): string[] {
   return [...text.matchAll(pattern)].map((m) => m[1]!).filter((v) => v !== undefined);
 }
 
+/**
+ * The `as const` arrays this file checks, as LITERAL patterns.
+ *
+ * Built with `new RegExp(`const ${name} ...`)` at first, which Semgrep blocks
+ * (`detect-non-literal-regexp`, ReDoS). The rule is aimed at user-controlled
+ * input and `name` here is one of two constants — but a dynamic pattern is
+ * unnecessary for two known arrays, and "the input happens to be safe today"
+ * is the argument this repository has already decided not to accept once.
+ */
+const SCREEN_LISTS = {
+  SOURCES: /const SOURCES = \[([\s\S]*?)\] as const;/,
+  CLASSIFICATIONS: /const CLASSIFICATIONS = \[([\s\S]*?)\] as const;/,
+} as const;
+
 /** The `as const` array named `name` in the screen. */
-function screenList(name: string): string[] {
-  const body = captured(
-    read(SCREEN),
-    new RegExp(`const ${name} = \\[([\\s\\S]*?)\\] as const;`),
-    name,
-  );
+function screenList(name: keyof typeof SCREEN_LISTS): string[] {
+  const body = captured(read(SCREEN), SCREEN_LISTS[name], name);
   return allCaptured(body, /"([^"]+)"/g);
 }
 

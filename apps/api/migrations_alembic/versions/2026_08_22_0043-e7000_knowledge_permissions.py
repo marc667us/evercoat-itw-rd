@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from sqlalchemy import text
+
 from migrations_alembic._sql import apply_sql
 
 revision: str = "e7000"
@@ -61,19 +63,31 @@ _INGEST_ADDED = (
 )
 
 
+#  BOUND PARAMETERS, NOT AN f-STRING.
+#
+#  The first version interpolated the role codes into the statement and carried
+#  a `# noqa: S608` arguing that they are literals from the tuples above and no
+#  input reaches them. That is true, and Semgrep blocked the build anyway --
+#  correctly. `app/core/db.set_local` has the same argument written out at
+#  length about a `uuid.UUID` that "cannot carry SQL", and its conclusion was
+#  that the safety was AN ARGUMENT, NOT A MECHANISM. The same conclusion
+#  applies here, and `= ANY(:roles)` costs nothing.
+_REVOKE = text(
+    """
+    DELETE FROM core.role_permissions rp
+     USING core.permissions p, core.roles r
+     WHERE p.id = rp.permission_id
+       AND r.id = rp.role_id
+       AND p.code = :code
+       AND r.code = ANY(:roles)
+    """
+)
+
+
 def downgrade() -> None:
     from alembic import op
 
     for code, roles in (("knowledge.view", _VIEW_ADDED), ("knowledge.ingest", _INGEST_ADDED)):
-        op.execute(
-            f"""
-            DELETE FROM core.role_permissions rp
-             USING core.permissions p, core.roles r
-             WHERE p.id = rp.permission_id
-               AND r.id = rp.role_id
-               AND p.code = '{code}'
-               AND r.code IN ({", ".join(f"'{role}'" for role in roles)})
-            """  # noqa: S608 - literals from the tuples above, no input reaches here
-        )
+        op.execute(_REVOKE.bindparams(code=code, roles=list(roles)))
 
     # The permission ROWS are deliberately left alone. They belong to 002.
