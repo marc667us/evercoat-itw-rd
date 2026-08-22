@@ -1,6 +1,8 @@
 # TODO — EvercoatITWRD APP
 
-**Updated 2026-08-21, tip `5c10ef0`. CI GREEN on `50a07ab`. S1 + S2 BUILT and DEPLOYED.** Read `RESUME_HERE.md` first.
+**Updated 2026-08-22. CI GREEN (6/6). Slice 8 — the RAG — BUILT, REVIEWED and the web half DEPLOYED.** Read `RESUME_HERE.md` first.
+
+▶ **Live suite on the deployed site: 31 passed / 0 failed / 2 skipped.** Both skips are the absent API. `/knowledge/` serves 200. **I74 and I75 are closed**; new **I76–I79** are in §1 P2, and **D1** below is the API deploy.
 
 🔴 **The API and Keycloak still are not deployed, and on Render at zero cost they cannot be.** Re-measured 2026-08-21 against the live API: `POST /services plan=free` → **400 "free tier usage quota has been exhausted"**, and a free database is refused because `autoworkshop-postgres` holds the **one** free slot and expires 2026-09-01. So even after the instance-hour quota resets, Evercoat can only get a free database by **taking the slot a live AutoWorkshop needs back**. See I13 and the report at `Desktop\Evercoat-Hosting-Options-2026-08-21.pdf`.
 
@@ -37,6 +39,15 @@ NOT**, and the retirement is flagged BLOCKED. It expires on its own in days.
 2. `gh workflow run render-provision.yml -f resource=api-service -f plan=free -f confirm=CREATE`
    — docker env, `rootDir: apps/api`, health check `/health/live`,
    `autoDeploy: no`.
+
+   ⚠️ **THIS STEP HAS ITS OWN QUOTA AND IT IS A DIFFERENT ONE.** Measured
+   2026-08-21: `POST /services plan=free` → **400 "free tier usage quota has
+   been exhausted"** — that is the 750 free INSTANCE-HOURS/month, separate from
+   the one-free-database limit blocking step 1. It resets with the billing
+   cycle and has **not** been re-tested since (re-testing it means actually
+   creating a service, which is pointless before the database exists). If it
+   400s again, the database from step 1 is harmless and costs nothing; stop and
+   report rather than reaching for a paid plan.
 3. Set `DATABASE_URL` (the new database's internal URL) and `KEYCLOAK_ISSUER`
    on the service, then deploy it.
 4. Run migrations against the new database — `alembic upgrade head`, currently
