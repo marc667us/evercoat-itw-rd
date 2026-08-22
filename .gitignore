@@ -47,3 +47,11 @@ apps/web/tsconfig.tsbuildinfo
 # source -- `tmp/live_smoke_test_*.py`-style keepers should be moved to
 # scripts/ deliberately rather than swept in by `git add .`.
 tmp/
+
+# Stored documents. The object store's filesystem adapter writes here by
+# default (app/core/object_storage.py::default_object_store_root), and it holds
+# uploaded SDS/TDS/CoA files. Committed by accident on 2026-08-22 -- eleven
+# seeded PDFs went into the index in one commit. Version control is not a
+# document store: these are tenant data, they are reproducible by the seeder,
+# and in a real deployment they would be proprietary hazard documentation.
+apps/api/var/
