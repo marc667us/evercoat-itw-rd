@@ -29,6 +29,7 @@ not called by a route — `root_orchestrator` is the only caller, and
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -38,6 +39,7 @@ from sqlalchemy.orm import Session
 from app.agents.ports import LanguageModelPort, NullLanguageModel
 from app.agents.tools import (
     compare_formulas,
+    explain_test,
     explain_the_application,
     find_records,
     formula_figures,
@@ -56,6 +58,7 @@ DISCLAIMER = "AI-generated recommendation — requires technical review."
 
 Intent = Literal[
     "compare_formulas",
+    "explain_result",
     "guidance",
     "pending_work",
     "material_safety",
@@ -109,7 +112,24 @@ def classify(question: str) -> Intent:
     if not lowered:
         return "unsupported"
 
-    # Guidance first — it is the only intent with written answers, and a
+    # 🔴 A QUESTION THAT NAMES A RECORD IS ABOUT THAT RECORD.
+    #
+    # Checked BEFORE guidance, and only when a test number is actually
+    # present. "Why did T-DEMO-01 fail?" matches the written guidance for
+    # "why did the test fail" -- so without this it would be answered with a
+    # general explanation of RED while the asker was holding a specific test
+    # number, which reads as an answer and is not one.
+    #
+    # The guard is the identifier, not the verb: "why did the test fail" with
+    # no number still goes to guidance, because there is nothing to look up
+    # and general guidance is the honest answer.
+    if _test_number_in(lowered) and any(
+        word in lowered
+        for word in ("why", "explain", "result", "disposition", "outcome", "colour", "color")
+    ):
+        return "explain_result"
+
+    # Guidance next — it is the only intent with written answers, and a
     # written answer always beats a search.
     if explain_the_application(lowered) is not None:
         return "guidance"
@@ -264,6 +284,22 @@ def answer(
             intent=intent,
             href="/materials",
             tool_calls=({"tool": "material_safety", "returned": len(materials)},),
+        )
+
+    if intent == "explain_result":
+        number = _test_number_in(question.lower())
+        # Named `explained`, not `found`: a later branch binds `found` to a
+        # list of records in the same function scope, and reusing the name
+        # made mypy see one variable with two types. Two meanings for one name
+        # in one function is the reader's problem before it is the checker's.
+        explained = explain_test(session, organization_id=organization_id, query=number or "")
+        return MsdAnswer(
+            body=model.rephrase(
+                composed=_compose_test_explanation(number, explained), question=question
+            ),
+            intent=intent,
+            href="/testing",
+            tool_calls=({"tool": "explain_test", "returned": 1 if explained else 0},),
         )
 
     if intent == "compare_formulas":
@@ -422,6 +458,100 @@ def _compose_records(records: list[RetrievedRecord]) -> str:
     for entity_type, group in by_type.items():
         lines.append(f"{entity_type.replace('_', ' ')} ({len(group)}):")
         lines.extend(f"· {r.label}" for r in group[:5])
+    return "\n".join(lines)
+
+
+def _test_number_in(lowered: str) -> str | None:
+    """The test number a question names, if it names one.
+
+    Deliberately narrow: `T-` followed by at least two identifier characters.
+    Test numbers in this application are issued by the controlled-numbering
+    policy as `...-T001` and by the demonstration seeder as `T-DEMO-xxxxxx`,
+    and both match. A looser pattern would claim ordinary words and send
+    general questions down a lookup that must fail.
+    """
+    match = re.search(r"\b(t-[a-z0-9][a-z0-9-]*)", lowered)
+    return match.group(1).upper() if match else None
+
+
+def _compose_test_explanation(number: str | None, found: dict[str, Any] | None) -> str:
+    """The answer, assembled from what the ENGINE derived. Concept Note §17.
+
+    🔴 EVERY NUMBER HERE WAS COMPUTED BY `app/calculations/testing.py` AND
+    READ BACK. Nothing is recomputed and nothing is rounded again: a second
+    arithmetic path reachable from a chat box is a second answer to a safety
+    question, and the model that rephrases this may not introduce a fact.
+
+    The automatic evaluation and the final disposition are stated SEPARATELY
+    because §10 requires it -- "Automatic evaluation: PASS" beside "Final
+    disposition: YELLOW - awaiting Lead approval" is the only way to say a
+    thing that is both a pass and not final.
+    """
+    if found is None:
+        named = f" {number}" if number else ""
+        return (
+            f"I could not find a test{named} you have access to. Name it by its "
+            "test number, for example T-DEMO-0001. A test in a project you are "
+            "not a member of would not appear here -- that is not the same as "
+            "it not existing."
+        )
+
+    lines: list[str] = []
+    auto = found.get("automatic_evaluation") or {}
+    disp = found.get("final_disposition") or {}
+    req = found.get("requirement") or {}
+    stats = found.get("statistics") or {}
+
+    lines.append(
+        f"{found['test_number']} - {found.get('test_purpose', 'test')} at "
+        f"{found.get('authority_level', 'unstated')} authority."
+    )
+
+    # The two fields, never merged.
+    if auto.get("calculated_result"):
+        detail = f" ({auto['detail']})" if auto.get("detail") else ""
+        lines.append(f"Automatic evaluation: {str(auto['calculated_result']).upper()}{detail}.")
+    if disp.get("colour"):
+        lines.append(f"Final disposition: {str(disp['colour']).upper()} - {disp.get('label', '')}.")
+        if disp.get("reason"):
+            lines.append(f"Why: {disp['reason']}.")
+        if disp.get("rule"):
+            # The rule number makes this checkable rather than plausible.
+            lines.append(f"Decided by rule {disp['rule']} of the ordered disposition algorithm.")
+        if disp.get("next_action"):
+            lines.append(f"Next: {disp['next_action']}.")
+
+    replicates = found.get("replicates") or []
+    measured = [
+        str(r.get("measured_value")) for r in replicates if r.get("measured_value") is not None
+    ]
+    if measured:
+        unit = req.get("canonical_unit") or ""
+        lines.append(f"Measured replicates: {', '.join(measured)} {unit}".strip() + ".")
+    if stats.get("mean") is not None:
+        cv = stats.get("cv_percent")
+        lines.append(
+            f"Mean {stats['mean']}"
+            + (f", CV {cv}%" if cv is not None else "")
+            + f" over {stats.get('valid_count', stats.get('count'))} valid replicates."
+        )
+    if req:
+        bounds = []
+        if req.get("minimum_value") is not None:
+            bounds.append(f"minimum {req['minimum_value']}")
+        if req.get("maximum_value") is not None:
+            bounds.append(f"maximum {req['maximum_value']}")
+        if bounds:
+            lines.append(
+                f"Requirement '{req.get('name', 'unnamed')}': "
+                f"{' and '.join(bounds)} {req.get('canonical_unit', '')}".strip()
+                + "."
+            )
+
+    lines.append(
+        "This is the application's derivation, not a judgement about the "
+        "product. Only an authorised reviewer confirms a result."
+    )
     return "\n".join(lines)
 
 

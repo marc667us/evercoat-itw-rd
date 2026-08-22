@@ -22,10 +22,12 @@ from app.agents.tools.safety import (
     formulas_containing,
     material_safety,
 )
+from app.agents.tools.testing import explain_test
 from app.agents.tools.work import pending_work
 
 __all__ = [
     "compare_formulas",
+    "explain_test",
     "explain_the_application",
     "find_records",
     "formula_figures",
