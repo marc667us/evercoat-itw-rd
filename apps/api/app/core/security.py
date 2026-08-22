@@ -197,27 +197,31 @@ async def _decode(token: str) -> dict[str, Any]:
 
 _PRINCIPAL_SQL = text(
     """
-    SELECT u.id                AS user_id,
-           u.email             AS email,
-           u.display_name      AS display_name,
-           om.organization_id  AS organization_id,
-           COALESCE(array_agg(DISTINCT r.code)
-                    FILTER (WHERE r.code IS NOT NULL), '{}') AS roles,
-           COALESCE(array_agg(DISTINCT p.code)
-                    FILTER (WHERE p.code IS NOT NULL), '{}') AS permissions
-    FROM core.users u
-    JOIN core.organization_members om
-      ON om.user_id = u.id AND om.status = 'active'
-    LEFT JOIN core.member_roles mr   ON mr.member_id = om.id
-    LEFT JOIN core.roles r           ON r.id = mr.role_id
-    LEFT JOIN core.role_permissions rp ON rp.role_id = r.id
-    LEFT JOIN core.permissions p     ON p.id = rp.permission_id
-    WHERE u.keycloak_sub = :sub
-      AND u.status = 'active'
-      AND om.organization_id = :org_id
-    GROUP BY u.id, u.email, u.display_name, om.organization_id
+    SELECT user_id, email, display_name, organization_id, roles, permissions
+    FROM core.principal_for_subject(:sub, :org_id)
     """
 )
+# 🔴 THIS WAS THE RAW JOIN UNTIL MIGRATION 033, AND IT COULD NOT SURVIVE 032.
+#
+# The query reads core.users / organization_members / member_roles / roles /
+# role_permissions / permissions -- all tenant-scoped, all under RLS. It runs
+# in `unscoped_session_scope()` by necessity: the tenant GUC cannot be set
+# until this query says which tenant the caller belongs to.
+#
+# While `core.rls_permissive()` returned TRUE, an unscoped read was admitted.
+# Migration 032 (I19) made it FALSE so the database fails closed, and this
+# query immediately returned nothing -- `row is None` -- so `get_principal`
+# raised PermissionDenied and **every authenticated request 403'd**. Measured:
+# 35 route tests across tests/auth/.
+#
+# The body now lives in `core.principal_for_subject`, SECURITY DEFINER owned
+# by `evercoat_owner`, which is exempt from policies on tables it owns while
+# RLS is ENABLED and not FORCED. Same pattern as `memberships_for_subject`
+# (024), `is_project_member` (001) and `audit.chain_row` (011).
+#
+# Keep the SQL here a thin call. Reintroducing joins against tenant-scoped
+# tables at this layer recreates the defect, and it will present as a total
+# authentication outage rather than as a leak.
 
 
 async def get_verified_subject(

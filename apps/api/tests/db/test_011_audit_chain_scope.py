@@ -50,6 +50,18 @@ def _set_org(session, org: uuid.UUID | None) -> None:
     session.execute(text(f"SET LOCAL app.current_org = '{value}'"))
 
 
+def _insert_unscoped(session, label: str) -> int:
+    """Write a SYSTEM-chain row with no organization context.
+
+    Split out so the scope switch is visible at the call site rather than
+    hidden in an argument, since an unscoped audit write is the one case
+    migration 013 deliberately restricted and 034 deliberately re-permitted
+    for reads.
+    """
+    _set_org(session, None)
+    return _insert(session, None, label)
+
+
 def _insert(session, org: uuid.UUID | None, label: str) -> int:
     return int(
         session.execute(
@@ -67,7 +79,23 @@ def _insert(session, org: uuid.UUID | None, label: str) -> int:
     )
 
 
-def _hashes(session, event_id: int) -> tuple[str, str]:
+def _hashes(session, event_id: int, org: uuid.UUID | None = None) -> tuple[str, str]:
+    """Read one row's chain hashes from the vantage point of ``org``.
+
+    🔴 THE ``org`` ARGUMENT EXISTS BECAUSE THESE TESTS USED TO READ UNSCOPED,
+    AND "UNSCOPED" USED TO MEAN "EVERY TENANT".
+
+    Before migration 032, ``core.rls_permissive()`` returned TRUE, so a
+    session with no organization GUC saw every row in the table. Several tests
+    here leaned on that to compare two tenants' chains in one read, with a
+    comment explaining that neither tenant's context could see both rows --
+    which was true, and was exactly the hole 032 closed.
+
+    So the scope is now named per read. A row is read from ITS OWN tenant's
+    vantage point, which is both the only thing now permitted and a more
+    honest test: it asserts what a legitimate reader of that tenant sees.
+    """
+    _set_org(session, org)
     row = (
         session.execute(
             text("SELECT prev_hash, row_hash FROM audit.events WHERE id = :i"),
@@ -97,15 +125,15 @@ def test_chain_links_within_an_organization_and_skips_another(app_session):
     _set_org(app_session, org_a)
     a2 = _insert(app_session, org_a, "A2")
 
-    # Read back unscoped. Under org A's context the SELECT policy hides
-    # B1, so the comparison below would be checking a row it could not
-    # see -- and would pass for the wrong reason on a build where the
-    # scoping had regressed.
-    _set_org(app_session, None)
-
-    _, a1_hash = _hashes(app_session, a1)
-    _, b1_hash = _hashes(app_session, b1)
-    a2_prev, _ = _hashes(app_session, a2)
+    # Each row is read from its OWN organization's vantage point. Reading
+    # unscoped would have been simpler and is no longer possible: migration
+    # 032 made an unscoped session see nothing, because seeing EVERYTHING was
+    # the defect. Naming the scope per read also removes the risk this comment
+    # used to warn about -- a comparison silently checking a row the session
+    # could not see.
+    _, a1_hash = _hashes(app_session, a1, org_a)
+    _, b1_hash = _hashes(app_session, b1, org_b)
+    a2_prev, _ = _hashes(app_session, a2, org_a)
 
     assert a2_prev == a1_hash, (
         "org A's second row must chain onto org A's first row; it chained "
@@ -128,12 +156,11 @@ def test_each_organization_starts_its_own_chain(app_session):
     _set_org(app_session, org_b)
     b1 = _insert(app_session, org_b, "B1")
 
-    # Unscoped read: both rows belong to different organizations and
-    # neither context can see both.
-    _set_org(app_session, None)
-
-    assert _hashes(app_session, a1)[0] == "GENESIS"
-    assert _hashes(app_session, b1)[0] == "GENESIS"
+    # One read per tenant, each from its own context. These rows belong to
+    # different organizations and no single context may see both -- which is
+    # the property under test, not an obstacle to it.
+    assert _hashes(app_session, a1, org_a)[0] == "GENESIS"
+    assert _hashes(app_session, b1, org_b)[0] == "GENESIS"
 
 
 def test_an_unscoped_write_does_not_splice_onto_a_tenant_chain(app_session):
@@ -147,11 +174,14 @@ def test_an_unscoped_write_does_not_splice_onto_a_tenant_chain(app_session):
 
     _set_org(app_session, org_a)
     a1 = _insert(app_session, org_a, "A1")
-    _, a1_hash = _hashes(app_session, a1)
+    _, a1_hash = _hashes(app_session, a1, org_a)
 
-    _set_org(app_session, None)
-    system_row = _insert(app_session, None, "SYSTEM")
-    system_prev, _ = _hashes(app_session, system_row)
+    system_row = _insert_unscoped(app_session, "SYSTEM")
+    # The system chain IS readable unscoped, and only the system chain --
+    # migration 034 made the policy NULL-safe so the platform's own writer can
+    # read back what it wrote. Before 034 this failed on the RETURNING, not on
+    # the INSERT: `INSERT ... RETURNING` is a read.
+    system_prev, _ = _hashes(app_session, system_row, None)
 
     assert system_prev != a1_hash, (
         "an unscoped write spliced onto a tenant's chain — this is the "
@@ -227,7 +257,19 @@ def test_the_force_rls_cutover_must_revisit_the_chain_trigger(owner_session):
     BYPASSRLS-capable owner, or read the tail through a dedicated
     SECURITY DEFINER helper that is exempt.
     """
-    permissive = owner_session.execute(text("SELECT core.rls_permissive()")).scalar_one()
+    # UPDATED 2026-08-22. Migration 032 set `core.rls_permissive()` to FALSE,
+    # so the first assertion has been removed -- it fired, and in doing so did
+    # exactly its job: it made that a reviewed decision rather than a side
+    # effect.
+    #
+    # The hazard this test names is untouched, because it was never really
+    # about `rls_permissive()`. `audit.chain_row` is SECURITY DEFINER owned by
+    # `evercoat_owner` (migration 013), and an owner is exempt from a policy
+    # that is not FORCED whatever the predicate says. That is why the chain
+    # trigger kept working across 032 while several tests in this file did not.
+    #
+    # FORCE is the half that still bites, and it is the half that always
+    # mattered.
     forced = owner_session.execute(
         text("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'audit.events'::regclass")
     ).scalar_one()
@@ -240,7 +282,6 @@ def test_the_force_rls_cutover_must_revisit_the_chain_trigger(owner_session):
         "is exempt. Read this test's docstring before changing it."
     )
 
-    assert permissive is True, f"core.rls_permissive() is now FALSE. {cutover_note}"
     assert forced is False, f"FORCE ROW LEVEL SECURITY is now on for audit.events. {cutover_note}"
 
 
@@ -265,14 +306,17 @@ def test_verify_chain_scoped_to_one_organization_ignores_another(app_session):
     _set_org(app_session, org_b)
     _insert(app_session, org_b, "B2")
 
-    # Read as the unscoped/permissive branch so the walk is not doing the
-    # filtering by accident — the explicit organization_id argument must be
-    # what scopes it.
-    _set_org(app_session, None)
-
+    # Each verification runs in the context of the tenant being verified,
+    # which is how production calls it. Reading unscoped used to prove the
+    # `organization_id` ARGUMENT was doing the filtering rather than RLS; after
+    # 032 an unscoped session sees nothing, so that device is gone. The
+    # argument is still shown to matter by the interleaving: org B wrote rows
+    # between org A's, and A's chain verifies clean regardless.
+    _set_org(app_session, org_a)
     assert verify_chain(app_session, organization_id=org_a, start_id=first - 1) is None, (
         "org A's chain must verify even though org B wrote between its rows"
     )
+    _set_org(app_session, org_b)
     assert verify_chain(app_session, organization_id=org_b, start_id=first - 1) is None, (
         "org B's chain must verify even though org A wrote between its rows"
     )

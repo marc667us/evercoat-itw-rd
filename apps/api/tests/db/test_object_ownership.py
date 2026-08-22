@@ -95,6 +95,20 @@ DEFINER_OWNED_BY_DESIGN = {
     # tests/db/test_024_memberships_for_subject.py, which fails the moment
     # the cutover lands.
     "core.memberships_for_subject",
+    # Migration 033. The third instance of the same shape, and the one that
+    # showed a tripwire on ONE function is not a tripwire on a PATTERN.
+    #
+    # 024 reasoned carefully about `memberships_for_subject` because it
+    # answers before a tenant is chosen -- and left the tripwire below. But
+    # `get_principal` does the same unscoped read for EVERY authenticated
+    # request, not just `/api/me`, and nothing named it. Migration 032 closed
+    # the permissive escape hatch and **35 route tests across tests/auth/
+    # returned 403**: not a leak, a total authentication outage.
+    #
+    # So this function exists for the same reason, carries the same limit --
+    # `evercoat_owner` is exempt only while RLS is ENABLED and not FORCED --
+    # and `tests/db/test_033_*` fails the moment that changes.
+    "core.principal_for_subject",
     # Migration 015. The trigger that freezes the composition of a
     # non-draft formula version looks that version up before deciding.
     # As SECURITY INVOKER, a session whose RLS view of

@@ -158,10 +158,27 @@ def test_the_force_rls_cutover_must_revisit_this_function(owner_session) -> None
     this one lookup -- is a decision that belongs with the cutover
     migration and its review, not smuggled in ahead of it.
 
-    This assertion fails the moment the cutover lands, in the file that
-    explains what to do about it.
+    ---------------------------------------------------------------
+    UPDATED 2026-08-22 — HALF THE CUTOVER LANDED, AND THIS TRIPWIRE
+    NARROWED TO THE HALF THAT STILL BITES.
+    ---------------------------------------------------------------
+
+    Migration 032 (I19) set ``core.rls_permissive()`` to FALSE, so this test
+    no longer asserts it is TRUE -- it was, and the assertion did exactly its
+    job by making that a deliberate decision rather than a side effect.
+
+    **The danger this file names is entirely unaffected**, because it was
+    never really about ``rls_permissive()``. This function is exempt by
+    OWNERSHIP, not by the escape hatch: an owner is exempt from a policy that
+    is not FORCED, whatever the predicate says. 032 changed the predicate and
+    deliberately left FORCE alone, which is precisely why sign-in survived it.
+
+    So the surviving assertion is the FORCE half, and it is the one that
+    always mattered. ``tests/db/test_032_the_database_fails_closed.py``
+    carries the positive counterpart -- it calls this function and asserts it
+    still returns rows -- so the two fail together and say the same thing from
+    both directions.
     """
-    permissive = owner_session.execute(text("SELECT core.rls_permissive()")).scalar_one()
     forced = owner_session.execute(
         text(
             "SELECT bool_or(relforcerowsecurity) FROM pg_class "
@@ -172,12 +189,13 @@ def test_the_force_rls_cutover_must_revisit_this_function(owner_session) -> None
 
     cutover_note = (
         "core.memberships_for_subject is owned by evercoat_owner, which does "
-        "NOT hold BYPASSRLS, and it runs with no organization GUC set. After "
-        "the cutover it returns zero rows and GET /api/me answers 404 for "
-        "every user -- sign-in stops working entirely. Grant evercoat_owner "
-        "BYPASSRLS, or add a policy that admits this lookup, in the SAME "
-        "migration that forces RLS. Read this test's docstring first."
+        "NOT hold BYPASSRLS, and it runs with no organization GUC set. Its "
+        "exemption comes from OWNERSHIP of a non-FORCED table, so forcing RLS "
+        "removes it: the function returns zero rows, GET /api/me answers 404 "
+        "for every user, and sign-in stops working entirely. Grant "
+        "evercoat_owner BYPASSRLS, or add a policy that admits this lookup, "
+        "in the SAME migration that forces RLS. Read this test's docstring "
+        "first."
     )
 
-    assert permissive is True, f"core.rls_permissive() is now FALSE. {cutover_note}"
     assert forced is False, f"FORCE ROW LEVEL SECURITY is now on. {cutover_note}"

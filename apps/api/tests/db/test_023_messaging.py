@@ -249,6 +249,14 @@ def test_a_mention_notifies_a_project_member(
         {"o": fx["org"], "p": fx["project"], "u": fx["outsider"]},
     )
     owner_session.commit()
+    # Re-scope: `_scope` issues SET LOCAL, which is TRANSACTION-scoped, so
+    # the commit above discarded the organization and user GUCs. Until
+    # migration 032 that went unnoticed -- `core.rls_permissive()` returned
+    # TRUE, so a session with no context saw every tenant's rows and the
+    # read below succeeded for the wrong reason. Production was never
+    # affected: `session_scope()` sets the context per transaction, which is
+    # exactly what this line imitates.
+    _scope(app_session, fx["org"], fx["author"])
 
     channel = create_channel(
         app_session,
@@ -269,6 +277,14 @@ def test_a_mention_notifies_a_project_member(
         spec=MessageInput(body=f"@{handle} please review"),
     )
     app_session.commit()
+    # Re-scope: `_scope` issues SET LOCAL, which is TRANSACTION-scoped, so
+    # the commit above discarded the organization and user GUCs. Until
+    # migration 032 that went unnoticed -- `core.rls_permissive()` returned
+    # TRUE, so a session with no context saw every tenant's rows and the
+    # read below succeeded for the wrong reason. Production was never
+    # affected: `session_scope()` sets the context per transaction, which is
+    # exactly what this line imitates.
+    _scope(app_session, fx["org"], fx["author"])
 
     assert result["mentions"][0]["notified"] is True, (
         "a project member was not notified of their own mention; the check is excluding too much"
@@ -314,6 +330,14 @@ def test_promotion_creates_a_task_and_links_back_to_the_message(
         title="Re-run adhesion at 5 C",
     )
     app_session.commit()
+    # Re-scope: `_scope` issues SET LOCAL, which is TRANSACTION-scoped, so
+    # the commit above discarded the organization and user GUCs. Until
+    # migration 032 that went unnoticed -- `core.rls_permissive()` returned
+    # TRUE, so a session with no context saw every tenant's rows and the
+    # read below succeeded for the wrong reason. Production was never
+    # affected: `session_scope()` sets the context per transaction, which is
+    # exactly what this line imitates.
+    _scope(app_session, fx["org"], fx["author"])
 
     source = (
         app_session.execute(
@@ -413,12 +437,28 @@ def test_a_withdrawn_message_leaves_the_conversation_readable(
         spec=MessageInput(body="Agreed.", reply_to_id=first["id"]),
     )
     app_session.commit()
+    # Re-scope: `_scope` issues SET LOCAL, which is TRANSACTION-scoped, so
+    # the commit above discarded the organization and user GUCs. Until
+    # migration 032 that went unnoticed -- `core.rls_permissive()` returned
+    # TRUE, so a session with no context saw every tenant's rows and the
+    # read below succeeded for the wrong reason. Production was never
+    # affected: `session_scope()` sets the context per transaction, which is
+    # exactly what this line imitates.
+    _scope(app_session, fx["org"], fx["author"])
 
     owner_session.begin()
     owner_session.execute(
         text("UPDATE messaging.messages SET is_deleted = TRUE WHERE id = :m"), {"m": first["id"]}
     )
     owner_session.commit()
+    # Re-scope: `_scope` issues SET LOCAL, which is TRANSACTION-scoped, so
+    # the commit above discarded the organization and user GUCs. Until
+    # migration 032 that went unnoticed -- `core.rls_permissive()` returned
+    # TRUE, so a session with no context saw every tenant's rows and the
+    # read below succeeded for the wrong reason. Production was never
+    # affected: `session_scope()` sets the context per transaction, which is
+    # exactly what this line imitates.
+    _scope(app_session, fx["org"], fx["author"])
 
     thread = list_messages(app_session, channel_id=channel["id"], organization_id=fx["org"])
     assert len(thread) == 2, "the withdrawn message vanished and took the thread with it"
