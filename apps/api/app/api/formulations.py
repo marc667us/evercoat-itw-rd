@@ -31,6 +31,7 @@ from app.core.tenancy import CrossTenantReferenceError
 from app.domains.formulations.service import (
     ComponentInput,
     FormulaError,
+    FormulaExportRefusedError,
     FormulaInput,
     FormulaNotFoundError,
     FormulationError,
@@ -42,6 +43,7 @@ from app.domains.formulations.service import (
     create_formula,
     decide_version,
     evaluate_version,
+    export_version,
     get_version,
     list_formulas,
     record_observed_effect,
@@ -269,6 +271,55 @@ def get_evaluation(
         )
     except VersionNotFoundError as exc:
         raise _missing(exc) from exc
+
+
+@router.get("/versions/{version_id}/export", tags=["formulations"])
+def get_export(
+    version_id: uuid.UUID,
+    principal: Principal = Depends(require_permission("formula.export")),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Export a full formula composition. I43.
+
+    🔴 A DIFFERENT PERMISSION FROM READING IT, AND THAT IS THE WHOLE POINT.
+
+    Until migration 039 this endpoint could not have existed: `formula.export`
+    did not exist, so removing a proprietary recipe from the building was
+    indistinguishable from looking at it, and nothing recorded that it had
+    happened. Security source §31 requires view / edit / approve / release /
+    export to be five separate permissions; one of the five was missing, so
+    the rule was unimplementable rather than merely unenforced.
+
+    `formula.export` is held by the Lead, QA and the Administrator -- and
+    deliberately NOT by the Director (§31: seniority is not a reason) nor by
+    the Chemist, who may read and edit the formula and may not take it out.
+    The separation only means something because it is asymmetric.
+
+    Cost is included only if the caller ALSO holds `formula.view_cost`, for
+    the reason `get_version` records: percentages plus per-material cost
+    reconstruct the formula's cost, so the two permissions compose rather than
+    one implying the other.
+
+    403 no `formula.export`
+    404 no such version in this organization
+    409 classified above the level one person may export alone
+    """
+    try:
+        return export_version(
+            session,
+            version_id=version_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            include_cost=principal.has("formula.view_cost"),
+        )
+    except VersionNotFoundError as exc:
+        raise _missing(exc) from exc
+    except FormulaExportRefusedError as exc:
+        # 409 rather than 403: the caller HOLDS the permission. What is
+        # missing is a second person, which is a state of the request rather
+        # than of the caller -- and a 403 would send them to an administrator
+        # to be granted something they already have.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/versions/{version_id}/weigh-up", tags=["formulations"])

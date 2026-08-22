@@ -64,6 +64,7 @@ from app.domains.materials.service import BLOCKING_STATUSES
 __all__ = [
     "ComponentInput",
     "FormulaError",
+    "FormulaExportRefusedError",
     "FormulaInput",
     "FormulaNotFoundError",
     "FormulationError",
@@ -75,6 +76,7 @@ __all__ = [
     "create_formula",
     "decide_version",
     "evaluate_version",
+    "export_version",
     "get_version",
     "list_formulas",
     "record_observed_effect",
@@ -398,6 +400,156 @@ def get_version(
         for component in components:
             component.pop("cost_per_kg", None)
     version["components"] = components
+    return version
+
+
+# 🔴 THE LEVEL ABOVE WHICH ONE PERSON MAY NOT REMOVE A RECIPE.
+#
+# Security source §32: *"For highly sensitive formulas, consider requiring a
+# second approval for full-formula export."* `FORMULA_RESTRICTED` is the
+# released master formulation -- the thing this platform exists to protect --
+# so it and `DIRECTOR_CONTROLLED` above it are where one signature stops being
+# enough.
+#
+# Expressed as a RANK comparison against `core.classifications`, not as a list
+# of level names, so adding a level between them does not silently widen it.
+EXPORT_WITHOUT_SECOND_APPROVAL_CEILING = "R&D_RESTRICTED"
+
+
+class FormulaExportRefusedError(FormulationError):
+    """The export is not permitted at this classification by one person alone."""
+
+
+def export_version(
+    session: Session,
+    *,
+    version_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    include_cost: bool = False,
+) -> dict[str, Any]:
+    """The full composition, removed from the application, and RECORDED.
+
+    🔴 EXPORT IS NOT A READ, AND UNTIL I43 IT WAS INDISTINGUISHABLE FROM ONE.
+
+    Anyone holding `formula.view` could take an entire proprietary recipe out
+    of the building, and nothing anywhere recorded that they had. §31 requires
+    view / edit / approve / release / export to be five separate permissions;
+    one of the five did not exist, so the rule was unimplementable rather than
+    unenforced.
+
+    Two controls, and they are different in kind:
+
+    1. **`formula.export`**, checked by the route. Deliberately NOT held by the
+       Director -- §31 says seniority is not a reason, and export is the
+       exfiltration act itself. A Chemist may read and edit a formula and may
+       not export it, which is only a separation of duties because it is
+       asymmetric.
+
+    2. **A classification ceiling.** Above `R&D_RESTRICTED` -- that is, a
+       released master formulation -- one person may not do this alone.
+
+    ⚠️ AND THE SECOND CONTROL IS CURRENTLY A REFUSAL, NOT A WORKFLOW. There is
+    no way in the product yet to obtain the second approval, so a
+    `FORMULA_RESTRICTED` export cannot happen at all. That is deliberate and it
+    is stated rather than hidden: failing closed on the most sensitive material
+    is the right default, and §9's approval engine already exists to carry the
+    real two-person route. Recorded as **I67** so it is a scheduled gap and not
+    a permanent one -- this codebase has already shipped one "safety check that
+    could only say BLOCKED" and does not need a second by accident.
+
+    Every outcome writes an audit event, including the refusal. A refused
+    attempt to export a master formulation is exactly the event a security
+    review wants to see, and recording only successes would hide it.
+    """
+    version = get_version(
+        session,
+        version_id=version_id,
+        organization_id=organization_id,
+        include_cost=include_cost,
+    )
+
+    classification = session.execute(
+        text(
+            """
+            SELECT f.classification
+            FROM formulations.formula_versions v
+            JOIN formulations.formulas f
+              ON f.id = v.formula_id AND f.organization_id = v.organization_id
+            WHERE v.id = :vid AND v.organization_id = :org
+            """
+        ),
+        {"vid": version_id, "org": organization_id},
+    ).scalar_one_or_none()
+
+    if classification is None:
+        # The version resolved a moment ago, so this is not "no such version".
+        # Treat an unreadable classification as the ceiling: an export decision
+        # made without knowing the sensitivity is the one to refuse.
+        raise FormulaExportRefusedError(
+            "the formula's classification could not be determined, so the export is refused"
+        )
+
+    ranks = (
+        session.execute(
+            text(
+                "SELECT core.classification_rank(:actual) AS actual, "
+                "       core.classification_rank(:ceiling) AS ceiling"
+            ),
+            {"actual": classification, "ceiling": EXPORT_WITHOUT_SECOND_APPROVAL_CEILING},
+        )
+        .mappings()
+        .one()
+    )
+
+    # NULL compares as neither above nor below, so it is treated as DENY --
+    # `classification_rank`'s own comment says so.
+    too_sensitive = (
+        ranks["actual"] is None or ranks["ceiling"] is None or ranks["actual"] > ranks["ceiling"]
+    )
+
+    if too_sensitive:
+        write_audit(
+            session,
+            AuditEvent(
+                action="formula.export_refused",
+                entity_type="formula_version",
+                entity_id=str(version_id),
+                organization_id=organization_id,
+                user_id=actor_id,
+                new_state={"classification": classification},
+                reason=("a full-formula export above the single-approver ceiling was refused"),
+            ),
+        )
+        raise FormulaExportRefusedError(
+            f"this formula is classified {classification}, which one person "
+            f"may not export alone. Exports up to "
+            f"{EXPORT_WITHOUT_SECOND_APPROVAL_CEILING} are permitted with "
+            f"formula.export; above it a second approval is required and that "
+            f"route is not built yet (I67)."
+        )
+
+    write_audit(
+        session,
+        AuditEvent(
+            action="formula.exported",
+            entity_type="formula_version",
+            entity_id=str(version_id),
+            organization_id=organization_id,
+            user_id=actor_id,
+            new_state={
+                "classification": classification,
+                # WHAT left the building, not merely that something did.
+                "component_count": len(version.get("components", [])),
+                "included_cost": include_cost,
+                "version_number": version.get("version_number"),
+            },
+            reason="full formula composition exported",
+        ),
+    )
+
+    version["classification"] = classification
+    version["export_recorded"] = True
     return version
 
 
