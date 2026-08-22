@@ -699,12 +699,12 @@ def list_materials(
                      WHERE ms.material_id = m.id) AS supplier_count
             FROM materials.materials m
             WHERE m.organization_id = :org
-              AND (:status IS NULL OR m.status = :status)
-              AND (:role IS NULL OR m.role = :role)
+              AND (CAST(:status AS TEXT) IS NULL OR m.status = CAST(:status AS TEXT))
+              AND (CAST(:role AS TEXT) IS NULL OR m.role = CAST(:role AS TEXT))
               AND (
-                    :search IS NULL
-                    OR m.name ILIKE '%' || :search || '%'
-                    OR m.material_code ILIKE '%' || :search || '%'
+                    CAST(:search AS TEXT) IS NULL
+                    OR m.name ILIKE '%' || CAST(:search AS TEXT) || '%'
+                    OR m.material_code ILIKE '%' || CAST(:search AS TEXT) || '%'
                   )
             ORDER BY m.material_code
             LIMIT :limit
@@ -945,7 +945,7 @@ def list_suppliers(
                      WHERE ms.supplier_id = s.id) AS material_count
             FROM materials.suppliers s
             WHERE s.organization_id = :org
-              AND (:status IS NULL OR s.status = :status)
+              AND (CAST(:status AS TEXT) IS NULL OR s.status = CAST(:status AS TEXT))
             ORDER BY s.supplier_code
             LIMIT :limit
             """

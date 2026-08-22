@@ -370,7 +370,7 @@ def list_formulas(
                 LIMIT 1
             ) latest ON TRUE
             WHERE f.organization_id = :org
-              AND (:pid IS NULL OR f.project_id = :pid)
+              AND (CAST(:pid AS UUID) IS NULL OR f.project_id = CAST(:pid AS UUID))
             ORDER BY f.formula_code
             LIMIT :limit
             """

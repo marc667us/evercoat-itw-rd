@@ -994,8 +994,8 @@ def list_failures(
                      AS open_actions
             FROM quality.failures f
             WHERE f.organization_id = :org
-              AND (:pid IS NULL OR f.project_id = :pid)
-              AND (:status IS NULL OR f.status = :status)
+              AND (CAST(:pid AS UUID) IS NULL OR f.project_id = CAST(:pid AS UUID))
+              AND (CAST(:status AS TEXT) IS NULL OR f.status = CAST(:status AS TEXT))
             ORDER BY f.opened_at DESC
             LIMIT :limit
             """

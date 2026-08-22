@@ -1178,8 +1178,8 @@ def list_tests(
             JOIN laboratory.samples s
               ON s.id = t.sample_id AND s.organization_id = t.organization_id
             WHERE t.organization_id = :org
-              AND (:pid IS NULL OR t.project_id = :pid)
-              AND (:review IS NULL OR t.review_state = :review)
+              AND (CAST(:pid AS UUID) IS NULL OR t.project_id = CAST(:pid AS UUID))
+              AND (CAST(:review AS TEXT) IS NULL OR t.review_state = CAST(:review AS TEXT))
             ORDER BY t.created_at DESC
             LIMIT :limit
             """

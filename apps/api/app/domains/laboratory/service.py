@@ -978,8 +978,8 @@ def list_batches(
             JOIN formulations.formulas f
               ON f.id = v.formula_id AND f.organization_id = v.organization_id
             WHERE b.organization_id = :org
-              AND (:pid IS NULL OR b.project_id = :pid)
-              AND (:status IS NULL OR b.status = :status)
+              AND (CAST(:pid AS UUID) IS NULL OR b.project_id = CAST(:pid AS UUID))
+              AND (CAST(:status AS TEXT) IS NULL OR b.status = CAST(:status AS TEXT))
             ORDER BY b.created_at DESC
             LIMIT :limit
             """
