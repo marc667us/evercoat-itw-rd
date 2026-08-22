@@ -13,7 +13,9 @@ explicitly.
 
 from __future__ import annotations
 
+import tempfile
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
@@ -68,7 +70,12 @@ class Settings(BaseSettings):
     # 2026-08-22). "s3" reaches Garage locally and Oracle Object Storage in
     # production, which is the same API by ADR-004.
     object_store_backend: str = "filesystem"
-    object_store_root: str = "/var/lib/evercoat/documents"
+    # NOT an absolute system path. The first default was
+    # `/var/lib/evercoat/documents`, which no CI runner and no developer
+    # machine can create -- so the API failed at dependency resolution rather
+    # than at upload. A deployment sets this to a mounted volume; everything
+    # else gets a path it can actually write.
+    object_store_root: str = str(Path(tempfile.gettempdir()) / "evercoat-documents")
 
     # --- Malware scanning ------------------------------------------------
     # 🔴 THE DEFAULT REFUSES. There is deliberately no "scanning disabled"

@@ -31,6 +31,7 @@ import io
 import os
 import pathlib
 import sys
+import tempfile
 import uuid
 
 import psycopg
@@ -59,7 +60,10 @@ from app.core.object_storage import (  # noqa: E402  - must follow the path shim
 # checksums for files the application cannot fetch -- which is I41 again, one
 # level along.
 document_store = FilesystemObjectStore(
-    os.getenv("OBJECT_STORE_ROOT", "/var/lib/evercoat/documents")
+    os.getenv(
+        "OBJECT_STORE_ROOT",
+        str(pathlib.Path(tempfile.gettempdir()) / "evercoat-documents"),
+    )
 )
 
 # ---------------------------------------------------------------------

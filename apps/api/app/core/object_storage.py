@@ -149,8 +149,20 @@ class FilesystemObjectStore:
     """
 
     def __init__(self, root: Path | str) -> None:
+        # 🔴 DOES NOT CREATE THE ROOT. Constructing a store must not touch the
+        # filesystem.
+        #
+        # The first version called `mkdir(parents=True)` here, so building the
+        # object simply FAILED on an unwritable path -- and because
+        # `get_object_store()` is a FastAPI dependency, that took down
+        # dependency resolution for the route rather than producing a handled
+        # error. CI found it: the default root is an absolute system path
+        # (`/var/lib/evercoat/documents`) and the runner is not root, so the
+        # Auth job died with PermissionError before any request was served.
+        #
+        # The directory is created on the first `put` instead, where a failure
+        # is an `ObjectStorageError` the route maps to 503.
         self._root = Path(root).resolve()
-        self._root.mkdir(parents=True, exist_ok=True)
 
     def _resolve(self, key: str) -> Path:
         candidate = (self._root / key).resolve()
@@ -160,7 +172,12 @@ class FilesystemObjectStore:
 
     def put(self, key: str, stream: BinaryIO, content_type: str) -> StoredObject:
         path = self._resolve(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ObjectStorageError(
+                f"could not create the storage directory for {key!r}: {exc}"
+            ) from exc
         # Write to a sibling temporary file and rename, so a crash mid-write
         # cannot leave a short file that hashes to nothing anyone expects but
         # still satisfies `exists()`.
@@ -196,7 +213,6 @@ class FilesystemObjectStore:
     def clear(self) -> None:
         """Test helper. Present so a test never reaches for `shutil` itself."""
         shutil.rmtree(self._root, ignore_errors=True)
-        self._root.mkdir(parents=True, exist_ok=True)
 
 
 class S3ObjectStore:

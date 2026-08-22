@@ -39,25 +39,39 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Written out literally rather than looped.
+
+    The first version built these with f-strings over a tuple of names, and
+    Semgrep blocked the build on `formatted-sql-query` and
+    `sqlalchemy-execute-raw-query`. The names are hardcoded constants and a DDL
+    identifier cannot be a bind parameter, so it was not exploitable -- but the
+    rule is right that the SHAPE is the dangerous one, and a `# nosemgrep`
+    here would suppress the guard for whatever this file becomes later.
+    Eleven literal statements cost nothing and leave nothing to argue about.
+    """
     from alembic import op
 
-    for constraint in (
-        "material_documents_approved_has_evidence",
-        "material_documents_infected_names_the_signature",
-        "material_documents_status_check",
-        "material_documents_scan_status_check",
-    ):
-        op.execute(
-            f"ALTER TABLE materials.material_documents DROP CONSTRAINT IF EXISTS {constraint}"
-        )
+    op.execute(
+        "ALTER TABLE materials.material_documents "
+        "DROP CONSTRAINT IF EXISTS material_documents_approved_has_evidence"
+    )
+    op.execute(
+        "ALTER TABLE materials.material_documents "
+        "DROP CONSTRAINT IF EXISTS material_documents_infected_names_the_signature"
+    )
+    op.execute(
+        "ALTER TABLE materials.material_documents "
+        "DROP CONSTRAINT IF EXISTS material_documents_status_check"
+    )
+    op.execute(
+        "ALTER TABLE materials.material_documents "
+        "DROP CONSTRAINT IF EXISTS material_documents_scan_status_check"
+    )
     op.execute("DROP INDEX IF EXISTS materials.material_documents_effective_idx")
-    for column in (
-        "status",
-        "scan_status",
-        "scanner_name",
-        "scanner_version",
-        "scan_signature",
-        "scanned_at",
-        "original_filename",
-    ):
-        op.execute(f"ALTER TABLE materials.material_documents DROP COLUMN IF EXISTS {column}")
+    op.execute("ALTER TABLE materials.material_documents DROP COLUMN IF EXISTS status")
+    op.execute("ALTER TABLE materials.material_documents DROP COLUMN IF EXISTS scan_status")
+    op.execute("ALTER TABLE materials.material_documents DROP COLUMN IF EXISTS scanner_name")
+    op.execute("ALTER TABLE materials.material_documents DROP COLUMN IF EXISTS scanner_version")
+    op.execute("ALTER TABLE materials.material_documents DROP COLUMN IF EXISTS scan_signature")
+    op.execute("ALTER TABLE materials.material_documents DROP COLUMN IF EXISTS scanned_at")
+    op.execute("ALTER TABLE materials.material_documents DROP COLUMN IF EXISTS original_filename")

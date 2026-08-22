@@ -43,6 +43,12 @@ dependencies = [
 
     # --- Object storage --------------------------------------------------
     "boto3>=1.35",         # S3-compatible client for Garage, behind a port
+    # Required by FastAPI for `Form(...)` and `UploadFile`, which the document
+    # upload route uses. It was present locally as a transitive dependency and
+    # undeclared, so the whole suite passed here and FOUR CI jobs failed with
+    # `Form data requires "python-multipart" to be installed`. A dependency you
+    # happen to have is not a dependency you declared.
+    "python-multipart>=0.0.9",
 
     # --- Scientific (Slice 3 onward) -------------------------------------
     "numpy>=2.1",
