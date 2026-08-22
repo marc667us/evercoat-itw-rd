@@ -135,11 +135,24 @@ ORPHANED_UNTIL_THEIR_SLICE: dict[str, str] = {
     # this allowlist asserts in BOTH directions: an entry that has gained
     # a holder fails as loudly as a new orphan. That was the point of
     # writing it that way.
-    # Slice 8. Nothing can ingest into the Knowledge Library because the
-    # Knowledge Library does not exist; `knowledge.promote` is granted
-    # because promotion is referenced from Slice 7's messaging.
-    "knowledge.ingest": "Slice 8 -- Knowledge Library and RAG",
+    #
+    # `knowledge.ingest` WAS HERE AND HAS BEEN RESOLVED TOO, 2026-08-22.
+    # Migration 043 grants it to the Lead, Director, QA/Compliance and the
+    # Administrator, and `POST /api/knowledge/documents` is the production
+    # path that uses it. Removed for the same reason as `test.confirm`.
+    #
+    # 🔴 THIS TEST CAUGHT IT, WHICH IS THE WHOLE ARGUMENT FOR THE BOTH-
+    # DIRECTIONS DESIGN. The slice-8 work granted the permission and did not
+    # think about this file; the run went red naming `knowledge.ingest`
+    # exactly, and the alternative -- an allowlist that only fails on NEW
+    # orphans -- would have kept quietly asserting that the Knowledge Library
+    # has no writer long after it had one.
 }
+
+# The allowlist is now EMPTY, and that is a state worth naming rather than an
+# accident. Every permission in the catalogue has a holder. The tests below
+# still read it, so the next orphan gets an entry and the next resolution
+# removes one; nothing about the mechanism depends on it being non-empty.
 
 
 # Function-scoped, deliberately. `owner_session` is function-scoped (it

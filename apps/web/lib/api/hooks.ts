@@ -35,6 +35,12 @@ import {
   type DataSource,
 } from "./config";
 import { fetchFormulas, type Formula } from "./formulations";
+import {
+  fetchKnowledgeDocuments,
+  searchKnowledge,
+  type KnowledgeDocument,
+  type KnowledgePassage,
+} from "./knowledge";
 import { fetchBatches, type Batch } from "./laboratory";
 import {
   fetchMaterials,
@@ -344,4 +350,77 @@ export function useTests<TShown>(
   project: (live: Test[]) => TShown,
 ): LiveOnly<TShown> {
   return useLiveOnlyList("testing-tests", project, fetchTests);
+}
+
+/**
+ * The knowledge library. Live or nothing — see `LiveOnly`.
+ *
+ * 🔴 NO DEMONSTRATION FIXTURE, DELIBERATELY. `demo-data.json` has no knowledge
+ * documents and must not gain any. A synthetic "standard" or "procedure" is
+ * materially worse than a synthetic supplier: this library is the text MSD
+ * QUOTES back as sourced evidence, so a fabricated passage would arrive in an
+ * answer wearing a real document's clothes. An empty screen that says why is
+ * the honest state.
+ */
+export function useKnowledgeDocuments<TShown>(
+  project: (live: KnowledgeDocument[]) => TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("knowledge-documents", project, fetchKnowledgeDocuments);
+}
+
+/**
+ * A knowledge search, run only when there is something to search for.
+ *
+ * `enabled` is the whole design here. `useLiveOnlyList` fires on mount, which
+ * is right for a list and wrong for a search: it would query the library for
+ * the empty string on every visit, and the API answers an unsearchable query
+ * with `[]` — so the screen would render "no matches" before the user had
+ * typed anything, which reads as an empty library.
+ */
+export function useKnowledgeSearch(query: string): LiveOnly<KnowledgePassage[]> {
+  const resolved = useCredentials();
+  const trimmed = query.trim();
+
+  const result = useQuery({
+    queryKey: [
+      "knowledge-search",
+      trimmed,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && trimmed.length > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return searchKnowledge(resolved.credentials, trimmed, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? {
+          data: undefined,
+          isLoading: false,
+          error: new Error(resolved.reason),
+          unavailable: null,
+        }
+      : {
+          data: undefined,
+          isLoading: false,
+          error: null,
+          unavailable: resolved.reason,
+        };
+  }
+
+  return {
+    data: trimmed.length === 0 ? undefined : result.data,
+    // `isPending` is TRUE for a disabled query that has never run, so asking
+    // it directly would leave the screen spinning before anything was typed.
+    isLoading: trimmed.length > 0 && result.isPending,
+    error: (result.error as Error | null) ?? null,
+    unavailable: null,
+  };
 }

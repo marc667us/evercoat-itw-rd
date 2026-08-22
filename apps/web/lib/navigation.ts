@@ -203,6 +203,29 @@ export const ALL_NAV_PERMISSIONS: ReadonlySet<string> = new Set(
   ),
 );
 
+/**
+ * Destinations built OUT OF ORDER, by id.
+ *
+ * 🔴 WHY A SET AND NOT JUST A HIGHER `CURRENT_SLICE`.
+ *
+ * A single ordinal encodes an assumption that slices ship in order, and that
+ * assumption has now failed: the Knowledge Library is slice 8 and it has a
+ * screen, while Messages and Analytics (slice 7), and Failures and Approvals
+ * (slice 6), do not. Raising the constant to 8 would turn those four into live
+ * links into 404s — the precise failure `isAvailable` exists to prevent.
+ *
+ * The alternative considered and rejected was to relabel Knowledge as slice 5.
+ * That would have made the ordinal lie about which slice built it, to preserve
+ * a model that no longer matches how the work is being delivered. Better to
+ * say plainly that one destination jumped the queue.
+ *
+ * ⚠️ This set is not a way to skip building a screen. `navigation.test.ts`
+ * reads the filesystem and fails if anything `isAvailable` returns true for
+ * has no `page.tsx` behind it — that guard covers this set exactly as it
+ * covers the ordinal, and a stale id left here after a rename fails too.
+ */
+export const BUILT_AHEAD: ReadonlySet<string> = new Set(["knowledge"]);
+
 export function isAvailable(item: NavItem): boolean {
-  return (item.slice ?? 1) <= CURRENT_SLICE;
+  return BUILT_AHEAD.has(item.id) || (item.slice ?? 1) <= CURRENT_SLICE;
 }

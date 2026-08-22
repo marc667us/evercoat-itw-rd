@@ -27,6 +27,7 @@ from app.api.failures import approvals_router
 from app.api.failures import router as failures_router
 from app.api.formulations import router as formulations_router
 from app.api.health import router as health_router
+from app.api.knowledge import router as knowledge_router
 from app.api.laboratory import router as laboratory_router
 from app.api.materials import router as materials_router
 from app.api.materials import suppliers_router
@@ -269,6 +270,14 @@ def create_app() -> FastAPI:
     # and never through a conductor or a tool (§0.2). Mounted last
     # because it READS across every other domain and is a prerequisite
     # for none of them.
+    # The knowledge library. Mounted before MSD because MSD RETRIEVES from it:
+    # this is the write path that migration 042 shipped without (I74), and
+    # without it the assistant's knowledge branch can only ever refuse.
+    #
+    # These routes call `app.domains.knowledge.service` directly, NOT the
+    # agent tool -- a route reaching into `app/agents/tools/` is the §0.2
+    # violation `tests/test_agent_topology.py` fails the build for.
+    application.include_router(knowledge_router, prefix="/api/knowledge", tags=["knowledge"])
     application.include_router(msd_router, prefix="/api/msd", tags=["msd"])
 
     if settings.metrics_enabled:

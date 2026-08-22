@@ -21,6 +21,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ALL_NAV_ITEMS,
+  BUILT_AHEAD,
   CURRENT_SLICE,
   NAVIGATION,
   isAvailable,
@@ -154,9 +155,17 @@ describe("slice availability", () => {
     //
     // Stated as a property it holds forever: availability is exactly
     // "slice <= CURRENT_SLICE", for all items, whatever CURRENT_SLICE is.
-    const future = ALL_NAV_ITEMS.filter((i) => (i.slice ?? 1) > CURRENT_SLICE);
+    //
+    // UPDATED 2026-08-22: the property gained a second term. Slice 8's
+    // Knowledge Library shipped before slices 6 and 7, so availability is now
+    // "slice <= CURRENT_SLICE OR the id is in BUILT_AHEAD". The property is
+    // still stated for ALL items rather than naming one, for the same reason
+    // as before.
+    const future = ALL_NAV_ITEMS.filter(
+      (i) => (i.slice ?? 1) > CURRENT_SLICE && !BUILT_AHEAD.has(i.id),
+    );
     const shipped = ALL_NAV_ITEMS.filter(
-      (i) => (i.slice ?? 1) <= CURRENT_SLICE,
+      (i) => (i.slice ?? 1) <= CURRENT_SLICE || BUILT_AHEAD.has(i.id),
     );
 
     // Both sides must be non-empty, or the property is vacuously true — a
@@ -170,7 +179,7 @@ describe("slice availability", () => {
     for (const item of future) {
       expect(
         isAvailable(item),
-        `${item.id} is slice ${item.slice} and should be inert`,
+        `${item.id} is slice ${item.slice}, is not in BUILT_AHEAD, and should be inert`,
       ).toBe(false);
     }
     for (const item of shipped) {
@@ -179,6 +188,35 @@ describe("slice availability", () => {
         `${item.id} has shipped and should be a link`,
       ).toBe(true);
     }
+  });
+
+  it("every BUILT_AHEAD id names a real navigation item", () => {
+    // 🔴 A TYPO HERE FAILS SILENTLY AND LOOKS FINE.
+    //
+    // `BUILT_AHEAD` is matched against `item.id`. An id that matches nothing --
+    // a misspelling, or a name left behind after a rename -- makes the set a
+    // no-op, so the screen it was meant to expose stays inert and the sidebar
+    // entry is simply missing. Nothing else in this file would notice: the
+    // filesystem guard only checks items that ARE available.
+    const ids = new Set(ALL_NAV_ITEMS.map((i) => i.id));
+    const unknown = [...BUILT_AHEAD].filter((id) => !ids.has(id));
+    expect(
+      unknown,
+      "BUILT_AHEAD names items that do not exist; a stale id makes it a no-op",
+    ).toEqual([]);
+  });
+
+  it("keeps BUILT_AHEAD to items that are genuinely ahead", () => {
+    // An id whose slice has since been reached is dead weight, and dead
+    // weight in an override list is how the override outlives its reason.
+    const ids = new Map(ALL_NAV_ITEMS.map((i) => [i.id, i.slice ?? 1]));
+    const redundant = [...BUILT_AHEAD].filter(
+      (id) => (ids.get(id) ?? 1) <= CURRENT_SLICE,
+    );
+    expect(
+      redundant,
+      "these are at or below CURRENT_SLICE already; remove them from BUILT_AHEAD",
+    ).toEqual([]);
   });
 
   it("treats items with no slice as available now", () => {

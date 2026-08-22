@@ -42,6 +42,7 @@ __all__ = [
     "MAX_CHUNKS_PER_DOCUMENT",
     "chunk_text",
     "ingest_document",
+    "list_documents",
     "retrieve",
 ]
 
@@ -209,6 +210,51 @@ def ingest_document(
             )
 
     return {"document_id": document_id, "chunks": len(chunks), "embedder": embedder.name}
+
+
+def list_documents(
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """The documents the caller can see, newest first.
+
+    🔴 NO `WHERE classification = ...` AND NO POST-FILTER. The RLS policy on
+    `knowledge.documents` decides, exactly as it does for the chunk search, so
+    this listing and that search cannot drift apart into two different answers
+    about who may see what. A second predicate written here would be a second
+    implementation of the boundary, and the two would be maintained by
+    different people on different days.
+
+    `chunks` is reported because a document with zero chunks is INVISIBLE to
+    retrieval however correct its row looks -- the ingestion either failed
+    partway or the body had no text in it. Surfacing the count is what makes
+    that difference visible on the screen rather than a mystery about why the
+    assistant never quotes a document somebody definitely uploaded.
+    """
+    rows = session.execute(
+        text(
+            """
+            SELECT d.id,
+                   d.title,
+                   d.source,
+                   d.classification,
+                   d.project_id,
+                   d.ingested_at,
+                   count(c.id) AS chunks
+            FROM knowledge.documents d
+            LEFT JOIN knowledge.chunks c ON c.document_id = d.id
+                                        AND c.organization_id = d.organization_id
+            WHERE d.organization_id = :org
+            GROUP BY d.id, d.title, d.source, d.classification, d.project_id, d.ingested_at
+            ORDER BY d.ingested_at DESC
+            LIMIT :limit
+            """
+        ),
+        {"org": organization_id, "limit": limit},
+    ).mappings()
+    return [dict(r) for r in rows]
 
 
 def retrieve(

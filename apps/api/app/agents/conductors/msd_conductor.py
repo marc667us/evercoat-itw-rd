@@ -422,15 +422,16 @@ def answer(
             return MsdAnswer(
                 body=model.rephrase(composed=_compose_passages(passages), question=question),
                 intent=intent,
-                # 🔴 NO href. There is no `/knowledge` route.
+                # The link is back, because the screen now exists.
                 #
-                # It pointed at one, because every other intent ends with
-                # somewhere to go and this one looked incomplete without it.
-                # `apps/web/app/` has no `knowledge` directory, so the link was
-                # a 404 offered to a user who had just been given an answer --
-                # the failure is worse than the missing feature, because it
-                # makes a working answer look broken. The link comes back with
-                # the screen, not before it.
+                # It was REMOVED earlier this session, when `apps/web/app/` had
+                # no `knowledge` directory and this pointed at a 404 offered to
+                # someone who had just been given a good answer. It returns in
+                # the same commit as `apps/web/app/knowledge/page.tsx` and the
+                # `/api/knowledge` routes -- which is the whole point of the
+                # ordering: a link is a claim that somewhere exists, and the
+                # claim and the place ship together or not at all.
+                href="/knowledge",
                 #
                 # 🔴 AND THE EVIDENCE IS RECORDED. This branch returned none,
                 # so `record_exchange` wrote zero `ai.msd_evidence` rows and
