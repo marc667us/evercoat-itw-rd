@@ -133,6 +133,13 @@ disallow_untyped_decorators = false
 module = ["boto3", "boto3.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 
+# Optional at runtime and absent here: ADR-013's embedder needs ~2 GB of
+# PyTorch. `app/core/embedding.py` imports it inside the adapter's __init__
+# and falls back, so the absence is a designed path, not a missing dependency.
+[[tool.mypy.overrides]]
+module = ["sentence_transformers", "sentence_transformers.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Auth tests are async because _decode awaits the JWKS fetch.

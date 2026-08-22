@@ -16,6 +16,7 @@ be a second answer to the same question.
 
 from app.agents.tools.formulation import compare_formulas, formula_figures
 from app.agents.tools.guidance import explain_the_application
+from app.agents.tools.knowledge import search_knowledge
 from app.agents.tools.records import find_records
 from app.agents.tools.safety import (
     formula_safety,
@@ -35,4 +36,5 @@ __all__ = [
     "formulas_containing",
     "material_safety",
     "pending_work",
+    "search_knowledge",
 ]

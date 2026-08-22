@@ -65,11 +65,84 @@ class _LyingModel:
         ("show me lightweight filler formulas", "find_records"),
         ("", "unsupported"),
         ("   ", "unsupported"),
-        ("thoughts on the weather", "unsupported"),
+        # 🔴 CHANGED CONTRACT, NOT A RELAXED TEST. An unrouted question is now
+        # SEARCHED before it is refused -- see `classify`'s closing comment.
+        # The refusal did not move to a weaker place: it moved DOWNSTREAM, to
+        # `answer()`, where it is returned verbatim once the knowledge base has
+        # actually been asked. The two tests below hold that line, and one of
+        # them proves the other can fail.
+        ("thoughts on the weather", "knowledge_search"),
     ],
 )
 def test_questions_route_to_the_right_capability(question: str, expected: str) -> None:
     assert classify(question) == expected
+
+
+def test_an_unrouted_question_is_still_refused_when_the_search_finds_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 THE REFUSAL SURVIVED THE FALLBACK CHANGE.
+
+    Routing everything unmatched into the knowledge base is only safe if
+    "I could not find that" still comes out when the base has nothing. The
+    failure mode being guarded is an assistant that, having gained a search,
+    quietly starts answering questions it has no material for.
+    """
+    import app.agents.conductors.msd_conductor as conductor
+
+    monkeypatch.setattr(conductor, "search_knowledge", lambda *a, **k: [])
+
+    result = answer(
+        session=None,  # type: ignore[arg-type] - search_knowledge is stubbed
+        organization_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        role_codes=frozenset(),
+        question="thoughts on the weather",
+    )
+
+    assert result.intent == "unsupported"
+    assert result.body.startswith("I cannot answer that yet.")
+    # And it must not have invented a destination for a question it refused.
+    assert result.href is None
+
+
+def test_the_refusal_test_can_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The falsification of the test above.
+
+    Written because a guard that cannot fail has been this codebase's
+    recurring defect -- three times in three days. If `answer()` refused
+    unconditionally, the test above would pass for the wrong reason and the
+    whole knowledge branch could be dead. Give the same question a passage and
+    the intent MUST change.
+    """
+    import app.agents.conductors.msd_conductor as conductor
+
+    monkeypatch.setattr(
+        conductor,
+        "search_knowledge",
+        lambda *a, **k: [
+            {
+                "content": "Sanding is done wet, at 400 grit.",
+                "title": "Application procedure",
+                "source": "procedure",
+                "document_id": uuid.uuid4(),
+                "ordinal": 1,
+                "classification": "INTERNAL",
+                "distance": 0.1,
+            }
+        ],
+    )
+
+    result = answer(
+        session=None,  # type: ignore[arg-type] - search_knowledge is stubbed
+        organization_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        role_codes=frozenset(),
+        question="thoughts on the weather",
+    )
+
+    assert result.intent == "knowledge_search"
+    assert "400 grit" in result.body
 
 
 def test_guidance_wins_over_record_search() -> None:
