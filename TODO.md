@@ -65,14 +65,71 @@ image against the real database: `/health/live` 200, `/health/ready`
 anonymous, `/docs` 200. CI job **`api-image`** now builds it on every run, so
 this cannot rot again before 09-01.
 
-⚠️ **AUTHENTICATION WILL STILL NOT WORK, AND THAT IS A SEPARATE DECISION.**
-`keycloak_issuer` is also required, and Keycloak 26 is **measured** on this
-platform at **451.6/512 MiB, OOM-killed (exit 137)** on Render free. Render has
-nothing between Starter $7 and Standard $25. So step 3 gives an API that
-serves `/health`, `/docs` and correct 401s, and **no authenticated route** —
-which means the RAG still is not usable end to end. Deciding that is the
-owner's: see [[feedback_zero_cost_no_spend_decisions]]. **Do not describe the
-API as "deployed and working" after step 5 without saying this.**
+### 🔑 KEYCLOAK — AND IT FITS ON THE FREE TIER AFTER ALL
+
+**Owner asked for Keycloak too, 2026-08-22.** It goes in with the API on
+09-01, as a 4th step, and it should cost **nothing**.
+
+🔴 **THE "KEYCLOAK CANNOT RUN ON RENDER FREE" CONCLUSION WAS WRONG — IT WAS
+MEASURED WITH AN UNTUNED JVM.** The record said 451.6/512 MiB, OOM-killed
+(exit 137), and that Render has nothing between Starter $7 and Standard $25.
+Re-measured on 2026-08-22 with a hard `--memory=512m` and a bounded heap:
+
+| mode | result | steady state |
+|---|---|---|
+| `start-dev --import-realm` | started, realm imported, discovery 200 | **407 MiB / 512** |
+| `start` (**production**) | started, discovery 200, token endpoint rejects a bad secret correctly | **387 MiB / 512** |
+
+The setting that makes the difference:
+
+```
+JAVA_OPTS_KC_HEAP="-Xms48m -Xmx256m -XX:MaxMetaspaceSize=128m"
+```
+
+Unconstrained, the JVM sizes its heap against the HOST — the running demo
+container measures **676.6 MiB** on a 3.78 GiB machine. Given a 512 MiB
+container and no `-Xmx`, it sizes badly and dies. **The old measurement was of
+an untuned JVM, not of Keycloak.** Neither number was wrong; the conclusion
+drawn from it was.
+
+⚠️ **COLD START IS ~190 SECONDS IN PRODUCTION MODE, AND FREE SERVICES SPIN
+DOWN.** For an identity provider that is a real problem: the first sign-in
+after an idle period will very likely time out before Keycloak answers. It is
+a usability constraint, NOT an impossibility, and it is the thing most likely
+to make somebody say "auth is broken" when it is merely asleep. Decide with
+open eyes; Starter removes the spin-down.
+
+⚠️ **~125 MiB of headroom is thin.** It is enough at rest with one realm and
+no users. It has NOT been load-tested, and the realm currently has **0 users**
+(`services/keycloak/realm/evercoat-realm.json` — 3 clients, 10 realm roles, no
+users), so users must be created before anyone can sign in.
+
+**Step 4, on 09-01 after the API is up:**
+
+4a. Create a `keycloak` **schema** in the same `evercoat-itw-rd-postgres` —
+    Keycloak takes `KC_DB_SCHEMA`, so it needs **no second database** and does
+    not consume another free-tier slot. This is how AutoWorkshop does it.
+4b. Create the Keycloak web service on **free**, image
+    `quay.io/keycloak/keycloak:26.0`, command `start`, with
+    `JAVA_OPTS_KC_HEAP` exactly as above, `KC_DB=postgres`, `KC_DB_SCHEMA=keycloak`,
+    `KC_HTTP_ENABLED=true`, `KC_PROXY_HEADERS=xforwarded`, and `KC_HOSTNAME`
+    set to its public URL.
+4c. Import `services/keycloak/realm/evercoat-realm.json`, then **create users** —
+    the realm ships with none.
+4d. Set `KEYCLOAK_ISSUER` on the API to `<kc-url>/realms/evercoat` and redeploy it.
+
+**A $0 alternative worth knowing about, NOT recommended without thought:** two
+paid Keycloak instances already exist on this account (`solarpro-keycloak` on
+`auth.aiappinvent.com`, `autoworkshop-keycloak`), and Keycloak is multi-realm,
+so the `evercoat` realm could be imported into one of them for no extra cost
+and no cold start. The reason it is not the default: it couples Evercoat's
+identity to a **live** app's instance and database, and
+[[feedback_solar_app_works_dont_break]] is a standing rule. Only do this if the
+owner accepts that blast radius.
+
+**Until step 4 lands, do not describe the API as "deployed and working".**
+After steps 1–3 it serves `/health`, `/docs` and correct 401s and **no
+authenticated route**, which means the RAG is not usable end to end.
 
 
 | # | Task | Why it blocks |
