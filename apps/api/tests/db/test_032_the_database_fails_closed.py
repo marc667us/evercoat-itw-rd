@@ -80,30 +80,65 @@ def test_setting_the_tenant_reveals_exactly_that_tenant(app_engine, owner_sessio
     A fail-closed database that is closed to everybody is not a security
     improvement, it is an outage. This asserts the positive half: with the GUC
     set, the runtime role sees that organization and only that organization.
+
+    ⚠️ THIS TEST COMMITS, AND THAT IS DELIBERATE. Its first version read two
+    SEEDED organizations and called `pytest.skip()` when it found fewer.
+    CI's database is migrated and not seeded, so it skipped -- and **CI fails
+    the build on any skip in `tests/db`**, because a skip there has always
+    meant "the database was unreachable". The gate was right and the test was
+    wrong.
+
+    It cannot use `owner_session`'s uncommitted rows either: `app_engine` is a
+    separate connection, and `evercoat_owner` holds no membership in
+    `evercoat_app`, so `SET ROLE` is refused (measured). Two connections and
+    an RLS-bearing role leave exactly one option -- commit, assert, and clean
+    up in a `finally`.
     """
-    orgs = owner_session.execute(
-        text("SELECT id FROM core.organizations ORDER BY created_at LIMIT 2")
-    ).all()
-    if len(orgs) < 2:
-        pytest.skip(
-            "needs two seeded organizations to prove isolation rather than merely visibility"
+    suffix = uuid.uuid4().hex[:8]
+    ids: list[uuid.UUID] = []
+    for label in ("A", "B"):
+        ids.append(
+            owner_session.execute(
+                text("INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"),
+                {"c": f"RLS-{label}-{suffix}", "n": f"RLS probe {label}"},
+            ).scalar_one()
         )
-    first, second = orgs[0][0], orgs[1][0]
+    owner_session.commit()
+    first, second = ids
 
-    with app_engine.connect() as conn:
-        conn.execute(text("SELECT set_config('app.current_org', :o, false)"), {"o": str(first)})
-        visible = conn.execute(text("SELECT id FROM core.organizations")).scalars().all()
+    try:
+        with app_engine.connect() as conn:
+            conn.execute(
+                text("SELECT set_config('app.current_org', :o, false)"),
+                {"o": str(first)},
+            )
+            visible = (
+                conn.execute(
+                    text("SELECT id FROM core.organizations WHERE id = ANY(:ids)"),
+                    {"ids": ids},
+                )
+                .scalars()
+                .all()
+            )
 
-    assert first in visible, (
-        "the runtime role could not see its OWN organization with the GUC "
-        "set. Migration 032 has closed the database to everyone, not just to "
-        "callers without context."
-    )
-    assert second not in visible, (
-        "another organization was visible while scoped to the first. The "
-        "policy predicate is not filtering on organization_id."
-    )
-    assert len(visible) == 1, f"expected exactly 1 organization, saw {len(visible)}"
+        assert first in visible, (
+            "the runtime role could not see its OWN organization with the GUC "
+            "set. Migration 032 has closed the database to everyone, not just "
+            "to callers without context."
+        )
+        assert second not in visible, (
+            "another organization was visible while scoped to the first. The "
+            "policy predicate is not filtering on organization_id."
+        )
+    finally:
+        # Committed rows must not outlive the test. `core.organizations` is not
+        # append-only (only `audit.events` is), and migration 032 made the
+        # auto-provisioned approval templates CASCADE, so this succeeds.
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.organizations WHERE id = ANY(:ids)"), {"ids": ids}
+        )
+        owner_session.commit()
 
 
 def test_an_unknown_tenant_reveals_nothing(app_engine) -> None:
