@@ -45,9 +45,28 @@ export const isApiConfigured: boolean = API_BASE_URL !== null;
  * Rendered to the user, so it says what is true of the deployment rather
  * than naming an environment variable they cannot set.
  */
+// 🔴 THE CAUSE ONLY. THE CONSEQUENCE BELONGS TO THE FRAME THAT RENDERS IT.
+//
+// This used to end "...so the figures below come from the demonstration
+// dataset rather than from a database", which is true on a `DataPage` and
+// FALSE on a `LiveOnlyPage` -- Knowledge, Laboratory and Testing show NOTHING
+// rather than a fixture. On those three the deployed page read:
+//
+//     ...so the figures below come from the demonstration dataset rather than
+//     from a database. This screen has no demonstration equivalent: ...
+//     nothing is shown rather than something synthetic.
+//
+// Two sentences contradicting each other, in the one banner whose entire job
+// is to tell the reader what they are looking at. Found by loading the
+// DEPLOYED page and reading it -- no test noticed, because every test asserts
+// the notice is PRESENT and none asserts it is COHERENT.
+//
+// `DataSourceBanner` already prints the heading "Demonstration data" above
+// this, and `LiveOnlyPage` already adds its own "no demonstration equivalent"
+// clause, so each frame states its own consequence and neither needs this
+// string to guess which one is rendering it.
 export const API_UNCONFIGURED_REASON =
-  "this build was compiled without an API address, so the figures below come " +
-  "from the demonstration dataset rather than from a database";
+  "this build was compiled without an API address";
 
 /**
  * The two things a screen can be showing. Every hook returns one of them
