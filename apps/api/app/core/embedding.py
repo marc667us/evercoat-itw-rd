@@ -37,6 +37,7 @@ half that is one `pip install` away.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import math
 import re
@@ -55,7 +56,19 @@ __all__ = [
 # column so the two cannot drift; `test_embedding` asserts they agree.
 DIMENSIONS = 384
 
-_WORD = re.compile(r"[a-z0-9]+")
+# \w with UNICODE, not [a-z0-9]. The ASCII class silently tokenised a
+# Cyrillic, Greek or CJK paragraph to NOTHING, and an empty token list
+# raises -- so ingesting a non-English document failed the whole document
+# mid-loop, and a question in those scripts returned [] with no error at
+# all. Accented Latin degraded more quietly still: "Adhäsion" split into
+# "adh" and "sion", two tokens that match nothing a reader would expect.
+#
+# ⚠️ THIS DOES NOT MAKE CJK WORK PROPERLY. Chinese and Japanese are not
+# space-delimited, so a sentence becomes one long token and matches only an
+# identical one. It converts a hard failure into honest poor recall, which
+# is the same bargain the lexical default makes everywhere else. Real CJK
+# retrieval needs the neural embedder.
+_WORD = re.compile(r"\w+", re.UNICODE)
 
 
 class EmbeddingUnavailableError(RuntimeError):
@@ -134,9 +147,28 @@ class SentenceTransformerEmbedding:
     than when the file is read.
     """
 
+    # 🔴 AN INSTANCE ATTRIBUTE, NOT A CLASS CONSTANT, AND THAT IS THE WHOLE
+    # POINT. It was a constant, and Codex found what that costs: the
+    # constructor takes `model_name`, so constructing this with any other
+    # 384-dim model labelled its vectors `all-MiniLM-L6-v2`. A later retrieval
+    # with the REAL MiniLM then matched on `embedder_name`, passed the guard,
+    # and ranked by cosine distance between two different models' vectors --
+    # which does not raise, returns rows, and is silently meaningless.
+    #
+    # That is exactly the failure `embedder_name` was added an hour earlier to
+    # make impossible: a name that is a literal rather than a measurement
+    # cannot disagree with reality loudly enough to be noticed.
     name = "sentence-transformers/all-MiniLM-L6-v2"
 
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2") -> None:
+        # The name RECORDED with every vector is the model actually loaded,
+        # NORMALISED. HuggingFace resolves "all-MiniLM-L6-v2" and
+        # "sentence-transformers/all-MiniLM-L6-v2" to the same weights, so
+        # without this the identical model could be stored under two names --
+        # and `retrieve()` filters on an exact match, which would make the
+        # whole existing index INVISIBLE. Zero results, for every question, with
+        # no error: precisely the silent failure `embedder_name` exists to stop.
+        self.name = _canonical_model_id(model_name)
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover - exercised by absence
@@ -144,15 +176,59 @@ class SentenceTransformerEmbedding:
                 "sentence-transformers is not installed; the lexical embedder "
                 "is in use and recall is word-overlap only"
             ) from exc
-        self._model = SentenceTransformer(model_name)
+
+        # 🔴 NOT JUST ImportError. The library imports fine and then fails to
+        # LOAD: weights not cached and no network (the ordinary hermetic
+        # container and CI case) raises OSError or a huggingface validation
+        # error, not ImportError. Only ImportError was translated, so
+        # `build_embedder`'s documented fallback never ran -- the exception
+        # escaped it, escaped `search_knowledge`, and became a 500 on every
+        # question. A fallback that only handles the failure you thought of is
+        # not a fallback.
+        try:
+            self._model = SentenceTransformer(model_name)
+        except EmbeddingUnavailableError:
+            raise
+        except Exception as exc:  # pragma: no cover - needs a broken model cache
+            raise EmbeddingUnavailableError(
+                f"sentence-transformers could not load {model_name!r}: {exc}"
+            ) from exc
 
     def embed(self, text: str) -> list[float]:
-        vector = self._model.encode(text, normalize_embeddings=True)
-        return [float(v) for v in vector]
+        vector = [float(v) for v in self._model.encode(text, normalize_embeddings=True)]
+        # The column is vector(384). A 768-dim model would otherwise surface as
+        # a pgvector "different vector dimensions" error at INSERT time, far
+        # from the choice that caused it, and would not trigger the fallback.
+        if len(vector) != DIMENSIONS:
+            raise EmbeddingUnavailableError(
+                f"{self.name} produces {len(vector)}-dimensional vectors; the "
+                f"knowledge.chunks column is vector({DIMENSIONS})"
+            )
+        return vector
 
 
+def _canonical_model_id(model_name: str) -> str:
+    """One name per set of weights.
+
+    `sentence-transformers/` is the default namespace HuggingFace fills in, so
+    the bare id and the qualified id are the same model. Stored as two
+    different strings they would partition one index into two halves that
+    cannot see each other.
+    """
+    return model_name.removeprefix("sentence-transformers/")
+
+
+@functools.lru_cache(maxsize=2)
 def build_embedder(*, prefer_neural: bool = True) -> EmbeddingPort:
     """The best embedder available, and it says which one it chose.
+
+    ⚠️ CACHED, AND IT HAS TO BE. `search_knowledge` calls this once per
+    question. Uncached, every question asked of a host with
+    sentence-transformers installed constructed a fresh `SentenceTransformer`
+    -- ~90 MB of weights read from disk and a new torch model allocated, on the
+    1.4 GB-free host this module's header is about. The lexical default is
+    cheap enough that the cost was invisible in exactly the configuration we
+    test in and ruinous in the one we are aiming at.
 
     Falls back rather than failing, because a lexical search that finds
     something is more useful than no knowledge search at all -- and because

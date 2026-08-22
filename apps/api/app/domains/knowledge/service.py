@@ -58,6 +58,38 @@ TARGET_CHUNK_CHARS = 700
 _PARAGRAPH = re.compile(r"\n\s*\n")
 
 
+def _split_oversized(paragraph: str, target: int) -> list[str]:
+    """Break a single paragraph longer than `target` at whitespace.
+
+    Whitespace rather than a blind character slice, so a retrieved passage
+    still ends on a whole word. A word longer than `target` (a URL, a pasted
+    base64 blob) is hard-sliced -- it has no boundary to prefer, and looping
+    for one would not terminate.
+    """
+    if len(paragraph) <= target:
+        return [paragraph]
+
+    pieces: list[str] = []
+    current = ""
+    for word in paragraph.split():
+        while len(word) > target:
+            if current:
+                pieces.append(current)
+                current = ""
+            pieces.append(word[:target])
+            word = word[target:]
+        if not word:
+            continue
+        if current and len(current) + 1 + len(word) > target:
+            pieces.append(current)
+            current = word
+        else:
+            current = f"{current} {word}" if current else word
+    if current:
+        pieces.append(current)
+    return pieces
+
+
 def chunk_text(body: str, *, target: int = TARGET_CHUNK_CHARS) -> list[str]:
     """Split on paragraphs, then pack up to `target` characters.
 
@@ -65,8 +97,24 @@ def chunk_text(body: str, *, target: int = TARGET_CHUNK_CHARS) -> list[str]:
     cuts sentences in half and a half-sentence retrieved as evidence reads as a
     misquotation of the source. Packing keeps a one-line heading attached to
     the paragraph it introduces.
+
+    🔴 AN OVERSIZED PARAGRAPH IS SPLIT, AND THE CAP DEPENDS ON IT.
+
+    Packing alone never divides a single paragraph, so a body containing no
+    blank line was one chunk however large it was -- and one chunk passes
+    `MAX_CHUNKS_PER_DOCUMENT` trivially. A multi-megabyte document therefore
+    sailed through the storage guard and was embedded and stored whole, which
+    is precisely the runaway ingestion Y4's budget exists to stop. Codex found
+    it: the cap counted chunks while the budget it was protecting is bytes,
+    and nothing connected the two until a paragraph could not be bigger than
+    a chunk.
     """
-    paragraphs = [p.strip() for p in _PARAGRAPH.split(body) if p.strip()]
+    paragraphs = [
+        piece
+        for p in _PARAGRAPH.split(body)
+        if p.strip()
+        for piece in _split_oversized(p.strip(), target)
+    ]
     chunks: list[str] = []
     current = ""
     for paragraph in paragraphs:
@@ -180,6 +228,14 @@ def retrieve(
     that forgets to pass it. There is no post-filter — see the module
     docstring for why a post-filter is the wrong shape rather than merely a
     redundant one.
+
+    ⚠️ THE BOUNDARY IS EXACT; THE RECALL IS APPROXIMATE. The HNSW index yields
+    about `hnsw.ef_search` candidates (default 40) and the policy filters
+    those. No unauthorized row is ever returned — but if every one of the 40
+    nearest chunks is out of the asker's scope, this returns an empty list
+    while a permitted, relevant passage sits further down the index, and the
+    asker simply sees the "found nothing" refusal. Fail-closed, and silent;
+    migration 042's header records what to do about it when the corpus grows.
 
     ⚠️ ONLY CHUNKS EMBEDDED BY THE SAME EMBEDDER ARE COMPARED. Vectors from
     two embedders are not comparable and mixing them does not raise: cosine

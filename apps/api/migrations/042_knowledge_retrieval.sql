@@ -21,9 +21,31 @@
 --
 -- So every chunk carries its own `organization_id`, `project_id` and
 -- `classification`, and its RLS policy is the same predicate the projects
--- themselves use. A vector search is then already filtered by the time it
--- ranks anything -- the caller's boundary is applied by PostgreSQL, before
--- ORDER BY, not by application code afterwards.
+-- themselves use. The caller's boundary is applied by PostgreSQL, as part of
+-- the scan, rather than by application code after an answer exists.
+--
+-- ⚠️ AND THE PRECISE CLAIM MATTERS, BECAUSE THE FIRST VERSION OF IT WAS WRONG.
+--
+-- This comment used to say the rows were filtered "BEFORE ORDER BY". That is
+-- not how an HNSW scan executes. The index yields approximately
+-- `hnsw.ef_search` candidate rows (default 40) ordered by distance, and the
+-- RLS qual is applied as a FILTER over those candidates. The Supervisor
+-- caught it -- the codebase's own "a comment asserting engine semantics the
+-- engine does not have" pattern.
+--
+-- The SECURITY property is unaffected: a row the policy rejects is never
+-- returned, whatever order the candidates arrive in. What is affected is
+-- RECALL, and only for restricted users: if the 40 nearest chunks in an
+-- organization all sit in projects the asker is not a member of, the search
+-- returns NOTHING even though a permitted, relevant passage exists further
+-- down the index. The asker sees the ordinary "I found nothing" refusal.
+--
+-- That is a fail-CLOSED degradation, which is the right direction, but it is
+-- invisible -- so it is written down here rather than discovered later by
+-- somebody wondering why the knowledge base "does not work for engineers".
+-- The fix, when the corpus is large enough to need it, is to raise
+-- `hnsw.ef_search` for this query or to fall back to an exact scan; neither is
+-- justified over a corpus this small, and both need measuring, not guessing.
 --
 -- ⚠️ `project_id` IS NULLABLE AND THAT IS NOT A LOOPHOLE. A document may be
 -- organization-wide (a standard, a policy). A NULL project means "visible to
@@ -154,8 +176,79 @@ CREATE TRIGGER chunks_inherit_authorization
     FOR EACH ROW EXECUTE FUNCTION knowledge.chunk_inherits_document();
 
 -- ---------------------------------------------------------------------
+-- 🔴 AND THE DOCUMENT CAN CHANGE AFTER ITS CHUNKS EXIST.
+--
+-- The trigger above fires on the CHUNK. That covers ingestion and nothing
+-- else, which left the denormalisation one-way: reclassify a document to
+-- CONFIDENTIAL, or move it into a restricted project, and its already-stored
+-- chunks kept the OLD project_id and the OLD classification indefinitely.
+--
+-- Codex found it. It matters more here than a stale copy usually would,
+-- because this schema's entire argument is that the CHUNK is independently
+-- authorized -- the comment above literally says the policy on this table can
+-- decide "without a join". That claim was true only until the first document
+-- update. `retrieve()` happens to join `documents` today, and that join is
+-- what kept the defect from being a live disclosure; but a correctness
+-- property that survives only because of an unrelated JOIN in one caller is
+-- not the property the schema advertises, and the next caller to take the
+-- comment at its word is the one who gets hurt.
+--
+-- So the propagation runs in both directions. Re-stating the chunks' columns
+-- fires `chunk_inherits_document()` on each row, which re-reads the document
+-- and therefore cannot disagree with it.
+--
+-- ⚠️ INVOKER, NOT SECURITY DEFINER, AND IT FAILS CLOSED. If the new project
+-- is one the updater cannot see, the chunk UPDATE violates the chunks policy
+-- and the whole transaction aborts -- so a document cannot be moved somewhere
+-- that would leave its own passages unreachable to the person moving it. The
+-- alternative, a DEFINER trigger that always succeeds, would silently hand
+-- rows to a scope the actor could not verify.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION knowledge.document_repropagates_to_chunks()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = knowledge, pg_temp AS $fn$
+BEGIN
+    UPDATE knowledge.chunks
+       SET organization_id = NEW.organization_id,
+           project_id      = NEW.project_id,
+           classification  = NEW.classification
+     WHERE document_id = NEW.id;
+    RETURN NULL;
+END $fn$;
+
+ALTER FUNCTION knowledge.document_repropagates_to_chunks() OWNER TO evercoat_owner;
+
+DROP TRIGGER IF EXISTS documents_repropagate ON knowledge.documents;
+CREATE TRIGGER documents_repropagate
+    AFTER UPDATE ON knowledge.documents
+    FOR EACH ROW
+    WHEN (
+        OLD.organization_id IS DISTINCT FROM NEW.organization_id
+        OR OLD.project_id     IS DISTINCT FROM NEW.project_id
+        OR OLD.classification IS DISTINCT FROM NEW.classification
+    )
+    EXECUTE FUNCTION knowledge.document_repropagates_to_chunks();
+
+-- ---------------------------------------------------------------------
 -- Row-level security — the same predicate the projects use
 -- ---------------------------------------------------------------------
+-- ⚠️ ENABLE, NOT FORCE -- DELIBERATELY, AND TRACKED AS I58.
+--
+-- Codex flagged the absence of FORCE ROW LEVEL SECURITY here. It is right
+-- about the property (both tables are owned by `evercoat_owner`, and an owner
+-- is exempt from a policy that is not FORCED) and wrong about the remedy for
+-- THIS migration. `relforcerowsecurity` is FALSE on every table in this
+-- schema by design, and `tests/db/test_024_memberships_for_subject.py` and
+-- `test_011_audit_chain_scope.py` are tripwires asserting it stays FALSE
+-- until the I58 cutover: forcing it piecemeal breaks
+-- `core.memberships_for_subject`, and with it `GET /api/me` and sign-in for
+-- every user.
+--
+-- The application connects as `evercoat_app`, which owns nothing and holds no
+-- BYPASSRLS, so the retrieval path IS policy-bound today. What is missing is
+-- the owner-path defence in depth, and it is missing schema-wide rather than
+-- here. These two tables are named in I58's scope so the cutover does not
+-- reach head with the knowledge tier left out of it.
+
 ALTER TABLE knowledge.documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE knowledge.chunks    ENABLE ROW LEVEL SECURITY;
 

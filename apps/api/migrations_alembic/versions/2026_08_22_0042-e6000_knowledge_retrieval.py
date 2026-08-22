@@ -47,4 +47,5 @@ def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS knowledge.chunks")
     op.execute("DROP TABLE IF EXISTS knowledge.documents")
     op.execute("DROP FUNCTION IF EXISTS knowledge.chunk_inherits_document()")
+    op.execute("DROP FUNCTION IF EXISTS knowledge.document_repropagates_to_chunks()")
     op.execute("DROP SCHEMA IF EXISTS knowledge CASCADE")

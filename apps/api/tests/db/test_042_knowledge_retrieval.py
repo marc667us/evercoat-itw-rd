@@ -24,7 +24,13 @@ from sqlalchemy.orm import Session
 
 from app.agents.tools.knowledge import search_knowledge
 from app.core.embedding import DIMENSIONS, EmbeddingUnavailableError, HashingEmbedding
-from app.domains.knowledge.service import chunk_text, ingest_document, retrieve
+from app.domains.knowledge.service import (
+    MAX_CHUNKS_PER_DOCUMENT,
+    TARGET_CHUNK_CHARS,
+    chunk_text,
+    ingest_document,
+    retrieve,
+)
 
 
 def _scope(session: Session, org: uuid.UUID, user: uuid.UUID) -> None:
@@ -264,6 +270,125 @@ def test_a_chunk_cannot_be_less_restricted_than_its_document(
     owner_session.rollback()
 
 
+def test_reclassifying_a_document_reclassifies_its_chunks(
+    owner_session: Session, two_libraries: dict[str, Any]
+) -> None:
+    """🔴 THE DENORMALISATION WAS ONE-WAY, AND CODEX FOUND IT.
+
+    The inheritance trigger fires on the CHUNK, so it covered ingestion and
+    nothing after it. A document reclassified from INTERNAL to CONFIDENTIAL --
+    the ordinary act of discovering a document is more sensitive than it looked
+    -- left every already-stored chunk carrying the OLD classification, forever.
+
+    That is not merely a stale copy. This schema's whole argument is that the
+    chunk is INDEPENDENTLY authorized and its policy can decide "without a
+    join"; the claim was true only until the first document update. `retrieve()`
+    joins `documents` today and that join is what kept this from being a live
+    disclosure -- but a property that holds only because of an unrelated JOIN in
+    one caller is not the property advertised, and the next caller to believe
+    the comment is the one who gets hurt.
+    """
+    fx = two_libraries
+    _scope(owner_session, fx["org"], fx["outsider"])
+
+    # The precondition, asserted rather than assumed: the chunks start OPEN.
+    before = (
+        owner_session.execute(
+            text("SELECT DISTINCT classification FROM knowledge.chunks WHERE document_id = :d"),
+            {"d": fx["normal_document"]},
+        )
+        .scalars()
+        .all()
+    )
+    assert before == ["INTERNAL"], (
+        f"fixture drift: expected the normal document's chunks to start "
+        f"INTERNAL, found {before}. Without this the test below could pass "
+        f"while proving nothing."
+    )
+
+    owner_session.execute(
+        text(
+            "UPDATE knowledge.documents "
+            "SET classification = 'CONFIDENTIAL', project_id = :p "
+            "WHERE id = :d"
+        ),
+        {"d": fx["normal_document"], "p": fx["restricted_project"]},
+    )
+    owner_session.flush()
+
+    after = (
+        owner_session.execute(
+            text(
+                "SELECT DISTINCT classification, project_id FROM knowledge.chunks "
+                "WHERE document_id = :d"
+            ),
+            {"d": fx["normal_document"]},
+        )
+        .mappings()
+        .all()
+    )
+
+    assert len(after) == 1, f"chunks disagree with each other after the update: {after}"
+    assert after[0]["classification"] == "CONFIDENTIAL", (
+        "a document was reclassified CONFIDENTIAL and its chunks stayed "
+        "INTERNAL. The chunk is the row a retrieval returns."
+    )
+    assert after[0]["project_id"] == fx["restricted_project"], (
+        "a document was moved into a restricted project and its chunks kept "
+        "the old scope -- organization-wide visibility over restricted text"
+    )
+    owner_session.rollback()
+
+
+def test_the_repropagation_is_not_a_blanket_rewrite(
+    owner_session: Session, two_libraries: dict[str, Any]
+) -> None:
+    """The falsification of the test above.
+
+    A trigger that rewrote every chunk on every document write would make the
+    previous test pass while doing something quite different and much worse --
+    it would also flatten the ordinals, content, or a sibling document's rows.
+    So: touch a column the authorization does not depend on, and show the
+    chunks of ANOTHER document are untouched by an update to this one.
+    """
+    fx = two_libraries
+    _scope(owner_session, fx["org"], fx["outsider"])
+
+    other_before = (
+        owner_session.execute(
+            text(
+                "SELECT classification FROM knowledge.chunks "
+                "WHERE document_id = :d ORDER BY ordinal"
+            ),
+            {"d": fx["restricted_document"]},
+        )
+        .scalars()
+        .all()
+    )
+
+    owner_session.execute(
+        text("UPDATE knowledge.documents SET title = :t WHERE id = :d"),
+        {"d": fx["normal_document"], "t": "retitled, not reclassified"},
+    )
+    owner_session.flush()
+
+    other_after = (
+        owner_session.execute(
+            text(
+                "SELECT classification FROM knowledge.chunks "
+                "WHERE document_id = :d ORDER BY ordinal"
+            ),
+            {"d": fx["restricted_document"]},
+        )
+        .scalars()
+        .all()
+    )
+
+    assert other_after == other_before, "updating one document changed another document's chunks"
+    assert other_before, "fixture drift: the restricted document has no chunks"
+    owner_session.rollback()
+
+
 def test_a_chunk_embedded_by_another_embedder_is_not_compared(
     owner_session: Session, two_libraries: dict[str, Any]
 ) -> None:
@@ -392,3 +517,73 @@ def test_chunking_keeps_paragraphs_whole() -> None:
         "Second paragraph.",
         "Third paragraph.",
     ]
+
+
+def test_one_enormous_paragraph_cannot_slip_past_the_chunk_cap() -> None:
+    """🔴 THE CAP COUNTED CHUNKS; THE BUDGET IT PROTECTS IS BYTES.
+
+    Packing never divided a single paragraph, so a body with no blank line in
+    it -- an exported PDF, a pasted wall of text -- became exactly ONE chunk
+    however large it was. One chunk passes `MAX_CHUNKS_PER_DOCUMENT = 200`
+    trivially, so a multi-megabyte document sailed through the guard and was
+    embedded and stored whole. That is the runaway ingestion Y4's storage
+    budget exists to stop, walking straight through the check written to stop
+    it. Codex found it.
+    """
+    one_paragraph = " ".join(["adhesion"] * 40_000)
+    assert "\n\n" not in one_paragraph
+
+    chunks = chunk_text(one_paragraph)
+
+    assert len(chunks) > MAX_CHUNKS_PER_DOCUMENT, (
+        f"a {len(one_paragraph)}-character single paragraph produced "
+        f"{len(chunks)} chunk(s); the cap can still be bypassed"
+    )
+    assert all(len(c) <= TARGET_CHUNK_CHARS for c in chunks), (
+        "a chunk exceeded the target after splitting"
+    )
+    # And the document is refused rather than silently stored.
+    with pytest.raises(ValueError, match="chunk"):
+        ingest_document(
+            None,  # type: ignore[arg-type] - refused before any database access
+            organization_id=uuid.uuid4(),
+            actor_id=uuid.uuid4(),
+            title="wall of text",
+            body=one_paragraph,
+            source="external",
+            embedder=HashingEmbedding(),
+        )
+
+
+def test_a_word_longer_than_a_chunk_terminates() -> None:
+    """A pasted base64 blob or a very long URL has no whitespace to break on.
+
+    Preferring a word boundary that does not exist is how a splitter loops
+    forever, so the no-boundary case is hard-sliced deliberately.
+    """
+    blob = "A" * (TARGET_CHUNK_CHARS * 3 + 17)
+    chunks = chunk_text(blob)
+    assert len(chunks) == 4
+    assert all(len(c) <= TARGET_CHUNK_CHARS for c in chunks)
+    assert "".join(chunks) == blob, "hard-slicing lost or duplicated characters"
+
+
+def test_splitting_a_long_paragraph_still_ends_on_whole_words() -> None:
+    """The falsification of the cap fix: it must not have become a blind slice.
+
+    A blind character window would satisfy the cap test above while
+    reintroducing exactly the half-sentence misquotation that paragraph
+    packing exists to avoid.
+    """
+    body = " ".join(["adhesion promoter improves bonding"] * 200)
+    chunks = chunk_text(body)
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert not chunk.startswith(" ")
+        assert not chunk.endswith(" ")
+        # Every token in every chunk is a whole word from the source.
+        for word in chunk.split():
+            assert word in {"adhesion", "promoter", "improves", "bonding"}, (
+                f"the splitter cut a word in half: {word!r}"
+            )
