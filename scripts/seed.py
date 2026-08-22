@@ -31,7 +31,7 @@ import io
 import os
 import pathlib
 import sys
-import tempfile
+
 import uuid
 
 import psycopg
@@ -52,19 +52,42 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "apps" / "a
 
 from app.core.object_storage import (  # noqa: E402  - must follow the path shim
     FilesystemObjectStore,
+    default_object_store_root,
     new_object_key,
 )
 
-# The filesystem adapter, matching the API's default. A seeder writing to a
-# different store than the API reads from would produce a database full of
-# checksums for files the application cannot fetch -- which is I41 again, one
-# level along.
-document_store = FilesystemObjectStore(
-    os.getenv(
-        "OBJECT_STORE_ROOT",
-        str(pathlib.Path(tempfile.gettempdir()) / "evercoat-documents"),
-    )
-)
+
+def _object_store_root() -> str:
+    """🔴 ONE SOURCE FOR WHERE THE BYTES LIVE, resolved the way the API does.
+
+    The first version read `os.getenv("OBJECT_STORE_ROOT", <tempdir>)` while
+    the API read `settings.object_store_root` -- and `Settings` loads
+    `apps/api/.env`. So a root configured the documented way, in that file
+    rather than in the process environment, was seen by the API and NOT by the
+    seeder: bytes under one root, rows the API cannot fetch, and
+    `usable_documents` still counting them as valid hazard documentation. I41
+    again, one level along. Raised by the Supervisor.
+
+    Importing `settings` directly would be tidier and is wrong here: it
+    REQUIRES `DATABASE_URL` and `KEYCLOAK_ISSUER`, and this script runs with
+    `SEED_DATABASE_URL` and no Keycloak. So it reads the same two sources in
+    the same order, and shares the DEFAULT rather than restating it.
+    """
+    from_env = os.getenv("OBJECT_STORE_ROOT")
+    if from_env:
+        return from_env
+
+    env_file = pathlib.Path(__file__).resolve().parents[1] / "apps" / "api" / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            name, _, value = line.partition("=")
+            if name.strip().upper() == "OBJECT_STORE_ROOT" and value.strip():
+                return value.strip().strip("\"'")
+
+    return str(default_object_store_root())
+
+
+document_store = FilesystemObjectStore(_object_store_root())
 
 # ---------------------------------------------------------------------
 # ONE SOURCE FOR THE DEMO RECORDS.
@@ -512,17 +535,53 @@ def main() -> None:
             # Keying the skip on the MATERIAL rather than the storage key is
             # also the honest question -- "does this material already have an
             # SDS on file?" -- and it means re-running writes no bytes at all.
+            # 🔴 ASK "IS THERE USABLE EVIDENCE", NOT "IS THERE A ROW".
+            #
+            # The first version of this check selected from
+            # `material_documents`. On any database seeded BEFORE migration 036
+            # -- the persistent local one, any demo deployment -- 036's backfill
+            # leaves those rows `legacy_unverified` with no checksum, and the
+            # check found them, skipped, and never wrote bytes. MEASURED: 33
+            # legacy rows, 0 usable, and re-seeding left it at 0, so every
+            # seeded formula was permanently unsubmittable. That is the exact
+            # deadlock 036's header says this seeder change exists to prevent.
+            # CI could never catch it because CI always seeds a fresh database.
+            #
+            # It also asks the STORE, not just the row: a checksum column
+            # proves storage happened once, not that the file is still there.
+            # With the root under a temp directory a reboot removes the bytes
+            # and leaves the rows claiming `approved` -- I41's shape, restored
+            # by omission. Both raised by the Supervisor.
             cur.execute(
                 """
-                SELECT 1 FROM materials.material_documents
+                SELECT id, storage_key FROM materials.usable_documents
                 WHERE organization_id = %s AND material_id = %s
                   AND document_type = 'SDS'
+                ORDER BY created_at DESC
                 LIMIT 1
                 """,
                 (org_id, material_ids[mat["material_code"]]),
             )
-            if cur.fetchone():
+            existing = cur.fetchone()
+            if existing and document_store.exists(existing[1]):
                 continue
+
+            # 🔴 SUPERSEDE THE ROW WHOSE BYTES ARE GONE, do not merely add a
+            # second one. `usable_documents` cannot ask the object store, so a
+            # row whose file has vanished stays "usable" forever -- measured:
+            # deleting the store and re-seeding took the usable count from 11
+            # to 22, one live document per material plus one pointing at
+            # nothing. Linking the replacement retires the old row through the
+            # view's own supersession rule.
+            #
+            # This is a seeder-local mitigation of a general defect: nothing
+            # re-verifies that an approved document is still retrievable.
+            # That is I62, and it needs a reconciliation worker.
+            supersedes = existing[0] if existing else None
+
+            # Not usable, or the bytes are gone. A new row rather than an
+            # update: evidence columns are write-once (migration 038), and a
+            # document register supersedes rather than rewrites.
 
             sds_bytes = _placeholder_sds(mat["material_code"], mat["name"])
             stored = document_store.put(
@@ -535,21 +594,23 @@ def main() -> None:
                 INSERT INTO materials.material_documents
                     (organization_id, material_id, document_type, title,
                      storage_key, content_type, uploaded_by, original_filename,
-                     byte_size, checksum_sha256,
+                     byte_size, checksum_sha256, supersedes_id,
                      status, scan_status, scanner_name, scanner_version, scanned_at)
                 VALUES (%s, %s, 'SDS', %s, %s, 'application/pdf', %s, %s,
-                        %s, %s, 'approved', 'clean', 'seed-placeholder', 'n/a', now())
+                        %s, %s, %s,
+                        'approved', 'clean', 'seed-placeholder', 'n/a', now())
                 ON CONFLICT (organization_id, storage_key) DO NOTHING
                 """,
                 (
                     org_id,
                     material_ids[mat["material_code"]],
-                    f"Safety Data Sheet — {mat['name']}",
+                    f"SYNTHETIC DEMO — not a Safety Data Sheet — {mat['name']}",
                     stored.key,
                     user_ids["procurement_specialist"],
-                    f"SDS {mat['material_code']}.pdf",
+                    f"SYNTHETIC-DEMO-{mat['material_code']}.pdf",
                     stored.byte_size,
                     stored.checksum_sha256,
+                    supersedes,
                 ),
             )
         print(f"{len(SUPPLIERS)} suppliers and {len(MATERIALS)} materials, each with an SDS")

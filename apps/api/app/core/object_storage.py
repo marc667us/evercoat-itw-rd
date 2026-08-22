@@ -50,8 +50,28 @@ __all__ = [
     "ObjectStoragePort",
     "S3ObjectStore",
     "StoredObject",
+    "default_object_store_root",
     "new_object_key",
 ]
+
+
+def default_object_store_root() -> Path:
+    """Where documents live when nothing configures it. ONE definition.
+
+    Inside the application's own tree, deliberately:
+
+    * NOT `/var/lib/evercoat/documents` -- unwritable on every CI runner and
+      developer machine, and because the store no longer creates its root
+      eagerly the failure surfaced at dependency resolution.
+    * NOT the shared temp directory -- swept on reboot, which leaves rows
+      claiming `approved` with a checksum for bytes that are gone (I41's shape,
+      restored by omission), and on a shared Linux host it is a world-writable
+      directory at a predictable name that an unprivileged user can create or
+      symlink first.
+
+    A container deployment mounts a volume over this path.
+    """
+    return Path(__file__).resolve().parents[2] / "var" / "documents"
 
 
 class ObjectStorageError(RuntimeError):

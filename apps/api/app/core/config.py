@@ -13,15 +13,16 @@ explicitly.
 
 from __future__ import annotations
 
-import tempfile
 from functools import lru_cache
-from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = ["Settings", "get_settings", "settings"]
+
+
+from app.core.object_storage import default_object_store_root
 
 
 class Settings(BaseSettings):
@@ -70,12 +71,26 @@ class Settings(BaseSettings):
     # 2026-08-22). "s3" reaches Garage locally and Oracle Object Storage in
     # production, which is the same API by ADR-004.
     object_store_backend: str = "filesystem"
-    # NOT an absolute system path. The first default was
-    # `/var/lib/evercoat/documents`, which no CI runner and no developer
-    # machine can create -- so the API failed at dependency resolution rather
-    # than at upload. A deployment sets this to a mounted volume; everything
-    # else gets a path it can actually write.
-    object_store_root: str = str(Path(tempfile.gettempdir()) / "evercoat-documents")
+    # 🔴 NEITHER AN UNWRITABLE SYSTEM PATH NOR THE SHARED TEMP DIRECTORY.
+    #
+    # First draft: `/var/lib/evercoat/documents` -- which no CI runner and no
+    # developer machine can create, so the API failed at dependency resolution
+    # rather than at upload.
+    #
+    # Second draft: `<tempdir>/evercoat-documents`. Worse, in two ways the
+    # Supervisor named. (a) LOSSY -- a temp directory is swept on reboot, and
+    # the rows survive still claiming `approved` with a checksum, which is
+    # I41's exact shape restored by omission. (b) On a shared Linux host `/tmp`
+    # is world-writable and the name is fixed and predictable, and since
+    # `FilesystemObjectStore.__init__` no longer creates the root, an
+    # unprivileged local user can create it first -- or symlink it -- and then
+    # read every stored Safety Data Sheet, or make every upload 503 because
+    # `_resolve` rejects the symlinked path.
+    #
+    # So: a path inside the application's own tree, created with the process
+    # umask under a directory only it uses. A container deployment mounts a
+    # volume here; `infrastructure/compose/docker-compose.yml` does.
+    object_store_root: str = str(default_object_store_root())
 
     # --- Malware scanning ------------------------------------------------
     # 🔴 THE DEFAULT REFUSES. There is deliberately no "scanning disabled"
