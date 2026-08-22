@@ -235,6 +235,33 @@ export function MsdPanel({ onClose }: { onClose: () => void }) {
                       </div>
                     )}
 
+                    {/*
+                      🔴 `href` WAS PARSED AND NEVER RENDERED.
+
+                      Every intent that has somewhere to go sets it -- my work,
+                      formulations, and now the knowledge library -- and
+                      `lib/api/msd.ts` has always parsed it. Nothing displayed
+                      it, so the field round-tripped from the conductor to the
+                      client and was dropped, and the "go here next" step of
+                      every answer simply did not exist. Found while checking
+                      whether restoring `href="/knowledge"` had accomplished
+                      anything; it had not.
+
+                      A plain `<a>`, not a router push: these destinations are
+                      real pages and a middle-click or a bookmark should work.
+                    */}
+                    {exchange.answer.href && (
+                      <p className="mt-2">
+                        <a
+                          href={exchange.answer.href}
+                          className="text-[11px] font-medium text-slate-800 underline underline-offset-2 hover:text-slate-950"
+                        >
+                          Open {exchange.answer.href}
+                          <span aria-hidden> →</span>
+                        </a>
+                      </p>
+                    )}
+
                     {exchange.answer.suggestions.length > 0 && (
                       <ul className="mt-2 space-y-1">
                         {exchange.answer.suggestions.map((suggestion) => (

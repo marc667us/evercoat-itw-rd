@@ -10,6 +10,7 @@ assistant's safety properties rot.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 
@@ -98,6 +99,10 @@ def test_an_unrouted_question_is_still_refused_when_the_search_finds_nothing(
         user_id=uuid.uuid4(),
         role_codes=frozenset(),
         question="thoughts on the weather",
+        # Held, so this test exercises the EMPTY SEARCH and not the permission
+        # gate below it. Without it the refusal would arrive for the wrong
+        # reason and the test would pass while proving nothing.
+        permissions=frozenset({"knowledge.view"}),
     )
 
     assert result.intent == "unsupported"
@@ -139,10 +144,65 @@ def test_the_refusal_test_can_fail(monkeypatch: pytest.MonkeyPatch) -> None:
         user_id=uuid.uuid4(),
         role_codes=frozenset(),
         question="thoughts on the weather",
+        permissions=frozenset({"knowledge.view"}),
     )
 
     assert result.intent == "knowledge_search"
     assert "400 grit" in result.body
+
+
+def test_msd_will_not_search_knowledge_without_the_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 §7: MSD MUST NOT BE A PERMISSION-BYPASS CHANNEL.
+
+    `GET /api/knowledge/search` requires `knowledge.view`. Without this gate a
+    caller holding `msd.use` and NOT `knowledge.view` -- the Procurement
+    Specialist, deliberately excluded in migration 043 -- could ask the
+    assistant a knowledge-shaped question and receive the passages the screen
+    would have refused them. Codex found it.
+
+    Note what the gap was NOT: every passage returned would still have been
+    inside the caller's organization and projects, because RLS never stopped
+    applying. The gap is that a PERMISSION governing a surface was enforced on
+    the surface and not on the assistant reading the same table.
+    """
+    import app.agents.conductors.msd_conductor as conductor
+
+    called: list[str] = []
+
+    def _should_not_run(*a: object, **k: object) -> list[dict[str, Any]]:
+        called.append("searched")
+        return [
+            {
+                "content": "Sanding is done wet, at 400 grit.",
+                "title": "Application procedure",
+                "source": "procedure",
+                "document_id": uuid.uuid4(),
+                "ordinal": 1,
+                "classification": "INTERNAL",
+                "distance": 0.1,
+            }
+        ]
+
+    monkeypatch.setattr(conductor, "search_knowledge", _should_not_run)
+
+    result = answer(
+        session=None,  # type: ignore[arg-type] - the search must not be reached
+        organization_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        role_codes=frozenset(),
+        question="thoughts on the weather",
+        permissions=frozenset(),  # no knowledge.view
+    )
+
+    assert not called, (
+        "the knowledge base was searched for a caller without knowledge.view; "
+        "the passages would have been handed to somebody the screen refuses"
+    )
+    assert result.intent == "unsupported"
+    # And the refusal must not advertise the library it just declined to search.
+    assert "knowledge" not in result.body.lower()
 
 
 def test_guidance_wins_over_record_search() -> None:

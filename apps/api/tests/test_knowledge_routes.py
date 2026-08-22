@@ -51,13 +51,27 @@ def test_the_routes_carry_the_permissions_they_should() -> None:
     """
     source = (API_ROOT / "app" / "api" / "knowledge.py").read_text(encoding="utf-8")
 
-    # Each route's decorator through to its permission, in source order.
-    handlers = re.findall(
-        r'@router\.(get|post)\("([^"]+)".*?require_permission\("([^"]+)"\)',
-        source,
-        re.DOTALL,
-    )
-    found = {(method, path): permission for method, path, permission in handlers}
+    # 🔴 EVERY VERB, NOT JUST THE TWO IN USE, AND EACH HANDLER READ ALONE.
+    #
+    # The first version matched `(get|post)` and used `.*?` under DOTALL, which
+    # has two holes the Supervisor named: a `delete` added later would be
+    # INVISIBLE to the assertion, and the lazy wildcard binds a decorator to
+    # the next `require_permission` ANYWHERE in the file rather than its own --
+    # so a handler with no permission at all would silently borrow the next
+    # one's and pass.
+    #
+    # Splitting on the decorator and searching only within each handler's own
+    # text makes the pairing structural, and a missing permission shows up as
+    # `None` instead of a neighbour's value.
+    blocks = re.split(r"@router\.", source)[1:]
+    found: dict[tuple[str, str], str | None] = {}
+    for block in blocks:
+        head = re.match(r'(get|post|put|patch|delete)\("([^"]+)"', block)
+        assert head, f"a @router decorator was not in the expected form: {block[:60]!r}"
+        # Stop at the next decorator or the end -- never spill into a sibling.
+        body = block.split("\n@router.")[0]
+        permission = re.search(r'require_permission\("([^"]+)"\)', body)
+        found[(head.group(1), head.group(2))] = permission.group(1) if permission else None
 
     assert found == {
         ("get", "/documents"): "knowledge.view",

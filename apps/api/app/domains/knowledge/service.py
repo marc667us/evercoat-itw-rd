@@ -232,6 +232,13 @@ def list_documents(
     partway or the body had no text in it. Surfacing the count is what makes
     that difference visible on the screen rather than a mystery about why the
     assistant never quotes a document somebody definitely uploaded.
+
+    ⚠️ `limit` TRUNCATES SILENTLY, AND THE CALLER IS EXPECTED TO SAY SO. At
+    `limit + 1` documents the oldest simply stop appearing, with no page two
+    and no count -- which is the same unanswerable "why is my document not
+    here?" the `chunks` column above exists to prevent. There is no pagination
+    yet; until there is, a caller rendering this list must tell the reader when
+    it is full. `docs`-level fix is I78.
     """
     rows = session.execute(
         text(

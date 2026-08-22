@@ -22,7 +22,7 @@
  * A request that IS made and fails stays failed. The page shows the error.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   ApiNoSessionError,
@@ -37,7 +37,10 @@ import {
 import { fetchFormulas, type Formula } from "./formulations";
 import {
   fetchKnowledgeDocuments,
+  ingestKnowledgeDocument,
   searchKnowledge,
+  type IngestRequest,
+  type IngestResult,
   type KnowledgeDocument,
   type KnowledgePassage,
 } from "./knowledge";
@@ -422,5 +425,61 @@ export function useKnowledgeSearch(query: string): LiveOnly<KnowledgePassage[]> 
     isLoading: trimmed.length > 0 && result.isPending,
     error: (result.error as Error | null) ?? null,
     unavailable: null,
+  };
+}
+
+/**
+ * Add a document to the knowledge library.
+ *
+ * 🔴 THIS HOOK IS THE REASON I74 IS ACTUALLY CLOSED.
+ *
+ * The route existed a commit earlier and NOTHING CALLED IT: the client
+ * function was written, exported, and reachable only by hand-constructing an
+ * HTTP request. Closing "the tier has no production write path" with a path no
+ * user of the application can walk is the same defect one level up, and the
+ * Supervisor said so. Asking the standing question of a ROUTE, not just of a
+ * table, is what this hook answers.
+ *
+ * On success the document list is invalidated rather than optimistically
+ * appended: the server decides the classification when the caller omitted one,
+ * counts the chunks, and may return fewer than the author expects. Rendering a
+ * guess and correcting it a moment later would show a classification the
+ * database never agreed to.
+ */
+export function useIngestKnowledgeDocument(): {
+  readonly submit: (request: IngestRequest) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly result: IngestResult | undefined;
+  readonly reset: () => void;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (request: IngestRequest) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return ingestKnowledgeDocument(resolved.credentials, request);
+    },
+    onSuccess: () => {
+      // Both lists are now stale: the document list obviously, and any search
+      // whose words the new text happens to match.
+      void queryClient.invalidateQueries({ queryKey: ["knowledge-documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["knowledge-search"] });
+    },
+  });
+
+  return {
+    submit: mutation.mutate,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    result: mutation.data,
+    reset: mutation.reset,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
   };
 }

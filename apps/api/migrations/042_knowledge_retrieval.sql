@@ -24,6 +24,21 @@
 -- themselves use. The caller's boundary is applied by PostgreSQL, as part of
 -- the scan, rather than by application code after an answer exists.
 --
+-- ⚠️ AND THE PREDICATE IS ORGANIZATION + PROJECT. NOT CLASSIFICATION.
+--
+-- The chunk carries `classification` so the label travels with the text -- to
+-- the screen, to MSD's citations, and to ADR-029's outbound gate. The policies
+-- below do NOT consult it, deliberately: migration 039 §2 states that
+-- classification is a property of the DATA and not an access group, there is
+-- no per-user clearance in this schema for it to be compared against, and
+-- merging the two axes is the §6 defect this project has found six times.
+--
+-- Listing the three columns in one sentence made it easy to read the third as
+-- part of the boundary, and a reviewer did exactly that. An organization-wide
+-- (`project_id IS NULL`) DIRECTOR_CONTROLLED document is readable by every
+-- `knowledge.view` holder in the organization; the classification tells them
+-- how to handle it, it does not stop them.
+--
 -- ⚠️ AND THE PRECISE CLAIM MATTERS, BECAUSE THE FIRST VERSION OF IT WAS WRONG.
 --
 -- This comment used to say the rows were filtered "BEFORE ORDER BY". That is

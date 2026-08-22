@@ -33,8 +33,41 @@
 import { useMemo, useState } from "react";
 
 import { LiveOnlyPage } from "@/components/ui/data-source-banner";
-import { useKnowledgeDocuments, useKnowledgeSearch } from "@/lib/api/hooks";
+import { ApiError } from "@/lib/api/client";
+import {
+  useIngestKnowledgeDocument,
+  useKnowledgeDocuments,
+  useKnowledgeSearch,
+} from "@/lib/api/hooks";
 import type { KnowledgeDocument, KnowledgePassage } from "@/lib/api/knowledge";
+
+/** Matches `documents_source_check` in migration 042 and `SOURCES` in the route. */
+const SOURCES = [
+  "internal_note",
+  "material_document",
+  "standard",
+  "procedure",
+  "external",
+] as const;
+
+/**
+ * The lattice, ordered, from migration 039.
+ *
+ * "" is offered FIRST and means "I have not decided", which the server answers
+ * with the ceiling. That is not a UI nicety: preselecting a value here would
+ * make whatever the form happened to default to the effective classification
+ * of every document nobody thought about, and the whole point of the column's
+ * `DIRECTOR_CONTROLLED` default is that an undecided document is maximally
+ * restricted rather than conveniently readable.
+ */
+const CLASSIFICATIONS = [
+  "PUBLIC",
+  "INTERNAL",
+  "CONFIDENTIAL",
+  "R&D_RESTRICTED",
+  "FORMULA_RESTRICTED",
+  "DIRECTOR_CONTROLLED",
+] as const;
 
 /**
  * How a cosine distance is described to a person.
@@ -73,12 +106,31 @@ function overlapBand(distance: number): { label: string; tone: string } {
  * ascends with sensitivity. §11 forbids colour as the sole indicator, and the
  * label is always the text of the code itself, so the colour only reinforces
  * something already written.
+ *
+ * 🔴 AND IT IS A HANDLING LABEL, NOT A LOCK. Nothing filters reads on it.
+ *
+ * No RLS policy in this schema consults `classification` — migration 039 §2
+ * decides that deliberately: classification is a property of the DATA, while
+ * WHO may see it is answered by permissions and project membership, and
+ * collapsing the two is a defect this project has found six times. There is no
+ * per-user clearance level for it to be compared against.
+ *
+ * So an organization-wide DIRECTOR_CONTROLLED document IS readable by every
+ * `knowledge.view` holder in the organization. A reviewer read this screen's
+ * first draft as implying otherwise, which is why the tooltip says what the
+ * chip means rather than leaving a coloured badge to suggest it.
  */
 const CLASSIFICATION_TONE: Record<string, string> = {
   PUBLIC: "bg-slate-100 text-slate-700 border-slate-300",
   INTERNAL: "bg-sky-50 text-sky-800 border-sky-200",
   CONFIDENTIAL: "bg-amber-50 text-amber-900 border-amber-200",
-  R_AND_D_RESTRICTED: "bg-orange-50 text-orange-900 border-orange-200",
+  // 🔴 "R&D_RESTRICTED", with an ampersand. It was written R_AND_D_RESTRICTED
+  // here and matched NOTHING -- migration 039 line 110 seeds the ampersand
+  // form. The chip fell through to the `??` default, which is the
+  // DIRECTOR_CONTROLLED purple, so rank 40 and rank 60 rendered identically
+  // and the "shading ascends with sensitivity" claim below was false for
+  // exactly the tier that carries formulas and test evidence.
+  "R&D_RESTRICTED": "bg-orange-50 text-orange-900 border-orange-200",
   FORMULA_RESTRICTED: "bg-rose-50 text-rose-900 border-rose-200",
   DIRECTOR_CONTROLLED: "bg-purple-50 text-purple-900 border-purple-200",
 };
@@ -91,9 +143,10 @@ function Classification({ code }: { code: string }) {
     CLASSIFICATION_TONE[code] ?? "bg-purple-50 text-purple-900 border-purple-200";
   return (
     <span
+      title="How this document must be handled. It is a label, not an access control: what you can see is decided by your project membership."
       className={`inline-block whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide ${tone}`}
     >
-      <span className="sr-only">Classification: </span>
+      <span className="sr-only">Handling classification: </span>
       {code.replace(/_/g, " ")}
     </span>
   );
@@ -164,6 +217,171 @@ function PassageCard({ passage }: { passage: KnowledgePassage }) {
   );
 }
 
+/**
+ * Adding a document — the production write path, reachable by a person.
+ *
+ * 🔴 THE ROUTE EXISTED A COMMIT BEFORE THIS FORM DID, AND THAT WAS NOT ENOUGH.
+ *
+ * `POST /api/knowledge/documents` shipped with no caller: the client function
+ * was exported and invoked from nowhere, so the only way to put a document in
+ * the library was to construct an HTTP request by hand. I74 was marked closed
+ * on the strength of the route alone, which is the "which production path
+ * writes it?" defect committed while closing an instance of itself.
+ *
+ * ⚠️ SHOWN TO EVERYONE, BECAUSE THE CLIENT DOES NOT KNOW ITS OWN PERMISSIONS.
+ *
+ * `/api/me` returns roles, not permissions, and the sidebar is handed the full
+ * module map rather than the caller's grants. So this form cannot be hidden
+ * from a Chemist the way a permission-aware UI would hide it. §6 is explicit
+ * that frontend checks are cosmetic and every control is re-enforced
+ * server-side — which it is, with `knowledge.ingest` — so the honest thing is
+ * to let the server answer and then SAY what the answer means, rather than
+ * render a dead form and let a 403 look like a bug.
+ */
+function AddDocument() {
+  const ingest = useIngestKnowledgeDocument();
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [source, setSource] = useState<string>("internal_note");
+  const [classification, setClassification] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const forbidden = ingest.error instanceof ApiError && ingest.error.status === 403;
+
+  return (
+    <section aria-labelledby="knowledge-add-heading" className="mt-10">
+      <h2 id="knowledge-add-heading" className="text-sm font-semibold text-slate-900">
+        Add a document
+      </h2>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((was) => !was)}
+        className="mt-1 text-sm text-slate-700 underline underline-offset-2 hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-500"
+      >
+        {open ? "Cancel" : "Add technical text to the library"}
+      </button>
+
+      {open && (
+        <form
+          className="mt-3 grid max-w-2xl gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            ingest.submit({
+              title: title.trim(),
+              body,
+              source,
+              // "" means the author did not choose. Omitted entirely so the
+              // SERVER applies the ceiling -- never sent as a default.
+              ...(classification === "" ? {} : { classification }),
+            });
+          }}
+        >
+          <div>
+            <label htmlFor="doc-title" className="block text-xs font-medium text-slate-700">
+              Title
+            </label>
+            <input
+              id="doc-title"
+              required
+              maxLength={200}
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label htmlFor="doc-source" className="block text-xs font-medium text-slate-700">
+                Source
+              </label>
+              <select
+                id="doc-source"
+                value={source}
+                onChange={(event) => setSource(event.target.value)}
+                className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              >
+                {SOURCES.map((value) => (
+                  <option key={value} value={value}>
+                    {value.replace(/_/g, " ")}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="doc-classification"
+                className="block text-xs font-medium text-slate-700"
+              >
+                Classification
+              </label>
+              <select
+                id="doc-classification"
+                value={classification}
+                onChange={(event) => setClassification(event.target.value)}
+                className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              >
+                <option value="">Not decided — most restrictive</option>
+                {CLASSIFICATIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {value.replace(/_/g, " ")}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="doc-body" className="block text-xs font-medium text-slate-700">
+              Text
+            </label>
+            <textarea
+              id="doc-body"
+              required
+              rows={8}
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              placeholder="Paste the technical sections worth retrieving — not a whole standards library."
+              className="mt-1 w-full rounded border border-slate-300 px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              Blank lines separate passages. Text is stored and quoted verbatim —
+              a classification is a <strong>handling label</strong>, not an access
+              control, so anyone in your organization with access to this library
+              can read what you paste here.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={ingest.isPending || title.trim() === "" || body.trim() === ""}
+              className="rounded bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-1 disabled:opacity-50"
+            >
+              {ingest.isPending ? "Indexing…" : "Add to library"}
+            </button>
+            {ingest.result && (
+              <p role="status" className="text-sm text-emerald-700">
+                Added — {ingest.result.chunks} searchable passage
+                {ingest.result.chunks === 1 ? "" : "s"}.
+              </p>
+            )}
+          </div>
+
+          {ingest.error && (
+            <p role="alert" className="text-sm text-red-700">
+              {forbidden
+                ? "You do not have permission to add documents to the knowledge library (knowledge.ingest). A Lead, Director, QA or Administrator can."
+                : `The document was not added: ${ingest.error.message}`}
+            </p>
+          )}
+        </form>
+      )}
+    </section>
+  );
+}
+
 export default function KnowledgePage() {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
@@ -179,8 +397,9 @@ export default function KnowledgePage() {
   return (
     <LiveOnlyPage
       title="Knowledge library"
-      lede="Technical documents MSD can quote from. Every passage is filtered by your own project membership and classification before it is ranked, so two people searching the same words see different results."
+      lede="Technical documents MSD can quote from. Every passage is filtered by your own project membership before it is ranked, so two people searching the same words see different results. Classification is a handling label that travels with the text — it is not what decides who can read it."
       unavailable={unavailable}
+      notInvented="technical documents MSD would quote as evidence"
     >
       <section aria-labelledby="knowledge-search-heading">
         <h2
@@ -203,7 +422,21 @@ export default function KnowledgePage() {
             id="knowledge-q"
             type="search"
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              const next = event.target.value;
+              setDraft(next);
+              // 🔴 CLEARING THE BOX MUST CLEAR THE RESULTS.
+              //
+              // Only `draft` changed on input, so emptying the field (or the
+              // native ✕ on a `type="search"`) left the previous `query` in
+              // place and its passages on screen under an empty box -- results
+              // with no visible question, which read as the current answer.
+              // Codex found it. Submitting an empty query is still blocked;
+              // this only tears down what is no longer being asked.
+              if (next.trim().length === 0) {
+                setQuery("");
+              }
+            }}
             placeholder="e.g. cure schedule, substrate abrasion"
             className="flex-1 rounded border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
           />
@@ -321,6 +554,8 @@ export default function KnowledgePage() {
           </div>
         )}
       </section>
+
+      <AddDocument />
     </LiveOnlyPage>
   );
 }

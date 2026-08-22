@@ -416,7 +416,27 @@ def answer(
             tool_calls=({"tool": "find_records", "returned": len(records)},),
         )
 
-    if intent == "knowledge_search":
+    if intent == "knowledge_search" and "knowledge.view" in permissions:
+        # 🔴 §7: MSD MUST NOT BE A PERMISSION-BYPASS CHANNEL.
+        #
+        # `GET /api/knowledge/search` and `GET /api/knowledge/documents` both
+        # require `knowledge.view`. Without this condition a caller holding
+        # `msd.use` and NOT `knowledge.view` -- the Procurement Specialist, who
+        # is deliberately excluded in migration 043 -- could ask the assistant
+        # a knowledge-shaped question and be handed the passages the screen
+        # would have refused them. Codex found it.
+        #
+        # The RLS boundary was never the gap: the passages returned would all
+        # be inside the caller's organization and projects. The gap is that a
+        # PERMISSION governing a surface was enforced on the surface and not on
+        # the assistant that reads the same table, which is precisely the shape
+        # §7 names. The cost figures two branches down already do it correctly
+        # (`include_cost="formula.view_cost" in permissions`); this branch
+        # simply did not follow the precedent beside it.
+        #
+        # Falling through to the refusal, rather than raising: a person without
+        # the permission should learn that MSD cannot answer that, not that a
+        # knowledge library exists and they are not allowed to see it.
         passages = search_knowledge(session, organization_id=organization_id, question=question)
         if passages:
             return MsdAnswer(

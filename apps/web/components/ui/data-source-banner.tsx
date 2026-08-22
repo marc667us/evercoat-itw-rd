@@ -176,12 +176,29 @@ export function LiveOnlyPage({
   title,
   lede,
   unavailable,
+  /**
+   * What this screen refuses to invent, in its own words.
+   *
+   * 🔴 THIS WAS HARDCODED AND IT WAS WRONG THE MOMENT A THIRD SCREEN USED IT.
+   *
+   * The notice read "laboratory batches and physical test results are not
+   * invented" for EVERY caller, because the component was written when only
+   * Laboratory and Testing used it. The Knowledge Library then rendered a
+   * paragraph about physical test results on a page that has none — found by
+   * loading the page and reading it, not by any test, because every test
+   * asserted the notice was PRESENT and none asserted it was RELEVANT.
+   *
+   * Defaulted to the original sentence so Laboratory and Testing are
+   * unchanged, rather than editing three call sites to preserve one string.
+   */
+  notInvented = "laboratory batches and physical test results",
   children,
 }: {
   title: string;
   lede?: string;
   /** Why this build cannot serve the screen, or null when it can. */
   unavailable: string | null;
+  notInvented?: string;
   children: ReactNode;
 }): ReactNode {
   return (
@@ -203,9 +220,8 @@ export function LiveOnlyPage({
               No data source
             </span>{" "}
             — {unavailable}. This screen has{" "}
-            <strong>no demonstration equivalent</strong>: laboratory batches and
-            physical test results are not invented, so nothing is shown rather
-            than something synthetic.
+            <strong>no demonstration equivalent</strong>: {notInvented} are not
+            invented, so nothing is shown rather than something synthetic.
           </p>
         </div>
       )}

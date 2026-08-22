@@ -53,17 +53,48 @@
 -- ---------------------------------------------------------------------
 --
 -- Nine of the ten seeded roles get it, and that is deliberate: for the
--- knowledge library the permission is NOT the confidentiality boundary. RLS on
--- `knowledge.chunks` is -- every chunk carries its own organization, project
--- and classification, and a search is filtered by PostgreSQL before it ranks.
--- Two users with identical permissions see different passages, because they
--- are members of different projects.
+-- knowledge library the permission is not what separates one reader from
+-- another. RLS on `knowledge.chunks` does that -- every chunk carries its own
+-- organization and project, and a search is filtered by PostgreSQL before it
+-- ranks. Two users with identical permissions see different passages, because
+-- they are members of different projects.
 --
 -- So `knowledge.view` gates whether the SCREEN and the search endpoint exist
--- for you at all; it does not decide what they return. Pretending otherwise --
--- granting it narrowly and describing it as the control -- would be the
--- comment-claims-a-rule-that-does-not-exist defect this codebase keeps
--- finding, written into the authorization model itself.
+-- for you at all; it does not decide what they return.
+--
+-- ---------------------------------------------------------------------
+-- 🔴 CORRECTION: CLASSIFICATION IS **NOT** PART OF THAT BOUNDARY.
+-- ---------------------------------------------------------------------
+--
+-- The paragraph above used to say the chunk's RLS predicate covers
+-- "organization, project and classification". Codex challenged it and it was
+-- wrong: `documents_scope` and `chunks_scope` test organization and project
+-- membership and NEVER look at `classification`. Grep the migrations -- not
+-- one policy in this schema mentions it.
+--
+-- That is not an oversight to be patched here. Migration 039 §2 decides it
+-- explicitly and argues it at length:
+--
+--     CLASSIFICATION IS NOT AN ACCESS GROUP AND NOT A PERMISSION. It is a
+--     property of the DATA -- how sensitive this thing is. WHO may see it is
+--     a separate question answered by permissions and project membership.
+--     Collapsing the two is the §6 defect this project has already found six
+--     times, a role standing in for an authorization.
+--
+-- There is no per-user clearance level in this schema, so a classification in
+-- an RLS predicate would have nothing to compare against. Adding one would
+-- merge the two axes 039 deliberately kept apart.
+--
+-- ⚠️ SO THE HONEST STATEMENT OF WHAT A CLASSIFICATION DOES HERE: it is a
+-- HANDLING LABEL that travels with the text -- into the UI, into MSD's
+-- citations, and into ADR-029's outbound gate, which is where "at most PUBLIC"
+-- is actually enforced. It is NOT a read boundary, and an
+-- organization-wide (`project_id IS NULL`) DIRECTOR_CONTROLLED document IS
+-- readable by every `knowledge.view` holder in the organization.
+--
+-- The person choosing a classification at ingestion must understand that. It
+-- is why `knowledge.ingest` is narrow, and why the screen must not present
+-- the chip as though it were a lock.
 --
 -- `procurement_specialist` is the one exclusion. Its business is suppliers and
 -- lots; it holds no `formula.view` and no `project.view`, so a technical
@@ -137,11 +168,19 @@ SELECT core._grant('administrator',                'knowledge.view', 'knowledge.
 
 DROP FUNCTION core._grant(TEXT, TEXT[]);
 
-COMMIT;
-
-
 -- ---------------------------------------------------------------------
--- Prove both permissions have a holder, in the migration itself.
+-- Prove both permissions have a holder, INSIDE THE TRANSACTION.
+--
+-- 🔴 THIS BLOCK USED TO SIT AFTER `COMMIT;` AND COULD NOT DO ITS JOB.
+--
+-- The file carries its own BEGIN/COMMIT so it can be applied standalone with
+-- psql; `migrations_alembic/_sql.py` strips them on the Alembic path. After
+-- the COMMIT, the grants are already durable on the psql path, so a probe that
+-- raised would report a state it had just finished making permanent -- a
+-- guard that runs after the thing it guards. The Supervisor found it.
+--
+-- Above the COMMIT it aborts the transaction on both paths, which is the only
+-- version of this check worth having.
 --
 -- 016 exists because a permission was defined and granted to nobody, and
 -- nothing noticed for fourteen migrations. `tests/db/test_002_roles_permissions.py`
@@ -166,3 +205,5 @@ BEGIN
         END IF;
     END LOOP;
 END $probe$;
+
+COMMIT;

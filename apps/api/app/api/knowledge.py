@@ -34,6 +34,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.embedding import EmbeddingUnavailableError, build_embedder
@@ -73,6 +74,81 @@ class DocumentCreate(BaseModel):
     classification: str | None = None
 
 
+def _reject_unknown_classification(session: Session, classification: str | None) -> None:
+    """🔴 THE SECURITY-RELEVANT FIELD HAD NO VALIDATION AND `source` DID.
+
+    `source` got a careful 422 naming the alternatives. `classification` --
+    the field that decides how the text must be handled once MSD is quoting it
+    -- went straight to the insert, where `REFERENCES core.classifications
+    (code)` raised a ForeignKeyViolation that this route did not catch: a 500,
+    with a stack trace, for a typo. Both reviewers found it independently.
+
+    Asked of `core.classifications` rather than checked against a Python list,
+    because a list here would be a seventh copy of the lattice and 039 built
+    the table precisely so "the levels" live in one place.
+    """
+    if classification is None:
+        return
+    known = session.execute(
+        text("SELECT 1 FROM core.classifications WHERE code = :c"),
+        {"c": classification},
+    ).scalar_one_or_none()
+    if known is None:
+        codes = session.execute(
+            text("SELECT code FROM core.classifications ORDER BY rank")
+        ).scalars()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"classification must be one of {', '.join(codes)}",
+        )
+
+
+def _reject_unusable_project(session: Session, project_id: uuid.UUID | None) -> None:
+    """🔴 A DOCUMENT COULD BE FILED INTO A PROJECT THE INGESTOR DOES NOT BELONG TO.
+
+    `project_id` arrived from the body and was passed straight through. Three
+    bad outcomes followed, and the docstring described none of them:
+
+    * a nonexistent or other-organization UUID violated the composite FK and
+      became a 500 rather than a 422;
+    * `documents_scope` admits any row in a project whose confidentiality is
+      `normal`, so a `knowledge.ingest` holder could file a document into a
+      project they are not a member of -- and MSD would afterwards quote it to
+      that project's members as sourced evidence, with the ingestor's name on
+      it;
+    * for a restricted project the caller cannot see, the `INSERT ...
+      RETURNING id` is evaluated against the SELECT policy, so the author
+      ended up with an error or a row invisible to themselves.
+
+    `core.is_project_member()` is the single definition of membership, shared
+    with every RLS policy -- asked here rather than reimplemented, so the rule
+    cannot drift between this route and the policies. That is the same
+    reasoning `require_project_member` gives; it reads the PATH, and this
+    project id is in the body, so the check is made here instead.
+    """
+    if project_id is None:
+        return
+    # The session is RLS-scoped, so a project in another organization is simply
+    # not found -- the same answer as one that does not exist, deliberately: a
+    # 404 that distinguished them would confirm the id belongs to somebody.
+    exists = session.execute(
+        text("SELECT 1 FROM projects.projects WHERE id = :p"),
+        {"p": project_id},
+    ).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="no such project",
+        )
+    if not session.execute(
+        text("SELECT core.is_project_member(:p)"), {"p": project_id}
+    ).scalar_one():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=("you are not a member of that project, so you cannot file a document into it"),
+        )
+
+
 @router.get("/documents", tags=["knowledge"])
 def get_documents(
     principal: Principal = Depends(require_permission("knowledge.view")),
@@ -108,15 +184,18 @@ def post_document(
             detail=f"source must be one of {', '.join(SOURCES)}",
         )
 
-    try:
-        embedder = build_embedder()
-    except EmbeddingUnavailableError as exc:
-        # 503, not 500: nothing the caller sent is wrong, and a retry after the
-        # embedder is installed is the correct next action.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="no embedder is available, so nothing could be indexed",
-        ) from exc
+    _reject_unknown_classification(session, payload.classification)
+    _reject_unusable_project(session, payload.project_id)
+
+    # ⚠️ NO `except EmbeddingUnavailableError` HERE, AND THAT IS NOT AN
+    # OVERSIGHT. `build_embedder()` cannot raise it: the neural path's failure
+    # is caught internally and it falls back to `HashingEmbedding`, which is
+    # constructed unconditionally. The first draft wrapped this in a 503
+    # "no embedder is available" branch that could never fire -- a documented
+    # failure mode that does not exist, which is the same overclaiming this
+    # file's own tests exist to catch. If a future embedder can fail to build,
+    # the handler comes back WITH a test that reaches it.
+    embedder = build_embedder()
 
     try:
         result = ingest_document(
@@ -178,10 +257,8 @@ def get_search(
     `app/core/embedding.py`; the screen must not imply the library "understood"
     the question.
     """
-    try:
-        embedder = build_embedder()
-    except EmbeddingUnavailableError:
-        return []
+    # See `post_document`: `build_embedder()` does not raise, it falls back.
+    embedder = build_embedder()
 
     try:
         passages = retrieve(
