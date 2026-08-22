@@ -113,7 +113,17 @@ case "${PROFILE}" in
         # a redirect stub answering 200 proves the edge is up and nothing
         # about whether the application mounted.
         READY_PATH="/dashboard/"
-        MOUNT_PATHS=("/" "/dashboard/" "/admin/")
+        # /knowledge/ is here because the mount proof should name the screens
+        # a user is currently being told exist. It shipped 2026-08-22, and the
+        # deploy that carried it proved nothing about it: the deploy workflow
+        # probes /auth/callback/, which has existed for weeks, so a build that
+        # omitted the new route entirely would still have reported that the
+        # deployed site is serving the current build.
+        #
+        # Add a path here whenever a screen becomes reachable in the sidebar.
+        # A route that 404s behind a link the application renders is the exact
+        # failure this list exists to catch.
+        MOUNT_PATHS=("/" "/dashboard/" "/admin/" "/knowledge/")
         RUN_API_SUITE="no"
         ;;
     api)
