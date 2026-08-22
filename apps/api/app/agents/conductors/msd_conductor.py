@@ -149,7 +149,15 @@ def classify(question: str) -> Intent:
         for word in (
             "sds",
             "safety",
+            # 🔴 "safe" as well as "safety". Measured 2026-08-22 against the
+            # running application: *"is RM-101 safe to use?"* -- the most
+            # natural way a chemist asks this -- classified as `unsupported`
+            # and got the fallback, while "safety of RM-101" worked. A
+            # substring list that misses the commonest phrasing of its own
+            # question is a capability that exists and cannot be reached.
+            "safe",
             "hazard",
+            "hazardous",
             "restricted",
             "coshh",
             "contain",
@@ -458,6 +466,32 @@ def _subject_of(question: str) -> str:
         "current",
         "sds",
         "safety",
+        # 🔴 THE SAFETY VOCABULARY MUST MATCH THE CLASSIFIER'S.
+        #
+        # Widening `classify()` to accept "safe" and "hazardous" without
+        # widening this set produced a HALF-WORKING PATH: *"is RM-ADD-01 safe
+        # to use?"* routed correctly to material_safety and then searched for
+        # `%rm-add-01 safe to use%`, matching nothing -- an answer of "I found
+        # no materials" about a material that plainly exists, which is worse
+        # than the "I cannot answer that yet" it replaced, because it sounds
+        # like a finding rather than a limitation.
+        #
+        # Measured against the running application. The two word lists are one
+        # decision expressed twice, so `test_msd_safety_vocabulary_agrees`
+        # asserts the classifier's safety words are all stripped here.
+        "safe",
+        "hazardous",
+        # Pre-existing, found the same way: "which formulas contain RM-ADD-01?"
+        # searched for `%contain rm-add-01%`. The conductor tests the QUESTION
+        # for these words to pick the usage branch, so stripping them from the
+        # SUBJECT is safe and is what makes the lookup find the material.
+        "contain",
+        "contains",
+        "containing",
+        "use",
+        "used",
+        "using",
+        "to",
         "data",
         "sheet",
         "hazard",
