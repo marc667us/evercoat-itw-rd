@@ -269,6 +269,22 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - working-directory: apps/web
         run: npm ci || npm install
+      - name: Design tokens - computed contrast (WCAG 2.2)
+        # Runs BEFORE lint so a contrast regression is the first thing
+        # reported. It PARSES packages/design-tokens/src/tokens.css rather
+        # than holding its own copy of the palette: a verifier with its own
+        # copy is a second source of truth AND a gate that cannot fail, since
+        # editing the tokens would leave it checking the old values and still
+        # reporting green. Proved by falsification on 2026-08-22 -- reverting
+        # PASS green to #16a34a (3.30:1), using the shadcn default border on a
+        # control (1.48:1, the exact ratio of the sidebar defect logged on
+        # 2026-08-20), and renaming a token each make it exit 1.
+        #
+        # This exists because axe cannot be relied on here: it reported ZERO
+        # violations over a 1.48:1 sidebar, because aria-disabled silences its
+        # own contrast rule.
+        run: python3 packages/design-tokens/verify_contrast.py
+
       - working-directory: apps/web
         run: npm run lint
       - working-directory: apps/web

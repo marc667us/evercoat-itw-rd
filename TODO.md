@@ -68,6 +68,36 @@ wiring.
 
 | **I21** | **A `technical_thread` channel may carry `project_id IS NULL`, and is then visible organization-wide.** | `022`'s `channels_project_channel_has_a_project` CHECK constrains only `channel_type = 'project'`, and `POST /api/messaging/channels` accepts `technical_thread` with a null project. `thread_for_record` is find-or-create keyed on `(entity_type, entity_id)`, so somebody holding a restricted record's UUID could pre-create an org-visible thread for it and have later "discuss this" clicks land there. Pre-existing, not touched by the 2026-08-20 audit, and the precondition — knowing a restricted record's UUID without being able to read it — is what keeps it below the fix-now bar. The fix is a CHECK constraint requiring `project_id` on `technical_thread` too. Raised as N1 by the Supervisor. |
 
+### 🔴 P1/P2 — raised 2026-08-22 by the ITW Evercoat 23 extension and its review
+
+Full detail in `IMPLEMENTATION_PLAN_EXTENSION.md` (v2) and
+`docs/REVIEW_EXTENSION_ADJUDICATION.md`. Codex FAILED v1 with 30 findings
+(3 BLOCKER); the Supervisor added 11 more with **one** overlap between them.
+
+| # | Issue | P |
+|---|---|---|
+| 🔴 **I41** | **The SDS safety gate counts ROWS, not files.** `POST /api/materials/{id}/documents` writes `material_documents` with a `storage_key`; **nothing writes the bytes** (`boto3` declared, never imported; no port, no adapter). So any holder of `material.edit` satisfies the control the golden scenario exists to demonstrate with `storage_key = "sds/anything.pdf"`. ⚠️ `seed.py:412` and `test_golden_scenario.py:236` both insert such rows, so tightening the gate alone makes every seeded formula permanently unsubmittable — a backfill and a byte-uploading seed ship with the fix | P1 |
+| 🔴 **I42** | **The AI Model Router must not exist before the evidence-classification gate.** Building it first creates the bypass, then asks for a guard | P1 |
+| **I43** | **`formula.export` does not exist** — export is not separable from read, not logged, and cannot require a second approval | P2 |
+| **I44** | **Audit records no IP and no session id.** Cheap now, unrecoverable retrospectively | P2 |
+| 🔴 **I45** | **Neon compatibility of FORCE RLS, five roles and `SET LOCAL` over the pooler is unverified.** ⚠️ And `tests/db/conftest.py` **skips** on any connection error, so "run the suite against Neon" can report 0 failed while testing nothing | P1 |
+| **I46** | **No storage-quota monitor**, so Neon's 0.5 GB ceiling has no early warning | P2 |
+| **I47** | **`RESUME_HERE.md` and I13 below both say no deployment path exists.** They become wrong the moment ADR-028 lands | P2 |
+| 🔴 **I48** | **Two data-classification taxonomies** in the source (§31 has `PUBLIC` and `MASTER FORMULA`; §34 has `FORMULA RESTRICTED` and `DIRECTOR CONTROLLED`). The outbound AI gate is defined in terms of `PUBLIC`, which only one contains. One lattice, deny-by-default, unset = ceiling | P1 |
+| 🔴 **I49** | **No retention or deletion anywhere.** Deleting a document leaves the content in embeddings, caches, graph edges and prior object versions. v3's F33 already promised purge-on-revocation; nothing implements it | P1 |
+| **I50** | **Backup destination unnamed** — restic on the same tenancy with the same credentials is not a backup against account compromise or Oracle reclaiming capacity | P2 |
+| 🔴 **I51** | **I18's proposed fix could not work.** `CF-Connecting-IP` restricted to Cloudflare IP ranges **never matches behind `cloudflared`** (the origin sees the local daemon), and Caddy is a second hop. Re-designed: Caddy as sole header authority, limits keyed on the subject claim where authenticated | P1 |
+| **I52** | **Oracle capacity is 2 OCPU/12 GB in the source and 4 cores/24 GB in three repo documents**, and the number decides the Penpot exclusion and the local LLM's RAM | P2 |
+| **I53** | **Oracle ARM caveats**: regional capacity is frequently unavailable, and the API image needs an ARM or multi-arch build. An `amd64`-only image fails after the host slice was signed off green | P2 |
+| **I54** | **~14 of the source's 24 research tables have no owning slice** — needs a table→slice ownership matrix or an explicit rejection per table | P2 |
+
+▶ **Shipped 2026-08-22 toward E5:** `packages/design-tokens` — one token
+source, **31 computed** WCAG checks wired into CI's web job, **proved by
+falsification** three ways. The accent is blue on purpose: green/amber/red are
+reserved for derived disposition, so no chrome may use a status hue.
+
+---
+
 ### 🟡 P3 — worth doing, not blocking
 
 | # | Issue | Detail |

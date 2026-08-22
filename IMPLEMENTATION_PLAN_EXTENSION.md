@@ -1,6 +1,15 @@
 # IMPLEMENTATION_PLAN_EXTENSION.md — EvercoatITWRD APP
 
-**Extension v1, 2026-08-22.** Additive to `IMPLEMENTATION_PLAN.md` (v3).
+**Extension v2, 2026-08-22 — post review.** Additive to
+`IMPLEMENTATION_PLAN.md` (v3).
+
+> **v1 → Codex: FAIL, 30 findings, 3 BLOCKERs → Supervisor: 11 further
+> findings, and the two reviewers overlapped on almost nothing — the ninth
+> consecutive session in which neither alone sufficed.** v2 is the result.
+> Three of my own measurements were **wrong** and are corrected below, one of
+> them (§2, the upload route) in a direction that makes I41 worse rather than
+> smaller. Full adjudication in `docs/REVIEW_EXTENSION_ADJUDICATION.md`.
+
 Nothing in v3 is deleted by this document. Where the two disagree, the
 disagreement is named in §3 and resolved there, never silently.
 
@@ -62,9 +71,10 @@ live local PostgreSQL.
 | Extensions installed | `plpgsql`, `pgcrypto`, `citext` — **all three are on Neon's allow-list** |
 | Event triggers in use | **0** — so the append-only audit is trigger + `REVOKE` based, not DDL-event based. **This is the single reason the Neon move is survivable** (see Y3) |
 | Database roles | All five exist: `evercoat_owner` `evercoat_app` `evercoat_worker` `evercoat_report` `evercoat_breakglass` |
-| Rate limiting | **Zero implementation.** No middleware, no dependency, no counter. Confirms I18 |
-| Object storage client | **None.** Garage is in `docker-compose.yml` and in `config.py` (`garage_endpoint`, `garage_bucket`, keys) and has **no client, no upload route, no `UploadFile` anywhere in `app/api/`** |
-| Upload security | **None.** No ClamAV, no quarantine, no MIME-magic validation, no filename sanitisation |
+| Rate limiting | **Valkey capability exists (`redis>=5.2` declared and configured); request-rate ENFORCEMENT does not.** No middleware, no dependency, no counter. Confirms I18. *(Phrased this way after Codex F19 so nobody provisions another cache instead of writing the policy.)* |
+| Object storage client | **`boto3>=1.35` is DECLARED in `pyproject.toml` — commented *"S3-compatible client for Garage, behind a port"* — and is never imported anywhere in `app/`.** Garage is in `docker-compose.yml` and `config.py` (`garage_endpoint`, `garage_bucket`, keys). So: a client library, a container and four settings, with **no port, no adapter, no byte-write path, no retrieval path and no `UploadFile` anywhere in `app/api/`**. *(Corrected after Codex F17 — my first phrasing said "no client", which is false and makes the gap sound smaller than it is: the dependency has sat unused since Slice 1.)* |
+| Upload route | 🔴 **CORRECTED — one EXISTS, and I said it did not.** `POST /api/materials/{material_id}/documents` → `register_document` (`app/api/materials.py:357`), gated on `material.edit` **or** `supplier.manage`. Its own docstring calls it *"THE ROUTE WITHOUT WHICH NO FORMULA COULD EVER BE SUBMITTED"* — it was added precisely because the SDS gate had no writer. **It registers metadata; it accepts no bytes.** *(Raised by the Supervisor. This correction makes I41 worse: the defect is reachable by a real authenticated user, not theoretical.)* |
+| Upload security | **None.** No ClamAV, no quarantine, no MIME-magic validation, no filename sanitisation, no byte transfer of any kind |
 | Storybook | **Absent.** Not in `apps/web/package.json`, no `.storybook/` |
 | Research Center | **Absent.** Migrations stop at `031`; no research schema, no `documents` domain |
 | Web screens | **15** page routes. Research Center needs ~18 more |
@@ -73,8 +83,10 @@ live local PostgreSQL.
 ### 🔴 The measurement that is a defect, not a gap
 
 `materials.material_documents` **exists** (migration 015) with `storage_key`,
-`content_type`, `byte_size`, `checksum_sha256`. Nothing writes bytes to that
-key, because there is no object-store client and no upload route.
+`content_type`, `byte_size`, `checksum_sha256`. A route writes the **row** —
+`POST /api/materials/{id}/documents`, permission-gated, shipped deliberately
+because the SDS gate previously had no writer at all. **Nothing writes the
+bytes**, because `boto3` is declared and never imported and no adapter exists.
 
 And `formulations/service.py:1265` and `msd_conductor.py:517` both gate on
 `requires_sds AND sds_count == 0`. **They count rows.**
@@ -82,10 +94,19 @@ And `formulations/service.py:1265` and `msd_conductor.py:517` both gate on
 So a `material_documents` row with a `storage_key` pointing at nothing
 satisfies the SDS safety control — the control the golden scenario exists to
 demonstrate — while no SDS was ever stored, scanned, or read by anybody. The
-row *is* the safety evidence. This is the same shape as every "which
-production path writes it?" finding this project has logged, asked of a
-**file** rather than a role or a status, and it is exactly the surface the new
-security file's upload pipeline lands on. Raised as **I41**.
+row *is* the safety evidence.
+
+🔴 **And it is reachable, not theoretical.** Any user holding `material.edit`
+can register `storage_key = "sds/anything.pdf"` and unblock submission of a
+formula whose SDS does not exist. The previous question was *"which production
+path writes it?"*; the question this raises is one level further in — **"which
+production path writes the thing the row is a POINTER to?"** Nothing does.
+
+⚠️ **`scripts/seed.py:412` and `test_golden_scenario.py:236` both insert
+exactly such rows**, and the seed carries a comment saying it does so to avoid
+reproducing the submission deadlock. So the demonstration data and the
+acceptance scenario both **canonise the broken evidence model**. E3 cannot
+simply tighten the gate — see E3's revised gate. Raised as **I41**.
 
 ---
 
@@ -216,42 +237,75 @@ because §10 makes HF the **preferred** path.
   *"Hugging Face should not be your production compute foundation."*
 - The AI Model Router **is still built**, because a router with one
   registered runtime today is how a second one gets added safely later. It
-  ships with exactly one runtime (Oracle-local) and a **hard policy gate**: a
-  runtime declared `external: true` may not receive a prompt carrying any
-  evidence item classified above `INTERNAL`. The gate is a test, not a
-  comment.
+  ships with exactly one runtime (Oracle-local) and a **hard policy gate**.
+
+  🔴 **REVISED after Codex review, and the correction matters.** My first
+  threshold was *"nothing above `INTERNAL`"*. **That was wrong, and it
+  leaked.** The source forbids sending **internal project names** and
+  **confidential test data** externally (`revised msd §35`) — and both of
+  those *are* `INTERNAL`. A threshold that permits `INTERNAL` permits exactly
+  what the sentence prohibits.
+
+  The gate is therefore: an external runtime receives **`PUBLIC` only**, plus
+  an independently allow-listed **sanitised query object** — a typed outbound
+  structure assembled from permitted fields, never an internal prompt with
+  redactions applied. **A missing or unknown classification is DENY.**
+  Construction, not redaction: redaction is a blocklist, and a blocklist
+  cannot enumerate every way a ratio, alias, trade name, filename, citation or
+  free-text fragment carries the same fact.
 - If an external runtime is ever wanted, it is a **separate ADR** with the
   sanitisation boundary of §35 built and tested first.
 
 Recorded as **ADR-029**. Raised as **I42** (build the classification gate
 before any router exists to bypass it).
 
-### Y6 — Rate limiting: I18's blocker is answered by these files
+### Y6 — 🔴 Rate limiting: I18 is NOT unblocked, and my first answer was wrong
 
-**I18 has been blocked, correctly, on one question that was never a code
-question:** what does the limiter key on? Behind a proxy,
-`request.client.host` is the proxy for every caller (one bucket for the whole
-internet, fails closed on the first burst); trusting `X-Forwarded-For` lets an
-attacker mint unlimited keys and defeats the limit entirely.
+**v1 claimed I18's blocker was answered.** It is not, and the reason is worth
+recording because it is a good example of a fix that reads correct and cannot
+work.
 
-`itw evercoat security.txt` answers it by fixing the topology:
+I18 has been blocked on one question that was never a code question: **what
+does the limiter key on?** Behind a proxy, `request.client.host` is the proxy
+for every caller (one bucket for the whole internet, fails closed on the first
+burst); trusting `X-Forwarded-For` lets an attacker mint unlimited keys.
 
-```
-Internet → Cloudflare (proxied, DNSSEC) → Cloudflare Tunnel → Caddy → FastAPI
-```
+v1's answer was: put Cloudflare in front, then key on `CF-Connecting-IP`,
+accepted **only from Cloudflare's published IP ranges**.
 
-§2 requires the origin to be unreachable except through Cloudflare — *"Use
-Cloudflare Tunnel or firewall rules so users cannot bypass Cloudflare"* — and
-§13 requires trusted-proxy configuration rather than blanket header trust.
+🔴 **That rule can never match in the topology v1 itself specified.** The chain
+is `Cloudflare → Cloudflare Tunnel → Caddy → FastAPI`. With `cloudflared`, the
+origin never sees a Cloudflare **edge** address at all — the connection is
+opened outbound by the local tunnel daemon, so the peer address is loopback or
+the container network. An IP allow-list against Cloudflare's ranges matches
+**nothing**, and "exactly one trusted hop" was also wrong: Caddy is a second
+hop, which is why `apps/api/tests/test_reverse_proxy_contract.py` already
+exists. The limiter would have shipped keyed on a header with a guard that is
+inert — **which is precisely I18's own finding, that a limiter keyed wrongly is
+worse than none.** *(Raised by the Supervisor.)*
 
-**With exactly one trusted hop, the key is `CF-Connecting-IP`, accepted only
-from Cloudflare's published IP ranges and rejected otherwise.** That is a
-decidable rule, so **I18 is unblocked** and moves into E4.
+**Revised resolution — the question narrows, it does not disappear.** The
+trust decision moves from *"is the peer a Cloudflare IP"* to *"is this request
+provably ours":*
 
-⚠️ It is unblocked *conditionally*: it is only true once the origin genuinely
-cannot be reached directly. **Ship the limiter and the origin lock-down in the
-same slice**, or the limiter is keyed on a header anyone can set. A limiter
-keyed wrongly is worse than none — that was I18's own finding and it survives.
+1. **Cloudflare Tunnel is the only ingress**, and the origin has no public
+   application port at all (Y13's default-deny). Then the peer address proves
+   nothing and is not asked to.
+2. **Caddy is the single header authority.** It strips every inbound
+   `X-Forwarded-*` and `CF-*` header and re-sets exactly one client-identity
+   header from Cloudflare's own, so FastAPI trusts a header **Caddy** wrote,
+   not one the internet wrote. `test_reverse_proxy_contract.py` is the file
+   that must assert this.
+3. **Prefer identity over address wherever there is one.** Authenticated
+   limits key on the subject claim, which cannot be forged past token
+   verification and is what §20's per-user quotas (MSD 20/min, search 60/min,
+   upload 10/min) are actually stated in. **Only anonymous endpoints need an
+   address at all** — and this API has almost none.
+4. **Cloudflare's own edge rate limit** stays as the outer layer, where the
+   real client address genuinely is known.
+
+So I18 moves into E4 **with a decided design**, but it is decided differently
+from v1 and the difference is not cosmetic. Raised as **I51**.
 
 ### Y7 — Object storage: the port survives, the adapter changes
 
@@ -323,6 +377,160 @@ Raised as **I43**.
 
 ---
 
+### Y11 — 🔴 There are TWO classification taxonomies and they are not the same
+
+**Missed in v1 of this extension; raised by Codex.** The folder defines data
+classification twice, in two files, with two vocabularies:
+
+| Source | Levels |
+|---|---|
+| `itw evercoat security.txt` §31 | `PUBLIC` · `INTERNAL` · `CONFIDENTIAL` · `R&D RESTRICTED` · **`MASTER FORMULA`** |
+| `revised msd and reseach.txt` §34 | `INTERNAL` · `CONFIDENTIAL` · `R&D RESTRICTED` · **`FORMULA RESTRICTED`** · **`DIRECTOR CONTROLLED`** |
+
+They are **not interchangeable**. One has `PUBLIC` and the other does not —
+which matters enormously, because Y5's outbound gate is *defined* in terms of
+`PUBLIC`. One ends at `MASTER FORMULA`, the other at `DIRECTOR CONTROLLED`,
+and nothing states whether those are one level under two names.
+
+**Resolution — one canonical lattice, totally ordered, deny-by-default:**
+
+```
+PUBLIC < INTERNAL < CONFIDENTIAL < R&D_RESTRICTED < FORMULA_RESTRICTED < DIRECTOR_CONTROLLED
+```
+
+- `MASTER FORMULA` maps to **`FORMULA_RESTRICTED`** — §31 describes it as the
+  released master recipe, which is what the research file's
+  `FORMULA_RESTRICTED` names.
+- `DIRECTOR_CONTROLLED` is the ceiling and has no counterpart in the security
+  file. It is additive, not conflicting.
+- **`PUBLIC` exists**, and is the *only* level Y5's outbound gate accepts.
+- **Classification is not an access group and not a permission.** It is a
+  property of the DATA. *Who* may see a level is a separate question answered
+  by permissions and project membership. Collapsing the two is the §6 defect
+  this project has already found six times — a role standing in for an
+  authorization.
+- **An unset classification is `DIRECTOR_CONTROLLED`, not `INTERNAL`.** Fail
+  closed. A NULL defaulting to the middle of a lattice is a disclosure waiting
+  for the first row somebody forgets to label.
+
+Raised as **I48**.
+
+### Y12 — 🔴 Retention and deletion are absent from the entire extension
+
+**Missed in v1; raised by Codex.** `revised msd §34` requires every research
+object to carry a **retention policy**. The extension creates research notes,
+findings, evidence, documents, embeddings, caches, graph edges and externally
+ingested material — and specifies **no retention, no legal hold, no deletion
+propagation, no purge**.
+
+This is not a tidiness gap. It is dangerous precisely *because* of two
+decisions already taken:
+
+- the audit trail is **append-only** by design, and
+- embeddings, caches and graph edges are **derived** copies of source content.
+
+So "delete the document" does not delete the content. It survives in the
+vector index, the rerank cache, the conversation memory, the knowledge-graph
+edges and the object store's earlier versions. v3 already committed to
+*"derived artifacts are purged when access is revoked"* (F33) — **that promise
+has no implementation and no owning slice.**
+
+**Resolution: retention is acceptance criteria on E6 and E7, not a later
+slice.** Retrofitting deletion onto a populated vector index is the same shape
+of rework as retrofitting authorization onto one. Each research table declares
+a retention class; deletion and reclassification **propagate** to embeddings,
+caches, graph edges and object versions; audit is preserved deliberately and
+separately; and the gate is that deleted or reclassified content is **no
+longer retrievable by any route**, proved the way E7's boundary is proved.
+
+Raised as **I49**.
+
+### Y13 — The backup destination is unnamed, and that is most of the control
+
+**Raised by Codex.** E2 said *"`restic` encrypted backups"*. `itw evercoat
+security.txt` §46 says a backup holding every formula *"can be more valuable to
+an attacker than the live application"* and requires it stored **separately**.
+
+A restic repository on the same Oracle tenancy, reachable with the same
+credentials, is not a backup against the two failure modes that actually
+threaten this application: **account compromise**, and **Oracle reclaiming
+Always Free capacity** — which pass 2 §24 explicitly warns can happen.
+
+**Resolution: name the destination, the credential boundary and the key
+custody, or the control does not exist.** Credentials distinct from the
+production host, an encryption key not stored on it, and a **failure-domain
+test**: restore with the Oracle tenancy treated as unavailable. The zero-cost
+candidate is owned disks — which is pass 1's own recommendation of at least
+two physical copies — not a second paid tier. Raised as **I50**.
+
+### Y14 — Navigation ownership is assigned to no slice
+
+**Raised by Codex.** `ui ux zerocost.txt` requires MSD **permanently in the
+global header**; `revised msd §40` defines an 11-item Research Center submenu.
+The extension named components and a visual language, and assigned the
+**navigation structure itself** to nothing.
+
+**Resolution: the shell belongs to E5, the Research Center submenu to E6** —
+each with keyboard operation, responsive collapse, permission-based
+visibility, deep links and preserved project context. A submenu rendered for a
+user who cannot use it is the §6 defect again, in the navigation.
+
+### Y15 — "Temporal owns it in design" is not a durability contract
+
+**Raised by Codex.** Y8 deferred the Temporal runtime and said the four named
+workflows stay Temporal-owned *in design*. That is not implementable: an
+engineer can satisfy "PostgreSQL workflow tables plus a worker" with
+APScheduler, Celery, or a polling loop, and those differ in retries,
+idempotency, leases, cancellation and recovery.
+
+**Resolution: `WorkflowPort` specifies the durability contract before document
+ingestion, embedding generation, alerts or Deep Research depend on it** — at
+minimum at-least-once execution, idempotency keys, visible retry state, lease
+ownership, cancellation, and recovery after worker death. That specification
+is a **prerequisite of E7**, because ingestion is the first long-running job
+whose partial failure is invisible.
+
+---
+
+### Y16 — 🔴 Two different Oracle capacities, and the number is load-bearing
+
+**Raised by the Supervisor.** The source folder says Oracle Always Free gives
+**2 OCPU / 12 GB**. Three documents already in this repository — `DECISIONS.md`
+(ADR-027), `RESUME_HERE.md` and `TODO.md` I13 — record **4 ARM cores / 24 GB**
+from the measurement taken on 2026-08-21.
+
+v1 took 12 GB from the source and never noticed the repo said otherwise. That
+is the *"two copies of a fact in two files disagreeing"* defect this document
+names twice in its own text, committed inside the document that names it.
+
+**And the number decides two conclusions:**
+
+- **Y9** excluded self-hosted Penpot because ~2 GB will not fit.
+- **R2** concluded *"12 GB is genuinely tight"* and that if Neon is refused,
+  PostgreSQL's 1–2 GB must come out of the local LLM.
+
+**At 24 GB both conclusions change.**
+
+**Resolution: neither number is adopted until E1 measures it, and the plan is
+written so that either is survivable.** The reconciling fact is that Oracle's
+A1 Always Free *allowance* is 4 OCPU / 24 GB **for the tenancy**, divisible
+across up to four instances — so "2 OCPU / 12 GB" is a plausible description
+of one conservatively-sized VM, and "4 cores / 24 GB" of the whole allowance.
+They may not be in conflict at all. **But that is a reading, not a
+measurement**, and the RAM budget is not a place to guess.
+
+**E1 reports the actual shape provisioned**, and the RAM budget in R2 is
+recomputed from it before E2 places anything on the host. Until then this plan
+**assumes 12 GB** — the pessimistic figure — because a plan that fits the
+small box also fits the large one. Raised as **I52**.
+
+⚠️ E1 must also carry the two caveats ADR-027 measured and v1 dropped:
+**Oracle ARM capacity is frequently unavailable by region**, and the API image
+**needs an ARM or multi-architecture build**. An `amd64`-only image fails at
+E2, after E1 was signed off green. Raised as **I53**.
+
+---
+
 ## 4. Security: what the 53 sections ask for, against what is built
 
 Not a restatement. Only the delta, measured.
@@ -330,10 +538,23 @@ Not a restatement. Only the delta, measured.
 ### Already satisfied by v3 (no work)
 
 §16 explicit authorization chain · §17 IDOR/BOLA resource-level checks · §18
-Pydantic validation · §19 parameterized SQL · §26 separate DB users · §27 RLS
-· §30 SOPS+age · §33 audit trail · §35 MSD never exceeds the caller · §37 tool
-allowlist (5 tool modules, no generic SQL tool) · §38 MSD proposes, humans act
-· §41 Semgrep/Gitleaks/Trivy in CI.
+Pydantic validation · §19 parameterized SQL · §26 separate DB users · §30
+SOPS+age · §33 audit trail (**event capture only** — see the gap table) · §37
+tool allowlist (5 tool modules, no generic SQL tool) · §38 MSD proposes,
+humans act · §41 Semgrep/Gitleaks/Trivy in CI.
+
+🔴 **Two entries were removed from this list after review, because v1 listed
+each as satisfied here and as an open gap nine lines later.** A reader scanning
+a "no work" list skips exactly the item the rest of the document calls
+critical:
+
+- **§27 RLS is NOT satisfied.** Policies exist, but `core.rls_permissive()` is
+  `SELECT TRUE` (`migrations/001_core_tenancy.sql:184`), so every policy opens
+  when the GUC is absent. RLS is not an independent barrier today. **I19.**
+- **§35 is HALF satisfied.** *"MSD never exceeds the caller"* holds. The other
+  half of §35 — **outbound sanitisation**, never sending proprietary data to an
+  external service — is an **unbuilt security control**, and Y5 and §5 R-C both
+  depend on it. Ticking §35 whole would close it by checklist.
 
 ### Partially satisfied — named gaps
 
@@ -363,10 +584,22 @@ allowlist (5 tool modules, no generic SQL tool) · §38 MSD proposes, humans act
 ## 5. Research Center + MSD — the largest addition, staged honestly
 
 `revised msd and reseach.txt` is ~25 tables, 18 screens, 10 agents and a
-knowledge graph. v3's whole MVP-1 was estimated at 700–1,050 engineering
-hours. **This is not a slice. On the same basis it is 250–400 hours**, and
-saying otherwise now would repeat exactly the fidelity failure v3's §K
-recorded and corrected.
+knowledge graph. v3's whole MVP-1 was estimated at 700–1,050 engineering hours.
+
+🔴 **v1 put this at 250–400 hours. Codex refuted that and is right.** The
+addition has **nearly half the table count of the entire existing database**,
+**more new screens than the existing UI has**, two new trust boundaries,
+document ingestion, vector retrieval, a knowledge graph, ten agents, patent and
+literature workflows, and new authorization semantics. It is comparable to
+MVP-1, not one third of it — and 250–400 also omitted deployment validation,
+data migration, evaluation datasets, retrieval-quality work, operational
+tooling and security testing.
+
+**Revised planning range: 800–1,400 hours**, estimated per tranche rather than
+in one number, and treated as a range to be replaced by measurement — spikes on
+ingestion, retrieval quality, authorization and graph maintenance — not as a
+commitment. Understating this would have repeated precisely the fidelity
+failure v3's §K recorded and corrected, one document later.
 
 It is therefore staged in three tranches, each independently useful and
 independently shippable. **The ordering is not negotiable, and the reason is
@@ -479,20 +712,30 @@ Penpot itself does not (Y9). These do:
 Numbered **E1–E12** so nothing collides with v3's 1–20. Each has a gate that
 can fail.
 
+> 🔴 **Every gate below was rewritten after review.** Codex found that
+> **eleven of twelve gates could pass against broken work** — E1's could pass
+> on nothing but skips, and could not fail at all because both outcomes were
+> declared success. That is this project's most-repeated defect (a gate that
+> cannot fail, shipped three times, twice in one day) found in the document
+> that names it. The rule applied throughout: **a gate states an expected
+> result and a way to be wrong.**
+
 | # | Slice | Depends on | Gate |
 |---|---|---|---|
-| **E1** | **Neon + Oracle feasibility, measured** — throwaway Neon project, `alembic upgrade head`, run `tests/db/` **against Neon**; provision the Oracle A1 VM; exercise a Neon→Oracle `pg_dump`/restore | D1 | **passed/failed/skipped against Neon, as three numbers.** Red ⇒ Neon refused, PostgreSQL on Oracle (Y1 pass 1), and that is a **success** for this slice |
-| **E2** | **Oracle production host** — Ubuntu, Docker Compose, Caddy, `ufw`, SSH keys, `fail2ban`, container hardening, `restic` encrypted backups, Uptime Kuma, **quota monitor** (Y4) with GREEN/YELLOW/RED thresholds | E1 | A restore drill succeeds from an encrypted backup. The quota monitor shows real numbers, not placeholders |
-| **E3** | **`ObjectStoragePort` + the document pipeline** — port with Garage and Oracle OS adapters; upload route; size → extension → MIME magic → UUID filename → **ClamAV** → quarantine → approved; formula IP classification + `formula.export` + export audit | E2 | **I41 closed:** the SDS gate counts documents whose bytes exist and passed a scan. Proved by falsification — a row with a dangling `storage_key` must **fail** the gate |
-| **E4** | **The edge and the API's own limits** — Cloudflare DNSSEC/proxy/WAF/Bot Fight/Turnstile/Tunnel; origin unreachable directly; `CF-Connecting-IP` trusted-proxy config; **Valkey rate limiting**; CSP + security headers; MFA for the four roles | E2, D3 | **I18 closed.** Direct-to-origin is refused (measured, not configured). A forged `CF-Connecting-IP` from a non-Cloudflare source does **not** mint a new bucket |
-| **E5** | **Design system + Storybook** — `packages/design-tokens`, 8 named stories, axe per story, traffic-light and MSD-provenance components | — | Every existing screen consumes tokens. Zero axe violations at component level, and **a deliberately broken contrast is caught** |
-| **E6** | **Research Center R-A** — 7 tables, Findings register, Notebook, Materials/Test/Failure Intelligence, evidence grading, confidence | v3 Slices 5–7 | A real cross-project question answered from seeded records, every claim sourced, **with no LLM running** |
-| **E7** | **Research Center R-B** — pgvector, ingestion, embeddings, reranker, knowledge graph, hybrid retrieval, prompt-injection boundary | E3, E6 | `msd_boundary.spec.ts` green **and proved by falsification** |
-| **E8** | **MSD multi-agent** — Research / Formulation / Materials / Testing / DOE / Failure / Modeling / Evidence agents under the existing §0.2 orchestrator→conductor topology; AI Model Router with **one** runtime and the Y5 classification gate | E7 | An external-flagged runtime **cannot** receive above-`INTERNAL` evidence. Test, not comment |
-| **E9** | **Admin Security Dashboard** — anomaly detection, `SECURITY_*` events, failed logins, blocked IPs, rate-limit events, formula exports, role changes | E4 | A simulated mass-export raises `SECURITY_HIGH` and appears on the dashboard |
-| **E10** | **Research Center R-C** — external gateway, patents, literature, standards, benchmarks, Deep Research, Research Inbox, analytics | E3, E8 | A sanitised external query is proved to carry **no** proprietary identifier — falsification test on the sanitiser |
-| **E11** | **Zero-cost governance** — `infrastructure/ZERO_COST_POLICY.md`, `FREE_TIER_LIMITS.md`, the ZERO-COST GUARD, CI check that refuses a non-free resource | E2 | CI **fails** on a deliberately introduced paid-tier resource |
-| **E12** | **Live suite on the deployed Oracle instance** | all | **passed / failed / skipped as three numbers** against the deployed URL |
+| **E1a** | **Neon feasibility, measured** — throwaway Neon project, `alembic upgrade head`, run `tests/db/` against **both** the direct and the pooled endpoint | D1 | 🔴 **`failed == 0` AND `skipped == 0` AND `passed == the expected manifest count`.** `tests/db/conftest.py` calls `pytest.skip()` on *any* connection error, so a wrong URL, a dead pooler or an unusable role yields "0 failed" and a pile of skips — v1's gate accepted that as success. Plus a preflight asserting: server is Neon, `current_user` is each intended login, all five role memberships exist, `rolbypassrls` and `rolsuper` are false on every app login, objects are owned by `evercoat_owner`. Plus lifecycle: forced idle suspend/wake, killed backend mid-transaction, pool saturation, and **tenant context re-established after reconnect** |
+| **E1b** | **Oracle host provisioned** — A1 shape, **architecture recorded**, capacity measured | D1, D2 | The actual OCPU/RAM shape is **reported as numbers** (Y16) and R2's budget recomputed from it. An **ARM/multi-arch image builds and runs** (I53). Region capacity obtained, or the refusal recorded |
+| **E1c** | **The exit is proven** — Neon→Oracle `pg_dump`/restore | E1a, E1b | Full `tests/db/` green against the restored Oracle database, `failed == 0`, `skipped == 0`. 🔴 **E1a red does NOT auto-pass as "architectural refusal".** A refusal counts only when *diagnosed*: a connection or config error is a defect to fix, not a verdict |
+| **E2** | **Production host hardening** — Ubuntu, Compose, Caddy, `ufw` **default-deny**, SSH keys, `fail2ban`, non-root/read-only containers, `restic` to a **named, separately-credentialed destination** (Y13), Uptime Kuma, quota monitor (Y4) | E1 | 🔴 **No public application port is reachable** — measured against the origin address, not read from a config. Restore succeeds **with the Oracle tenancy treated as unavailable**. The quota monitor is compared against provider/database queries within a tolerance, a threshold crossing is **injected**, and it **fails closed** on a stale reading |
+| **E3** | **`ObjectStoragePort` + document lifecycle** — port, Garage + Oracle OS adapters, byte upload, MIME magic, UUID names, **ClamAV**, quarantine→approved; **replaces** `register_document`'s contract rather than sitting beside it; classification lattice (Y11); `formula.export` + export audit + **export-volume detection**; **upload rate limit** | E2 | 🔴 **The SDS gate accepts only an approved, retrievable, checksum-matching, current, unexpired SDS object** — and a **dangling row FAILS**, proved by falsification. ⚠️ **And a backfill/grandfathering path ships with it**: `seed.py:412` and `test_golden_scenario.py:236` both insert dangling rows today, so tightening the gate alone makes every seeded formula permanently unsubmittable — the exact deadlock `service.py:1071` records. The seed must upload real bytes |
+| **E4** | **Edge + API limits** — Cloudflare DNSSEC/proxy/WAF/Bot Fight/Turnstile/Tunnel; **Caddy as sole header authority** (Y6); Valkey rate limiting keyed on **subject** where authenticated; CSP + headers; MFA for four roles | E2, D3 | **I18 closed.** An inbound forged `CF-*`/`X-Forwarded-*` header is **stripped by Caddy** and cannot influence a bucket — asserted in `test_reverse_proxy_contract.py`. Direct-to-origin refused, measured. Turnstile and MFA exercised by a real sign-in |
+| **E5** | **Design system + Storybook + the shell** — `packages/design-tokens` (**built**), 8 named stories, axe per story, traffic-light and MSD-provenance components, **global nav + persistent MSD header** (Y14) | — | Contrast **computed on rendered colour**, not inferred from axe — `verify_contrast.py` runs in CI and is **proved by falsification** (already done: 31 checks, 3 falsifications). Plus keyboard/focus order, **print snapshots**, a lint refusing raw hex in components, and an assertion that **every status rendering carries icon + text** |
+| **E6** | **Research Center R-A** — 7 tables, Findings register, Notebook, Materials/Test/Failure Intelligence, evidence grading, confidence, retention classes (Y12), Research submenu | v3 Slices 5–7, **I19 closed** | 🔴 **I19 is now a hard prerequisite.** E6 is the highest-value cross-project aggregation surface in the product, and shipping it while `rls_permissive()` is `SELECT TRUE` leaves the application layer as the sole tenant barrier. Gate: a **fixed seeded question** with expected facts, **forbidden facts**, minimum recall and exact source ids; answered **with no LLM**; plus FORCE-RLS and project-membership tests on every new table; plus a mutation removing the provenance join, which must fail it |
+| **E7** | **Research Center R-B** — pgvector, ingestion, embeddings, reranker, knowledge graph, hybrid retrieval, prompt-injection boundary, **deletion propagation** (Y12), **`WorkflowPort` durability contract** (Y15) | E3, E6 | 🔴 **A route matrix, not one spec file.** Every retrieval channel — SQL, vector, graph, metadata, cache, citation, source-open, reranker input, logs, generated summary — under membership revocation, reclassification and cross-org id collision. Each row **names the guard removed** to prove it fails. Plus: deleted content is unretrievable **by every one of those routes** |
+| **E8** | **MSD multi-agent** — specialist agents under the existing §0.2 topology; AI Model Router, one runtime, Y5 gate | E7 | 🔴 **Force selection of a mock external adapter** and assert at the **transport boundary** that nothing above `PUBLIC` reaches the request body, headers, logs, traces, retry queue or fallback prompt. A router that simply never calls the external path makes "cannot receive" vacuously true |
+| **E9** | **Admin Security Dashboard** — anomaly detection, `SECURITY_*` events | **E3**, E4 | 🔴 **Depends on E3**, because "formula exports" is one of its panels and the export audit lives there — built on E4 alone it renders **empty forever**, which is the 2026-08-21 lesson exactly. Gate: exports performed **through the real API as a real user** until the threshold trips; no direct event insertion by the test; dashboard visibility itself authorization-scoped |
+| **E10** | **Research Center R-C** — external gateway, patents, literature, standards, benchmarks, Deep Research, Inbox, analytics | E3, E8 | 🔴 **The outbound object is allow-list-constructed, not redacted**, and adversarial fixtures cover exact and rounded ratios, aliases, trade names, Unicode, encodings, filenames, quotations, citations and **multi-turn reconstruction** — because a query naming no project can still disclose a unique material combination |
+| **E11** | **Zero-cost governance** — `ZERO_COST_POLICY.md`, `FREE_TIER_LIMITS.md`, the guard | E2 | An **allow-list of provider/resource/SKU/region**; unknown resources are refused, not ignored; validated against IaC **and** runtime inventory; multiple forbidden **and unknown** fixtures |
+| **E12** | **Live suite on the deployed instance** | all | 🔴 **An expected manifest, `failed == 0`, zero connectivity skips, and each remaining skip named and reviewed.** "Report three numbers" alone is satisfied by `0 passed / 500 failed` |
 
 ### Where the extension folds into v3's own slices
 
@@ -509,11 +752,28 @@ database state.
 
 | # | Decision | Why it cannot be defaulted |
 |---|---|---|
-| **D1** | 🔴 **Are the four signups authorised?** Oracle (card verification), Neon, Cloudflare, Hugging Face | The standing rule is that no task may be assigned to the operator. These files spend that rule. **If the answer is no, E1–E4 and E10–E12 are all unreachable** and the app stays local-plus-tunnel. Everything else in this extension still ships |
+| **D1** | 🔴 **Are the four signups authorised?** Oracle (card verification), Neon, Cloudflare, Hugging Face | The standing rule is that no task may be assigned to the operator. These files spend that rule. 🔴 **v1 said "everything else still ships" and that was false** — E7 depends on E3, E8 on E7, E9 on E3+E4, so a *no* leaves only E5 and E6 (Supervisor). **The plan has been re-cut so that is no longer true:** see the note below the table — the provider-independent work is now separated out and does not wait on an answer |
 | **D2** | **Own hardware, or Oracle?** Y1 pass 1 prefers a machine the operator already owns; pass 2 and the "use this" file prefer Oracle | They are genuinely different operational commitments (uptime, electricity, a home IP vs a cloud tenancy). Oracle is assumed above; say so if it is wrong |
 | **D3** | **Does ADR-025 (browser PKCE + static export) change?** §9 says tokens should not sit in browser storage; that implies a server session and therefore a Next.js runtime | Reversing ADR-025 changes the deploy artefact for the whole web tier. **Do it deliberately or not at all** — this would be the fourth time this project found a defect that began as a quiet drift between two documents |
 | **D4** | **Confirm Y5.** Hugging Face = model repository only; no external inference path for internal evidence | Recorded as ADR-029 on the strength of the folder's own §35 and §39. It **contradicts** pass 2 §10, which makes HF the *preferred* runtime. If the operator wants HF inference, the sanitisation boundary must be built first, and that is a slice of its own |
-| **D5** | **Does the Research Center enter MVP-1, or follow it?** | v3's MVP-1 gate is the golden scenario. Adding 250–400 hours inside that gate moves it by months. Recommendation: **MVP-1 ships as scoped; E6 follows immediately.** But it is a scope decision and it is the operator's |
+| **D5** | **Does the Research Center enter MVP-1, or follow it?** | v3's MVP-1 gate is the golden scenario. Adding **800–1,400 hours** inside that gate moves it by many months. Recommendation: **MVP-1 ships as scoped; E6 follows immediately.** A scope decision, and the operator's |
+
+### 🔴 What proceeds regardless of D1 — re-cut after review
+
+v1 gated almost everything behind four signups. Two of the sharpest defects in
+this plan are **pure code and need no provider at all**, and it would be wrong
+to leave them open waiting for an account:
+
+| Work | Why it needs nothing from D1 |
+|---|---|
+| **E3-local — `ObjectStoragePort` + Garage adapter + real byte upload + MIME magic + ClamAV + quarantine + the classification lattice + `formula.export`** | Garage is **already in `docker-compose.yml`**, `boto3` is **already a declared dependency**, and ClamAV is a container. This closes **I41** (P1) and **I43** with no cloud account in existence |
+| **E5 — design system, Storybook, the shell, the traffic light** | Entirely local. Already begun this session: `packages/design-tokens` with 31 computed contrast checks, proved by falsification |
+| **E6 — Research Center R-A** (after I19) | Runs against the local PostgreSQL that has worked since 2026-08-21 |
+| **I19 — close `rls_permissive()`** | A migration. It is also E6's prerequisite and the reason §1's defence-in-depth claim is currently false |
+| **Y15 — the `WorkflowPort` durability contract** | A specification |
+
+**Only the deployment tiers wait on D1**: E1, E2, E4, E9, E10, E12. That is the
+honest split, and it means a *no* costs the deployment, not the product.
 
 ---
 
@@ -528,6 +788,13 @@ database state.
 | **I45** | **Neon compatibility of FORCE RLS, five roles and `SET LOCAL` over the pooler is unverified.** Y3 — the measurement, not the assumption | P1 (E1) |
 | **I46** | **No storage-quota monitor exists**, so Y4's 0.5 GB ceiling has no early warning | P2 |
 | **I47** | **`RESUME_HERE.md` and `TODO.md` I13 state that no deployment path exists.** They become wrong the moment ADR-028 lands and must change in the same commit | P2 |
+| **I48** | 🔴 **Two data-classification taxonomies (Y11)** with different levels, and Y5's outbound gate is defined in terms of `PUBLIC`, which only one of them has. One lattice, deny-by-default, unset = ceiling | P1 |
+| **I49** | 🔴 **No retention or deletion anywhere (Y12).** Deleting a document leaves the content in embeddings, caches, graph edges and prior object versions. v3's F33 already promised purge-on-revocation; nothing implements it | P1 |
+| **I50** | **The backup destination is unnamed (Y13)** — restic on the same tenancy with the same credentials is not a backup against account compromise or Oracle reclaiming capacity | P2 |
+| **I51** | 🔴 **I18's fix in v1 could not work (Y6).** `CF-Connecting-IP` from Cloudflare IP ranges never matches behind `cloudflared`, and Caddy is a second hop. Re-designed around Caddy as sole header authority and subject-keyed limits | P1 |
+| **I52** | **Oracle capacity is recorded as 2 OCPU/12 GB in the source and 4 cores/24 GB in three repo documents (Y16)**, and the number decides the Penpot exclusion and the LLM's RAM. Measure it in E1 | P2 |
+| **I53** | **Oracle ARM caveats dropped from v1** — regional capacity is frequently unavailable, and the API image needs an ARM or multi-arch build. An `amd64`-only image fails at E2 after E1 signed off green | P2 |
+| **I54** | **~14 of the source's 24 research tables have no owning slice.** E6 names 7, E7 names 3; `research_plans`, `research_sessions`, `research_sources`, `research_documents`, the literature/patent/competitor/benchmark tables and the `msd_*` evidence/recommendation/tool-call records are unassigned. Needs a table→slice ownership matrix, or an explicit rejection per table | P2 |
 
 Carried forward unchanged and **not** superseded by this extension: **I3**
 (golden E2E, UI half), **I19** (`rls_permissive()` is still `SELECT TRUE` —

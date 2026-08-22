@@ -1,0 +1,187 @@
+/* ===========================================================================
+ * EvercoatITWRD APP — design tokens
+ * ---------------------------------------------------------------------------
+ * ONE source. Every colour, space and type value in the web tier comes from
+ * here. A raw hex in a component is a defect: this repository's most repeated
+ * failure is two literals in two files disagreeing, and a design system is the
+ * easiest place in the world to create one.
+ *
+ * Provenance: ui-ux-pro-max 2.13.0 verified matches —
+ *   style     "Minimalism & Swiss Style"
+ *   palette   "B2B Service — Professional navy + blue CTA"
+ *   type      "Dashboard Data" (Fira Sans + Fira Code)
+ *   ux rule   "Color Only" (severity High): never convey meaning by colour alone
+ * Dials: variance 2 (minimal) · motion 2 (subtle) · density 9 (dense/dashboard)
+ *
+ * 🔴 THE ACCENT IS BLUE ON PURPOSE.
+ * Green, amber and red are RESERVED for derived test disposition (plan §E
+ * rule 6: the traffic light is derived, never selected). A green primary
+ * button would read as PASS on a screen whose entire job is to say whether
+ * something passed. No chrome may use a status hue.
+ *
+ * Every ratio below was COMPUTED, not asserted. See scripts/verify-contrast.py,
+ * which runs in CI and fails the build on a regression.
+ * =========================================================================== */
+
+:root {
+  /* --- Surfaces ---------------------------------------------------------- */
+  --color-background: #f8fafc; /* app canvas */
+  --color-card: #ffffff; /* workspace / table surface */
+  --color-muted: #e8ecf1; /* table header, inert fill */
+  --color-foreground: #020617; /* 18.9:1 on card */
+  --color-card-foreground: #020617;
+  --color-muted-foreground: #475569; /* 7.58:1 on card, 6.39:1 on muted */
+
+  /* --- Brand / chrome ---------------------------------------------------- */
+  --color-primary: #0f172a; /* 17.85:1 on card */
+  --color-on-primary: #ffffff;
+  --color-secondary: #334155;
+  --color-on-secondary: #ffffff;
+  --color-accent: #0369a1; /* 5.93:1 on card — links, primary action */
+  --color-on-accent: #ffffff;
+
+  /* --- Borders ----------------------------------------------------------- *
+   * 🔴 TWO border tokens, and they are NOT interchangeable.
+   *
+   * --color-border is 1.23:1. That is fine for a row rule between cells and
+   * is NOT sufficient for anything a user must locate in order to operate it.
+   *
+   * --color-border-control is 4.76:1 and is MANDATORY for input, select,
+   * checkbox, radio and any focusable boundary (WCAG 1.4.11 needs 3:1).
+   *
+   * This distinction is not theoretical here. slate-300 (#cbd5e1) computes to
+   * 1.48:1 — the exact ratio of the sidebar defect logged on 2026-08-20, where
+   * axe reported zero violations because aria-disabled silences its own
+   * contrast rule. The default shadcn border IS that value. Do not use it on a
+   * control.
+   * ----------------------------------------------------------------------- */
+  --color-border: #e2e8f0; /* 1.23:1 — decorative separators ONLY */
+  --color-border-control: #64748b; /* 4.76:1 — every interactive boundary */
+  --color-ring: #0369a1; /* focus ring: 5.93:1 on card, 5.67:1 on canvas */
+
+  /* --- Disposition ------------------------------------------------------- *
+   * Derived from the ordered evaluation in IMPLEMENTATION_PLAN.md §E. Never
+   * set by a user, never used for chrome. Each is a THREE-part token —
+   * surface, foreground, and a required icon+text label — because colour
+   * alone is prohibited and because these render into printed reports.
+   * All foregrounds computed against their OWN surface, not against white.
+   * ----------------------------------------------------------------------- */
+  --color-pass-surface: #dcfce7;
+  --color-pass-foreground: #166534; /* 6.49:1 on its surface, 7.13:1 on card */
+  --color-pass-mark: "\2713"; /* ✓ */
+
+  --color-review-surface: #fef3c7;
+  --color-review-foreground: #92400e; /* 6.37:1 on its surface */
+  --color-review-mark: "\0021"; /* ! */
+
+  --color-fail-surface: #fee2e2;
+  --color-fail-foreground: #991b1b; /* 6.80:1 on its surface, 6.47:1 on card */
+  --color-fail-mark: "\2715"; /* ✕ */
+
+  --color-neutral-surface: #e8ecf1;
+  --color-neutral-foreground: #334155; /* 8.73:1 on its surface */
+
+  --color-destructive: #dc2626; /* destructive ACTION ≠ FAIL disposition */
+  --color-on-destructive: #ffffff;
+
+  /* --- MSD provenance ---------------------------------------------------- *
+   * Five treatments, mandatory and distinct (revised msd §28/§29). A user who
+   * mistakes an AI recommendation for an approved test conclusion is the worst
+   * outcome this UI can produce, so recommendation and prediction get their
+   * OWN hue and NEVER the pass green. §29: "never use green PASS for an AI
+   * recommendation."
+   * ----------------------------------------------------------------------- */
+  --color-evidence-verified-surface: #e0f2fe; /* measured + approved */
+  --color-evidence-verified-foreground: #075985; /* 6.59:1 */
+  --color-evidence-calculated-surface: #e8ecf1; /* deterministic engine */
+  --color-evidence-calculated-foreground: #334155;
+  --color-evidence-prediction-surface: #ede9fe; /* model output */
+  --color-evidence-prediction-foreground: #5b21b6;
+  --color-evidence-recommendation-surface: #f5f3ff; /* MSD suggestion */
+  --color-evidence-recommendation-foreground: #6d28d9;
+  --color-evidence-warning-surface: #fef3c7;
+  --color-evidence-warning-foreground: #92400e;
+
+  /* --- Evidence grade (revised msd §6) ----------------------------------- */
+  --color-grade-a: #166534;
+  --color-grade-b: #075985;
+  --color-grade-c: #92400e;
+  --color-grade-d: #475569;
+  --color-grade-x: #991b1b;
+
+  /* --- Typography -------------------------------------------------------- *
+   * Fira Sans for label and prose. Fira Code for every MEASURED VALUE, code
+   * and identifier — it is tabular, so a column of adhesion results aligns on
+   * the decimal point. In a platform whose defining asset is a measurement,
+   * that is a correctness affordance, not a stylistic one.
+   * ----------------------------------------------------------------------- */
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-mono: "Fira Code", ui-monospace, "Cascadia Mono", "Consolas", monospace;
+
+  --text-xs: 0.75rem; /* 12px — the floor. Never smaller for body text */
+  --text-sm: 0.8125rem; /* 13px — table cell, the workhorse at density 9 */
+  --text-base: 0.875rem; /* 14px — form and prose in workspace chrome */
+  --text-md: 1rem; /* 16px — page-level prose */
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --leading-tight: 1.25; /* dense tables */
+  --leading-normal: 1.5; /* prose — WCAG floor */
+
+  /* --- Spacing — density 9/10 (dense/dashboard), 4px base ---------------- */
+  --space-1: 0.25rem; /* 4  */
+  --space-2: 0.5rem; /* 8  */
+  --space-3: 0.75rem; /* 12 */
+  --space-4: 1rem; /* 16 */
+  --space-5: 1.5rem; /* 24 */
+  --space-6: 2rem; /* 32 */
+
+  /* --- Shell geometry ---------------------------------------------------- */
+  --sidebar-width: 240px; /* plan §E: collapsible 220–260 */
+  --sidebar-width-collapsed: 68px; /* plan §E: 64–72 */
+  --topbar-height: 48px;
+  --submenu-height: 40px;
+  --row-height: 34px; /* dense technical table */
+
+  /* --- Radius / elevation — Swiss: sharp, minimal ------------------------ */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --shadow-drawer: 0 0 0 1px rgb(15 23 42 / 0.06), -8px 0 24px rgb(15 23 42 / 0.08);
+
+  /* --- Motion — dial 2/10, subtle --------------------------------------- */
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* --- Touch ------------------------------------------------------------- *
+   * 44px is the accessibility floor for a touch target. A 34px table row is
+   * NOT a touch target — a dense row is selected via its own hit area, and any
+   * ACTION inside it must still reach 44px. Density never overrides this.
+   * ----------------------------------------------------------------------- */
+  --target-min: 44px;
+}
+
+/* Motion is decoration in this product, never meaning. Remove it wholesale. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Print. A qualification dossier and a release record are PRINTED and filed.
+ * Colour is not reliably reproduced, so disposition must survive greyscale —
+ * which is the second reason (after WCAG) that the mark and the word are
+ * mandatory rather than decorative.
+ * ------------------------------------------------------------------------- */
+@media print {
+  :root {
+    --color-background: #ffffff;
+    --color-pass-surface: transparent;
+    --color-review-surface: transparent;
+    --color-fail-surface: transparent;
+    --color-neutral-surface: transparent;
+  }
+}
