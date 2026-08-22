@@ -499,6 +499,31 @@ def main() -> None:
             # port. It is a placeholder and it says so IN the document -- demo
             # data must never be mistakable for a genuine Safety Data Sheet,
             # which is a regulated artefact about actual hazards.
+            # 🔴 CHECK FIRST, THEN WRITE. This seeder is documented idempotent
+            # and re-runs in CI to prove it.
+            #
+            # The first version called `new_object_key()` unconditionally and
+            # relied on `ON CONFLICT (organization_id, storage_key)`. But that
+            # key contains a fresh UUID every run, so the conflict could never
+            # fire: the second run added a SECOND SDS per material (22 rows for
+            # 11 materials, which is how CI caught it) and orphaned another 11
+            # files in the store with nothing referencing them.
+            #
+            # Keying the skip on the MATERIAL rather than the storage key is
+            # also the honest question -- "does this material already have an
+            # SDS on file?" -- and it means re-running writes no bytes at all.
+            cur.execute(
+                """
+                SELECT 1 FROM materials.material_documents
+                WHERE organization_id = %s AND material_id = %s
+                  AND document_type = 'SDS'
+                LIMIT 1
+                """,
+                (org_id, material_ids[mat["material_code"]]),
+            )
+            if cur.fetchone():
+                continue
+
             sds_bytes = _placeholder_sds(mat["material_code"], mat["name"])
             stored = document_store.put(
                 new_object_key(org_id, "SDS"),
