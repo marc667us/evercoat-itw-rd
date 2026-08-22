@@ -172,29 +172,74 @@ def test_an_inheriting_table_does_not_carry_its_own_column(owner_session, table:
     )
 
 
-def test_a_version_resolves_the_classification_of_its_formula(owner_session) -> None:
-    """The inheritance itself, end to end."""
-    row = owner_session.execute(
+@pytest.fixture
+def a_version(owner_session, two_orgs):
+    """A formula version this file OWNS, rather than one it hopes to find.
+
+    🔴 The first version of the two tests below called
+    `pytest.skip("no formula version seeded on this database")`. CI's database
+    is migrated and NOT seeded, so both skipped -- and **CI fails the build on
+    any skip in `tests/db`**, because a skip there has always meant the
+    database was unreachable.
+
+    That is the third time in one session I assumed seeded data. The gate was
+    right every time. A test that needs a row builds the row.
+    """
+    import uuid
+
+    from app.domains.formulations.service import FormulaInput, create_formula
+
+    org, _ = two_orgs
+    user = owner_session.execute(
+        text(
+            "INSERT INTO core.users (keycloak_sub,email,display_name) "
+            "VALUES (:s,:e,'Coverage') RETURNING id"
+        ),
+        {"s": str(uuid.uuid4()), "e": f"{uuid.uuid4().hex[:8]}@example.test"},
+    ).scalar_one()
+    owner_session.execute(
+        text(
+            "INSERT INTO core.organization_members (organization_id,user_id,status) "
+            "VALUES (:o,:u,'active')"
+        ),
+        {"o": org, "u": user},
+    )
+    project = owner_session.execute(
         text(
             """
-            SELECT v.id, f.classification
-            FROM formulations.formula_versions v
-            JOIN formulations.formulas f
-              ON f.id = v.formula_id AND f.organization_id = v.organization_id
-            LIMIT 1
+            INSERT INTO projects.projects
+                (organization_id, project_code, name, current_stage, lead_user_id)
+            VALUES (:o,:c,'Coverage','REQUIREMENTS',:u) RETURNING id
             """
-        )
-    ).one_or_none()
-    if row is None:
-        pytest.skip("no formula version seeded on this database")
+        ),
+        {"o": org, "c": f"RDP-{uuid.uuid4().hex[:6]}", "u": user},
+    ).scalar_one()
+    created = create_formula(
+        owner_session,
+        project_id=project,
+        organization_id=org,
+        actor_id=user,
+        spec=FormulaInput(formula_code=f"F-{uuid.uuid4().hex[:6]}", name="Coverage"),
+    )
+    owner_session.flush()
+    return created
+
+
+def test_a_version_resolves_the_classification_of_its_formula(owner_session, a_version) -> None:
+    """The inheritance itself, end to end."""
+    declared = owner_session.execute(
+        text("SELECT classification FROM formulations.formulas WHERE id = :f"),
+        {"f": a_version["formula_id"]},
+    ).scalar_one()
 
     resolved = owner_session.execute(
-        text("SELECT formulations.effective_classification(:v)"), {"v": row[0]}
+        text("SELECT formulations.effective_classification(:v)"),
+        {"v": a_version["version_id"]},
     ).scalar()
-    assert resolved == row[1]
+    assert resolved == declared
 
 
-def test_reclassifying_the_formula_reclassifies_the_recipe(owner_session) -> None:
+def test_reclassifying_the_formula_reclassifies_the_recipe(owner_session, a_version) -> None:
     """🔴 The property inheritance exists to provide.
 
     A per-table column would need five updates and could half-succeed. One
@@ -202,20 +247,8 @@ def test_reclassifying_the_formula_reclassifies_the_recipe(owner_session) -> Non
     investigations all move together, in the same instant -- which is also what
     makes I49's purge-on-reclassification implementable later.
     """
-    row = owner_session.execute(
-        text(
-            """
-            SELECT v.id, f.id
-            FROM formulations.formula_versions v
-            JOIN formulations.formulas f
-              ON f.id = v.formula_id AND f.organization_id = v.organization_id
-            LIMIT 1
-            """
-        )
-    ).one_or_none()
-    if row is None:
-        pytest.skip("no formula version seeded on this database")
-    version_id, formula_id = row
+    version_id = a_version["version_id"]
+    formula_id = a_version["formula_id"]
 
     before = owner_session.execute(
         text("SELECT formulations.effective_classification(:v)"), {"v": version_id}
