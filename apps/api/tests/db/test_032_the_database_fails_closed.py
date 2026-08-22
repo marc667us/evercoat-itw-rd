@@ -132,28 +132,49 @@ def test_sign_in_still_works(owner_session) -> None:
     SECURITY DEFINER and owned by `evercoat_owner`, so it is exempt from
     policies **only while FORCE ROW LEVEL SECURITY is off**.
 
-    That is why 032 changes `rls_permissive()` and does NOT enable FORCE. If
-    someone enables FORCE without granting the owner BYPASSRLS or adding a
-    policy for this lookup, `GET /api/me` answers 404 for every legitimate
-    user and sign-in dies. This test is where that shows up.
+    That is why 032 changes `rls_permissive()` and does NOT enable FORCE.
+
+    ⚠️ THIS TEST BUILDS ITS OWN SUBJECT. The first version read a seeded user
+    and **failed in CI**, whose database is migrated but not seeded -- and it
+    failed with the message *"sign-in is broken"*, which was false. A test that
+    reports a security regression when the real cause is an empty table is
+    worse than no test: it sends the next reader hunting a defect that is not
+    there. Everything it needs is created here and rolled back.
     """
-    subject = owner_session.execute(
-        text("SELECT keycloak_sub FROM core.users WHERE keycloak_sub IS NOT NULL LIMIT 1")
-    ).scalar()
-    if subject is None:
-        pytest.skip("no seeded user carries a keycloak subject")
+    sub = f"kc-{uuid.uuid4().hex[:12]}"
+    org = owner_session.execute(
+        text(
+            "INSERT INTO core.organizations (code, name) VALUES (:c, 'Sign-in probe') RETURNING id"
+        ),
+        {"c": f"SIGNIN-{uuid.uuid4().hex[:8]}"},
+    ).scalar_one()
+    user = owner_session.execute(
+        text(
+            "INSERT INTO core.users (keycloak_sub, email, display_name) "
+            "VALUES (:s, :e, 'Sign-in probe') RETURNING id"
+        ),
+        {"s": sub, "e": f"{sub}@example.invalid"},
+    ).scalar_one()
+    owner_session.execute(
+        text(
+            "INSERT INTO core.organization_members (organization_id, user_id, status) "
+            "VALUES (:o, :u, 'active')"
+        ),
+        {"o": org, "u": user},
+    )
+    owner_session.flush()
 
     rows = owner_session.execute(
-        text("SELECT * FROM core.memberships_for_subject(:s)"), {"s": subject}
+        text("SELECT * FROM core.memberships_for_subject(:s)"), {"s": sub}
     ).all()
 
     assert rows, (
-        "core.memberships_for_subject returned NOTHING for a real seeded "
-        "subject. Sign-in is broken: /api/me will 404 for every user and no "
-        "browser can learn an organization id. If FORCE ROW LEVEL SECURITY "
-        "was just enabled, that is the cause -- grant evercoat_owner "
-        "BYPASSRLS or add a policy admitting this lookup, in the same "
-        "migration."
+        "core.memberships_for_subject returned NOTHING for a subject that is "
+        "an active member of an active organization. Sign-in is broken: "
+        "/api/me will 404 for every user and no browser can learn an "
+        "organization id. If FORCE ROW LEVEL SECURITY was just enabled, that "
+        "is the cause -- grant evercoat_owner BYPASSRLS or add a policy "
+        "admitting this lookup, in the same migration."
     )
 
 
@@ -165,10 +186,26 @@ def test_the_owner_is_still_exempt(owner_session) -> None:
     stops being true, every migration that backfills data breaks at once --
     the failure this project already logged as "LOCAL IS SUPERUSER, RENDER IS
     NOT".
+
+    ⚠️ Writes its own row for the same reason as the test above: the first
+    version counted seeded organizations and **failed in CI on an unseeded
+    database**, announcing that the owner exemption was gone when it was
+    intact.
     """
-    count = owner_session.execute(text("SELECT count(*) FROM core.organizations")).scalar_one()
-    assert count > 0, (
-        "evercoat_owner sees no organizations with no GUC set. The owner "
-        "exemption is gone -- check whether FORCE ROW LEVEL SECURITY was "
+    code = f"EXEMPT-{uuid.uuid4().hex[:8]}"
+    owner_session.execute(
+        text("INSERT INTO core.organizations (code, name) VALUES (:c, 'Owner exemption probe')"),
+        {"c": code},
+    )
+    owner_session.flush()
+
+    # No GUC is set anywhere in this test. The owner must still see its row.
+    seen = owner_session.execute(
+        text("SELECT count(*) FROM core.organizations WHERE code = :c"), {"c": code}
+    ).scalar_one()
+
+    assert seen == 1, (
+        "evercoat_owner cannot read a row it just wrote, with no GUC set. The "
+        "owner exemption is gone -- check whether FORCE ROW LEVEL SECURITY was "
         "enabled. Every migration backfill and scripts/seed.py depend on it."
     )

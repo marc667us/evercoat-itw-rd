@@ -78,48 +78,58 @@ COMMIT;
 
 
 -- ---------------------------------------------------------------------
--- Prove the boundary rather than assert it.
+-- Verify by INSPECTING THE POLICY, never by writing.
 --
--- Written as a SET ROLE experiment because the property is about what the
--- RUNTIME role can see, and the migration runs as a role that is exempt.
+-- 🔴 THIS BLOCK USED TO SEED TWO PROBE ROWS AND READ THEM BACK UNDER
+-- `SET LOCAL ROLE evercoat_app`. Codex refused it, and was right: `audit.events`
+-- is append-only by trigger, so those rows COULD NOT BE DELETED -- verified,
+-- `DELETE` raises *"audit.events is append-only"*. A security migration was
+-- writing permanent fake history into the one table whose entire purpose is to
+-- be trustworthy about who did what, including a tenant row bearing an
+-- organization id that exists nowhere.
+--
+-- The behavioural check now lives in
+-- `tests/db/test_034_system_audit_chain_readable.py`, where the transaction
+-- rolls back and nothing survives. What remains here is a catalog assertion,
+-- which is the only kind of verification a migration against an immutable
+-- ledger may safely perform.
 -- ---------------------------------------------------------------------
 DO $$
 DECLARE
-    v_org        UUID := gen_random_uuid();
-    v_sys_seen   INT;
-    v_other_seen INT;
+    v_qual TEXT;
 BEGIN
-    -- Seed one system row and one tenant row, as the exempt migration role.
-    INSERT INTO audit.events (organization_id, action, entity_type, entity_id,
-                              prev_hash, row_hash)
-    VALUES (NULL,  'migration.034_probe', 'probe', 'system', '', ''),
-           (v_org, 'migration.034_probe', 'probe', 'tenant', '', '');
+    SELECT pg_get_expr(polqual, polrelid) INTO v_qual
+      FROM pg_policy
+     WHERE polrelid = 'audit.events'::regclass
+       AND polname  = 'audit_org_isolation';
 
-    -- Unscoped runtime session: must see system rows, and no tenant row.
-    SET LOCAL ROLE evercoat_app;
-    PERFORM set_config('app.current_org', '', true);
-
-    SELECT count(*) INTO v_sys_seen
-      FROM audit.events
-     WHERE action = 'migration.034_probe' AND organization_id IS NULL;
-
-    SELECT count(*) INTO v_other_seen
-      FROM audit.events
-     WHERE action = 'migration.034_probe' AND organization_id IS NOT NULL;
-
-    RESET ROLE;
-
-    IF v_sys_seen = 0 THEN
-        RAISE EXCEPTION
-            'an unscoped runtime session still cannot read the system audit '
-            'chain; INSERT ... RETURNING will keep failing for the platform''s '
-            'own writer';
+    IF v_qual IS NULL THEN
+        RAISE EXCEPTION 'audit_org_isolation policy is missing after 034';
     END IF;
 
-    IF v_other_seen > 0 THEN
+    -- The NULL-safe operator is the whole point of this migration. `=` would
+    -- leave the platform's own writer unable to read the system chain, which
+    -- breaks the WRITE, because INSERT ... RETURNING is a read.
+    --
+    -- ⚠️ MATCH THE NORMALISED FORM. PostgreSQL rewrites `a IS NOT DISTINCT
+    -- FROM b` as `NOT (a IS DISTINCT FROM b)` before storing it, so searching
+    -- pg_get_expr() for the literal source text finds nothing and this check
+    -- would fail on every fresh database while the policy was perfectly
+    -- correct. Caught by running it; the first version of this block searched
+    -- for the text as written in the CREATE POLICY above.
+    IF v_qual NOT ILIKE '%IS DISTINCT FROM%' THEN
         RAISE EXCEPTION
-            'an unscoped runtime session can read % tenant-owned audit row(s). '
-            '034 was meant to admit ONLY the system chain -- this is the hole '
-            '032 closed, reopened.', v_other_seen;
+            'audit_org_isolation is not NULL-safe (%). An unscoped session '
+            'cannot read the system chain, so INSERT ... RETURNING fails for '
+            'migrations and maintenance scripts.', v_qual;
+    END IF;
+
+    -- And it must NOT have kept the permissive escape hatch, or 034 would
+    -- have quietly reopened what 032 closed.
+    IF v_qual ILIKE '%rls_permissive%' THEN
+        RAISE EXCEPTION
+            'audit_org_isolation still references core.rls_permissive() (%). '
+            '034 was meant to REPLACE the permissive branch, not keep it.',
+            v_qual;
     END IF;
 END $$;

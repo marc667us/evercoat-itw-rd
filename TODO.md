@@ -89,7 +89,21 @@ Full detail in `IMPLEMENTATION_PLAN_EXTENSION.md` (v2) and
 | 🔴 **I51** | **I18's proposed fix could not work.** `CF-Connecting-IP` restricted to Cloudflare IP ranges **never matches behind `cloudflared`** (the origin sees the local daemon), and Caddy is a second hop. Re-designed: Caddy as sole header authority, limits keyed on the subject claim where authenticated | P1 |
 | **I52** | **Oracle capacity is 2 OCPU/12 GB in the source and 4 cores/24 GB in three repo documents**, and the number decides the Penpot exclusion and the local LLM's RAM | P2 |
 | **I53** | **Oracle ARM caveats**: regional capacity is frequently unavailable, and the API image needs an ARM or multi-arch build. An `amd64`-only image fails after the host slice was signed off green | P2 |
+| 🔴 **I55** | **`core.users` has NO RLS — 290 users, every tenant, readable unscoped by `evercoat_app`.** Measured 2026-08-22 immediately after the I19 cutover, which closed `organization_members` (now 0) but not this. Emails and display names are cross-tenant PII. **Pre-existing, not introduced by 032** — but it is now the largest remaining hole and it qualifies I19's "the database fails closed": tenant *records* fail closed, the user *directory* does not. ⚠️ Not a simple `ENABLE ROW LEVEL SECURITY`: a user legitimately belongs to several organizations, so the policy is "visible if the reader shares an organization with them", and `core.principal_for_subject` / `core.memberships_for_subject` must keep working (both are SECURITY DEFINER owner-owned, so they would). The other four non-RLS tables were checked and are fine: `roles`, `permissions`, `role_permissions` carry no `organization_id` and are global RBAC reference data; `member_roles` is `(member_id, role_id)` with opaque ids that are no longer obtainable now that `organization_members` is closed | P1 |
 | **I54** | **~14 of the source's 24 research tables have no owning slice** — needs a table→slice ownership matrix or an explicit rejection per table | P2 |
+
+▶ **Shipped 2026-08-22 — I19 CLOSED** (migrations 032/033/034, `9b761a0`).
+`core.rls_permissive()` was `SELECT TRUE`, so with no tenant GUC `evercoat_app`
+read **119 organizations and 137 projects** — the whole database. Now 0.
+FORCE RLS deliberately **not** enabled, so `evercoat_owner` stays exempt by
+ownership and migrations, the seeder and sign-in survive; the FORCE tripwires
+in `test_024` and `test_011` are narrowed, not defused. Running the suite then
+found what reading could not: **35 auth routes 403'd** because `get_principal`
+resolves every caller through an unscoped read (→ 033, a SECURITY DEFINER
+`core.principal_for_subject`), and the **system audit chain became unreadable
+by its own writer** — which broke the *write*, because `INSERT ... RETURNING`
+is a read (→ 034, NULL-safe equality). Suite **516/0/11**; proved by
+falsification.
 
 ▶ **Shipped 2026-08-22 toward E5:** `packages/design-tokens` — one token
 source, **31 computed** WCAG checks wired into CI's web job, **proved by

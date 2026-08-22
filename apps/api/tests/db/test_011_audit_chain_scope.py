@@ -307,11 +307,7 @@ def test_verify_chain_scoped_to_one_organization_ignores_another(app_session):
     _insert(app_session, org_b, "B2")
 
     # Each verification runs in the context of the tenant being verified,
-    # which is how production calls it. Reading unscoped used to prove the
-    # `organization_id` ARGUMENT was doing the filtering rather than RLS; after
-    # 032 an unscoped session sees nothing, so that device is gone. The
-    # argument is still shown to matter by the interleaving: org B wrote rows
-    # between org A's, and A's chain verifies clean regardless.
+    # which is how production calls it.
     _set_org(app_session, org_a)
     assert verify_chain(app_session, organization_id=org_a, start_id=first - 1) is None, (
         "org A's chain must verify even though org B wrote between its rows"
@@ -319,6 +315,27 @@ def test_verify_chain_scoped_to_one_organization_ignores_another(app_session):
     _set_org(app_session, org_b)
     assert verify_chain(app_session, organization_id=org_b, start_id=first - 1) is None, (
         "org B's chain must verify even though org A wrote between its rows"
+    )
+
+    # 🔴 AND THE ARGUMENT MUST BE WHAT FILTERS, NOT THE RLS CONTEXT.
+    #
+    # The two assertions above would BOTH still pass if `verify_chain` dropped
+    # its `organization_id` predicate entirely, because RLS is now scoped to
+    # the same tenant and would do the filtering for it. Codex caught that:
+    # the pre-032 version read unscoped precisely so RLS could not mask a
+    # missing predicate, and my first rewrite lost that property.
+    #
+    # Restored by asking for the WRONG tenant from a given context. If the
+    # argument is honoured, org B's chain is not reachable from org A's
+    # context and the walk finds nothing to contradict; if the predicate were
+    # dropped, the walk would read org A's rows while claiming to verify org
+    # B and the interleaved hashes would not line up.
+    _set_org(app_session, org_a)
+    mismatched = verify_chain(app_session, organization_id=org_b, start_id=first - 1)
+    assert mismatched is None, (
+        "verifying org B's chain from org A's context reported a break. That "
+        "means the walk read rows the organization_id argument should have "
+        "excluded -- the argument is not doing the filtering, RLS is."
     )
 
 
