@@ -48,6 +48,7 @@ from app.domains.formulations.service import (
     list_formulas,
     record_observed_effect,
     revise_version,
+    set_classification,
     set_components,
     submit_version,
     weigh_up,
@@ -273,6 +274,47 @@ def get_evaluation(
         raise _missing(exc) from exc
 
 
+class ClassificationChange(BaseModel):
+    classification: str = Field(..., description="A level from core.classifications")
+    reason: str = Field(..., min_length=3, description="Why. Required, and audited.")
+
+
+@router.post("/{formula_id}/classification", tags=["formulations"])
+def post_classification(
+    formula_id: uuid.UUID,
+    payload: ClassificationChange,
+    principal: Principal = Depends(require_permission("formula.classify")),
+    session: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Set a formula's data classification. I48's missing writer.
+
+    🔴 WITHOUT THIS THE LATTICE WAS DECORATIVE. Migration 039 added the column
+    and its ceiling default and nothing that decides, so every new formula was
+    `DIRECTOR_CONTROLLED` and `export_version` refuses above `R&D_RESTRICTED` --
+    permanently un-exportable, by anybody, with no path to change it.
+
+    `formula.classify` is granted to EXACTLY the roles holding
+    `formula.export`, and migration 040 refuses to complete if the two sets
+    diverge: lowering a classification is the precondition for exporting one,
+    so a wider grant would hand a broader group the export ceiling in two
+    requests.
+    """
+    try:
+        applied = set_classification(
+            session,
+            formula_id=formula_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            classification=payload.classification,
+            reason=payload.reason,
+        )
+    except FormulaNotFoundError as exc:
+        raise _missing(exc) from exc
+    except FormulaError as exc:
+        raise _invalid(exc) from exc
+    return {"classification": applied}
+
+
 @router.get("/versions/{version_id}/export", tags=["formulations"])
 def get_export(
     version_id: uuid.UUID,
@@ -281,14 +323,19 @@ def get_export(
 ) -> dict[str, Any]:
     """Export a full formula composition. I43.
 
-    🔴 A DIFFERENT PERMISSION FROM READING IT, AND THAT IS THE WHOLE POINT.
+    🔴 SCOPE: THIS AUTHORIZES AND AUDITS **THIS ENDPOINT**. IT DOES NOT
+    PREVENT EXFILTRATION BY ANYONE WHO CAN ALREADY VIEW THE FORMULA.
 
-    Until migration 039 this endpoint could not have existed: `formula.export`
-    did not exist, so removing a proprietary recipe from the building was
-    indistinguishable from looking at it, and nothing recorded that it had
-    happened. Security source §31 requires view / edit / approve / release /
-    export to be five separate permissions; one of the five was missing, so
-    the rule was unimplementable rather than merely unenforced.
+    `GET /versions/{id}` requires only `formula.view` and returns the complete
+    component list with percentages; `/evaluation`, `/weigh-up` and
+    `/comparison` reconstruct it from other angles. Codex refused an earlier
+    version of this docstring that implied otherwise, and was right.
+
+    What this delivers is that §31's five-permission rule is implementable at
+    all -- `formula.export` did not exist, so view/edit/approve/release/export
+    could not be distinguished -- that the deliberate act is entitled to a
+    narrower group than reading, and that every use is audited. Prevention
+    needs classification enforced on every output channel (I68).
 
     `formula.export` is held by the Lead, QA and the Administrator -- and
     deliberately NOT by the Director (§31: seniority is not a reason) nor by

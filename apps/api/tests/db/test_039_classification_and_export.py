@@ -18,6 +18,7 @@ from app.domains.formulations.service import (
     FormulaInput,
     create_formula,
     export_version,
+    set_classification,
     set_components,
 )
 from app.domains.materials.service import MaterialInput, create_material
@@ -380,3 +381,132 @@ def test_view_and_export_are_not_the_same_permission(owner_session) -> None:
     )
     assert {"formula.view", "formula.export"} <= codes
     assert "formula.view" != "formula.export"
+
+
+# ---------------------------------------------------------------------------
+# I48's missing writer — migration 040
+# ---------------------------------------------------------------------------
+
+
+def test_a_new_formula_is_exportable_by_its_own_rules(owner_session, a_formula) -> None:
+    """🔴 THE TEST THAT WOULD HAVE CAUGHT MIGRATION 039'S DEFECT.
+
+    039 gave the column a ceiling default and no writer, so every new formula
+    was `DIRECTOR_CONTROLLED` while `export_version` refuses above
+    `R&D_RESTRICTED`. Every formula created from that commit onward could never
+    be exported, by anybody, with no path to change it -- and CI was green,
+    because nothing asserted that the two ends agreed.
+
+    This is the "safety check that could only say BLOCKED" shape recorded on
+    materials/service.py, and restated in I67's own note two hours before I
+    shipped it one column over. So it is instrumented now rather than
+    restated again.
+    """
+    classification = owner_session.execute(
+        text("SELECT classification FROM formulations.formulas WHERE id = :f"),
+        {"f": a_formula["formula"]},
+    ).scalar_one()
+
+    assert classification != "DIRECTOR_CONTROLLED", (
+        "a newly created formula carries the column's ceiling DEFAULT rather "
+        "than a decision, so it can never be exported and nothing can change "
+        "that. create_formula must classify deliberately."
+    )
+
+    # And it is genuinely exportable, not merely differently labelled.
+    export_version(
+        owner_session,
+        version_id=a_formula["version"],
+        organization_id=a_formula["org"],
+        actor_id=a_formula["user"],
+    )
+
+
+def test_a_reclassification_is_recorded_with_both_levels(owner_session, a_formula) -> None:
+    """Lowering is the dangerous direction, so the event names it."""
+    set_classification(
+        owner_session,
+        formula_id=a_formula["formula"],
+        organization_id=a_formula["org"],
+        actor_id=a_formula["user"],
+        classification="INTERNAL",
+        reason="published in the product datasheet",
+    )
+
+    event = (
+        owner_session.execute(
+            text(
+                "SELECT previous_state, new_state, reason FROM audit.events "
+                "WHERE entity_id = :e AND action = 'formula.reclassified' "
+                "ORDER BY id DESC LIMIT 1"
+            ),
+            {"e": str(a_formula["formula"])},
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+    assert event is not None, "a reclassification wrote no audit event"
+    assert event["previous_state"]["classification"] == "R&D_RESTRICTED"
+    assert event["new_state"]["classification"] == "INTERNAL"
+    assert event["new_state"]["lowered"] is True, (
+        "the event must say that the classification was LOWERED -- that is the "
+        "direction a security review comes looking for"
+    )
+    assert event["reason"]
+
+
+def test_a_reclassification_must_state_why(owner_session, a_formula) -> None:
+    from app.domains.formulations.service import FormulaError
+
+    with pytest.raises(FormulaError, match="state why"):
+        set_classification(
+            owner_session,
+            formula_id=a_formula["formula"],
+            organization_id=a_formula["org"],
+            actor_id=a_formula["user"],
+            classification="PUBLIC",
+            reason="   ",
+        )
+
+
+def test_an_unknown_level_cannot_be_applied(owner_session, a_formula) -> None:
+    from app.domains.formulations.service import FormulaError
+
+    with pytest.raises(FormulaError, match="not a classification level"):
+        set_classification(
+            owner_session,
+            formula_id=a_formula["formula"],
+            organization_id=a_formula["org"],
+            actor_id=a_formula["user"],
+            classification="TOP_SECRET",
+            reason="trying an invented level",
+        )
+
+
+def test_classify_and_export_are_held_by_exactly_the_same_roles(owner_session) -> None:
+    """🔴 A wider classify grant hands the export ceiling to a broader group.
+
+    Lowering a classification is the PRECONDITION for exporting, so if a role
+    can reclassify but not export -- or the two sets drift for any reason --
+    the ceiling becomes something that group steps over in two requests.
+    Migration 040 refuses to complete if they differ; this is the same
+    assertion where a reviewer will look for it.
+    """
+
+    def holders(permission: str) -> set[str]:
+        return set(
+            owner_session.execute(
+                text(
+                    """
+                    SELECT r.code FROM core.roles r
+                    JOIN core.role_permissions rp ON rp.role_id = r.id
+                    JOIN core.permissions p ON p.id = rp.permission_id
+                    WHERE p.code = :p
+                    """
+                ),
+                {"p": permission},
+            ).scalars()
+        )
+
+    assert holders("formula.classify") == holders("formula.export") != set()

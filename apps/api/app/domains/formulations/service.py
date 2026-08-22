@@ -81,6 +81,7 @@ __all__ = [
     "list_formulas",
     "record_observed_effect",
     "revise_version",
+    "set_classification",
     "set_components",
     "submit_version",
     "weigh_up",
@@ -244,8 +245,20 @@ def create_formula(
                     """
                     INSERT INTO formulations.formulas
                         (organization_id, project_id, formula_code, name,
-                         product_family, description, owner_user_id, created_by)
-                    SELECT :org, p.id, :code, :name, :family, :description, :owner, :actor
+                         product_family, description, owner_user_id, created_by,
+                         classification)
+                    -- 🔴 CLASSIFIED DELIBERATELY, NOT LEFT TO THE COLUMN
+                    -- DEFAULT. The default is `DIRECTOR_CONTROLLED`, which is
+                    -- the right BACKSTOP for a path that forgets and the wrong
+                    -- value for the application to intend: `export_version`
+                    -- refuses above `R&D_RESTRICTED`, so relying on the
+                    -- default made every new formula permanently
+                    -- un-exportable, by anybody, with no way to change it
+                    -- (migration 040). A formula under development is
+                    -- proprietary development work, which is what
+                    -- R&D_RESTRICTED means and what 039 backfilled.
+                    SELECT :org, p.id, :code, :name, :family, :description, :owner, :actor,
+                           'R&D_RESTRICTED'
                     FROM projects.projects p
                     WHERE p.id = :pid
                       AND p.organization_id = :org
@@ -420,6 +433,93 @@ class FormulaExportRefusedError(FormulationError):
     """The export is not permitted at this classification by one person alone."""
 
 
+def set_classification(
+    session: Session,
+    *,
+    formula_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    classification: str,
+    reason: str,
+) -> str:
+    """Change a formula's data classification. Audited, both directions.
+
+    🔴 THE COLUMN HAD NO WRITER, WHICH MADE THE LATTICE DECORATIVE.
+
+    Migration 039 added the column and its ceiling default and nothing that
+    decides. Every new formula was `DIRECTOR_CONTROLLED`, `export_version`
+    refuses above `R&D_RESTRICTED`, and no path existed to move it -- so the
+    export control was not strict, it was total. Asking "which production path
+    WRITES it?" of my own change is what found it, one commit late.
+
+    Gated on `formula.classify`, which migration 040 grants to EXACTLY the
+    roles holding `formula.export`. That is not tidiness: lowering a
+    classification is the precondition for exporting, so a wider grant would
+    let a broader group step over the export ceiling in two requests. The
+    migration refuses to complete if the two sets ever diverge.
+
+    `reason` is required. A reclassification with no stated why is a decision
+    nobody can review, and lowering one is the change a security review comes
+    looking for.
+    """
+    if not reason or not reason.strip():
+        raise FormulaError("a reclassification must state why")
+
+    previous = session.execute(
+        text(
+            "SELECT classification FROM formulations.formulas "
+            "WHERE id = :f AND organization_id = :org"
+        ),
+        {"f": formula_id, "org": organization_id},
+    ).scalar_one_or_none()
+
+    if previous is None:
+        raise FormulaNotFoundError("no such formula in this organization")
+    current: str = str(previous)
+
+    known = session.execute(
+        text("SELECT core.classification_rank(:c)"), {"c": classification}
+    ).scalar()
+    if known is None:
+        raise FormulaError(f"{classification!r} is not a classification level")
+
+    if current == classification:
+        return current
+
+    with guarded_write(session):
+        session.execute(
+            text(
+                "UPDATE formulations.formulas SET classification = :c "
+                "WHERE id = :f AND organization_id = :org"
+            ),
+            {"c": classification, "f": formula_id, "org": organization_id},
+        )
+
+    previous_rank = session.execute(
+        text("SELECT core.classification_rank(:c)"), {"c": current}
+    ).scalar()
+
+    write_audit(
+        session,
+        AuditEvent(
+            action="formula.reclassified",
+            entity_type="formula",
+            entity_id=str(formula_id),
+            organization_id=organization_id,
+            user_id=actor_id,
+            previous_state={"classification": current},
+            new_state={
+                "classification": classification,
+                # Named explicitly so "who made this exportable" is a query
+                # rather than a comparison of two ranks after the fact.
+                "lowered": bool(previous_rank is not None and known < previous_rank),
+            },
+            reason=reason.strip(),
+        ),
+    )
+    return classification
+
+
 def export_version(
     session: Session,
     *,
@@ -428,23 +528,44 @@ def export_version(
     actor_id: uuid.UUID,
     include_cost: bool = False,
 ) -> dict[str, Any]:
-    """The full composition, removed from the application, and RECORDED.
+    """The full composition, through the dedicated export endpoint, RECORDED.
 
-    🔴 EXPORT IS NOT A READ, AND UNTIL I43 IT WAS INDISTINGUISHABLE FROM ONE.
+    🔴 READ THE SCOPE STATEMENT BEFORE TRUSTING THIS CONTROL.
 
-    Anyone holding `formula.view` could take an entire proprietary recipe out
-    of the building, and nothing anywhere recorded that they had. §31 requires
-    view / edit / approve / release / export to be five separate permissions;
-    one of the five did not exist, so the rule was unimplementable rather than
-    unenforced.
+    **`formula.export` authorizes and audits use of the dedicated export
+    endpoint. It does NOT prevent, and does not audit, removal of formula
+    information by anyone who can already view it.**
+
+    That sentence is here because the first version of this docstring said the
+    opposite -- "anyone holding `formula.view` could take an entire proprietary
+    recipe out of the building" -- and implied that this function closed it.
+    Codex refused the claim and was right. Measured: `GET /versions/{id}`
+    requires only `formula.view` and returns the complete component list with
+    percentages. So do `/evaluation`, `/weigh-up` and `/comparison`, which
+    together reconstruct a composition; and MSD answers under `msd.use`.
+
+    The export endpoint is ONE door in a building with several. What it
+    genuinely delivers:
+
+      * §31's five-permission rule becomes implementable -- `formula.export`
+        exists at all, which it did not, so view/edit/approve/release/export
+        can now be distinguished;
+      * the deliberate act of exporting is ENTITLED to a narrower group than
+        reading, and every use is audited with what left;
+      * a classification ceiling exists above which one person may not do it.
+
+    What it does not deliver is prevention. A user with `formula.view` who
+    calls the version endpoint and saves the JSON has removed the recipe, and
+    nothing here sees it. Closing that needs classification enforced on every
+    output channel (I68), not a permission on one route.
 
     Two controls, and they are different in kind:
 
     1. **`formula.export`**, checked by the route. Deliberately NOT held by the
-       Director -- §31 says seniority is not a reason, and export is the
-       exfiltration act itself. A Chemist may read and edit a formula and may
-       not export it, which is only a separation of duties because it is
-       asymmetric.
+       Director -- §31 says seniority is not a reason -- nor by the Chemist,
+       which is only a separation of duties because it is asymmetric. ⚠️ It
+       entitles the ACT, and given the scope statement above it should be read
+       as "who may use the export function", not "who may obtain the recipe".
 
     2. **A classification ceiling.** Above `R&D_RESTRICTED` -- that is, a
        released master formulation -- one person may not do this alone.
