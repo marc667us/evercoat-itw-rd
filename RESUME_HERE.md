@@ -1,5 +1,72 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION CLOSE 2026-08-23 — START HERE
+
+Tip **`ab9621e`**, tree clean, all pushed. **Nine commits.**
+
+▶ **Restart procedure for the demo tunnel:**
+`Documents/session-archives/2026-08-23/RESTART_THE_DEMO.md`
+Full session record: `.../2026-08-23/README.md`
+
+### The one thing outstanding
+
+A **confirming live-suite run**. The last COMPLETE run was
+**699 passed / 2 failed / 0 skipped** with `api-live` a clean **670 / 0 / 0**.
+Those 2 e2e failures were a timeout budget sized for a local origin; the fix
+landed in `playwright.config.ts` (180s live / 60s local) and both tests were
+verified individually against the tunnel in 1.5m — but the full run confirming
+it was **killed mid-flight and its numbers are void** (it showed 668/2, both
+`httpx.ReadTimeout` against the API as it was shut down).
+
+Expected on a clean run: **~701 / 0 / 0**.
+
+### What shipped
+
+* **Migration 044** — RLS on `core.users` (**I55**: 571 rows of cross-tenant
+  PII readable with no context) and the cross-tenant WRITE in `invite_member`
+  (**I80**, new: it renamed another tenant's user and returned their real email).
+* 🔴 **A defect neither reviewer found.** `core.user_id_for_subject` was owned
+  by `postgres` — `rolsuper`, `rolbypassrls` — while 044's own comment claimed
+  `evercoat_owner`. I56's exact shape, three migrations after 033 wrote the
+  warning. **`pg_proc` found it, not Codex and not the Supervisor**;
+  `test_object_ownership.py` structurally could not, because its sweep only
+  flags definers wrongly moved *to* `evercoat_owner`.
+* **Laboratory workspace** at `/laboratory/batch?id=…` — eleven API routes that
+  no browser could reach now have a caller.
+* **I78** — the knowledge list reports what it truncates.
+* **MSD relevance** — the distance threshold had stopped separating relevant
+  from irrelevant (ranges OVERLAP: related 0.554–0.716, unrelated 0.664–0.859).
+  Replaced with a shared-vocabulary requirement, which is what a LEXICAL
+  embedder can actually attest to. **I77 still open** for a neural embedder.
+* **Eight harness defects**, none in the product — see the archive README.
+  The sharpest: a fully green 31-test Playwright run **reported nothing and
+  passed**, and the pytest parser **deleted the passed count on every green
+  run** (accurate when broken, wrong when clean).
+* **`evercoat-test` Keycloak client** — the 11 auth round-trip tests had
+  **never once executed** since they were written. They now pass (11 in 55.82s).
+
+### Proven by hand, not by the suite
+
+The full batch lifecycle driven end to end over the tunnel with real tokens:
+create → authorise → start → 8/8 weighed → deviation → sample → complete →
+accept. Authorization refused correctly three times, including **the technician
+who executed a batch may not review it** (§9 segregation of duties).
+
+⚠️ `evercoat-web`'s direct grant was temporarily enabled for that and
+**disabled again, verified**. `evercoat-test` exists so nobody is tempted to
+leave it on.
+
+### 🔴 Read before touching the demo
+
+* **localtunnel is unusable** — 15 of 15 concurrent requests → HTTP 429.
+* **A Cloudflare QUICK tunnel changes hostname every restart**, and four things
+  carry it (Keycloak `KC_HOSTNAME`, client redirect URIs, API issuer, the web
+  bundle). **A named tunnel removes all of it and needs one browser login.**
+* **Keycloak `start-dev` must NOT be memory-capped** — 512 MB + tuned heap is a
+  Render `start` measurement; here it sticks at 497/512 and never boots.
+
+---
+
 ## 🔴 RENDER IS RETIRED. THIS APP RUNS LOCALLY, SHARED BY TUNNEL.
 
 **Owner decision, 2026-08-21: $0 on Render.** Settled by measurement, not
