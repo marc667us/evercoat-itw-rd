@@ -133,13 +133,51 @@ def test_the_table_is_protected_at_all(owner_session) -> None:
         "If this cutover is intentional, it is I58 and it must prove sign-in."
     )
 
-    policies = owner_session.execute(
-        text("SELECT count(*) FROM pg_policy WHERE polrelid = 'core.users'::regclass")
-    ).scalar_one()
-    assert policies == 3, (
-        f"core.users carries {policies} policies; 044 creates exactly 3 "
-        "(select, insert, update). A missing UPDATE policy re-opens I80."
+    # 🔴 COUNTING POLICIES PROVED ALMOST NOTHING. Raised by Codex: the first
+    # version asserted `count(*) == 3`, which passes against three INSERT
+    # policies, or against a SELECT policy of `USING (true)`. Assert the SHAPE:
+    # which command each governs, and that neither read nor update predicate is
+    # the constant TRUE.
+    shape = {
+        row[0]: (row[1], row[2], row[3])
+        for row in owner_session.execute(
+            text(
+                """
+                SELECT polname, polcmd::text,
+                       COALESCE(pg_get_expr(polqual, polrelid), ''),
+                       COALESCE(pg_get_expr(polwithcheck, polrelid), '')
+                  FROM pg_policy WHERE polrelid = 'core.users'::regclass
+                """
+            )
+        ).all()
+    }
+    assert set(shape) == {
+        "users_visible_within_a_shared_organization",
+        "users_identity_may_be_created",
+        "users_updatable_within_a_shared_organization",
+    }, f"core.users carries the wrong set of policies: {sorted(shape)}"
+
+    # 'r' = SELECT, 'a' = INSERT, 'w' = UPDATE.
+    assert shape["users_visible_within_a_shared_organization"][0] == "r"
+    assert shape["users_identity_may_be_created"][0] == "a"
+    assert shape["users_updatable_within_a_shared_organization"][0] == "w"
+
+    read_using = shape["users_visible_within_a_shared_organization"][1]
+    assert read_using.strip() != "true", (
+        f"the read policy's USING expression is {read_using!r}. A constant TRUE "
+        "re-opens I55 in full while every count-based test stays green."
     )
+    assert "organization_members" in read_using, (
+        f"the read policy's USING expression is {read_using!r} and does not "
+        "consult core.organization_members, so it cannot be scoping on shared "
+        "membership."
+    )
+    upd_using, upd_check = shape["users_updatable_within_a_shared_organization"][1:]
+    permissive = "the UPDATE policy is permissive. It is not what refuses the "
+    permissive += "cross-tenant rename today, but it is the only thing that would "
+    permissive += "if the read policy were ever widened -- see 044's matrix."
+    assert upd_using.strip() != "true", permissive
+    assert upd_check.strip() != "true", permissive
 
 
 def test_no_tenant_context_means_no_users(app_engine) -> None:
@@ -258,8 +296,38 @@ def test_a_deactivated_member_is_still_resolvable(app_engine, owner_session, two
         "actor through core.users. See the policy comment in migration 044."
     )
 
+    # 🔴 A DIRECT READ IS NOT THE CLAIM. Raised by Codex: the assertion above
+    # passes while the INNER joins the justification is built on still drop
+    # their parent rows. So run a REAL one -- this is `list_members`'
+    # production query (`app/api/admin.py`), INNER by construction, and the
+    # row it would lose is the membership itself.
+    with app_engine.connect() as conn:
+        conn.execute(
+            text("SELECT set_config('app.current_org', :o, false)"),
+            {"o": str(f["org_a"])},
+        )
+        rows = conn.execute(
+            text(
+                """
+                SELECT om.id, u.display_name
+                  FROM core.organization_members om
+                  JOIN core.users u ON u.id = om.user_id
+                 WHERE om.user_id = :u
+                """
+            ),
+            {"u": f["user_a"]},
+        ).all()
 
-def test_the_cross_tenant_rename_is_refused(app_engine, two_orgs_two_users) -> None:
+    assert len(rows) == 1, (
+        "the deactivated member vanished from an INNER JOIN through "
+        "core.users -- the Administration members list would silently lose "
+        "the row, not merely the name. This is the failure the policy's "
+        "status decision exists to prevent, and the direct read above cannot "
+        "see it."
+    )
+
+
+def test_the_cross_tenant_rename_is_refused(app_engine, owner_session, two_orgs_two_users):
     """I80, as the exact statement that was measured doing it.
 
     Run 2026-08-23 as `evercoat_app` under organization A's GUC against a
@@ -321,6 +389,21 @@ def test_the_cross_tenant_rename_is_refused(app_engine, two_orgs_two_users) -> N
         f"{caught.value}. The test must fail on the boundary, not on a typo."
     )
 
+    # 🔴 THE "STILL UNCHANGED" CHECK BELONGS HERE, NOT IN ITS OWN TEST.
+    # It was a separate test, and Codex showed that made it near-vacuous:
+    # pytest builds a FRESH fixture per test, so the separate version was
+    # reading a user its own fixture had just created and nothing had
+    # attempted to rename. It asserted that an untouched row was untouched.
+    # Read as the owner, so this observes the STORED row rather than a
+    # policy's view of it -- a refusal that still wrote would otherwise look
+    # identical to a refusal that did not.
+    stored = owner_session.execute(
+        text("SELECT display_name FROM core.users WHERE id = :u"), {"u": f["user_b"]}
+    ).scalar_one()
+    assert stored == "I55 member B", (
+        f"organization B's user is now named {stored!r}. The rename raised and was applied anyway."
+    )
+
 
 def test_a_rename_inside_the_organization_still_works(app_engine, two_orgs_two_users) -> None:
     """🔴 The half that was missing, and the one that catches a deny-all.
@@ -359,21 +442,6 @@ def test_a_rename_inside_the_organization_still_works(app_engine, two_orgs_two_u
         f"(got {renamed!r}). Migration 044 has made core.users read-only "
         "rather than org-scoped, and every cross-tenant test in this file "
         "passes vacuously against that."
-    )
-
-
-def test_the_row_is_unchanged_after_the_refusal(owner_session, two_orgs_two_users) -> None:
-    """A refusal that still wrote would be the worst of both.
-
-    Read as the owner so this observes the stored row rather than a policy's
-    view of it.
-    """
-    f = two_orgs_two_users
-    name = owner_session.execute(
-        text("SELECT display_name FROM core.users WHERE id = :u"), {"u": f["user_b"]}
-    ).scalar_one()
-    assert name == "I55 member B", (
-        f"organization B's user is now named {name!r}. The rename was refused and applied anyway."
     )
 
 
@@ -428,29 +496,95 @@ def test_the_binding_lookup_resolves_an_id_and_nothing_else(app_engine, two_orgs
     )
 
 
-def test_the_binding_lookup_is_not_public(owner_session) -> None:
-    """A definer function granted to PUBLIC is granted to every future role.
+def test_the_binding_lookup_runs_as_a_non_superuser_and_only_for_the_app(owner_session):
+    """🔴 THE DEFECT THIS MIGRATION ALMOST SHIPPED, PINNED AS A TEST.
 
-    Same finding shape as migration 035, which had to take `principal_for_subject`
-    back from PUBLIC after it shipped that way.
+    `core.user_id_for_subject` is SECURITY DEFINER, which means it runs as its
+    OWNER. The owner is whoever executed `CREATE FUNCTION` unless it is pinned,
+    and this database applies migrations as `postgres`. Measured after the
+    first apply: the function was owned by **postgres**, `rolsuper = true`,
+    `rolbypassrls = true` -- outside RLS permanently, including after the I58
+    FORCE cutover. That is I56, and migration 044's comment claimed
+    `evercoat_owner` the whole time. Migration 033 had already written the rule
+    three migrations earlier.
+
+    Neither reviewer found it; `pg_proc` did.
+
+    The privilege half was raised by Codex separately: asserting only that
+    PUBLIC cannot execute passes while `evercoat_worker` or `evercoat_report`
+    can. Assert the WHOLE access list.
     """
-    public_can = owner_session.execute(
+    owner, secdef, volatility, config = owner_session.execute(
         text(
             """
-            SELECT has_function_privilege('public',
-                'core.user_id_for_subject(text)', 'EXECUTE')
+            SELECT pg_get_userbyid(p.proowner), p.prosecdef, p.provolatile,
+                   COALESCE(array_to_string(p.proconfig, ','), '')
+              FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'core' AND p.proname = 'user_id_for_subject'
             """
         )
+    ).one()
+
+    assert owner == "evercoat_owner", (
+        f"core.user_id_for_subject is owned by {owner!r}. SECURITY DEFINER runs "
+        "as the owner; migration 044 must pin it with ALTER FUNCTION ... OWNER TO."
+    )
+
+    is_super = owner_session.execute(
+        text("SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = :r"),
+        {"r": owner},
+    ).scalar_one()
+    assert is_super is False, (
+        f"core.user_id_for_subject runs as {owner!r}, which is a superuser or "
+        "holds BYPASSRLS. A definer owned by such a role is outside RLS "
+        "permanently -- I56, and the reason I58 has to re-owner all four."
+    )
+
+    assert secdef is True, "the function is no longer SECURITY DEFINER"
+    assert volatility == "s", (
+        f"volatility is {volatility!r}, not STABLE. A VOLATILE definer can be "
+        "given side effects without this test noticing."
+    )
+    assert "search_path=core, pg_temp" in config, (
+        f"proconfig is {config!r}. A SECURITY DEFINER function without a pinned "
+        "search_path can be redirected by a caller-controlled schema."
+    )
+
+    # The COMPLETE access list, not just PUBLIC. Only the owner and the runtime
+    # role may execute it; `evercoat_worker`, `evercoat_report` and
+    # `evercoat_breakglass` must not.
+    grantees = set(
+        owner_session.execute(
+            text(
+                """
+                SELECT r.rolname
+                  FROM pg_roles r
+                 WHERE has_function_privilege(
+                           r.rolname, 'core.user_id_for_subject(text)', 'EXECUTE')
+                   AND NOT r.rolsuper
+                """
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert grantees == {"evercoat_owner", "evercoat_app"}, (
+        f"core.user_id_for_subject is executable by {sorted(grantees)}. It is "
+        "SECURITY DEFINER and reads across every tenant by design; only the "
+        "runtime role may call it."
+    )
+
+    public_can = owner_session.execute(
+        text("SELECT has_function_privilege('public', 'core.user_id_for_subject(text)', 'EXECUTE')")
     ).scalar_one()
     assert public_can is False, (
-        "core.user_id_for_subject is executable by PUBLIC. It is SECURITY "
-        "DEFINER and reads across every tenant by design; only evercoat_app "
-        "may call it."
+        "core.user_id_for_subject is executable by PUBLIC -- the same finding "
+        "migration 035 had to fix for principal_for_subject after it shipped."
     )
 
 
-def test_sign_in_still_works(owner_session) -> None:
-    """🔴 The thing 044 was shaped not to break.
+def test_sign_in_still_works(app_engine, owner_session) -> None:
+    """🔴 The thing 044 was shaped not to break — AS THE ROLE THAT SIGNS IN.
 
     `core.memberships_for_subject` runs BEFORE an organization is chosen — it
     is what tells a signed-in browser which organizations it may ask for — and
@@ -458,9 +592,16 @@ def test_sign_in_still_works(owner_session) -> None:
     owned by `evercoat_owner` and FORCE is off, which is the same argument
     migration 032 made and the same one I58 will have to replace.
 
+    🔴 THE FIRST VERSION CALLED IT THROUGH `owner_session` AND PROVED NOTHING.
+    Raised by Codex: the owner bypasses non-forced RLS anyway, so that version
+    stayed green even if the function were changed to SECURITY INVOKER — while
+    the real sign-in path, `evercoat_app` with no tenant GUC, would return zero
+    rows and 404 every user. It now runs on `app_engine`, with no GUC, which is
+    exactly what `GET /api/me` does.
+
     Builds its own subject: CI's database is migrated and not seeded, and a
-    version of this test that read a seeded user would fail there reporting a
-    security regression that is not present.
+    version that read a seeded user would fail there reporting a security
+    regression that is not present.
     """
     suffix = uuid.uuid4().hex[:8]
     sub = f"i55-signin-{suffix}"
@@ -481,15 +622,30 @@ def test_sign_in_still_works(owner_session) -> None:
         text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o, :u)"),
         {"o": org, "u": uid},
     )
-    owner_session.flush()
+    owner_session.commit()
 
-    rows = owner_session.execute(
-        text("SELECT * FROM core.memberships_for_subject(:s)"), {"s": sub}
-    ).all()
+    try:
+        with app_engine.connect() as conn:
+            # Deliberately NO app.current_org. That absence is the point: the
+            # browser has not chosen an organization yet, and this lookup is
+            # what offers it the list.
+            rows = conn.execute(
+                text("SELECT * FROM core.memberships_for_subject(:s)"), {"s": sub}
+            ).all()
 
-    assert len(rows) == 1, (
-        f"core.memberships_for_subject returned {len(rows)} rows for a subject "
-        "with exactly one membership. GET /api/me answers 404 for every "
-        "legitimate user and sign-in is dead. 044 enabled RLS on core.users; "
-        "if FORCE was enabled with it, that is the cause."
-    )
+        assert len(rows) == 1, (
+            f"core.memberships_for_subject returned {len(rows)} rows to "
+            "evercoat_app for a subject with exactly one membership, with no "
+            "tenant context set. GET /api/me answers 404 for every legitimate "
+            "user and sign-in is dead. 044 enabled RLS on core.users; if FORCE "
+            "was enabled with it, or the function stopped being an "
+            "owner-owned SECURITY DEFINER, that is the cause."
+        )
+    finally:
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE user_id = :u"), {"u": uid}
+        )
+        owner_session.execute(text("DELETE FROM core.users WHERE id = :u"), {"u": uid})
+        owner_session.execute(text("DELETE FROM core.organizations WHERE id = :o"), {"o": org})
+        owner_session.commit()

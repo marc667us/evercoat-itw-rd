@@ -109,6 +109,30 @@ DEFINER_OWNED_BY_DESIGN = {
     # `evercoat_owner` is exempt only while RLS is ENABLED and not FORCED --
     # and `tests/db/test_033_*` fails the moment that changes.
     "core.principal_for_subject",
+    # Migration 044. The FOURTH instance, and this test caught it exactly as
+    # designed -- it went red the moment `ALTER FUNCTION ... OWNER TO
+    # evercoat_owner` was added, which is the acknowledgement being recorded
+    # here rather than a way of quieting the check.
+    #
+    # 🔴 IT ALSO CAUGHT THE OPPOSITE MISTAKE FIRST, BY NOT FIRING. 044 shipped
+    # its `CREATE FUNCTION` with no owner pin, so the function was owned by
+    # `postgres` -- a SUPERUSER with BYPASSRLS -- while the migration's own
+    # comment claimed `evercoat_owner`. This list only catches definers moved
+    # TO `evercoat_owner`, so a superuser-owned one is invisible to it, and
+    # nothing in the suite would ever have said so. That is I56's exact shape,
+    # created three migrations after 033 wrote the warning.
+    #
+    # Why it must be a definer at all: 044 makes a user in ANOTHER
+    # organization unreadable, and `keycloak_sub` is globally unique, so an
+    # administrator could otherwise neither find nor create a human who
+    # already has an account elsewhere -- multi-organization membership, which
+    # is the reason `core.users` has no `organization_id`, would break.
+    #
+    # Same limit as the three above: `evercoat_owner` is exempt only while RLS
+    # is ENABLED and not FORCED, and
+    # `tests/db/test_044_user_directory_is_not_global.py` asserts the owner is
+    # not a superuser and fails the moment that changes.
+    "core.user_id_for_subject",
     # Migration 015. The trigger that freezes the composition of a
     # non-draft formula version looks that version up before deciding.
     # As SECURITY INVOKER, a session whose RLS view of

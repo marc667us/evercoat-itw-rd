@@ -77,6 +77,20 @@
 --    Visibility of a person's name is not the same control as their ability
 --    to sign in, which is `status` and Keycloak's job.
 --
+--    ⚠️ THE JUSTIFICATION COVERS THE NAME, AND THE POLICY GRANTS THE ROW.
+--    Raised by Codex, and correct: every one of those eleven joins selects
+--    `display_name`, and none of them selects `email` or `keycloak_sub`. So
+--    the reasoning above argues for attribution and the policy delivers
+--    attribution **plus contact details and an authentication identifier**
+--    for a former member of your own organization. RLS is row-level and
+--    cannot express the difference; separating them needs column privileges
+--    or a view, and `list_members` legitimately shows emails for the same
+--    people. Recorded as **I81** rather than widened or quietly ignored.
+--    Note the direction of travel: before 044 those columns were readable
+--    for all 571 users in every tenant. This narrows that to former members
+--    of the reader's own organization, which is a large reduction and not
+--    yet the right answer.
+--
 -- 2. 🔴 THE `rls_permissive()` PREFIX IS NOT USED HERE, AND THAT IS ALSO
 --    DELIBERATE. Every policy written before 032 carries
 --    `(core.rls_permissive() AND core.current_org_id() IS NULL) OR ...`.
@@ -156,14 +170,32 @@ COMMENT ON POLICY users_visible_within_a_shared_organization ON core.users IS
 -- junk identity row. That is a directory-hygiene concern, not a
 -- confidentiality one, and it is reachable only behind that permission.
 --
--- ⚠️ The `keycloak_sub` UNIQUE constraint is enforced outside RLS, as all
--- unique constraints are. So an INSERT of a subject that already exists in
--- another organization raises a unique violation rather than succeeding —
--- which tells the caller that subject exists. That channel is inherent to a
--- globally-unique identifier and is not closed here; it is named so nobody
--- later mistakes it for a leak this migration introduced. It discloses
--- existence of a subject the caller already had to name exactly, and no
--- attribute of it.
+-- ⚠️ UNIQUE CONSTRAINTS ARE ENFORCED OUTSIDE RLS, AND THERE ARE **TWO** ON
+-- THIS TABLE. An INSERT that collides raises rather than succeeding, which
+-- tells the caller a row exists. Neither channel is closed here; both are
+-- named so nobody later mistakes them for leaks this migration introduced.
+--
+--   `users_keycloak_sub_key` — inherent to a globally-unique identifier, and
+--   weak: a subject is a random UUID, so the caller must already know it
+--   exactly. It discloses existence and no attribute.
+--
+--   🔴 `users_email_key` — THE SAME CHANNEL OVER A **GUESSABLE** IDENTIFIER,
+--   and an earlier draft of this paragraph did not consider it at all. Raised
+--   by the Supervisor and measured: as `evercoat_app` scoped to organization
+--   A, inserting organization B's address raised `duplicate key value violates
+--   unique constraint "users_email_key"`, while an unused address inserted
+--   cleanly. A holder of `admin.users` in ANY tenant can therefore test
+--   `firstname.lastname@competitor.com`, or sweep a domain, and learn which
+--   named individuals and which companies exist on the platform — leaving no
+--   row behind, so the probe repeats without limit. That is the class of
+--   information this migration exists to protect, reached through a
+--   constraint rather than through a policy.
+--
+--   The route makes the *refusal* generic (I72's reasoning), but 201 and 409
+--   remain distinguishable, so the oracle survives. Closing it properly is a
+--   schema decision — email uniqueness would have to become per-organization,
+--   which reaches `messaging/service.py`'s `@mention` resolution — and it is
+--   recorded as **I83** rather than half-done inside an RLS migration.
 CREATE POLICY users_identity_may_be_created ON core.users
     FOR INSERT
     WITH CHECK (true);
@@ -257,8 +289,29 @@ COMMENT ON POLICY users_updatable_within_a_shared_organization ON core.users IS
 --
 -- So: one narrow lookup that resolves an EXACT subject to an id and returns
 -- nothing else. No email, no display name, no status, no enumeration — the
--- caller must already know the exact subject string, and the unique
--- constraint already tells them whether it exists.
+-- caller must already know the exact subject string.
+--
+-- ⚠️ WHAT IT DISCLOSES, STATED HONESTLY. An earlier draft of this comment said
+-- it reveals nothing the UNIQUE constraint does not. **That is not true**, and
+-- Codex was right to say so. Two things are given away beyond existence:
+--
+--   1. **The user's uuid.** The constraint discloses only that a subject
+--      exists; this hands over the identifier. That matters here more than it
+--      would elsewhere, because `project_members.user_id`, `tasks
+--      .assigned_user_id` and several others are plain `REFERENCES
+--      core.users(id)` — referential integrity bypasses RLS, which is the hole
+--      `app/core/tenancy.py` exists to guard **in Python**. So the uuid is an
+--      input to a class of attack whose only defence is application code.
+--   2. **Existence without a write.** The constraint answers only when you
+--      attempt an INSERT. This answers on a SELECT, leaving no row behind.
+--
+-- Neither is reachable without `admin.users` and the exact subject string, and
+-- the route's very next act is to bind that user to the caller's organization,
+-- at which point ordinary RLS would have shown the id anyway. The narrower
+-- design — fold resolution into a single atomic bind, so the id is returned
+-- only after the membership exists — is recorded as **I82** rather than done
+-- here, because it changes the route's transaction shape and belongs with the
+-- membership-race work.
 --
 -- SECURITY DEFINER owned by `evercoat_owner`, matching the three definers
 -- that already exist (`memberships_for_subject`, `principal_for_subject`,
@@ -275,6 +328,25 @@ CREATE OR REPLACE FUNCTION core.user_id_for_subject(p_subject TEXT)
 AS $$
     SELECT id FROM core.users WHERE keycloak_sub = p_subject
 $$;
+
+-- 🔴 PIN THE OWNER. THE FIRST VERSION OF THIS MIGRATION DID NOT, AND THE
+-- COMMENT ABOVE CLAIMED IT DID.
+--
+-- Measured after applying it: `pg_get_userbyid(proowner)` returned **postgres**
+-- — `rolsuper = true, rolbypassrls = true`. SECURITY DEFINER means "run as the
+-- owner", and the owner is whoever executed CREATE FUNCTION unless it is set.
+-- This database's migrations are applied as `postgres`, so the function ran as
+-- a superuser: **permanently outside RLS, including after the I58 FORCE
+-- cutover.** That is I56 exactly, and this migration had created a fourth
+-- instance of it while its own comment asserted it had not.
+--
+-- Migration 033 wrote the rule and the warning three migrations ago — *"CI
+-- applies migrations as postgres (superuser, bypasses RLS entirely); another
+-- deployment applies them as evercoat_owner. Leaving that to chance makes
+-- behaviour depend on who ran the migration."* Same shape, missed anyway, and
+-- neither reviewer caught it; it was found by reading `pg_proc` rather than
+-- the diff.
+ALTER FUNCTION core.user_id_for_subject(TEXT) OWNER TO evercoat_owner;
 
 REVOKE ALL ON FUNCTION core.user_id_for_subject(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION core.user_id_for_subject(TEXT) TO evercoat_app;
@@ -305,7 +377,42 @@ DECLARE
     v_visible  INT;
     v_total    INT;
     v_org      UUID;
+    v_owner    TEXT;
+    v_super    BOOLEAN;
+    v_secdef   BOOLEAN;
 BEGIN
+    -- 🔴 THE CHECK THAT WOULD HAVE CAUGHT THIS MIGRATION'S OWN WORST DEFECT.
+    -- Without the ALTER above, the function was owned by `postgres` and ran as
+    -- a superuser -- outside RLS permanently, I56's exact shape, while the
+    -- comment claimed `evercoat_owner`. 033 already had this block; omitting
+    -- it here is what let a false comment stand.
+    SELECT pg_get_userbyid(p.proowner), p.prosecdef
+      INTO v_owner, v_secdef
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'core' AND p.proname = 'user_id_for_subject';
+
+    IF v_owner IS DISTINCT FROM 'evercoat_owner' THEN
+        RAISE EXCEPTION
+            'core.user_id_for_subject is owned by % -- the ALTER ... OWNER TO '
+            'did not take. SECURITY DEFINER runs as the owner, so this '
+            'function now executes with that role''s privileges.', v_owner;
+    END IF;
+
+    SELECT rolsuper INTO v_super FROM pg_roles WHERE rolname = v_owner;
+    IF v_super THEN
+        RAISE EXCEPTION
+            'core.user_id_for_subject is owned by %, which is a SUPERUSER. A '
+            'superuser-owned definer is outside RLS permanently, including '
+            'after the I58 FORCE cutover. That is I56.', v_owner;
+    END IF;
+
+    IF NOT v_secdef THEN
+        RAISE EXCEPTION
+            'core.user_id_for_subject is not SECURITY DEFINER; it reads as the '
+            'caller, returns nothing for a user in another organization, and '
+            'multi-organization invites break silently';
+    END IF;
+
     SELECT c.relrowsecurity, c.relforcerowsecurity
       INTO v_rls, v_force
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace

@@ -23,9 +23,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
+from app.core.db import guarded_write
 from app.core.logging import log_audit, log_security
 from app.core.security import Principal, get_db, require_permission
 
@@ -222,37 +224,63 @@ def invite_member(
     ).scalar_one_or_none()
 
     if existing_user_id is None:
-        user_id = session.execute(
-            text(
-                """
-                INSERT INTO core.users (keycloak_sub, email, display_name)
-                VALUES (:sub, :email, :name)
-                RETURNING id
-                """
-            ),
-            {
-                "sub": payload.keycloak_sub,
-                "email": payload.email,
-                "name": payload.display_name,
-            },
-        ).scalar_one()
-        stored_email, stored_name = str(payload.email), payload.display_name
+        # ⚠️ LOOKUP-THEN-INSERT REINTRODUCED A RACE THE UPSERT DID NOT HAVE.
+        # Two administrators inviting the same brand-new subject at once both
+        # resolve NULL, both INSERT, and the loser hits the `keycloak_sub`
+        # unique constraint -- which the old `ON CONFLICT` absorbed and this
+        # does not. Unhandled, that is a 500 on an ordinary action.
+        #
+        # `guarded_write` puts the INSERT in a SAVEPOINT so the violation
+        # refuses the statement instead of destroying the request transaction
+        # (see its docstring: `session.rollback()` here would discard the
+        # topmost transaction, which is I30's lesson).
+        #
+        # The retry is sound rather than hopeful: PostgreSQL raises a unique
+        # violation only once the conflicting transaction has COMMITTED -- while
+        # it is still in flight the INSERT blocks. So by the time we are in this
+        # handler the other administrator's row exists and resolves.
+        try:
+            with guarded_write(session):
+                user_id = session.execute(
+                    text(
+                        """
+                        INSERT INTO core.users (keycloak_sub, email, display_name)
+                        VALUES (:sub, :email, :name)
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "sub": payload.keycloak_sub,
+                        "email": payload.email,
+                        "name": payload.display_name,
+                    },
+                ).scalar_one()
+        except IntegrityError as exc:
+            raced = session.execute(
+                text("SELECT core.user_id_for_subject(:sub)"),
+                {"sub": payload.keycloak_sub},
+            ).scalar_one_or_none()
+            if raced is None:
+                # Not the subject race. `core.users` carries a SECOND unique
+                # constraint -- `users_email_key` -- so this is reached when a
+                # DIFFERENT subject already holds the submitted email address.
+                # Raised by Codex as an exact-email existence oracle, and it is
+                # one: unique constraints are enforced outside RLS, so the
+                # refusal is observable across tenants. It is answered with a
+                # deliberately GENERIC message that does not say which
+                # constraint failed, so an `admin.users` holder cannot tell an
+                # email collision from a subject collision from any other
+                # failure -- the same reasoning as I72. The driver message is
+                # never passed through; it names tables and columns.
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="the user record could not be created",
+                ) from exc
+            user_id = raced
     else:
         # The identity already exists. Bind it to this organization; do NOT
         # touch its email or display name, which belong to whoever created it.
         user_id = existing_user_id
-        stored = session.execute(
-            text("SELECT email::text, display_name FROM core.users WHERE id = :uid"),
-            {"uid": user_id},
-        ).one_or_none()
-        # ⚠️ `stored` is None when the row exists but this organization cannot
-        # see it (044's read policy) — the ordinary case for a first-time
-        # cross-organization invite. The membership written below makes it
-        # visible from the next request onward; until this transaction commits
-        # there is nothing truthful to report, so the caller's own strings are
-        # echoed and the record is authoritative, not the response.
-        stored_email = stored[0] if stored is not None else str(payload.email)
-        stored_name = stored[1] if stored is not None else payload.display_name
 
     existing = session.execute(
         text(
@@ -270,19 +298,55 @@ def invite_member(
             detail="user is already a member of this organization",
         )
 
-    member_id = session.execute(
-        text(
-            """
-            INSERT INTO core.organization_members (organization_id, user_id)
-            VALUES (:org, :uid)
-            RETURNING id
-            """
-        ),
-        {"org": principal.organization_id, "uid": user_id},
-    ).scalar_one()
+    # ⚠️ The check above is not the guarantee; `organization_members_unique`
+    # (organization_id, user_id) is. Two administrators inviting the same user
+    # concurrently both read no row and both insert, and the loser violates
+    # that constraint. Raised by Codex, and PRE-EXISTING -- the old upsert
+    # covered the `core.users` half of this race and never covered this half.
+    #
+    # Translated to the SAME 409 the explicit check returns, because it means
+    # the same thing to the caller: somebody is already a member. The driver
+    # message is not passed through; it names tables and constraints.
+    try:
+        with guarded_write(session):
+            member_id = session.execute(
+                text(
+                    """
+                    INSERT INTO core.organization_members (organization_id, user_id)
+                    VALUES (:org, :uid)
+                    RETURNING id
+                    """
+                ),
+                {"org": principal.organization_id, "uid": user_id},
+            ).scalar_one()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="user is already a member of this organization",
+        ) from exc
 
     for role_code in payload.roles:
         _grant_role(session, member_id, role_code)
+
+    # 🔴 READ THE STORED ATTRIBUTES *AFTER* THE MEMBERSHIP EXISTS, NOT BEFORE.
+    #
+    # This read used to sit in the `else` branch above, and the Supervisor
+    # showed it was DEAD CODE: 044's read policy admits a row only when the
+    # reader shares an organization with that user (or is that user), and both
+    # conditions imply a membership row -- which the check above would already
+    # have turned into a 409. So on every path that reached a 201, the lookup
+    # returned None and the response fell back to echoing the caller's own
+    # submission. The commit claimed it returned stored values; it could not.
+    #
+    # Moving it here makes it true rather than removing it. The membership
+    # INSERT above is visible to this transaction, so the policy's EXISTS now
+    # matches and the real row is readable. `one()`, not `one_or_none()`: after
+    # a successful bind there is no legitimate way for this to miss, and a
+    # silent fallback is what produced the false report in the first place.
+    stored_email, stored_name = session.execute(
+        text("SELECT email::text, display_name FROM core.users WHERE id = :uid"),
+        {"uid": user_id},
+    ).one()
 
     write_audit(
         session,
@@ -292,7 +356,12 @@ def invite_member(
             entity_id=str(member_id),
             organization_id=principal.organization_id,
             user_id=principal.user_id,
-            new_state={"email": str(payload.email), "roles": payload.roles},
+            # ⚠️ The STORED email, not the submitted one. This recorded
+            # `payload.email` -- for a pre-existing identity that address was
+            # never written anywhere, so the audit trail asserted a value the
+            # database does not hold. A forensic record that reports the
+            # request instead of the result is worse than no record.
+            new_state={"email": stored_email, "roles": payload.roles},
             reason="membership created via Administration",
         ),
     )

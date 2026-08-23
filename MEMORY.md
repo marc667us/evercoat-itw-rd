@@ -84,6 +84,10 @@ Durable project facts. Not a debug log — temporary work belongs in `TODO.md` a
 - **A status file lies as easily as it informs.** `CONTEXT.md` claimed `MEMORY.md` and `DECISIONS.md` existed when they did not. Measure the repo; do not quote the handover.
 - **Synthetic data cannot validate scientific correctness.** Hypothesis proves internal consistency, not chemistry. The calculation engine needs review by a formulation chemist before production trust.
 - Solar's RLS is **tenant-scoped only** — reusing it unchanged would import this project's single highest risk instead of retiring it.
+- **A GLOBAL-BY-DESIGN TABLE IS INVISIBLE TO A CUTOVER THAT SWEEPS POLICIES.** Migration 032 closed I19 by making `core.rls_permissive()` FALSE, collapsing every policy to its real predicate — and `core.users` had **no policy to collapse**, so 032 silently did nothing for it. 571 rows of cross-tenant PII survived a migration whose entire subject was closing exactly that. **After any policy-wide change, enumerate the tables with RLS *disabled*, not just the policies you altered.** (2026-08-23, migration 044.)
+- **A `RETURNING` CLAUSE IS A READ, AND AN UPSERT IS A WRITE TO A ROW YOU DID NOT CHOOSE.** `INSERT ... ON CONFLICT (globally_unique_key) DO UPDATE ... RETURNING` reached across tenants in both directions from one statement, behind a legitimate permission. **An `ON CONFLICT` target that is globally unique is a cross-tenant selector.** (I80.)
+- **CHECK WHICH POLICY IS ACTUALLY LOAD-BEARING BEFORE THE COMMENT CLAIMS ONE IS.** PostgreSQL applies the **SELECT** policy to rows an `UPDATE` reads through its `WHERE` clause, so a restrictive UPDATE predicate sitting beside a restrictive SELECT predicate is defence in depth, not an independent boundary. Measure the matrix; do not reason it. (2026-08-23.)
+- **A DENY-ALL PASSES EVERY CROSS-TENANT TEST YOU WROTE.** RLS enabled with no usable UPDATE policy makes a table read-only, and every "org B cannot write here" assertion goes green against it. **Each isolation test needs its positive twin: the same action, inside the org, must SUCCEED.** (2026-08-23.)
 
 ## Environment
 

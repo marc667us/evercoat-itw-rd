@@ -1,5 +1,136 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-23 — the user directory was global, and one route wrote across tenants
+
+Migration **044**. API suite **654 passed / 0 failed / 11 skipped**
+(`tests/db` skips zero). ruff, ruff format, mypy (86 files) green.
+Downgrade/upgrade roundtrip verified.
+
+### 🔴 I55 — `core.users` HAD NO RLS AT ALL, SO 032 NEVER TOUCHED IT
+
+Migration 032 closed I19 by making `core.rls_permissive()` FALSE, which
+collapsed every policy to its real predicate. `core.users` had **no policy to
+collapse**. Measured as `evercoat_app` with no tenant context:
+
+    SELECT count(*) FROM core.organization_members;   -->    0
+    SELECT count(*) FROM core.users;                  -->  571
+
+Tenant *records* failed closed. The user *directory* did not — 571 rows, every
+tenant, email addresses and display names.
+
+⚠️ **The register said 290.** It had been quoted from a handover rather than
+re-measured, and the development database had grown since. The defect was real
+either way, but the number in front of it was stale.
+
+### 🔴 I80 — FOUND WHILE MEASURING I55: A CROSS-TENANT WRITE
+
+`invite_member` ran `INSERT ... ON CONFLICT (keycloak_sub) DO UPDATE SET
+display_name`. Replayed as `evercoat_app` under organization A's GUC against a
+subject belonging only to organization B:
+
+    id            54648e11-...
+    email         owner-08f856f3@example.test      <-- B's real address
+    display_name  PWNED BY ORG A                   <-- overwritten
+
+An `admin.users` holder in any organization could rename a user in any other,
+and `RETURNING` disclosed that user's real email even though the caller had
+supplied a different one. One statement, both directions.
+
+### What 044 does
+
+- **RLS on `core.users`**, predicate: readable if the reader shares an
+  organization with that user, or is that user.
+- **`core.user_id_for_subject`** — because 044's read policy makes an existing
+  user in another organization invisible and `keycloak_sub` is globally unique,
+  so without it an administrator could neither find nor create them. Removing a
+  disclosure by deleting a feature is not a fix. It returns one uuid and no
+  personal data.
+- **`invite_member` no longer upserts** — resolve, insert only when absent,
+  never touch an existing row's email or display name, and return the STORED
+  values rather than the submitted ones.
+
+MEASURED AFTER: unscoped read **571 → 0**; the replayed rename is refused.
+
+### 🔴 THE MEMBERSHIP `status` IS NOT IN THE PREDICATE, DELIBERATELY
+
+Filtering on `core.organization_members.status` looks like hardening and is a
+data-loss bug. Eleven INNER joins resolve an actor through `core.users`
+(`projects/dashboard.py`, `opportunities/service.py`, `messaging/service.py`,
+`tasks/service.py`, `pipeline/service.py`), so a leaver would not merely lose
+their name — **the records they created would drop out of every list.**
+Whether somebody may sign in is `status` and Keycloak; whether their name
+renders on a record they made is this policy.
+
+### 🔴 THE COMMENT CLAIMED A BOUNDARY THE CODE DOES NOT HOLD
+
+The first version said the UPDATE policy is what closes I80 and that "both are
+required". Both false. The matrix was measured:
+
+    SELECT policy | UPDATE policy | result
+    --------------+---------------+-----------------------------------
+    restrictive   | restrictive   | refused              (shipped)
+    restrictive   | permissive    | refused
+    permissive    | restrictive   | refused
+    permissive    | permissive    | 'PWNED BY ORG A'     (pre-044)
+
+Either alone refuses it. A direct `UPDATE ... WHERE` with the UPDATE policy
+made permissive still changed **0 rows**, because PostgreSQL applies the SELECT
+policy to rows an UPDATE reads through its WHERE clause. The read policy does
+this work. The UPDATE policy exists so the table is not read-only, and its
+predicate is defence in depth against the read policy ever being widened.
+
+### 🔴 THE GUARD TEST COULD NOT FAIL — FOURTH TIME IN THIS PROJECT
+
+`test_the_cross_tenant_rename_is_refused` passed with the UPDATE policy
+dropped (no policy denies everyone) **and** with it made fully permissive. The
+falsification that actually reddens it is making the READ policy permissive —
+the pre-044 state. Both real failure modes are now covered:
+
+- read policy permissive (the pre-044 hole) → **3 tests red**
+- no UPDATE policy (deny-all read-only) → **2 tests red**
+
+The second is caught by a test that did not exist: **a same-organization
+rename must SUCCEED.** Every cross-tenant assertion in the file passes
+vacuously against a read-only table.
+
+### 🔴 THE REVIEW FOUND A DEFECT NEITHER REVIEWER FOUND, AND `pg_proc` DID
+
+`core.user_id_for_subject` was **owned by `postgres`** — `rolsuper = true`,
+`rolbypassrls = true` — while migration 044's own comment stated it was owned
+by `evercoat_owner`, "matching the three definers that already exist".
+
+SECURITY DEFINER runs as the owner, and the owner is whoever executed
+`CREATE FUNCTION` unless it is pinned. This database applies migrations as
+`postgres`. So the migration created a **fourth superuser-owned definer** —
+I56's exact shape, permanently outside RLS including after the I58 cutover —
+three migrations after 033 wrote the warning and the idiom.
+
+Found by reading `pg_proc`, not the diff. `test_object_ownership.py` could not
+have caught it: its sweep only flags definers wrongly moved **to**
+`evercoat_owner`, so a superuser-owned one is invisible to it. It went red the
+moment the owner was pinned, which is the acknowledgement now recorded there.
+
+### Codex — 4 findings
+
+| # | Finding | Outcome |
+|---|---|---|
+| 1 | Concurrent invites are not race-safe | **FIXED.** Independently found first; `guarded_write` + retry on `core.users`, and the **pre-existing** `organization_members_unique` half translated to the same 409 |
+| 2 | The `status` justification covers the NAME; the policy grants the ROW | **ACCEPTED, recorded as I81.** Correct: all eleven joins select `display_name`, none selects `email`. RLS cannot express column granularity |
+| 3 | `user_id_for_subject` discloses more than the UNIQUE constraint | **ACCEPTED, comment corrected, recorded as I82.** It hands over the uuid, which feeds the FK-reference hole `tenancy.py` guards in Python |
+| 4 | Guard tests pass against broken implementations | **FIXED.** Policy-shape assertions (`polcmd` + non-constant predicates), a real INNER-join query for the `status` claim, the disconnected row-unchanged test merged into the refusal test, full definer/ACL/volatility/`search_path` assertions, and sign-in re-run as `evercoat_app` with no GUC instead of as the owner |
+
+### Supervisor — 3 findings, disjoint from Codex except one
+
+| # | Finding | Outcome |
+|---|---|---|
+| 1 | **Cross-tenant email existence oracle** through `users_email_key` | **ACCEPTED, recorded as I83 (P1).** Measured. The same channel as `keycloak_sub` but over a **guessable** identifier — a domain can be swept. Closing it is a schema decision reaching `@mention` resolution |
+| 2 | The definer is owned by `postgres` | Confirms the defect found above, 10/10 confidence |
+| 3 | "Return the STORED values" was **unreachable** | **FIXED.** The read sat where 044's policy makes the row invisible, so every 201 echoed the caller's submission and the audit recorded an email never written. Moved **after** the membership INSERT, where the policy's `EXISTS` matches — proved: `<<invisible>>` before the bind, the real address after |
+
+**Two reviewers, near-disjoint again — the 12th session running.**
+
+
+
 ## 2026-08-20 (pt2) — Laboratory and Testing have screens, and a controlled mass was a float
 
 **21 static pages** (from 19). Web typecheck + lint clean · **130 Vitest**
