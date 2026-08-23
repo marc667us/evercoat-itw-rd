@@ -258,10 +258,35 @@ test.describe("navigation gating", () => {
   });
 
   test("no page contains a dead internal link", async ({ page }) => {
-    // Same budget as the sidebar crawl above, for the same measured reason —
-    // this one is the heavier of the two, because it follows EVERY internal
-    // anchor it finds on ten pages rather than one link per sidebar entry.
-    test.slow();
+    // 🔴 THE HEAVIEST TEST IN THE SUITE, AND `test.slow()` WAS NOT ENOUGH.
+    //
+    // It follows EVERY internal anchor on ten pages, where the sidebar crawl
+    // above follows one link per sidebar entry. `test.slow()` tripled the
+    // budget to 180s and it STILL timed out against the demonstration tunnel.
+    //
+    // Measured 2026-08-23 rather than guessed at:
+    //   * ten crawled pages carry 157 anchors, deduplicated to roughly
+    //     thirty-five distinct destinations (the sidebar repeats on each);
+    //   * a bare HTML fetch through the tunnel costs ~1.2s, measured three
+    //     times: 1.309s / 1.193s / 1.148s;
+    //   * but Playwright navigates with `waitUntil: "load"`, so each hop also
+    //     pulls JS chunks and CSS — several times the HTML cost.
+    //
+    // Thirty-five browser navigations at that cost lands just past 180s, which
+    // is exactly the marginal overrun observed. 600s is that measurement with
+    // headroom, not a number picked to make a red test green.
+    //
+    // ⚠️ THE COST IS THE TUNNEL, NOT THE APPLICATION. Against the static
+    // export that actually deploys, this crawl finishes in about two minutes;
+    // both crawls together ran in 3.5m against a local dev server. If this
+    // test ever fails on a FAST origin, that is a real defect and the budget
+    // is not the reason.
+    //
+    // Kept in the live profile deliberately. A dead link is the most visible
+    // possible failure in a client demonstration, and dropping the crawl from
+    // the deployed run to save minutes would remove the coverage exactly where
+    // it matters most.
+    test.setTimeout(600_000);
 
     // The sidebar check above is not enough, and Codex said so: the
     // Administration header advertised /admin/roles, /admin/permissions and
