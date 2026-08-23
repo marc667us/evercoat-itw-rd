@@ -44,7 +44,25 @@ import {
   type KnowledgeDocumentPage,
   type KnowledgePassage,
 } from "./knowledge";
-import { fetchBatches, type Batch } from "./laboratory";
+import {
+  authorizeBatch,
+  completeBatch,
+  createSample,
+  fetchBatch,
+  fetchBatches,
+  raiseDeviation,
+  recordProcessParameter,
+  recordWeighing,
+  reviewBatch,
+  startBatch,
+  type Batch,
+  type BatchDetail,
+  type DeviationRequest,
+  type ProcessParameterRequest,
+  type ReviewRequest,
+  type SampleRequest,
+  type WeighingRequest,
+} from "./laboratory";
 import {
   fetchMaterials,
   fetchSuppliers,
@@ -479,6 +497,134 @@ export function useIngestKnowledgeDocument(): {
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
     result: mutation.data,
+    reset: mutation.reset,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The batch workspace — one query, and every step of the bench lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * One batch, with its weigh-up sheet.
+ *
+ * 🔴 THE KEY CARRIES `batchId`, `organizationId` **AND** `userId`. The last
+ * one is not decoration: a key of `[resource, orgId]` already served one
+ * user's rows to another on this project. Two people at the same bench, in the
+ * same organization, do not see the same sheet — RLS filters by project
+ * membership — so caching on the organization alone would hand a technician a
+ * batch they are not a member of the project for.
+ */
+export function useBatch(batchId: string): LiveOnly<BatchDetail> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "laboratory-batch",
+      batchId,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && batchId.length > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchBatch(resolved.credentials, batchId, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * Every bench action, behind one hook.
+ *
+ * 🔴 EACH ONE INVALIDATES AND REFETCHES RATHER THAN PATCHING LOCAL STATE.
+ * `status`, and the per-line `deviation`, are DERIVED and server-owned (§10).
+ * A screen that advanced `status` optimistically would be computing a
+ * safety-critical field in the browser, which is the defect §4 exists to
+ * prevent. The round trip is the point, not a cost.
+ *
+ * The batch list is invalidated too: `unweighed_count` and `deviation_count`
+ * on the queue are stale the moment any of these succeeds, and a queue that
+ * still shows "3 unweighed" after the third line was weighed is the kind of
+ * quiet wrongness that makes people stop trusting the screen.
+ */
+export function useBatchActions(batchId: string): {
+  readonly authorize: () => void;
+  readonly start: () => void;
+  readonly weigh: (componentId: string, request: WeighingRequest) => void;
+  readonly addProcessParameter: (request: ProcessParameterRequest) => void;
+  readonly addDeviation: (request: DeviationRequest) => void;
+  readonly addSample: (request: SampleRequest) => void;
+  readonly complete: () => void;
+  readonly review: (request: ReviewRequest) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly reset: () => void;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["laboratory-batch", batchId] });
+    void queryClient.invalidateQueries({ queryKey: ["laboratory-batches"] });
+    // A sample is what a test cites, so the test queue can change too.
+    void queryClient.invalidateQueries({ queryKey: ["testing-tests"] });
+  };
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (job: { readonly label: string; readonly run: () => Promise<unknown> }) => {
+      await job.run();
+      return job.label;
+    },
+    onSuccess: refresh,
+  });
+
+  const run = (label: string, make: () => Promise<unknown>) =>
+    mutation.mutate({ label, run: make });
+
+  return {
+    authorize: () => run("authorize", () => authorizeBatch(credentials(), batchId)),
+    start: () => run("start", () => startBatch(credentials(), batchId)),
+    weigh: (componentId, request) =>
+      run("weigh", () => recordWeighing(credentials(), batchId, componentId, request)),
+    addProcessParameter: (request) =>
+      run("process-parameter", () => recordProcessParameter(credentials(), batchId, request)),
+    addDeviation: (request) =>
+      run("deviation", () => raiseDeviation(credentials(), batchId, request)),
+    addSample: (request) => run("sample", () => createSample(credentials(), batchId, request)),
+    complete: () => run("complete", () => completeBatch(credentials(), batchId)),
+    review: (request) => run("review", () => reviewBatch(credentials(), batchId, request)),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
     reset: mutation.reset,
     unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
   };

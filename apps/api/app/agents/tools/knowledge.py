@@ -31,7 +31,7 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.core.embedding import EmbeddingUnavailableError, build_embedder
+from app.core.embedding import EmbeddingUnavailableError, _tokens, build_embedder
 from app.domains.knowledge.service import retrieve
 
 logger = logging.getLogger(__name__)
@@ -66,11 +66,142 @@ MAX_PASSAGES = 4
 # passages -- possibly from CONFIDENTIAL-tier documents -- presented as
 # responsive. The refusal exists precisely so that does not happen.
 #
-# ⚠️ 0.74 SITS IN A NARROW MEASURED GAP (0.719 .. 0.767) ON A SMALL SAMPLE.
-# It removes obvious nonsense; it is NOT a relevance guarantee, and it is
-# calibrated for `HashingEmbedding`. A neural embedder has a completely
-# different distance distribution and MUST have this re-derived, not inherited.
+# ⚠️ 0.74 SAT IN A NARROW MEASURED GAP (0.719 .. 0.767) ON A SMALL SAMPLE.
+#
+# 🔴 THAT GAP HAS SINCE CLOSED, AND A THRESHOLD ALONE NO LONGER SEPARATES
+# RELEVANT FROM IRRELEVANT. Re-measured 2026-08-23 against a five-document
+# demonstration library, which is still tiny but four times the corpus the
+# number above was derived on:
+#
+#     RELATED                                        best distance
+#       post cure before sanding microspheres            0.554
+#       what tolerance applies when weighing a batch     0.662
+#       how is adhesion reported                         0.633
+#       vacuum de-aeration during mixing                 0.716
+#     UNRELATED
+#       my favourite colour is blue                      0.664   <-- admitted
+#       thoughts on the weather today                    0.714   <-- admitted
+#       who won the football last night                  0.747
+#       what time does the train leave                   0.773
+#       recipe for banana bread                          0.859
+#
+# The ranges OVERLAP: "my favourite colour is blue" (0.664) scores better than
+# a genuinely related question (0.716). No value of MAX_DISTANCE separates
+# these two sets, so retuning the constant would be picking a number that
+# looks decisive and decides nothing -- and this project has shipped that
+# shape before.
+#
+# The cause is not a bad constant, it is what the default embedder IS.
+# `HashingEmbedding` is LEXICAL (see `app/core/embedding.py`, which says so in
+# its first paragraph): tokens and sub-word trigrams hashed into buckets and
+# L2-normalised. A short question made of common words lands near everything,
+# because normalisation makes the few buckets it does light up dominate. The
+# distance is a real number and it is not a relevance signal at this length.
+#
+# So the guard below is a MECHANISM rather than a tuned constant: for a
+# lexical embedder, relevance IS shared vocabulary, and requiring it is
+# honest where approximating it through a distance is not. MAX_DISTANCE stays
+# as the second half of the cut -- it still removes the far tail -- but it is
+# no longer asked to do work it cannot do.
+#
+# ⚠️ A neural embedder changes both halves. The distance distribution must be
+# re-derived, and the overlap requirement should then be relaxed rather than
+# kept, because a neural model is expected to match a paraphrase that shares
+# no words at all. That is I77 and it is still open.
 MAX_DISTANCE = 0.74
+
+# Words that carry no subject matter. Deliberately SHORT: this is not an
+# information-retrieval stopword list, it is the set of tokens whose presence
+# in both a question and a passage says nothing about whether the passage
+# answers the question. Over-pruning here would start refusing real questions.
+_EMPTY_WORDS = frozenset(
+    [
+        "a",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "but",
+        "by",
+        "can",
+        "could",
+        "do",
+        "does",
+        "doing",
+        "for",
+        "from",
+        "had",
+        "has",
+        "have",
+        "how",
+        "i",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "me",
+        "my",
+        "no",
+        "not",
+        "of",
+        "on",
+        "or",
+        "our",
+        "so",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "to",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "with",
+        "would",
+        "you",
+        "your",
+        "about",
+    ]
+)
+
+
+def _shares_subject_matter(question: str, passage: str) -> bool:
+    """Does the question use any content word this passage also uses?
+
+    🔴 THE POINT: with a lexical embedder there is no such thing as a match
+    that shares no vocabulary. If the question and the passage have no content
+    word in common, a small cosine distance is an artefact of hashing and
+    normalisation, not evidence that the passage is responsive.
+
+    Deliberately ONE shared word, not a proportion. A chemist asking about
+    "microspheres" against a passage that mentions microspheres once has asked
+    a good question, and requiring a percentage would refuse exactly the narrow
+    technical queries this library exists to answer.
+    """
+    asked = {t for t in _tokens(question) if t not in _EMPTY_WORDS and len(t) > 2}
+    if not asked:
+        # No content words at all -- "why?" -- which the base cannot answer.
+        return False
+    found = {t for t in _tokens(passage) if t not in _EMPTY_WORDS and len(t) > 2}
+    return bool(asked & found)
 
 
 def search_knowledge(
@@ -151,5 +282,19 @@ def search_knowledge(
         # The cut, applied HERE rather than in SQL, so `retrieve` stays a
         # ranking primitive and the policy about what is too poor to quote
         # lives with the caller that has to defend the quotation.
+        #
+        # 🔴 TWO CONDITIONS, AND THE SECOND IS THE ONE THAT WORKS. See
+        # MAX_DISTANCE above: on a five-document library the related and
+        # unrelated distance ranges overlap, so the threshold alone admitted
+        # "my favourite colour is blue". Shared subject matter is what a
+        # lexical embedder can actually attest to.
+        #
+        # ⚠️ THIS GUARD IS ON THE MSD PATH ONLY, NOT ON `/knowledge` SEARCH.
+        # The screen deliberately shows weak matches with their distance, and
+        # says why: "a person scanning a ranked list can judge a weak match for
+        # themselves and a hidden result they asked for is worse than a visible
+        # bad one." MSD QUOTES what it gets back as though it were responsive,
+        # so it does not get that latitude.
         if float(p["distance"]) <= MAX_DISTANCE
+        and _shares_subject_matter(question, f"{p['title']} {p['content']}")
     ]

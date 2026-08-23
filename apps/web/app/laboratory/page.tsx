@@ -27,6 +27,8 @@
  * return rather than one derived in the browser.
  */
 
+import Link from "next/link";
+
 import { LiveOnlyPage, DataSourceError } from "@/components/ui/data-source-banner";
 import { Absent } from "@/components/ui/record-link";
 import { StatusBadge, type DisplayStatus } from "@/components/ui/status-badge";
@@ -123,7 +125,23 @@ export default function LaboratoryPage() {
                     {b.batch_number}
                   </span>
                   <h2 className="flex-1 text-sm font-semibold text-slate-900">
-                    {b.formula_code} · {b.formula_name}
+                    {/*
+                      The queue is a list of things to DO, so every row opens
+                      the bench workspace. Before this link existed the eleven
+                      lifecycle routes had no caller anywhere in the browser —
+                      the same "a route nobody calls" defect this project
+                      recorded on the knowledge ingest endpoint.
+
+                      A query parameter, not a path segment: see the workspace
+                      page's header for why a live batch UUID cannot be
+                      pre-rendered under `output: "export"`.
+                    */}
+                    <Link
+                      href={`/laboratory/batch?id=${encodeURIComponent(b.id)}`}
+                      className="underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900"
+                    >
+                      {b.formula_code} · {b.formula_name}
+                    </Link>
                   </h2>
                   {d.status === "yellow" ? (
                     <StatusBadge
