@@ -101,6 +101,31 @@
       ]
     },
     {
+      "clientId": "evercoat-test",
+      "name": "EvercoatITWRD automated tests",
+      "_comment": "AUTOMATED TESTS ONLY, AND SEPARATE FROM evercoat-web ON PURPOSE. tests/integration/test_auth_end_to_end.py needs a password grant to mint a real token without a browser, and evercoat-web is a PKCE public client whose directAccessGrantsEnabled MUST stay false -- enabling it there would weaken the flow real users sign in through. Measured 2026-08-23: with this client the eleven auth round-trip tests run and pass; without it they SKIP, and had skipped in every session since they were written. standardFlowEnabled is false because nothing redirects to it.",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocolMappers": [
+        {
+          "name": "evercoat-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "evercoat-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
       "clientId": "evercoat-api",
       "name": "EvercoatITWRD API",
       "enabled": true,

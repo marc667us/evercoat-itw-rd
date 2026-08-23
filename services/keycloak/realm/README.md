@@ -128,3 +128,42 @@ SOPS. It must never be the value in this file.
 
 **The worker holds no realm role.** Background jobs act on records they
 are given, not on an identity that can approve anything.
+
+### `evercoat-test` — public, direct grant, AUTOMATED TESTS ONLY
+
+`apps/api/tests/integration/test_auth_end_to_end.py` proves the one thing
+no mock can: that a token an actual identity provider minted survives
+signature, issuer, audience and expiry checks and resolves to a principal.
+To do that without a browser it needs a **password grant**.
+
+🔴 **It must not be `evercoat-web`.** That is the PKCE public client real
+users sign in through, and its `directAccessGrantsEnabled` stays `false`.
+Turning it on there to make a test pass would weaken the production login
+flow — so the grant lives on a client nothing else uses, with no redirect
+URIs and `standardFlowEnabled: false` because nothing redirects to it.
+
+It carries the same `oidc-audience-mapper` as `evercoat-web`. Without it
+the token's `aud` omits `evercoat-api` and every request is rejected as an
+invalid audience.
+
+⚠️ **These eleven tests had SKIPPED in every session since they were
+written**, because the four variables below were never set and the file
+skips loudly rather than failing when they are absent. A skip is a third
+state, not a pass. Measured 2026-08-23 with the client and the variables
+in place: **11 passed in 55.82s** against a real Keycloak over the tunnel.
+
+To run them, and to make `scripts/live-suite.sh` run them instead of
+counting eleven skips:
+
+```bash
+export TEST_KEYCLOAK_URL="<base>/auth"      # e.g. https://<tunnel>/auth
+export TEST_API_URL="<base>"
+export TEST_KEYCLOAK_PASSWORD='<the demo user password>'
+export TEST_ORGANIZATION_ID="<an org the user is a member of>"
+export TEST_KEYCLOAK_CLIENT="evercoat-test" # the default; set it explicitly
+export TEST_KEYCLOAK_REALM="evercoat"
+```
+
+`TEST_ORGANIZATION_ID` is required because every authenticated route needs
+`X-Organization-Id` and the tests must supply one the user really belongs
+to — a wrong value produces 403s that read as broken authentication.
