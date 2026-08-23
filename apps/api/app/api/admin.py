@@ -196,18 +196,63 @@ def invite_member(
             detail=f"unknown roles: {sorted(unknown)}",
         )
 
-    user_id = session.execute(
-        text(
-            """
-            INSERT INTO core.users (keycloak_sub, email, display_name)
-            VALUES (:sub, :email, :name)
-            ON CONFLICT (keycloak_sub) DO UPDATE
-                SET display_name = EXCLUDED.display_name
-            RETURNING id
-            """
-        ),
-        {"sub": payload.keycloak_sub, "email": payload.email, "name": payload.display_name},
-    ).scalar_one()
+    # 🔴 This was an upsert, and the upsert was a cross-tenant write (I80).
+    #
+    #     INSERT ... ON CONFLICT (keycloak_sub) DO UPDATE
+    #         SET display_name = EXCLUDED.display_name
+    #     RETURNING id
+    #
+    # Measured 2026-08-23 as `evercoat_app` under organization A's GUC, naming
+    # a subject who is a member only of organization B: it renamed that user
+    # to the caller's supplied string and returned B's real email address.
+    # `core.users` carried no RLS at the time, so nothing refused it.
+    #
+    # Migration 044's UPDATE policy now refuses that statement, but a route
+    # that relies on the database raising is a route that answers 500 to an
+    # ordinary administrative action. So the two cases are separated here and
+    # neither one edits a row this organization does not own.
+    #
+    # `core.user_id_for_subject` exists because 044's read policy makes an
+    # existing user in ANOTHER organization invisible, and a human legitimately
+    # belongs to several. It resolves an exact subject to an id and returns no
+    # personal data — see its COMMENT in 044.
+    existing_user_id = session.execute(
+        text("SELECT core.user_id_for_subject(:sub)"),
+        {"sub": payload.keycloak_sub},
+    ).scalar_one_or_none()
+
+    if existing_user_id is None:
+        user_id = session.execute(
+            text(
+                """
+                INSERT INTO core.users (keycloak_sub, email, display_name)
+                VALUES (:sub, :email, :name)
+                RETURNING id
+                """
+            ),
+            {
+                "sub": payload.keycloak_sub,
+                "email": payload.email,
+                "name": payload.display_name,
+            },
+        ).scalar_one()
+        stored_email, stored_name = str(payload.email), payload.display_name
+    else:
+        # The identity already exists. Bind it to this organization; do NOT
+        # touch its email or display name, which belong to whoever created it.
+        user_id = existing_user_id
+        stored = session.execute(
+            text("SELECT email::text, display_name FROM core.users WHERE id = :uid"),
+            {"uid": user_id},
+        ).one_or_none()
+        # ⚠️ `stored` is None when the row exists but this organization cannot
+        # see it (044's read policy) — the ordinary case for a first-time
+        # cross-organization invite. The membership written below makes it
+        # visible from the next request onward; until this transaction commits
+        # there is nothing truthful to report, so the caller's own strings are
+        # echoed and the record is authoritative, not the response.
+        stored_email = stored[0] if stored is not None else str(payload.email)
+        stored_name = stored[1] if stored is not None else payload.display_name
 
     existing = session.execute(
         text(
@@ -253,11 +298,15 @@ def invite_member(
     )
     log_audit("member_invited", member_id=str(member_id), roles=payload.roles)
 
+    # The STORED values, not the submitted ones. For an identity that already
+    # existed, the caller's email and display name were not written and
+    # echoing them would report a change that did not happen — the same
+    # class of defect as the upsert above, one layer up.
     return MemberRead(
         member_id=member_id,
         user_id=user_id,
-        email=str(payload.email),
-        display_name=payload.display_name,
+        email=stored_email,
+        display_name=stored_name,
         status="active",
         roles=payload.roles,
     )
