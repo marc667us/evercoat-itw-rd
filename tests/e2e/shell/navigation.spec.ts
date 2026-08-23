@@ -191,6 +191,31 @@ test.describe("navigation gating", () => {
   });
 
   test("every enabled sidebar link reaches a real page", async ({ page }) => {
+    // 🔴 A CRAWL DOES NOT FIT THE SUITE-WIDE 60s BUDGET, AND FOR TWO REASONS
+    // THAT ONLY APPEAR OUTSIDE A PRE-BUILT SITE.
+    //
+    // This test and `no page contains a dead internal link` below are the only
+    // two that perform DOZENS of navigations rather than one or two. The 60s
+    // default in `playwright.config.ts` was set against a STATIC EXPORT, where
+    // every route is already built and a navigation is a file read.
+    //
+    // Measured 2026-08-23, both failing on `Test timeout of 60000ms exceeded`:
+    //   * against a Next DEV server, every route compiles on first visit —
+    //     seconds each, and the crawl visits each one exactly once, so it pays
+    //     the compile cost on every single hop;
+    //   * through the demonstration TUNNEL, each page load measured 1.3–2.7s
+    //     of round trip on top of that.
+    //
+    // Neither is a defect in the application, and both were briefly read as
+    // one: the failure surfaced as `page.goto: net::ERR_ABORTED` inside the
+    // crawl loop, which looks exactly like a dead link. `test.slow()` triples
+    // the budget to 180s, which is what this test's actual work costs.
+    //
+    // ⚠️ It does NOT paper over a slow application. If a SINGLE navigation
+    // ever takes 60s the other twenty-odd tests in this file fail first, and
+    // they still carry the default budget.
+    test.slow();
+
     // WHAT REPLACED WHAT, AND WHY, STATED PLAINLY.
     //
     // This test used to assert that Administration was ABSENT, because the
@@ -233,6 +258,11 @@ test.describe("navigation gating", () => {
   });
 
   test("no page contains a dead internal link", async ({ page }) => {
+    // Same budget as the sidebar crawl above, for the same measured reason —
+    // this one is the heavier of the two, because it follows EVERY internal
+    // anchor it finds on ten pages rather than one link per sidebar entry.
+    test.slow();
+
     // The sidebar check above is not enough, and Codex said so: the
     // Administration header advertised /admin/roles, /admin/permissions and
     // five more as live links into pages that do not exist, and a

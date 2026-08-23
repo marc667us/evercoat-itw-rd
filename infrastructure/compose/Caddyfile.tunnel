@@ -1,0 +1,77 @@
+# Reverse proxy for the LOCAL DEMONSTRATION TUNNEL.
+#
+# NOT `infrastructure/compose/Caddyfile`. That one fronts services running
+# inside compose; this one fronts the API and web running on the HOST, so the
+# whole stack does not have to be built on a machine with 1.6 GB free.
+#
+# 🔴 WHY THIS FILE IS IN THE REPOSITORY.
+#
+# It used to live in a session scratchpad under
+# `AppData/Local/Temp/claude/<session-id>/scratchpad/proxy/`, mounted into the
+# container from there. That directory belongs to a single Claude session and
+# is cleaned up; the running container held the only copy, so the demonstration
+# tunnel could not be rebuilt from the repository by anyone, including the next
+# session. A demo whose configuration exists only inside a running container is
+# one power cut from being unreproducible.
+#
+# Usage:
+#
+#   docker run -d --name evercoat-demo-caddy -p 18081:80 \
+#     --add-host host.docker.internal:host-gateway \
+#     -v "<repo>/infrastructure/compose/Caddyfile.tunnel:/etc/caddy/Caddyfile:ro" \
+#     caddy:2-alpine
+#
+#   npx localtunnel --port 18081 --subdomain evercoat-itwrd
+#
+# Everything reaches the client on ONE origin, which is what makes browser
+# PKCE work: the token issuer, the API and the page are same-origin, so there
+# is no CORS negotiation and no third-party cookie question.
+
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	encode gzip
+
+	# FastAPI mounts every router UNDER /api itself, so stripping the prefix
+	# here would 404 every route. Same rule as the repo's own Caddyfile.
+	handle /api/* {
+		reverse_proxy host.docker.internal:18000
+	}
+
+	# 🔴 ADDED 2026-08-23. Without this the health endpoints fell through to
+	# Next.js, which answered 404 — and `scripts/live-suite.sh` waits on
+	# `/health/ready` before it will run anything at all. It polled for the
+	# full 300 seconds and reported `passed=0 failed=0 skipped=0 (suite did
+	# not run)` against a stack that was entirely healthy.
+	#
+	# That is the three-number contract doing exactly its job: an exit code
+	# would have said "failed" and sent the next reader looking for an outage.
+	# The API was fine; the PROXY had no route to the probe.
+	handle /health/* {
+		reverse_proxy host.docker.internal:18000
+	}
+
+	handle /docs* {
+		reverse_proxy host.docker.internal:18000
+	}
+	handle /openapi.json {
+		reverse_proxy host.docker.internal:18000
+	}
+
+	# Identity. Strip the prefix, because Keycloak serves /realms/... at its
+	# root and is told its public base is <tunnel>/auth via KC_HOSTNAME.
+	handle /auth/* {
+		uri strip_prefix /auth
+		reverse_proxy host.docker.internal:18080 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	handle {
+		reverse_proxy host.docker.internal:3000
+	}
+}

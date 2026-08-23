@@ -225,6 +225,36 @@ run_pytest() {
 
     echo
     echo "--- ${label} ---"
+
+    # 🔴 THE APPLICATION'S SETTINGS ARE REQUIRED AT IMPORT TIME, AND THIS STEP
+    # SUPPLIED NEITHER OF THEM.
+    #
+    # `app/core/config.py` builds `settings` at module scope, and both
+    # `database_url` and `keycloak_issuer` are `Field(...)` -- mandatory. Nearly
+    # every test module imports something that reaches `app.core.db`, so with
+    # those absent pytest died with **25 collection errors** before running a
+    # single test.
+    #
+    # Measured 2026-08-23 against a healthy deployment: this reported
+    # `api-live: passed=0 failed=1` and pointed the reader at the deployment,
+    # when nothing was wrong with it. That is precisely the misdiagnosis this
+    # script's three-number contract exists to prevent, reproduced one level
+    # further in.
+    #
+    # They are FORWARDED from the caller, never defaulted. A default would aim
+    # this suite at whatever database the script's author had in mind -- and
+    # for a suite whose entire purpose is "test what is actually deployed",
+    # that is the wrong answer in the most convincing direction.
+    if [[ -z "${DATABASE_URL:-}" || -z "${KEYCLOAK_ISSUER:-}" ]]; then
+        echo "  NOT RUN -- DATABASE_URL and/or KEYCLOAK_ISSUER are not set."
+        echo "  These tests import the application, whose settings require both"
+        echo "  at import time; without them pytest fails at COLLECTION and the"
+        echo "  errors read as deployment faults. Export both and re-run."
+        echo "  This is a COVERAGE GAP, counted as skipped. A skip is NOT a pass."
+        SKIPPED=$((SKIPPED + 1))
+        return 0
+    fi
+
     ( cd "${REPO_ROOT}/apps/api" && \
       LIVE_BASE_URL="${BASE_URL}" python -m pytest "$@" \
         -q --no-header -rs ) > "${logfile}" 2>&1
@@ -237,13 +267,37 @@ run_pytest() {
     line="$(grep -E '^[0-9]+ (passed|failed)|passed|failed|skipped|no tests ran' \
             "${logfile}" | tail -1)" || line=""
 
+    # 🔴 `(^|.*[^0-9])`, NOT `.*[^0-9]`. THE OLD FORM DELETED THE PASSED COUNT
+    # ON EVERY FULLY GREEN RUN.
+    #
+    # `.*[^0-9]([0-9]+) passed` requires a NON-DIGIT before the number. pytest
+    # writes the passed count FIRST when nothing failed --
+    #
+    #     659 passed, 11 skipped, 6 warnings in 133.31s
+    #
+    # -- so there is no character before "659" and the match failed, yielding
+    # "" and defaulting to 0. Measured 2026-08-23: this suite reported
+    # `passed=0 failed=0 skipped=11` from a log whose own summary line said
+    # **659 passed**.
+    #
+    # The polarity is the worst available. With failures present the line reads
+    # "10 failed, 659 passed, ..." -- a comma and a space precede the number,
+    # the match succeeds, and the count is right. So the parser was accurate
+    # exactly when the run was broken, and wrong exactly when it was clean:
+    # **the greener the run, the more wrong the report.**
+    #
+    # Nothing caught it because 0 passed / 0 failed reads as a plausible
+    # "nothing to run" outcome, and the rc reconciliation below only fires when
+    # p+f+s is zero -- 11 skips were enough to satisfy it. This is the same
+    # shape as the CRLF and four-field bugs already recorded above it: the
+    # counts destroyed by the parser rather than by the deployment.
     local p f s e
-    p="$(sed -nE 's/.*[^0-9]([0-9]+) passed.*/\1/p'  <<< "${line}")"; p="${p:-0}"
-    f="$(sed -nE 's/.*[^0-9]([0-9]+) failed.*/\1/p'  <<< "${line}")"; f="${f:-0}"
-    s="$(sed -nE 's/.*[^0-9]([0-9]+) skipped.*/\1/p' <<< "${line}")"; s="${s:-0}"
+    p="$(sed -nE 's/(^|.*[^0-9])([0-9]+) passed.*/\2/p'  <<< "${line}")"; p="${p:-0}"
+    f="$(sed -nE 's/(^|.*[^0-9])([0-9]+) failed.*/\2/p'  <<< "${line}")"; f="${f:-0}"
+    s="$(sed -nE 's/(^|.*[^0-9])([0-9]+) skipped.*/\2/p' <<< "${line}")"; s="${s:-0}"
     # Collection errors are reported as "errors", not "failed", and are
     # every bit as much a not-working suite.
-    e="$(sed -nE 's/.*[^0-9]([0-9]+) errors?.*/\1/p'  <<< "${line}")"; e="${e:-0}"
+    e="$(sed -nE 's/(^|.*[^0-9])([0-9]+) errors?.*/\2/p'  <<< "${line}")"; e="${e:-0}"
     f=$((f + e))
 
     # RECONCILE THE EXIT CODE AGAINST THE PARSED COUNTS.
