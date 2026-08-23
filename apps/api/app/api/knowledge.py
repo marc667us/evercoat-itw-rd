@@ -153,12 +153,23 @@ def _reject_unusable_project(session: Session, project_id: uuid.UUID | None) -> 
 def get_documents(
     principal: Principal = Depends(require_permission("knowledge.view")),
     session: Session = Depends(get_db),
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """The library, as far as this caller is concerned.
 
     Two people with identical permissions get different lists, because RLS on
     `knowledge.documents` is the boundary and project membership differs. That
     is the intended behaviour, not a caching bug to be reported.
+
+    🔴 I78: RETURNS AN OBJECT, NOT A BARE ARRAY. It used to return the
+    array `list_documents` produced, which meant the 100-row cap the service
+    applies was invisible to every caller -- the route did not pass a limit, so
+    nobody reading this signature had a reason to think one existed. The
+    response now carries `total` and `limit` beside `documents`, so the screen
+    can say how much of the library it is showing.
+
+    A bare array had nowhere to put that number, which is why the shape
+    changed rather than a header being added: a truncation notice that lives in
+    a header is one a client forgets to read.
     """
     return list_documents(session, organization_id=principal.organization_id)
 

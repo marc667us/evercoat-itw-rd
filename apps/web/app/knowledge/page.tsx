@@ -39,7 +39,11 @@ import {
   useKnowledgeDocuments,
   useKnowledgeSearch,
 } from "@/lib/api/hooks";
-import type { KnowledgeDocument, KnowledgePassage } from "@/lib/api/knowledge";
+import type {
+  KnowledgeDocument,
+  KnowledgeDocumentPage,
+  KnowledgePassage,
+} from "@/lib/api/knowledge";
 
 /** Matches `documents_source_check` in migration 042 and `SOURCES` in the route. */
 const SOURCES = [
@@ -387,12 +391,19 @@ export default function KnowledgePage() {
   const [query, setQuery] = useState("");
 
   const documents = useKnowledgeDocuments(
-    (live: KnowledgeDocument[]) => live,
+    (live: KnowledgeDocumentPage) => live,
   );
   const search = useKnowledgeSearch(query);
 
   const unavailable = documents.unavailable ?? search.unavailable;
-  const rows = useMemo(() => documents.data ?? [], [documents.data]);
+  const rows = useMemo(() => documents.data?.documents ?? [], [documents.data]);
+
+  // I78. The API caps this list at `limit` and used to say nothing about it,
+  // so past that point the oldest documents just stopped appearing. There is
+  // still no page two — this tells the reader what they are looking at rather
+  // than pretending the list is the library.
+  const total = documents.data?.total ?? rows.length;
+  const truncated = total > rows.length;
 
   return (
     <LiveOnlyPage
@@ -518,6 +529,24 @@ export default function KnowledgePage() {
             No documents you have access to. The library is filled by ingesting
             technical text; until something is in it, MSD will answer knowledge
             questions by saying it could not find anything.
+          </p>
+        )}
+        {rows.length > 0 && (
+          <p className="mt-2 text-sm text-slate-600">
+            {truncated ? (
+              <>
+                <span className="font-medium text-amber-800">
+                  Showing the {rows.length} most recent of {total} documents.
+                </span>{" "}
+                The rest are not reachable from this screen yet — there is no
+                page two. Search covers the whole library, not just this list.
+              </>
+            ) : (
+              <>
+                {total} document{total === 1 ? "" : "s"}, newest first — the
+                whole library you have access to.
+              </>
+            )}
           </p>
         )}
         {rows.length > 0 && (

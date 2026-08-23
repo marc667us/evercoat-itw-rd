@@ -47,7 +47,25 @@ export const knowledgePassageSchema = z.object({
 
 export type KnowledgePassage = z.infer<typeof knowledgePassageSchema>;
 
-const documentList = z.array(knowledgeDocumentSchema);
+/**
+ * I78. The list arrives WITH its total, because the service caps the page at
+ * 100 and used to say nothing about it — past that, the oldest documents
+ * simply stopped appearing, with no page two and no count. That is the same
+ * unanswerable "why is my document not here?" the `chunks` field above exists
+ * to prevent, one level up.
+ *
+ * `total` is not a promise of pagination and there is still no way to reach
+ * document 101 from here. It exists so the screen can say how much of the
+ * library it is showing, which is the difference between a limit and a silent
+ * omission.
+ */
+const documentPageSchema = z.object({
+  documents: z.array(knowledgeDocumentSchema),
+  total: z.number(),
+  limit: z.number(),
+});
+
+export type KnowledgeDocumentPage = z.infer<typeof documentPageSchema>;
 const passageList = z.array(knowledgePassageSchema);
 
 const ingestResultSchema = z.object({
@@ -61,10 +79,10 @@ export type IngestResult = z.infer<typeof ingestResultSchema>;
 export function fetchKnowledgeDocuments(
   credentials: ApiCredentials,
   signal?: AbortSignal,
-): Promise<KnowledgeDocument[]> {
+): Promise<KnowledgeDocumentPage> {
   return apiRequest(
     { path: "/api/knowledge/documents", credentials, signal },
-    (payload) => documentList.parse(payload),
+    (payload) => documentPageSchema.parse(payload),
   );
 }
 

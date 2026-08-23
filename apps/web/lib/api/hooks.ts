@@ -41,7 +41,7 @@ import {
   searchKnowledge,
   type IngestRequest,
   type IngestResult,
-  type KnowledgeDocument,
+  type KnowledgeDocumentPage,
   type KnowledgePassage,
 } from "./knowledge";
 import { fetchBatches, type Batch } from "./laboratory";
@@ -366,7 +366,7 @@ export function useTests<TShown>(
  * the honest state.
  */
 export function useKnowledgeDocuments<TShown>(
-  project: (live: KnowledgeDocument[]) => TShown,
+  project: (live: KnowledgeDocumentPage) => TShown,
 ): LiveOnly<TShown> {
   return useLiveOnlyList("knowledge-documents", project, fetchKnowledgeDocuments);
 }

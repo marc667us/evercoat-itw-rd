@@ -217,8 +217,8 @@ def list_documents(
     *,
     organization_id: uuid.UUID,
     limit: int = 100,
-) -> list[dict[str, Any]]:
-    """The documents the caller can see, newest first.
+) -> dict[str, Any]:
+    """The documents the caller can see, newest first, and how many there are.
 
     🔴 NO `WHERE classification = ...` AND NO POST-FILTER. The RLS policy on
     `knowledge.documents` decides, exactly as it does for the chunk search, so
@@ -233,12 +233,31 @@ def list_documents(
     that difference visible on the screen rather than a mystery about why the
     assistant never quotes a document somebody definitely uploaded.
 
-    ⚠️ `limit` TRUNCATES SILENTLY, AND THE CALLER IS EXPECTED TO SAY SO. At
-    `limit + 1` documents the oldest simply stop appearing, with no page two
-    and no count -- which is the same unanswerable "why is my document not
-    here?" the `chunks` column above exists to prevent. There is no pagination
-    yet; until there is, a caller rendering this list must tell the reader when
-    it is full. `docs`-level fix is I78.
+    🔴 I78: `limit` USED TO TRUNCATE SILENTLY, AND NOTHING SAID SO.
+    The route never passed a limit, the screen showed no notice, and at
+    `limit + 1` documents the oldest simply stopped appearing -- no page two,
+    no count. That is the same unanswerable *"why is my document not here?"*
+    the `chunks` column above exists to prevent, one level up.
+
+    It now returns the visible `total` beside the page, so a caller can say
+    *"showing the most recent 100 of 247"*. That is not pagination and does not
+    pretend to be: there is still no way to reach document 101 through this
+    API. What changed is that the reader is told, which is the difference
+    between a limit and a silent omission.
+
+    🔴 THE COUNT IS BOUNDED BY RLS, NOT BY ITS `WHERE` CLAUSE. Both
+    statements below carry the `organization_id` predicate and nothing else,
+    letting the policy on `knowledge.documents` decide the rest -- exactly as
+    the docstring above insists for the listing. A count written with any
+    ADDITIONAL `WHERE` would be a second definition of who may see what, and
+    the screen would confidently report a total the reader cannot reach.
+
+    ⚠️ Measured, because the first version of this comment claimed the
+    predicate was the control: deleting `WHERE organization_id = :org` from the
+    count changes nothing, and every test in
+    `tests/db/test_044_document_list_says_what_it_hides.py` still passes. RLS
+    bounds it already. The predicate is redundancy and an index hint, not the
+    boundary -- so do not "simplify" the policy on the strength of it.
     """
     rows = session.execute(
         text(
@@ -261,7 +280,17 @@ def list_documents(
         ),
         {"org": organization_id, "limit": limit},
     ).mappings()
-    return [dict(r) for r in rows]
+
+    # Same table, same single predicate, same policy. Counted separately rather
+    # than window-functioned onto the page because the page is GROUPed by
+    # document and a count over that grouping would count groups on the page,
+    # not documents in the library -- which is the number the notice needs.
+    total = session.execute(
+        text("SELECT count(*) FROM knowledge.documents WHERE organization_id = :org"),
+        {"org": organization_id},
+    ).scalar_one()
+
+    return {"documents": [dict(r) for r in rows], "total": int(total), "limit": limit}
 
 
 def retrieve(
