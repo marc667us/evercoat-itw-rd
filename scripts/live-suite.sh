@@ -378,9 +378,60 @@ if [[ -d "${REPO_ROOT}/tests/e2e" ]] && command -v npx >/dev/null 2>&1; then
         # $((...)) on it died with "syntax error in expression".
         read -r E2E_P E2E_F E2E_S E2E_FLAKY < <(python - "${ARTIFACTS}/e2e.json" <<'PY' | tr -d '\r' || true
 import json, sys
+
+# 🔴 `json.load` IS WRONG HERE: PLAYWRIGHT WRITES ONE REPORT PER PROJECT.
+#
+# `playwright.config.ts` defines several projects, and with `--reporter=json`
+# each one emits its own complete JSON document to the SAME stdout. The file is
+# therefore a CONCATENATION, and strict parsing dies on the second document:
+#
+#     json.decoder.JSONDecodeError: Extra data: line 1187 column 4 (char 37826)
+#
+# Measured 2026-08-23. Playwright had run 31 tests and passed all 31
+# (`expected: 31, unexpected: 0`, 918s). The parser raised, exited 1, and the
+# suite reported `e2e: passed=0 failed=0 skipped=0` -- a fully green
+# fifteen-minute run contributing NOTHING to the totals, and not flagged,
+# because the reconciliation below only fired on a non-zero exit code.
+#
+# So: decode EVERY document in the stream and sum their stats. `raw_decode`
+# returns where each object ended, which is the documented way to walk
+# concatenated JSON; skipping a byte on failure keeps a truncated tail (a
+# killed run) from losing the reports that did complete before it.
+def _documents(text):
+    dec = json.JSONDecoder()
+    i, n = 0, len(text)
+    while i < n:
+        while i < n and text[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            return
+        try:
+            obj, end = dec.raw_decode(text, i)
+            i = end
+            if isinstance(obj, dict):
+                yield obj
+        except json.JSONDecodeError:
+            i += 1
+
 try:
     with open(sys.argv[1], encoding="utf-8") as fh:
-        report = json.load(fh)
+        raw = fh.read()
+except Exception:
+    sys.exit(1)
+
+reports = [d for d in _documents(raw) if isinstance(d.get("stats"), dict)]
+if reports:
+    totals = {"expected": 0, "unexpected": 0, "skipped": 0, "flaky": 0}
+    for r in reports:
+        for key in totals:
+            totals[key] += r["stats"].get(key, 0) or 0
+    print(totals["expected"], totals["unexpected"], totals["skipped"], totals["flaky"])
+    sys.exit(0)
+
+# No stats anywhere. Fall through to the single-document path below, which
+# still handles a report shaped differently by a future Playwright version.
+try:
+    report = json.loads(raw)
 except Exception:
     sys.exit(1)
 
@@ -456,8 +507,31 @@ PY
 
     # Same reconciliation as the pytest runner: a non-zero exit with
     # nothing parsed must never read as success.
-    if [[ ${E2E_RC} -ne 0 && $((E2E_P + E2E_F + E2E_S)) -eq 0 ]]; then
-        echo "  playwright exited ${E2E_RC} with no parseable report -- counted as 1 FAILED"
+    # 🔴 ZERO COUNTS ARE A FAILURE WHATEVER THE EXIT CODE SAID.
+    #
+    # This condition used to require `E2E_RC -ne 0`, so it only fired when
+    # Playwright had ALREADY failed. A run that exited 0 while the parser
+    # extracted nothing sailed through as `passed=0 failed=0 skipped=0` and was
+    # added to the totals as zero.
+    #
+    # Measured 2026-08-23: Playwright ran 31 tests, passed all 31, took 918s —
+    # and contributed NOTHING to the report, silently, because its multi-project
+    # output could not be parsed and its exit code was 0. That is this
+    # platform's most-repeated defect wearing yet another face: *an empty
+    # requirement set rendered "ALL REQUIREMENTS PASSED"*.
+    #
+    # An end-to-end suite that reports no tests has not passed; it has not run,
+    # and the two must never be the same outcome. If Playwright is genuinely
+    # absent this branch is unreachable — the enclosing `if` already checks for
+    # `tests/e2e` and `npx`, and reports the absence as a gap.
+    if [[ $((E2E_P + E2E_F + E2E_S)) -eq 0 ]]; then
+        if [[ ${E2E_RC} -ne 0 ]]; then
+            echo "  playwright exited ${E2E_RC} with no parseable report -- counted as 1 FAILED"
+        else
+            echo "  playwright exited 0 but reported NO TESTS -- counted as 1 FAILED."
+            echo "  A suite that ran nothing has not passed. Check ${ARTIFACTS}/e2e.json:"
+            echo "  a non-empty report here means the PARSER failed, not the deployment."
+        fi
         E2E_F=1
     fi
 
