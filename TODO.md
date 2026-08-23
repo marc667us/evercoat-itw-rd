@@ -118,14 +118,46 @@ users), so users must be created before anyone can sign in.
     the realm ships with none.
 4d. Set `KEYCLOAK_ISSUER` on the API to `<kc-url>/realms/evercoat` and redeploy it.
 
-**A $0 alternative worth knowing about, NOT recommended without thought:** two
-paid Keycloak instances already exist on this account (`solarpro-keycloak` on
-`auth.aiappinvent.com`, `autoworkshop-keycloak`), and Keycloak is multi-realm,
-so the `evercoat` realm could be imported into one of them for no extra cost
-and no cold start. The reason it is not the default: it couples Evercoat's
-identity to a **live** app's instance and database, and
-[[feedback_solar_app_works_dont_break]] is a standing rule. Only do this if the
-owner accepts that blast radius.
+4e. Run `scripts/keycloak-bootstrap.sh`. **The realm has ZERO users** and this
+    is what creates them — ten, one per realm role, matching `scripts/seed.py`
+    exactly: `chem.demo`, `eng.demo`, `lead.demo`, `dir.demo`, `qa.demo`,
+    `tech.demo`, `proc.demo`, `prod.demo`, `exec.demo`, `admin.demo`. It needs
+    `KC_ADMIN_PASSWORD` and `KC_USER_PASSWORD`.
+
+**🔑 THE CREDENTIALS ALREADY EXIST — created 2026-08-23, in GitHub Secrets on
+this repo, which is the authoritative store on this platform:**
+
+| Secret | Used as | For |
+|---|---|---|
+| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Keycloak's `KC_BOOTSTRAP_ADMIN_PASSWORD`, and `KC_ADMIN_PASSWORD` for the bootstrap script | the `admin` master account |
+| `KC_USER_PASSWORD` | `KC_USER_PASSWORD` for the bootstrap script | all ten `*.demo` users |
+
+Set with `printf '%s' | gh secret set` — **never** through a PowerShell pipe,
+which appends a BOM to the value ([[feedback_powershell_pipe_bom_secrets]]).
+The owner holds copies for testing. **Neither has ever been used**, because
+the service does not exist yet; rotate them if that changes.
+
+---
+
+**THE SHARED-INSTANCE ROUTE WAS TRIED ON 2026-08-23 AND IS CLOSED.**
+
+The owner approved importing the `evercoat` realm into the existing paid
+`solarpro-keycloak` (`auth.aiappinvent.com`) to avoid the cold start. It could
+not be done: **the master admin password has been rotated** since the value in
+`project_solar_pv_credentials` (`marble-willow-poppy-river`, 2026-06-13), which
+now returns `Invalid user credentials`, and **the owner does not hold the
+current one**. GitHub Secrets are write-only, so it cannot be read back.
+
+It was NOT worked around. Fetching it through a workflow would have printed a
+live production password into a build log — `KC_BOOTSTRAP_ADMIN_PASSWORD` is
+not a registered secret on THIS repo, so GitHub would not mask it.
+
+`autoworkshop-keycloak` is separately ruled out: its database is
+`autoworkshop-postgres`, which Render **deletes 2026-09-01**, so a realm
+imported there would work for days and then vanish.
+
+Solar was left untouched and verified after the attempt: master realm 200,
+`solarpro` realm discovery 200, `solarpro.aiappinvent.com` 200.
 
 **Until step 4 lands, do not describe the API as "deployed and working".**
 After steps 1–3 it serves `/health`, `/docs` and correct 401s and **no
