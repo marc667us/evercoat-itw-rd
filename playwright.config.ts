@@ -112,8 +112,37 @@ export default defineConfig({
   // the trace and screenshot of a failure are actually reachable.
   reporter: [["list"], ["html", { open: "never" }]],
 
-  expect: { timeout: 10_000 },
-  timeout: 60_000,
+  // 🔴 THE BUDGET SCALES WITH THE TARGET, BECAUSE THE TARGET IS WHAT COSTS.
+  //
+  // 60s was set against a local origin — a dev server or a static export on
+  // localhost, where a navigation is milliseconds. Pointed at a DEPLOYED
+  // instance behind a tunnel it is marginal for any test that visits more than
+  // one page, and marginal is worse than wrong: it fails a DIFFERENT test each
+  // run and reads as flakiness in the application.
+  //
+  // Measured 2026-08-23 against the demonstration tunnel, two consecutive runs
+  // of the same unchanged suite:
+  //   run 1 — 31 passed, 0 failed
+  //   run 2 — 29 passed, 2 failed: "dashboard has no WCAG 2.1 AA violations"
+  //           and "the demonstration notice is on every page", both on
+  //           `Test timeout of 60000ms exceeded`
+  // Neither test changed. Neither touches anything the other run did not.
+  // A bare HTML fetch through that tunnel measured ~1.2s (1.309 / 1.193 /
+  // 1.148), and Playwright navigates with `waitUntil: "load"`, so each hop
+  // also pulls JS chunks and CSS — several times that.
+  //
+  // So the fix belongs HERE and not in the individual tests. Raising
+  // `test.slow()` on whichever test failed most recently would have chased the
+  // symptom around the suite forever, and each such change would quietly
+  // reduce the sensitivity of one more test on a fast origin.
+  //
+  // ⚠️ LOCAL RUNS KEEP THE TIGHT BUDGET. 60s locally is a real assertion that
+  // the application is fast, and this must not become a blanket 180s that lets
+  // a genuine performance regression through unnoticed. The one test that
+  // needs more even at this budget — the dead-link crawl, ~35 browser
+  // navigations — sets its own 600s and says why.
+  expect: { timeout: LIVE ? 30_000 : 10_000 },
+  timeout: LIVE ? 180_000 : 60_000,
 
   use: {
     trace: "retain-on-failure",
