@@ -5,6 +5,7 @@ __pycache__/
 .env.*
 !.env.example
 .next/
+.next-demo/
 dist/
 .venv/
 venv/

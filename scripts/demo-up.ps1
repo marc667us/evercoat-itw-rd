@@ -197,12 +197,19 @@ $webCmd = @"
 `$env:NEXT_PUBLIC_KEYCLOAK_URL='$PublicUrl/auth';
 `$env:NEXT_PUBLIC_KEYCLOAK_REALM='evercoat';
 `$env:NEXT_PUBLIC_KEYCLOAK_CLIENT_ID='evercoat-web';
+# 🔴 ITS OWN BUILD DIRECTORY. `next build` regenerates `.next/standalone/`,
+# which is what this server SERVES -- so a Playwright local run, which builds
+# before starting its own web server, silently replaced the demo's bundle with
+# one built without NEXT_PUBLIC_*. Twice. The site returned 200 everywhere and
+# could not sign in. Separate directories, so neither build can destroy the
+# other.
+`$env:NEXT_DIST_DIR='.next-demo';
 Set-Location '$RepoRootpps\web';
 npx next build;
-Copy-Item -Recurse -Force '.next\static' '.next\standalone\.next\static';
-if (Test-Path 'public') { Copy-Item -Recurse -Force 'public' '.next\standalone\public' }
+Copy-Item -Recurse -Force '.next-demo\static' '.next-demo\standalone\.next-demo\static';
+if (Test-Path 'public') { Copy-Item -Recurse -Force 'public' '.next-demo\standalone\public' }
 `$env:PORT='3000'; `$env:HOSTNAME='0.0.0.0';
-node '.next\standalone\server.js'
+node '.next-demo\standalone\server.js'
 "@
 Start-Process powershell -ArgumentList @("-NoProfile", "-Command", $webCmd) `
     -RedirectStandardOutput (Join-Path $logDir "web.log") `

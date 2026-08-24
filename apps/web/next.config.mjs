@@ -31,6 +31,21 @@ const nextConfig = {
   // being true at Slice 3, when the API is wired in; at that point a static
   // host cannot serve the product and this switch should go away rather than
   // be worked around.
+  // 🔴 THE BUILD DIRECTORY IS OVERRIDABLE, SO TWO BUILDS CANNOT CLOBBER EACH
+  // OTHER.
+  //
+  // `next build` regenerates `.next/` INCLUDING `.next/standalone/`, which is
+  // what the running demonstration server serves. So a Playwright local run --
+  // which builds before starting its own web server -- silently overwrote the
+  // demo's bundle with one built WITHOUT `NEXT_PUBLIC_*`. Twice. The site kept
+  // returning 200 on every page and simply announced "no identity provider is
+  // deployed for this environment", because those values are inlined at BUILD
+  // time and nothing at runtime can notice they are missing.
+  //
+  // `scripts/demo-up.ps1` now sets `NEXT_DIST_DIR=.next-demo`, so the demo and
+  // the test suite own separate directories and neither can destroy the other.
+  // Default unchanged, so CI and ordinary `next build` behave exactly as before.
+  distDir: process.env.NEXT_DIST_DIR ?? ".next",
   output: isExport ? "export" : "standalone",
   // Directory-index output (`/dashboard/index.html`) instead of
   // `/dashboard.html`, and ONLY for the static export.
