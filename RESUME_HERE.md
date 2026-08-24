@@ -2,8 +2,9 @@
 
 ## ▶▶ SESSION CLOSE 2026-08-24 — START HERE
 
-Tip **`a14c95f`**. One commit: **23 of 37 endpoints across Laboratory,
-Testing, Formulations and MSD had no browser caller.** All 37 do now.
+Tip **`7c2c453`**. Two commits: **23 of 37 endpoints across Laboratory,
+Testing, Formulations and MSD had no browser caller.** All 37 do now — and
+the second commit exists because the first one *claimed* that and was wrong.
 
 | Module | Endpoints | Reachable before | Now |
 |---|---|---|---|
@@ -12,8 +13,31 @@ Testing, Formulations and MSD had no browser caller.** All 37 do now.
 | Formulations | 13 | **1** | **13** |
 | MSD | 4 | 2 | **4** |
 
-Local gates: API **671 passed / 0 failed / 11 skipped**, web **137 / 0**,
-`next lint` + ruff + ruff format + mypy (86 files) all green.
+Local gates: API **671 passed / 0 failed / 11 skipped** (run ALONE — 139s),
+web **137 / 0**, `tsc` exit 0, `next lint` + ruff + ruff format + mypy
+(86 files) all green.
+
+### 🔴 THE LIVE SUITE DID NOT FINISH — AND ITS e2e NUMBERS DO NOT EXIST
+
+Run against the tunnel, `full` profile:
+
+| phase | result |
+|---|---|
+| health / mount probes | `/`, `/health/live`, `/docs`, `/dashboard/` all **200** |
+| **`api-live`** | **682 passed / 0 failed / 0 skipped** (rc=0) — COMPLETE and valid |
+| **e2e (Playwright)** | 🔴 **KILLED MID-FLIGHT. `e2e.log` is 0 bytes. NO COUNTS.** |
+
+The session's background tasks were stopped while Playwright was ~7 minutes
+into its run, exactly as happened twice on 08-23. **A run killed mid-flight
+has void numbers** — there is no e2e figure to quote and none is quoted.
+
+`api-live` is reported because that phase FINISHED and the script printed its
+own three numbers before the stop. It is up from 670 on 08-23, still with
+**zero skipped**.
+
+▶ **OUTSTANDING: one complete live-suite run.** Bring the stack back up (the
+API and the tunnel are down; Postgres, Keycloak, Caddy and the web server
+survived) and re-run `scripts/live-suite.sh <url> full`.
 
 ### 🔴 The orphaned routes were hiding real defects
 
@@ -44,6 +68,36 @@ Six, and the first two are the ones to remember.
   routes existed with no caller, so every reload began an empty conversation
   on top of a full record.
 * **I89 — the bench could do everything to a batch except create one** (Codex).
+
+### 🔴 The review round — read this before trusting a claim of mine
+
+**Codex 4 findings, Supervisor 10, one overlap.** Thirteenth session running
+where neither alone was enough.
+
+* **I90 — the first commit's central claim was FALSE, and Codex checked it
+  rather than believing it.** `createBatch`, `createTest`, `createFormula`
+  and `classifyFormula` existed only as declarations in `lib/api/*.ts`.
+  **A client function is not a caller** — the same defect the commit exists
+  to remove, one layer up. Closing it needed `GET /api/testing/methods` and
+  `GET /api/formulations/classifications` first: without them a planning form
+  has no method to offer, so the create routes were unreachable **by
+  construction**. §H's own warning, turned on this session.
+* **I91 — four comments I wrote asserted a rule the code did not have.** The
+  server's explanation sits in `.detail` and no screen read it, so every
+  refusal rendered "the API refused this request (422)". A blocked
+  submission's blocks were discarded **wholesale**. New `serverMessage()`.
+* **I92 — the only UI path that creates a revision returned 422 on every
+  press**, on the control the page calls "the only way a formula changes".
+* **I93 — four inert mechanisms**, including an `invalidateQueries` key
+  matching no query, under a comment claiming it prevented exactly that.
+* **I94 — three of my own**, found by re-verifying rather than by a reviewer.
+* **I95 — left open on purpose:** `app/knowledge/page.tsx` has I91's defect in
+  three places. Out of the four modules under review, so **named rather than
+  silently fixed**.
+
+🔴 **AN EMPTY OUTPUT FILE IS NOT A PASSING RUN.** I read a still-being-written
+`tsc` output as clean. It had silently taken `useWeighUp` with a block I
+deleted. `next lint` caught it; the typecheck I trusted did not.
 
 ### ⚠️ Two operational findings
 

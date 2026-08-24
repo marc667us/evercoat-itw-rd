@@ -99,6 +99,90 @@ Ten of eleven laboratory routes had a caller; `POST /batches` did not. Every
 batch on screen had been inserted by a seeding script, so the lifecycle was
 demonstrable only on records no user could have produced. Found by Codex.
 
+### The review round — Codex 4, Supervisor 10, one overlap
+
+Thirteenth session running in which neither reviewer alone was enough.
+
+#### 🔴 The central claim of this session's first commit was FALSE
+
+`a14c95f` said all 37 endpoints had a production caller. Codex checked it
+rather than believing it, and found `createBatch`, `createTest`,
+`createFormula` and `classifyFormula` referenced **nowhere but at their own
+definitions**.
+
+**A client function is not a caller.** It is the same defect the commit exists
+to remove, moved one layer up, with a function standing where the person
+pressing something should be.
+
+It was closed by building the callers, not by editing the claim — and doing
+that first required two routes that did not exist:
+
+* `GET /api/testing/methods`
+* `GET /api/formulations/classifications`
+
+Without them a planning form has no method to offer and a reclassification
+form has no level, so the create routes were **unreachable by construction**.
+That is §H's own warning turned on this session: *"every 'editable in
+Administration' escape hatch resolved to a screen nobody was scheduled to
+create."*
+
+The four controls then went where the digital thread already carries the
+identifier they need — plan-a-test on each **sample** of the bench (§5:
+no result without the specimen it came from), create-a-batch on the formula
+**version** (§2: the one id the batch queue does not have), create-formula
+against a chosen project, and reclassify on the workspace.
+
+#### 🔴 Four comments asserted a rule the code did not have
+
+`apiRequest` throws `ApiError` with a generic message and puts the server's
+own explanation in `.detail` — which **no screen read**. So the formula
+workspace rendered "the API refused this request (422)" beneath a comment
+saying *"the server's own sentence … explains why"*, and the test workspace
+did the same beneath *"a 403 is surfaced as the sentence the server sent"*,
+losing the ADR-019 segregation-of-duties distinction that is the only reason
+a 403 there is interesting.
+
+Measured against the running service, a blocked submission returns:
+
+    {"message": "this formula cannot be submitted",
+     "blocks": [{"code": "TOTAL_OUT_OF_TOLERANCE", ...},
+                {"code": "RESTRICTED_MATERIAL",     ...}]}
+
+**Every block was discarded** — on a route whose own docstring says returning
+one at a time *"is how a form teaches people to distrust it."* New
+`serverMessage()` handles all three detail shapes and renders all of them.
+
+#### 🔴 The only path that creates a revision returned 422 every time
+
+`RevisionCreate` requires `change_reason`, `technical_hypothesis` **and**
+`driver_type`. The client interface declared the first, made the second
+optional and omitted the third entirely, so the type system could not catch
+it — and the control the workspace itself labels *"the only way a formula
+changes"* failed on every press.
+
+#### Four inert mechanisms
+
+An `invalidateQueries` key matching **no query in the application**, under a
+comment claiming it kept the failure queue current. A failed `/evaluation`
+rendering **"Calculating…" for ever** because the hook's error was discarded.
+A submission `note` posted to a route that declares no request body. And
+`quantize` sitting **outside** the `try` that exists so this function never
+propagates.
+
+#### Three of my own, found while re-verifying rather than by either reviewer
+
+`GET /methods` landed at `/api/testing/tests/methods`, because the testing
+router is mounted at `/api/testing/tests` — a method is not a sub-resource of
+a test, so it now has its own `reference_router`. Two hooks — `useMsdThreads`
+and `useMsdTurns` — that **nothing ever called**, deleted rather than kept.
+
+And deleting them silently took **`useWeighUp`** with them, because it sat
+between the deleted block and the next marker. `next lint` caught it. The
+typecheck I had already read as "clean" was still being written:
+
+> **An empty output file is not a passing run.**
+
+
 ### Built
 
 * **`/testing/test?id=…`** — the test workspace. Both status fields side by
