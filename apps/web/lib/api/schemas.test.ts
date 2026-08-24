@@ -47,6 +47,13 @@ const FORMULA = {
   // NOT NULL column would have passed. Codex found it.
   owner_user_id: "44444444-4444-4444-4444-444444444444",
   updated_at: "2026-08-01T10:00:00Z",
+  // 🔴 THE KEY, NOT THE LABEL. `list_formulas` returns the latest version's
+  // id, and twelve of the thirteen formulation routes are keyed by it. Its
+  // ABSENCE was I86: without it the list could hand the workspace nothing to
+  // open, so `/formulations/[code]` rendered a build-time fixture instead.
+  // A `version_code` is unique per formula, not per organization, and is
+  // therefore not a key.
+  latest_version_id: "55555555-5555-5555-5555-555555555555",
   latest_version_code: "FRM-014-v3",
   latest_version_number: 3,
   latest_version_status: "draft",
@@ -108,12 +115,14 @@ describe("formulaSchema", () => {
   it("accepts a formula with no version yet", () => {
     const parsed = formulaWithCoherentVersion.parse({
       ...FORMULA,
+      latest_version_id: null,
       latest_version_code: null,
       latest_version_number: null,
       latest_version_status: null,
       version_count: 0,
     });
     expect(parsed.latest_version_code).toBeNull();
+    expect(parsed.latest_version_id).toBeNull();
   });
 
   it("🔴 REJECTS a HALF-populated latest version", () => {
@@ -123,6 +132,21 @@ describe("formulaSchema", () => {
     // matches or it does not. Codex found it.
     expect(() =>
       formulaWithCoherentVersion.parse({ ...FORMULA, latest_version_status: null }),
+    ).toThrow();
+  });
+
+  it("🔴 REJECTS a present id beside a null code — the dead-link half-match", () => {
+    // The coherence rule covers `latest_version_id` for a reason beyond
+    // symmetry: it is the field the workspace LINK is built from. A row
+    // carrying an id with no code would render "Open null →" pointing at a
+    // real version, and a row carrying a code with no id would silently drop
+    // the link from a formula that has one. Both are the LEFT JOIN LATERAL
+    // half-matching, which it cannot do.
+    expect(() =>
+      formulaWithCoherentVersion.parse({ ...FORMULA, latest_version_code: null }),
+    ).toThrow();
+    expect(() =>
+      formulaWithCoherentVersion.parse({ ...FORMULA, latest_version_id: null }),
     ).toThrow();
   });
 

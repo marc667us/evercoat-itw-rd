@@ -88,6 +88,46 @@ export function fetchBatches(
   );
 }
 
+export interface BatchCreateRequest {
+  readonly formula_version_id: string;
+  readonly batch_number: string;
+  /**
+   * A string. See this file's header: the API declares this `Decimal` and
+   * *"the engine refuses a float at its boundary"*. A batch quantity is a
+   * controlled mass, and JSON has only floats.
+   */
+  readonly planned_quantity_kg: string;
+  readonly tolerance_percent?: string;
+  readonly purpose?: string;
+  readonly mixing_procedure?: string;
+  readonly notes?: string;
+}
+
+/**
+ * Create a batch against an approved formula version.
+ *
+ * 🔴 THIS ROUTE HAD NO CALLER WHILE THE OTHER TEN DID. The batch bench could
+ * authorise, start, weigh, deviate, sample, complete and review a batch —
+ * and could not create one, so every batch on screen had been inserted by a
+ * seeding script. The lifecycle was demonstrable only on records no user
+ * could have produced, which is the same defect as a table with no writer,
+ * one step earlier in the chain. Found by Codex.
+ */
+export function createBatch(
+  credentials: ApiCredentials,
+  request: BatchCreateRequest,
+): Promise<{ id: string }> {
+  return apiRequest(
+    {
+      path: "/api/laboratory/batches",
+      method: "POST",
+      body: request,
+      credentials,
+    },
+    (payload) => z.object({ id: z.string() }).passthrough().parse(payload),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The batch detail — the weigh-up sheet and everything recorded against it
 // ---------------------------------------------------------------------------

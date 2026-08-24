@@ -1053,19 +1053,40 @@ def get_test(session: Session, *, test_id: uuid.UUID, organization_id: uuid.UUID
     disposition = context["disposition"]
 
     test["replicates"] = context["replicates"]
-    test["statistics"] = {
-        "count": context["statistics"].count,
-        "valid_count": context["statistics"].valid_count,
-        "mean": context["statistics"].mean,
-        "standard_deviation": context["statistics"].standard_deviation,
-        "cv_percent": context["statistics"].cv_percent,
-    }
+    # 🔴 `_decimal_strings`, AND IT IS NOT DECORATION (I84).
+    #
+    # `mean`, `standard_deviation`, `cv_percent` and `margin_percent` are
+    # `Decimal`, and FastAPI's `jsonable_encoder` maps `Decimal` to
+    # **float** -- measured, `Decimal("12.500000") -> 12.5`. Every one of
+    # these was leaving the API with its stored scale destroyed, so a mean
+    # computed to six places arrived at the browser as three.
+    #
+    # This is the same defect `app/domains/laboratory/service.py` fixed for
+    # batch masses, and it survived here for exactly one reason: **no
+    # browser ever called this endpoint**, so nothing ever parsed the
+    # numbers and noticed. An orphaned route hid a live correctness bug --
+    # this codebase's most-repeated lesson, arriving one layer down.
+    #
+    # `_decimal_strings` leaves `count`, `valid_count` and a `None` alone:
+    # cardinalities are not measurements, and `None` means "undefined", not
+    # zero. Pinned by `tests/test_laboratory_testing_serialisation.py`.
+    test["statistics"] = _decimal_strings(
+        {
+            "count": context["statistics"].count,
+            "valid_count": context["statistics"].valid_count,
+            "mean": context["statistics"].mean,
+            "standard_deviation": context["statistics"].standard_deviation,
+            "cv_percent": context["statistics"].cv_percent,
+        }
+    )
     # TWO SEPARATE FIELDS, ALWAYS.
-    test["automatic_evaluation"] = {
-        "calculated_result": test["calculated_result"],
-        "detail": context["evaluation"].detail,
-        "margin_percent": context["evaluation"].margin_percent,
-    }
+    test["automatic_evaluation"] = _decimal_strings(
+        {
+            "calculated_result": test["calculated_result"],
+            "detail": context["evaluation"].detail,
+            "margin_percent": context["evaluation"].margin_percent,
+        }
+    )
     test["final_disposition"] = {
         "colour": disposition.colour,
         "label": disposition.label,

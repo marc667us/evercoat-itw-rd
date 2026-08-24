@@ -38,6 +38,8 @@
 
 import { useMemo } from "react";
 
+import Link from "next/link";
+
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
 import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -62,6 +64,17 @@ interface FormulaRow {
   /** Null when the formula has no version yet — a real state, not an error. */
   readonly latest_version_code: string | null;
   readonly latest_version_status: string | null;
+  /**
+   * The live key the workspace opens with, or null.
+   *
+   * 🔴 NULL ON EVERY DEMONSTRATION ROW, AND THAT IS DELIBERATE. A fixture
+   * formula has no `version_id` on the server, so a link built from one would
+   * 404 against a live API — a link that works in the demo and breaks in use,
+   * which this file has already been burned by once. The card offers the
+   * workspace only when it genuinely has a key for it, and says why when it
+   * does not.
+   */
+  readonly latest_version_id: string | null;
 }
 
 function fromApi(formula: Formula): FormulaRow {
@@ -83,6 +96,7 @@ function fromApi(formula: Formula): FormulaRow {
     version_count: formula.version_count,
     latest_version_code: formula.latest_version_code,
     latest_version_status: formula.latest_version_status,
+    latest_version_id: formula.latest_version_id,
   };
 }
 
@@ -113,6 +127,7 @@ function fromDemo(formula: DemoFormula): FormulaRow {
       version_count: 0,
       latest_version_code: null,
       latest_version_status: null,
+      latest_version_id: null,
     };
   }
   return {
@@ -124,6 +139,8 @@ function fromDemo(formula: DemoFormula): FormulaRow {
     version_count: formula.versions.length,
     latest_version_code: latest.version_code,
     latest_version_status: latest.status,
+    // A fixture has no live version id. See `FormulaRow`.
+    latest_version_id: null,
   };
 }
 
@@ -198,6 +215,21 @@ export default function FormulationsPage() {
                 )}
                 {f.product_family !== null && <> · {f.product_family}</>}
               </p>
+
+              {f.latest_version_id !== null && (
+                <p className="mt-2 text-xs">
+                  <Link
+                    href={`/formulations/formula?version=${f.latest_version_id}`}
+                    className="font-medium text-slate-800 underline underline-offset-2"
+                  >
+                    Open {f.latest_version_code} →
+                  </Link>{" "}
+                  <span className="text-slate-600">
+                    composition, derived properties, weigh-up sheet and the difference
+                    against its parent
+                  </span>
+                </p>
+              )}
             </li>
           ))}
         </ul>

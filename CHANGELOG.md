@@ -1,5 +1,120 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-24 — twenty-three routes had no caller, and one of them was hiding a float
+
+No migration. API suite **671 passed / 0 failed / 11 skipped**; web **137
+passed / 0 failed**; `next lint`, ruff, ruff format and mypy (86 files) green.
+
+Laboratory, Testing, Formulations and MSD were measured route by route against
+the code that calls them. Of **37 endpoints across the four modules, 23 had no
+production caller** — no browser could reach them at all.
+
+| Module | Endpoints | Reachable before | Reachable now |
+|---|---|---|---|
+| Laboratory | 11 | 10 | **11** |
+| Testing | 9 | 1 | **9** |
+| Formulations | 13 | 1 | **13** |
+| MSD | 4 | 2 | **4** |
+
+### 🔴 I84 — EVERY MEASUREMENT ON THOSE ROUTES WAS A FLOAT
+
+`jsonable_encoder` maps `Decimal` to float. `app/domains/formulations/service.py`
+had **no conversion helper of any kind**, and `testing.get_test` assembled
+`statistics` and `automatic_evaluation` *after* its row-level `_decimal_strings`
+had run. Measured against the running service, before the fix:
+
+    percentage                 2.5                  float
+    density_g_cm3              2.2                  float
+    cost_per_kg                6.4                  float
+    theoretical_density_g_cm3  1.0906918323011936   float
+
+`CLAUDE.md` §5 — *"NUMERIC, never float, for percentages, masses, densities and
+measured values"* — was satisfied in the database, satisfied in the engine, and
+satisfied nowhere in between.
+
+**The orphaned route was hiding it.** This is the identical defect
+`tests/test_laboratory_testing_serialisation.py` was written for on 2026-08-19,
+and that file's own header explains why it had survived: *"no screen was wired
+to these routes yet, so no client had ever parsed the response"*. The fix that
+day reached exactly as far as the routes wired that day. It was found the same
+way again — by wiring a screen to routes nothing had ever called.
+
+Fixed at the **response boundary only**, never at load: the engine needs real
+`Decimal`s, and stringifying in `_load_components` would break every
+calculation that reads them.
+
+### 🔴 I85 — AND THEN THE STRINGS CARRIED FALSE PRECISION
+
+With I84 fixed, a theoretical density became
+`1.092376966584235260696368803` — twenty-eight significant digits asserted from
+inputs recorded to four, because the engine divides at full `Decimal` context
+precision and deliberately does not round. Rule 3 requires a theoretical
+density presented **as calculated**, not dressed up as measured.
+
+Quantized to `0.0001` at the response boundary, never in the engine —
+`test_formulation.py` asserts `binder_to_filler_ratio` is exactly
+`Decimal("40")/Decimal("60")` and the engine must go on answering that exactly.
+Four places is not invented: `scripts/build_demo_formulations.py` already
+quantizes these same properties to `"0.0001"`, and the build-time fixture and
+the live API render onto the **same screens**.
+
+### 🔴 I86 — THE LIST COULD NOT REACH THE WORKSPACE, WHICH IS WHY THERE WAS NONE
+
+Twelve of the thirteen formulation routes are keyed by `version_id`.
+`list_formulas` returned the latest version's code, number and status — and
+**not its id**. A `version_code` is unique per formula, not per organization,
+so it is a label and not a key.
+
+The browser therefore had no identifier with which to open any version-scoped
+route, and `/formulations/[code]` rendered `lib/demo/dataset.ts` instead. This
+was never a missing screen; it was a missing column that made the screen
+unbuildable, and a build-time fixture quietly stood in for it.
+
+### I87 — the difference engine was missing two of its named columns
+
+§H Slice 3 specifies *"old / new / Δ / %Δ"*. `compare_versions` returned the
+two percentages and a categorical `change`, and its docstring explained the
+omission: the delta *"is a SUBTRACTION OF TWO PERCENTAGES … the one place that
+may subtract them is the engine."* **The refusal was right and no such engine
+function was ever written**, so the gap sat behind a correct-sounding comment.
+
+`component_delta` returns percentage-POINT and RELATIVE movement as separate
+named fields — 2.5%→5.0% is 2.5 points and 100% relative — and `None` for an
+added or removed component, which has no delta rather than a zero one.
+
+### I88 — MSD had a complete memory and no way to read it
+
+`GET /threads` and `GET /threads/{id}/turns` both existed, were tested, and
+neither had a caller. `MsdPanel` kept its thread id in a `useRef`, so every
+reload began an empty conversation on top of a complete server-side record —
+a route with no caller surfacing as *"the assistant forgets everything"*.
+
+The panel now adopts the caller's most recent thread and replays it. **A
+replayed answer keeps the disclaimer read from its stored turn**, never a
+constant, so §7 holds on history exactly as it does live.
+
+### I89 — the bench could do everything to a batch except create one
+
+Ten of eleven laboratory routes had a caller; `POST /batches` did not. Every
+batch on screen had been inserted by a seeding script, so the lifecycle was
+demonstrable only on records no user could have produced. Found by Codex.
+
+### Built
+
+* **`/testing/test?id=…`** — the test workspace. Both status fields side by
+  side and labelled (F31), the raw replicates with the exclusion control and
+  its mandatory reason, the statistics with `null` rendered as a named absence
+  rather than a zero, the snapshotted approval ladder showing **undecided**
+  steps because an undecided step is the answer to "what requires action?",
+  all seven decision types, and the rule number that decided the colour.
+* **`/formulations/formula?version=…`** — the formula workspace on live tenant
+  data: composition, derived properties (each a value **or** the engine's own
+  sentence saying why not), the weigh-up sheet, and the difference against the
+  parent with both delta columns.
+* Query parameters, not `[id]` segments — under `output: "export"` a dynamic
+  segment must enumerate its params at build time, so it would pre-render the
+  seeded records and 404 every real one.
+
 ## 2026-08-23 — the user directory was global, and one route wrote across tenants
 
 Migration **044**. API suite **654 passed / 0 failed / 11 skipped**

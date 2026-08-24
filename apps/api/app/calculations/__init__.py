@@ -18,8 +18,10 @@ correct.
 
 from app.calculations.formulation import (
     Component,
+    ComponentDelta,
     SubmissionBlock,
     binder_to_filler_ratio,
+    component_delta,
     cost_per_kg,
     normalize_to_100,
     scale_to_batch,
@@ -33,8 +35,10 @@ from app.calculations.formulation import (
 
 __all__ = [
     "Component",
+    "ComponentDelta",
     "SubmissionBlock",
     "binder_to_filler_ratio",
+    "component_delta",
     "cost_per_kg",
     "normalize_to_100",
     "scale_to_batch",

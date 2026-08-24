@@ -34,7 +34,6 @@ import {
   isApiConfigured,
   type DataSource,
 } from "./config";
-import { fetchFormulas, type Formula } from "./formulations";
 import {
   fetchKnowledgeDocuments,
   ingestKnowledgeDocument,
@@ -64,15 +63,54 @@ import {
   type WeighingRequest,
 } from "./laboratory";
 import {
+  createRevision,
+  decideVersion,
+  fetchFormulas,
+  fetchVersion,
+  fetchVersionComparison,
+  fetchVersionEvaluation,
+  fetchWeighUp,
+  putComponents,
+  recordObservedEffect,
+  submitVersion,
+  type ComponentInput,
+  type Formula,
+  type FormulaVersionDetail,
+  type RevisionRequest,
+  type VersionComparison,
+  type VersionDecisionRequest,
+  type VersionEvaluation,
+  type WeighUp,
+} from "./formulations";
+import {
   fetchMaterials,
   fetchSuppliers,
   type Material,
   type Supplier,
 } from "./materials";
+import {
+  fetchThreads,
+  fetchTurns,
+  type MsdThread,
+  type MsdTurn,
+} from "./msd";
 import { fetchProjects, type Project } from "./projects";
 import { useSession } from "./session";
 import { fetchMyWork, type Task } from "./tasks";
-import { fetchTests, type Test } from "./testing";
+import {
+  completeTest,
+  confirmTest,
+  excludeReplicate,
+  fetchTest,
+  fetchTests,
+  recordReplicate,
+  recordTestDecision,
+  startTest,
+  type DecisionRequest,
+  type ReplicateRequest,
+  type Test,
+  type TestDetail,
+} from "./testing";
 
 /**
  * What every screen receives.
@@ -627,5 +665,463 @@ export function useBatchActions(batchId: string): {
     lastAction: mutation.data ?? null,
     reset: mutation.reset,
     unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The test workspace — one query, and every step from planning to confirmation
+// ---------------------------------------------------------------------------
+
+/**
+ * One test, with its raw replicates and BOTH status fields.
+ *
+ * 🔴 THE KEY CARRIES `userId` FOR THE SAME REASON `useBatch` DOES. A key of
+ * `[resource, orgId]` already served one user's rows to another on this
+ * project. It matters more here, not less: two engineers in one organization
+ * see different tests, because RLS filters by project membership.
+ *
+ * This is the ONLY place the traffic light exists. `list_tests` withholds it
+ * deliberately, so the queue shows the five stored axes and this view shows
+ * the derived disposition — computed by the server, on every read, from the
+ * axes plus the method's limits and the requirement's threshold.
+ */
+export function useTest(testId: string): LiveOnly<TestDetail> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "testing-test",
+      testId,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && testId.length > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchTest(resolved.credentials, testId, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * Every test action, behind one hook.
+ *
+ * 🔴 EVERY ONE REFETCHES RATHER THAN PATCHING LOCAL STATE, and here that is
+ * not merely good hygiene — it is the rule. `calculated_result`,
+ * `display_color` and `final_status` are DERIVED and server-owned, and there
+ * is deliberately no endpoint that sets any of them. A screen that advanced
+ * a colour optimistically would be deciding a traffic light in the browser
+ * from an incomplete input, which is exactly what §10 forbids.
+ *
+ * Completing a test can open a failure investigation, so the dashboard
+ * queries are invalidated too: a RED result that did not update the
+ * investigation queue is a finding nobody is looking at.
+ */
+export function useTestActions(testId: string): {
+  readonly start: () => void;
+  readonly addReplicate: (request: ReplicateRequest) => void;
+  readonly excludeOne: (replicateId: string, reason: string) => void;
+  readonly complete: () => void;
+  readonly decide: (request: DecisionRequest) => void;
+  readonly confirm: () => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly reset: () => void;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["testing-test", testId] });
+    void queryClient.invalidateQueries({ queryKey: ["testing-tests"] });
+    void queryClient.invalidateQueries({ queryKey: ["dashboards"] });
+  };
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (job: { readonly label: string; readonly run: () => Promise<unknown> }) => {
+      await job.run();
+      return job.label;
+    },
+    onSuccess: refresh,
+  });
+
+  const run = (label: string, make: () => Promise<unknown>) =>
+    mutation.mutate({ label, run: make });
+
+  return {
+    start: () => run("start", () => startTest(credentials(), testId)),
+    addReplicate: (request) =>
+      run("replicate", () => recordReplicate(credentials(), testId, request)),
+    excludeOne: (replicateId, reason) =>
+      run("exclusion", () => excludeReplicate(credentials(), testId, replicateId, reason)),
+    complete: () => run("complete", () => completeTest(credentials(), testId)),
+    decide: (request) => run("decision", () => recordTestDecision(credentials(), testId, request)),
+    confirm: () => run("confirm", () => confirmTest(credentials(), testId)),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+    reset: mutation.reset,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The formula workspace — composition, derived properties, and the lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * One version's composition.
+ *
+ * 🔴 THE COMPOSITION AND THE EVALUATION ARE TWO ENDPOINTS AND THEY STAY TWO
+ * HOOKS. `/versions/{id}` returns the components; `/evaluation` runs the
+ * engine over them and returns the derived properties plus the submission
+ * blocks. Merging them would hide that a property can be UNAVAILABLE WITH A
+ * STATED REASON while the composition reads perfectly — "density unknown for:
+ * RM-FIL-07" is the most useful sentence on the screen, and it belongs to the
+ * evaluation, not to the components.
+ */
+export function useFormulaVersion(versionId: string): LiveOnly<FormulaVersionDetail> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "formulation-version",
+      versionId,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && versionId.length > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchVersion(resolved.credentials, versionId, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/** The engine on that version: properties, submission blocks, submittability. */
+export function useFormulaEvaluation(versionId: string): LiveOnly<VersionEvaluation> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "formulation-evaluation",
+      versionId,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && versionId.length > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchVersionEvaluation(resolved.credentials, versionId, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * The difference against another version.
+ *
+ * Disabled when there is no parent. That is the honest state of a FIRST
+ * version rather than an error, and the screen says so rather than showing an
+ * empty table that looks like "nothing changed".
+ */
+export function useFormulaComparison(
+  versionId: string,
+  againstVersionId: string | null,
+): LiveOnly<VersionComparison> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "formulation-comparison",
+      versionId,
+      againstVersionId,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && versionId.length > 0 && (againstVersionId?.length ?? 0) > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchVersionComparison(
+        resolved.credentials,
+        versionId,
+        againstVersionId as string,
+        signal,
+      );
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * Every formulation action, behind one hook.
+ *
+ * The weigh-up sheet is deliberately NOT here: `POST /weigh-up` takes a batch
+ * mass and returns a scaled sheet without writing anything, so it is a read
+ * with a body rather than a mutation. It lives in the workspace as its own
+ * request, and its result is held in component state.
+ */
+export function useFormulaActions(versionId: string): {
+  readonly saveComponents: (components: readonly ComponentInput[]) => void;
+  readonly submit: (note?: string) => void;
+  readonly decide: (request: VersionDecisionRequest) => void;
+  readonly revise: (request: RevisionRequest) => void;
+  readonly recordObserved: (observedEffect: string) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly reset: () => void;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["formulation-version", versionId] });
+    void queryClient.invalidateQueries({ queryKey: ["formulation-evaluation", versionId] });
+    void queryClient.invalidateQueries({ queryKey: ["formulation-comparison"] });
+    // The list carries `latest_version_code` and `version_count`, and a
+    // revision changes both.
+    void queryClient.invalidateQueries({ queryKey: ["formulations"] });
+  };
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (job: { readonly label: string; readonly run: () => Promise<unknown> }) => {
+      await job.run();
+      return job.label;
+    },
+    onSuccess: refresh,
+  });
+
+  const run = (label: string, make: () => Promise<unknown>) =>
+    mutation.mutate({ label, run: make });
+
+  return {
+    saveComponents: (components) =>
+      run("components", () => putComponents(credentials(), versionId, components)),
+    submit: (note) => run("submit", () => submitVersion(credentials(), versionId, note)),
+    decide: (request) => run("decision", () => decideVersion(credentials(), versionId, request)),
+    revise: (request) => run("revision", () => createRevision(credentials(), versionId, request)),
+    recordObserved: (observedEffect) =>
+      run("observed-effect", () => recordObservedEffect(credentials(), versionId, observedEffect)),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+    reset: mutation.reset,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// MSD — the conversations that were recorded and never read back
+// ---------------------------------------------------------------------------
+
+/** The caller's own threads. Owner-scoped in the database. */
+export function useMsdThreads(): LiveOnly<MsdThread[]> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "msd-threads",
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchThreads(resolved.credentials, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * One thread's history.
+ *
+ * 🔴 THIS IS THE HOOK THAT GIVES MSD A MEMORY IT ALWAYS HAD. Every exchange
+ * was being written to `ai.msd_turns`, and no production path ever read one
+ * back — so each reload began an empty conversation on top of a complete
+ * record. The assistant appeared stateless while the state existed and was
+ * simply unreachable.
+ */
+export function useMsdTurns(threadId: string | null): LiveOnly<MsdTurn[]> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "msd-turns",
+      threadId,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && (threadId?.length ?? 0) > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchTurns(resolved.credentials, threadId as string, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * The weigh-up sheet, on demand.
+ *
+ * 🔴 A POST THAT WRITES NOTHING, AND THAT IS THE API'S SHAPE RATHER THAN A
+ * MISTAKE. `POST /weigh-up` takes a batch mass and returns a scaled sheet; it
+ * is a POST because the mass is an INPUT, not because it mutates. So it is
+ * neither a query (it has a body the user chooses) nor a mutation (nothing
+ * changes), and it is exposed as an explicit `run` the screen calls.
+ *
+ * It lives here rather than in the page so that `useCredentials` stays private
+ * to this module: a screen that reaches for credentials directly is one edit
+ * away from building its own request and bypassing the parsing contract every
+ * other call goes through.
+ *
+ * The server REFUSES a formula that does not total 100%, and its sentence is
+ * the useful part — "scaling it silently would produce masses that contradict
+ * the stated percentages". It is surfaced verbatim.
+ */
+export function useWeighUp(versionId: string): {
+  readonly run: (batchMassKg: string) => void;
+  readonly data: WeighUp | null;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+} {
+  const resolved = useCredentials();
+
+  const mutation = useMutation({
+    mutationFn: (batchMassKg: string) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchWeighUp(resolved.credentials, versionId, batchMassKg);
+    },
+  });
+
+  return {
+    run: (batchMassKg) => mutation.mutate(batchMassKg),
+    data: mutation.data ?? null,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
   };
 }

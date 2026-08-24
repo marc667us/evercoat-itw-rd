@@ -529,7 +529,21 @@ def test_excluding_a_replicate_keeps_it_on_the_record_and_out_of_the_mean(
 
     assert len(detail["replicates"]) == 3, "the excluded replicate disappeared from the record"
     assert detail["statistics"]["valid_count"] == 2
-    assert detail["statistics"]["mean"] == Decimal("12")
+
+    # 🔴 A STRING, AND THE ASSERTION CHECKS BOTH HALVES (I84).
+    #
+    # `get_test` now returns every statistic as a string, because FastAPI's
+    # `jsonable_encoder` maps `Decimal` to float and this endpoint was
+    # shipping a mean with its scale destroyed. `isinstance` pins the
+    # contract; comparing the PARSED value pins the arithmetic without
+    # pinning an incidental scale -- `Decimal("12.000000") == Decimal("12")`
+    # is true, and a test that demanded the literal "12.000000" would break
+    # the next time the engine's quantum changed for an unrelated reason.
+    assert isinstance(detail["statistics"]["mean"], str), (
+        "a measured mean must leave the service as a string, or the encoder "
+        "turns it into a float and the recorded scale is lost"
+    )
+    assert Decimal(detail["statistics"]["mean"]) == Decimal("12")
 
 
 def test_excluding_a_replicate_without_a_reason_is_refused(

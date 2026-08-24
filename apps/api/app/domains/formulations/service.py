@@ -36,6 +36,7 @@ alone is a claim.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -47,6 +48,7 @@ from sqlalchemy.orm import Session
 from app.calculations.formulation import (
     Component,
     binder_to_filler_ratio,
+    component_delta,
     cost_per_kg,
     scale_to_batch,
     solids_content,
@@ -354,6 +356,17 @@ def list_formulas(
             """
             SELECT f.id, f.formula_code, f.name, f.product_family, f.status,
                    f.project_id, p.project_code, f.owner_user_id, f.updated_at,
+                   -- 🔴 THE ID, AND WITHOUT IT THIS LIST GOES NOWHERE (I86).
+                   -- Twelve of the thirteen formulation routes are keyed by
+                   -- `version_id`, and this endpoint returned the latest
+                   -- version's code, number and status but not its
+                   -- identifier. A browser reading this list therefore had
+                   -- nothing to open a version WITH -- which is the
+                   -- structural reason the formulation workspace was never
+                   -- wired and rendered a build-time fixture instead. A
+                   -- version_code is a label, not a key: it is unique per
+                   -- formula, not per organization.
+                   latest.id AS latest_version_id,
                    latest.version_code AS latest_version_code,
                    latest.version_number AS latest_version_number,
                    latest.status AS latest_version_status,
@@ -363,7 +376,7 @@ def list_formulas(
             JOIN projects.projects p
               ON p.id = f.project_id AND p.organization_id = f.organization_id
             LEFT JOIN LATERAL (
-                SELECT v.version_code, v.version_number, v.status
+                SELECT v.id, v.version_code, v.version_number, v.status
                 FROM formulations.formula_versions v
                 WHERE v.formula_id = f.id AND v.organization_id = f.organization_id
                 ORDER BY v.version_number DESC
@@ -412,8 +425,12 @@ def get_version(
     if not include_cost:
         for component in components:
             component.pop("cost_per_kg", None)
-    version["components"] = components
-    return version
+    # The response boundary -- see `_decimal_strings` (I84). The version row
+    # and every component carry NUMERIC columns, and both halves must be
+    # converted or the screen receives a float for a controlled percentage.
+    out = _decimal_strings(version)
+    out["components"] = [_decimal_strings(c) for c in components]
+    return out
 
 
 # 🔴 THE LEVEL ABOVE WHICH ONE PERSON MAY NOT REMOVE A RECIPE.
@@ -808,7 +825,7 @@ def evaluate_version(
 
     if not rows:
         return {
-            "version": version,
+            "version": _decimal_strings(version),
             "component_count": 0,
             "properties": {},
             "submission_blocks": [
@@ -849,7 +866,7 @@ def evaluate_version(
     )
 
     return {
-        "version": version,
+        "version": _decimal_strings(version),
         "component_count": len(rows),
         "properties": properties,
         "submission_blocks": [{"code": b.code, "message": b.message} for b in blocks],
@@ -885,8 +902,8 @@ def weigh_up(
         raise FormulationError(str(exc)) from exc
 
     return {
-        "version": version,
-        "batch_mass_kg": batch_mass_kg,
+        "version": _decimal_strings(version),
+        "batch_mass_kg": str(batch_mass_kg),
         # ORDERED BY THE FORMULA, NOT BY THE ENGINE'S RETURN.
         # `scale_to_batch` returns a dict built largest-line-last, because
         # the largest line absorbs the rounding remainder. Iterating that
@@ -895,12 +912,18 @@ def weigh_up(
         # technician's sheet follows `display_order`, which is the order
         # the composition is stored and rendered in.
         "lines": [
-            {
-                "material_code": r["material_code"],
-                "material_name": r["material_name"],
-                "percentage": r["percentage"],
-                "mass_kg": masses[r["material_code"]],
-            }
+            # Strings -- see `_decimal_strings` (I84). A weigh-up mass is the
+            # figure a technician weighs against; shipping it as a float is
+            # the one place in this module where the scale loss reaches the
+            # bench rather than only the screen.
+            _decimal_strings(
+                {
+                    "material_code": r["material_code"],
+                    "material_name": r["material_name"],
+                    "percentage": r["percentage"],
+                    "mass_kg": masses[r["material_code"]],
+                }
+            )
             for r in rows
         ],
     }
@@ -957,24 +980,44 @@ def compare_versions(
     }
 
     codes = sorted(set(left_rows) | set(right_rows))
-    component_rows = [
-        {
-            "material_code": code,
-            "material_name": (left_rows.get(code) or right_rows[code])["material_name"],
-            "previous_percentage": left_rows[code]["percentage"] if code in left_rows else None,
-            "new_percentage": right_rows[code]["percentage"] if code in right_rows else None,
-            "change": (
-                "added"
-                if code not in left_rows
-                else "removed"
-                if code not in right_rows
-                else "unchanged"
-                if left_rows[code]["percentage"] == right_rows[code]["percentage"]
-                else "changed"
-            ),
-        }
-        for code in codes
-    ]
+    # 🔴 THE DELTA IS COMPUTED BY THE ENGINE, WHICH IS WHY IT EXISTS AT ALL.
+    #
+    # This function's docstring refused to subtract the two percentages here
+    # and named the engine as "the one place that may" -- and then no such
+    # engine function was ever written, so the difference engine shipped
+    # without two of the columns the plan names (§H, Slice 3: "old / new /
+    # Δ / %Δ / reason / expected / observed"). The refusal was right and the
+    # gap was real; `component_delta` closes it without moving the
+    # arithmetic anywhere it does not belong.
+    #
+    # An ADDED or REMOVED component gets `None`, not its own percentage and
+    # not zero -- see `ComponentDelta`.
+    component_rows = []
+    for code in codes:
+        previous = left_rows[code]["percentage"] if code in left_rows else None
+        current = right_rows[code]["percentage"] if code in right_rows else None
+        movement = component_delta(previous, current)
+        component_rows.append(
+            _decimal_strings(
+                {
+                    "material_code": code,
+                    "material_name": (left_rows.get(code) or right_rows[code])["material_name"],
+                    "previous_percentage": previous,
+                    "new_percentage": current,
+                    "delta": movement.delta,
+                    "percent_delta": movement.percent_delta,
+                    "change": (
+                        "added"
+                        if code not in left_rows
+                        else "removed"
+                        if code not in right_rows
+                        else "unchanged"
+                        if left_rows[code]["percentage"] == right_rows[code]["percentage"]
+                        else "changed"
+                    ),
+                }
+            )
+        )
 
     return {
         "previous": left["version"],
@@ -1539,6 +1582,46 @@ def _safety_checks(rows: list[dict[str, Any]]) -> tuple[str, ...]:
     )
 
 
+# The presentation scale for every DERIVED property, matching
+# `scripts/build_demo_formulations.py`. See `_try` for why it is four.
+PROPERTY_SCALE = Decimal("0.0001")
+
+
+def _decimal_strings(row: Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
+    """Every `Decimal` in the row as a string; everything else untouched.
+
+    🔴 THIS IS A CORRECTNESS FIX, NOT FORMATTING (I84).
+
+    FastAPI's `jsonable_encoder` maps `Decimal` to **float**, and every
+    number this module returns was going out that way. Measured against
+    the running service before the fix:
+
+        percentage                 2.5                  float
+        density_g_cm3              2.2                  float
+        theoretical_density_g_cm3  1.0906918323011936   float
+
+    The last one is the clearest: the engine returns a `Decimal` quantized
+    to a defined scale, and the wire carried sixteen significant digits of
+    binary-float noise instead. `CLAUDE.md` §5 -- *"NUMERIC, never float,
+    for percentages, masses, densities and measured values"* -- was
+    satisfied in the database, in the engine, and nowhere in between.
+
+    It survived because **no browser called any of these routes**. The
+    identical defect was found and fixed for batch masses in
+    `app/domains/laboratory/service.py` long ago; here the missing caller
+    meant nothing ever parsed the numbers and noticed. An orphaned route
+    hiding a live correctness bug is this codebase's most-repeated lesson
+    arriving one layer down.
+
+    Applied at the RESPONSE boundary only, never at load: the engine needs
+    real `Decimal`s, and stringifying in `_load_components` would break
+    every calculation that reads them.
+    """
+    return {
+        key: (str(value) if isinstance(value, Decimal) else value) for key, value in row.items()
+    }
+
+
 def _try(fn: Any) -> dict[str, Any]:
     """Run one engine calculation, reporting refusal as a stated reason.
 
@@ -1549,6 +1632,39 @@ def _try(fn: Any) -> dict[str, Any]:
     mistake a missing property for a computed zero.
     """
     try:
-        return {"value": fn(), "unavailable_reason": None}
+        value = fn()
     except (ValueError, ZeroDivisionError) as exc:
         return {"value": None, "unavailable_reason": str(exc)}
+    # A STRING, QUANTIZED TO FOUR PLACES (I84 / I85).
+    #
+    # Two separate corrections, and both are needed.
+    #
+    # 1. A string, per `_decimal_strings`: every engine property is a
+    #    `Decimal` and would otherwise reach the browser as a float.
+    #
+    # 2. Quantized, because the engine deliberately does NOT round. It
+    #    divides at full `Decimal` context precision, so a theoretical
+    #    density arrived as `1.092376966584235260696368803` -- twenty-eight
+    #    significant digits asserted from inputs recorded to four. That is
+    #    false precision on a controlled figure, and `CLAUDE.md` rule 3
+    #    requires a theoretical density to be presented as calculated, not
+    #    dressed up as measured.
+    #
+    # 🔴 FOUR PLACES IS NOT AN INVENTED SCALE. It is the one this project
+    # already uses for exactly these properties: `scripts/build_demo_
+    # formulations.py` quantizes `total_percentage`,
+    # `theoretical_density_g_cm3` and `raw_material_cost_per_kg` to
+    # `"0.0001"` and stringifies them, and `tests/test_msd_conductor.py`
+    # pins densities as `"1.5790"` / `"1.0920"`. The build-time dataset and
+    # the live API render onto the SAME screens, so a scale that disagreed
+    # between them would make one formula look different depending on where
+    # it was read from.
+    #
+    # The rounding happens HERE, at the response boundary, and never in the
+    # engine: `test_formulation.py` asserts `binder_to_filler_ratio` is
+    # exactly `Decimal("40") / Decimal("60")`, and the engine must go on
+    # answering that exactly. Presentation scale is the API's business;
+    # exactness is the engine's.
+    if isinstance(value, Decimal):
+        return {"value": str(value.quantize(PROPERTY_SCALE)), "unavailable_reason": None}
+    return {"value": value, "unavailable_reason": None}

@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 from app.calculations import (
     Component,
     binder_to_filler_ratio,
+    component_delta,
     cost_per_kg,
     normalize_to_100,
     scale_to_batch,
@@ -490,3 +491,86 @@ def test_scaling_refuses_a_formula_with_duplicated_components():
     ]
     with pytest.raises(ValueError, match="duplicated components"):
         scale_to_batch(components, Decimal("10"))
+
+
+# ---------------------------------------------------------------------------
+# component_delta — the two columns the difference engine was missing
+# ---------------------------------------------------------------------------
+#
+# `compare_versions` refused to subtract two percentages itself and named the
+# engine as "the one place that may". No such engine function was ever written,
+# so the difference engine shipped without the Δ and %Δ columns §H Slice 3
+# names. These pin the behaviour that closes that gap.
+
+
+def test_a_delta_is_percentage_points_and_a_percent_delta_is_relative() -> None:
+    """The two are different numbers and a reader will confuse them.
+
+    2.5% -> 5.0% is a movement of 2.5 POINTS and a relative change of 100%.
+    Reporting either under the other's heading is the kind of error nobody
+    notices because both are small plausible numbers.
+    """
+    moved = component_delta(Decimal("2.5000"), Decimal("5.0000"))
+    assert moved.delta == Decimal("2.5000")
+    assert moved.percent_delta == Decimal("100.0000")
+
+
+def test_a_decrease_is_signed_in_both_columns() -> None:
+    """A filler coming down is the whole lightweighting story; the sign is
+    the information."""
+    moved = component_delta(Decimal("40.0000"), Decimal("37.5000"))
+    assert moved.delta == Decimal("-2.5000")
+    assert moved.percent_delta == Decimal("-6.2500")
+
+
+def test_the_subtraction_is_exact_where_a_float_would_not_be() -> None:
+    """The reason this lives in Python at all.
+
+    In JavaScript `0.3 - 0.1` is 0.19999999999999998, and a component share is
+    a controlled figure on a master formulation. Under `Decimal` it is exact,
+    and the trailing scale the laboratory recorded survives.
+    """
+    moved = component_delta(Decimal("0.3000"), Decimal("0.1000"))
+    assert moved.delta == Decimal("-0.2000")
+    assert str(moved.delta) == "-0.2000", "the recorded scale was not preserved"
+
+
+@pytest.mark.parametrize(
+    ("previous", "new"),
+    [(None, Decimal("5.0")), (Decimal("5.0"), None)],
+    ids=["added", "removed"],
+)
+def test_an_added_or_removed_component_has_no_delta_at_all(
+    previous: Decimal | None, new: Decimal | None
+) -> None:
+    """🔴 NOT ZERO, AND NOT ITS OWN PERCENTAGE.
+
+    A component that did not exist has no delta. Reporting its full percentage
+    would say "it increased by 5 points" about something that was not there to
+    increase; reporting 0 would say it did not move. `change` on the row
+    already distinguishes added from removed, so this declines to invent a
+    number for either.
+    """
+    moved = component_delta(previous, new)
+    assert moved.delta is None
+    assert moved.percent_delta is None
+
+
+def test_a_relative_change_from_zero_is_undefined_not_infinite() -> None:
+    """A division by zero, reported as an absence.
+
+    The POINT movement is real and is reported; the RELATIVE one is not
+    defined, and rendering it as 100% — or as anything — would be a claim the
+    arithmetic does not support.
+    """
+    moved = component_delta(Decimal("0.0000"), Decimal("5.0000"))
+    assert moved.delta == Decimal("5.0000")
+    assert moved.percent_delta is None
+
+
+def test_no_change_is_a_zero_delta_and_not_an_absence() -> None:
+    """The opposite direction of the same distinction: a component that stayed
+    put HAS a delta, and it is zero."""
+    moved = component_delta(Decimal("12.5000"), Decimal("12.5000"))
+    assert moved.delta == Decimal("0.0000")
+    assert moved.percent_delta == Decimal("0.0000")

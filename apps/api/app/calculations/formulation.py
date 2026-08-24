@@ -21,6 +21,7 @@ __all__ = [
     "MassDeviation",
     "SubmissionBlock",
     "binder_to_filler_ratio",
+    "component_delta",
     "cost_per_kg",
     "fraction_to_percent",
     "mass_deviation",
@@ -202,6 +203,65 @@ def fraction_to_percent(fraction: Decimal | int | str) -> Decimal:
     if not (ZERO <= value <= Decimal("1")):
         raise ValueError(f"a fraction must be between 0 and 1, not {value}")
     return value * HUNDRED
+
+
+@dataclass(frozen=True)
+class ComponentDelta:
+    """How one component's share moved between two versions.
+
+    `delta` is in PERCENTAGE POINTS and `percent_delta` is RELATIVE, and
+    they are different numbers that a reader will confuse if either is
+    unlabelled: 2.5% -> 5.0% is a delta of 2.5 points and a relative
+    change of 100%. The plan asks for both (§H, Slice 3: "old / new / Δ /
+    %Δ"), so both are named rather than one being left for the reader to
+    infer.
+
+    Both are `None` when the component was ADDED or REMOVED. A component
+    that did not exist has no delta -- reporting one as its full
+    percentage would say "it increased by 2.5 points" about something
+    that was not there to increase, and reporting 0 would say it did not
+    move. `change` on the row already distinguishes added from removed;
+    this field declines to invent a number for either.
+
+    `percent_delta` is additionally `None` when the previous percentage
+    was zero, which is a division by zero and not an infinite increase.
+    """
+
+    delta: Decimal | None
+    percent_delta: Decimal | None
+
+
+def component_delta(
+    previous: Decimal | int | str | None,
+    new: Decimal | int | str | None,
+) -> ComponentDelta:
+    """The percentage-point and relative movement between two shares.
+
+    WHY THIS IS IN THE ENGINE AND NOT IN THE SERVICE OR THE SCREEN.
+
+    `compare_versions` deliberately refused to compute it, and said so:
+    *"the percentage-point delta on a component is a SUBTRACTION OF TWO
+    PERCENTAGES and is therefore arithmetic -- so it is not done here.
+    It is expressed as the pair of values, and the one place that may
+    subtract them is the engine."* This is that place. The pair of values
+    stayed on the wire and the delta stayed unimplemented, which left the
+    difference engine short of two columns the plan names.
+
+    Doing it in TypeScript instead would be wrong twice over: `CLAUDE.md`
+    rule 2 gives controlled arithmetic to Python, and in JavaScript
+    `5.0 - 2.5` is fine but `0.3 - 0.1` is 0.19999999999999998 -- and a
+    component share is a controlled figure on a master formulation.
+    """
+    if previous is None or new is None:
+        return ComponentDelta(None, None)
+
+    was = _dec(previous, "previous")
+    now = _dec(new, "new")
+    delta = now - was
+    if was == ZERO:
+        # Not an infinite increase, and not 100%. Undefined, and said so.
+        return ComponentDelta(delta, None)
+    return ComponentDelta(delta, (delta / was * HUNDRED).quantize(Decimal("0.0001")))
 
 
 def total_percentage(components: list[Component]) -> Decimal:

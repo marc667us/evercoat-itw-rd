@@ -29,6 +29,8 @@
  * papered over with a colour is a safety defect.
  */
 
+import Link from "next/link";
+
 import { LiveOnlyPage, DataSourceError } from "@/components/ui/data-source-banner";
 import { Absent } from "@/components/ui/record-link";
 import { useTests } from "@/lib/api/hooks";
@@ -101,7 +103,18 @@ export default function TestingPage() {
                       {t.test_number}
                     </span>
                     <h2 className="flex-1 text-sm font-semibold text-slate-900">
-                      {t.method_code} · {t.method_name}
+                      {/*
+                        The queue is a queue: its job is to get somebody to the
+                        test. The disposition is NOT computed here and cannot be
+                        (see this file's header) — the link is how a reader
+                        reaches the screen where the server has computed it.
+                      */}
+                      <Link
+                        href={`/testing/test?id=${t.id}`}
+                        className="underline underline-offset-2"
+                      >
+                        {t.method_code} · {t.method_name}
+                      </Link>
                     </h2>
                     {/* Purpose and authority together, always. §10: a green
                         SCREENING test is never qualification evidence, so the

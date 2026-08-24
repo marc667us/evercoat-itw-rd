@@ -24,12 +24,35 @@
  * 3. **It is a panel, not a page.** A chemist asks MSD *about what they
  *    are looking at*. Navigating away to a chat screen loses the context
  *    that makes the question worth asking.
+ *
+ * 🔴 THE CONVERSATION IS RESUMED, NOT RESTARTED — AND IT ALWAYS COULD HAVE
+ * BEEN.
+ *
+ * This panel used to hold its thread id in a `useRef` and its exchanges in
+ * component state, so closing the panel or reloading the page began an empty
+ * conversation. Meanwhile `ai.msd_threads` and `ai.msd_turns` were faithfully
+ * recording every exchange, and `GET /threads` and `GET /threads/{id}/turns`
+ * existed to read them back — with **no caller anywhere in the application**.
+ * The assistant appeared to have no memory while the memory existed and was
+ * simply unreachable: a route with no caller, showing up as a product defect
+ * a user would describe as "it forgets everything".
+ *
+ * On open, the panel now adopts the caller's most recent thread and hydrates
+ * its history. "New conversation" is an explicit control, because starting a
+ * fresh thread is a choice rather than an accident of navigation.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useSession } from "@/lib/api/session";
-import { askMsd, openThread, type MsdAnswer } from "@/lib/api/msd";
+import {
+  askMsd,
+  fetchThreads,
+  fetchTurns,
+  openThread,
+  type MsdAnswer,
+  type MsdTurn,
+} from "@/lib/api/msd";
 
 interface Exchange {
   readonly question: string;
@@ -37,11 +60,62 @@ interface Exchange {
   readonly error: string | null;
 }
 
+/**
+ * Stored turns, folded back into question/answer pairs.
+ *
+ * A `user` turn opens an exchange; the `assistant` turn that follows closes
+ * it. An assistant turn with no preceding question — which the schema permits
+ * even if the service does not produce it — becomes its own exchange with an
+ * empty question rather than being attached to an unrelated one or dropped.
+ * Silently discarding a stored AI answer would make the history disagree with
+ * the audit record.
+ */
+function pairTurns(turns: readonly MsdTurn[]): Exchange[] {
+  const ordered = [...turns].sort((a, b) => a.turn_number - b.turn_number);
+  const out: Exchange[] = [];
+
+  for (const turn of ordered) {
+    if (turn.role === "user") {
+      out.push({ question: turn.body, answer: null, error: null });
+      continue;
+    }
+
+    const answer: MsdAnswer = {
+      turn_id: turn.id,
+      body: turn.body,
+      // 🔴 FROM THE STORED TURN, NEVER A CONSTANT. The database refuses an
+      // assistant turn with a NULL disclaimer, so this is present in practice;
+      // the fallback exists so that a schema change can never render an
+      // unlabelled AI answer, which is the one outcome §7 forbids outright.
+      disclaimer:
+        turn.disclaimer ??
+        "AI-generated recommendation — requires technical review.",
+      // Not stored per turn. `intent`, `href` and `suggestions` shape the LIVE
+      // response's follow-up controls; replaying them from a past conversation
+      // would offer navigation decided for a question asked hours ago.
+      intent: "history",
+      href: null,
+      suggestions: [],
+      evidence: turn.evidence,
+    };
+
+    const open = out.at(-1);
+    if (open !== undefined && open.answer === null && open.error === null) {
+      out[out.length - 1] = { ...open, answer };
+    } else {
+      out.push({ question: "", answer, error: null });
+    }
+  }
+
+  return out;
+}
+
 export function MsdPanel({ onClose }: { onClose: () => void }) {
   const session = useSession();
   const [question, setQuestion] = useState("");
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState(true);
   const threadId = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -51,6 +125,60 @@ export function MsdPanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     headingRef.current?.focus();
   }, []);
+
+  /**
+   * Adopt the most recent thread and replay it.
+   *
+   * 🔴 THE TURNS ARE PAIRED BACK INTO EXCHANGES RATHER THAN LISTED FLAT. The
+   * server stores one row per turn — a `user` turn then an `assistant` turn —
+   * and this panel's unit is the exchange. Rendering the rows flat would put a
+   * question and its answer side by side as two equal blocks, and an assistant
+   * turn separated from its question is exactly the shape in which an
+   * AI-generated sentence gets quoted as if it were a record.
+   *
+   * ⚠️ A REPLAYED ANSWER IS STILL AN AI ANSWER AND KEEPS ITS LABEL. The
+   * disclaimer is read from the stored turn, never supplied here — a history
+   * view that dropped the label would be the one place §7 did not hold.
+   *
+   * Failure is SILENT and leaves an empty panel, deliberately: a person
+   * opening the assistant to ask a question does not need an error about a
+   * conversation they had yesterday. The ask path reports its own failures.
+   */
+  useEffect(() => {
+    if (session.status !== "authenticated") {
+      setRestoring(false);
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+
+    void (async () => {
+      try {
+        const threads = await fetchThreads(session.credentials, controller.signal);
+        // `list_threads` orders newest first; the caller's current
+        // conversation is the one they were last having.
+        const [latest] = threads;
+        if (latest === undefined || cancelled) return;
+        const turns = await fetchTurns(
+          session.credentials,
+          latest.id,
+          controller.signal,
+        );
+        if (cancelled) return;
+        threadId.current = latest.id;
+        setExchanges(pairTurns(turns));
+      } catch {
+        // See the note above.
+      } finally {
+        if (!cancelled) setRestoring(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [session]);
 
   // Escape closes it, which every dialog is expected to do.
   useEffect(() => {
@@ -137,6 +265,22 @@ export function MsdPanel({ onClose }: { onClose: () => void }) {
             Material Science &amp; Development Assistant
           </p>
         </div>
+        {/*
+          Starting a fresh thread is an explicit choice. It used to happen by
+          accident on every reload, which is how a conversation with a complete
+          server-side record looked like an assistant with amnesia.
+        */}
+        <button
+          type="button"
+          onClick={() => {
+            threadId.current = null;
+            setExchanges([]);
+          }}
+          disabled={busy || exchanges.length === 0}
+          className="rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 hover:text-slate-900 disabled:text-slate-300"
+        >
+          New
+        </button>
         <button
           type="button"
           onClick={onClose}
@@ -161,7 +305,9 @@ export function MsdPanel({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        {exchanges.length === 0 ? (
+        {restoring ? (
+          <p className="text-xs text-slate-600">Restoring your conversation…</p>
+        ) : exchanges.length === 0 ? (
           <div className="text-xs text-slate-600">
             <p>
               Ask about your work, the records you can see, or how the
