@@ -17,9 +17,11 @@ Local gates: API **671 passed / 0 failed / 11 skipped** (run ALONE — 139s),
 web **137 / 0**, `tsc` exit 0, `next lint` + ruff + ruff format + mypy
 (86 files) all green.
 
-### ✅ THE LIVE SUITE — COMPLETE, ON THE RESTORED TUNNEL
+### ✅ THE LIVE SUITE — 713 / 0 / 0, AND THE STACK IS STILL UP
 
-`scripts/live-suite.sh <url> full`:
+Against **`https://file-dawn-trailer-corners.trycloudflare.com`** (read
+`tmp/tunnel_url.txt` — a QUICK tunnel, so the hostname holds only while that
+`cloudflared` process lives):
 
 | phase | passed | failed | skipped |
 |---|---|---|---|
@@ -27,23 +29,34 @@ web **137 / 0**, `tsc` exit 0, `next lint` + ruff + ruff format + mypy
 | e2e (Playwright) | **31** | 0 | 0 |
 | **TOTAL** | **713** | **0** | **0** |
 
-Health and mount probes green first (`/`, `/health/live`, `/docs`,
-`/dashboard/` all 200), and auth verified end to end through the tunnel before
-the run: a real token minted, `/api/me` 200, and **the served bundle confirmed
-to carry the tunnel host** — the check that matters, because `NEXT_PUBLIC_*` is
-compile-time and a stale bundle serves a perfect-looking site that cannot sign
-in.
+Counts verified against each tool's OWN output — pytest's `682 passed`, and
+Playwright's JSON decoded ONE DOCUMENT AT A TIME (it writes one per project;
+a strict `json.load` dying on the second is how a green 31-test run reported
+nothing and passed on 08-23).
 
-⚠️ **The counts were checked against each tool's OWN output, not the harness
-summary** — `pytest` printed `682 passed`, and Playwright's JSON reported
-`expected: 31, unexpected: 0, skipped: 0`. On 08-23 a fully green 31-test run
-reported nothing and passed, because Playwright writes one JSON document per
-project and a strict `json.load` died on the second. The decoder used here
-reads them one at a time.
+### 🔴 713 GREEN AND SIGN-IN WAS 404 — READ I97
 
-▶ An earlier attempt this session was **killed mid-Playwright** when the
-session's background tasks were stopped; its numbers were void and were
-recorded as such rather than quoted. This run is the complete one.
+Every one of those assertions passed **while browser sign-in was broken**
+(I96: Caddy's `/auth/*` identity prefix swallowed the app's own
+`/auth/callback/`). `api-live` authenticates by DIRECT GRANT; the e2e shell
+suite uses a seam compiled out of production builds. **Neither traverses the
+callback.** The number was true and did not mean a human could log in.
+
+**I97 is open for exactly this**: no test drives authorize → login form →
+callback. Verified by hand instead — 302 with a real code, callback 200.
+
+### The stack OUTLIVES the session now
+
+`scripts/demo-up.ps1` starts cloudflared, the API and the web tier
+**detached**, and the containers carry `--restart unless-stopped`. It derives
+the tunnel hostname from cloudflared's own log, repoints all four things that
+carry it, and **verifies the Keycloak client by reading it back** — four
+self-inflicted bugs are written up in its header, including `next start`
+printing "✓ Ready" while binding nothing.
+
+Sign in as any of the ten roles with **`EvercoatDemo-2026!`**: `lead.demo`
+`chem.demo` `eng.demo` `tech.demo` `dir.demo` `qa.demo` `admin.demo`
+`proc.demo` `prod.demo` `exec.demo`.
 
 ### 🔴 The review round — read this before trusting a claim of mine
 
