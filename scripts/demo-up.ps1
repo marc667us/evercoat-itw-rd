@@ -121,9 +121,27 @@ $clientId = (& $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh ge
                 -q clientId=evercoat-web --fields id --format csv --noquotes) -replace "`r", ""
 if (-not $clientId) { throw "could not resolve the evercoat-web client id -- is Keycloak up?" }
 & $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh update "clients/$clientId" -r evercoat `
-    -s "redirectUris=[`"$PublicUrl/auth/callback/`",`"$PublicUrl/*`",`"http://localhost:3000/auth/callback/`"]" `
+    -s "redirectUris=[`"$PublicUrl/auth/callback/`",`"$PublicUrl/auth/callback`",`"$PublicUrl/*`",`"http://localhost:3000/auth/callback/`"]" `
     -s "webOrigins=[`"$PublicUrl`",`"http://localhost:3000`"]" | Out-Null
-Write-Host "  keycloak client repointed"
+
+# 🔴 READ IT BACK. THE UPDATE IS NOT PROOF THAT THE UPDATE HAPPENED.
+#
+# `$ErrorActionPreference` is "Continue" here (it has to be -- see the top of
+# the file), which means a FAILED kcadm call does not stop the script. That is
+# exactly what happened once: the client update silently did nothing, the
+# script carried on and reported success, and every browser sign-in died on
+# "Invalid parameter: redirect_uri" against a client still holding the
+# PREVIOUS tunnel's hostname.
+#
+# Fixing the stderr trap removed the failure detection with it. So the check
+# is explicit now, and it asserts the STORED value rather than the call's
+# exit: a check that cannot fail is not a check.
+$stored = (& $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh get "clients/$clientId" `
+              -r evercoat --fields redirectUris) -join ""
+if ($stored -notlike "*$PublicUrl*") {
+    throw "the evercoat-web client was NOT repointed -- it still reads: $stored"
+}
+Write-Host "  keycloak client repointed (verified by read-back)"
 
 & $docker rm -f evercoat-demo-keycloak | Out-Null
 & $docker run -d --restart unless-stopped --name evercoat-demo-keycloak -p 18080:8080 `

@@ -61,6 +61,27 @@
 		reverse_proxy host.docker.internal:18000
 	}
 
+	# 🔴 THE APPLICATION'S OWN CALLBACK LIVES UNDER /auth AND MUST BE MATCHED
+	# FIRST, OR THE IDENTITY PROXY BELOW SWALLOWS IT.
+	#
+	# `lib/auth/config.ts` sets `CALLBACK_PATH = "/auth/callback/"`, there is a
+	# real page at `app/auth/callback/page.tsx`, and that exact URL is what the
+	# realm has registered as the redirect URI. But the `/auth/*` rule below
+	# strips the prefix and forwards to Keycloak -- so Keycloak was asked for
+	# `/callback/`, answered 404, and **every browser sign-in ended on a 404
+	# page after authenticating successfully**.
+	#
+	# Measured: `:3000/auth/callback` -> 200, `:18081/auth/callback/` -> 404.
+	# The application was fine; the PROXY had no route to it. The same shape as
+	# the `/health/*` fall-through fixed on 2026-08-23, one directory along.
+	#
+	# ⚠️ This never showed up before because the demo had only ever been driven
+	# by DIRECT GRANT tokens (`evercoat-test`), which never touch the callback.
+	# The browser flow -- the one a human actually uses -- was unexercised.
+	handle /auth/callback* {
+		reverse_proxy host.docker.internal:3000
+	}
+
 	# Identity. Strip the prefix, because Keycloak serves /realms/... at its
 	# root and is told its public base is <tunnel>/auth via KC_HOSTNAME.
 	handle /auth/* {
