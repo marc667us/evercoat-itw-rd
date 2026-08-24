@@ -67,15 +67,37 @@ export type MsdThread = z.infer<typeof msdThreadSchema>;
  * is ordered by it rather than by `created_at`, which two turns written in
  * the same transaction can share.
  */
-export const msdTurnSchema = z.object({
-  id: z.string(),
-  turn_number: z.number(),
-  role: z.string(),
-  body: z.string(),
-  disclaimer: z.string().nullable(),
-  evidence: z.array(msdEvidenceSchema),
-  created_at: z.string(),
-});
+export const msdTurnSchema = z
+  .object({
+    id: z.string(),
+    turn_number: z.number(),
+    role: z.string(),
+    body: z.string(),
+    disclaimer: z.string().nullable(),
+    evidence: z.array(msdEvidenceSchema),
+    created_at: z.string(),
+  })
+  // 🔴 AN ASSISTANT TURN WITHOUT ITS RECORDED LABEL IS REFUSED HERE.
+  //
+  // The first version of this schema accepted a null disclaimer on any turn
+  // and the panel substituted the constant text during replay. Codex caught
+  // it: that is precisely the behaviour §7 forbids, and the comment beside it
+  // claimed the opposite — "FROM THE STORED TURN, NEVER A CONSTANT" written
+  // directly above a `?? "AI-generated recommendation …"`. A comment asserting
+  // a rule the code does not have, in the one place a safety label lives.
+  //
+  // Fabricating the label is worse than failing: it makes an unlabelled
+  // assistant answer indistinguishable from a labelled one, which is the
+  // entire distinction the rule protects. `msd_turns_assistant_is_labelled`
+  // refuses such a row at the database, so this cannot happen against a
+  // healthy service — and if it ever does, the history must fail loudly
+  // rather than be quietly relabelled by the browser.
+  .refine((t) => t.role !== "assistant" || (t.disclaimer ?? "").trim() !== "", {
+    message:
+      "an assistant turn arrived without its stored disclaimer — §7 requires " +
+      "every AI output to carry the label it was recorded with, and this " +
+      "client will not supply one on the server's behalf",
+  });
 
 export type MsdTurn = z.infer<typeof msdTurnSchema>;
 

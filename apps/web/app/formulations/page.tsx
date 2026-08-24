@@ -39,11 +39,13 @@
 import { useMemo } from "react";
 
 import Link from "next/link";
+import { useState } from "react";
 
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
+import { serverMessage } from "@/lib/api/client";
 import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { useFormulas } from "@/lib/api/hooks";
+import { useCreateFormula, useFormulas, useProjects } from "@/lib/api/hooks";
 import type { Formula } from "@/lib/api/formulations";
 import {
   FORMULAS,
@@ -161,6 +163,149 @@ function VersionBadge({ row }: { row: FormulaRow }): React.ReactNode {
   );
 }
 
+/**
+ * Create a formula inside a project.
+ *
+ * 🔴 A PROJECT IS REQUIRED AND IS CHOSEN, NOT TYPED. `POST /api/formulations`
+ * takes a `project_id`, and §2's thread runs project -> formula: a formula
+ * outside a project is the "isolated data island" the whole design forbids.
+ * The project list is already a live call on this application, so the picker
+ * costs nothing and removes the only field a person could get wrong.
+ *
+ * ⚠️ THE CONTROL IS ALWAYS OFFERED AND THE SERVER DECIDES. `formula.create`
+ * is not held by every role, and §6 makes a frontend check cosmetic. A
+ * refusal is shown as the sentence the server sent.
+ */
+interface ProjectOption {
+  readonly id: string;
+  readonly project_code: string;
+  readonly name: string;
+}
+
+function CreateFormulaPanel() {
+  // `useProjects` is a SOURCED list (demo fallback + live), not a live-only
+  // one, so it takes the demonstration rows first. An empty array is the
+  // honest fallback here: this panel creates a real record, and offering a
+  // fixture project to create it against would produce a request the server
+  // rejects with an id that means nothing.
+  const projects = useProjects<ProjectOption[]>([], (live) =>
+    live.map((p) => ({ id: p.id, project_code: p.project_code, name: p.name })),
+  );
+  const [open, setOpen] = useState(false);
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const create = useCreateFormula();
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
+        onClick={() => setOpen(true)}
+      >
+        New formula
+      </button>
+    );
+  }
+
+  const options = projects.data ?? [];
+  const input =
+    "mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm text-slate-900 " +
+    "focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500";
+  const label = "block text-xs font-medium text-slate-600";
+
+  return (
+    <div className="grid max-w-xl gap-2 rounded border border-slate-200 bg-white p-4">
+      <div>
+        <label className={label} htmlFor="new-project">
+          Project
+        </label>
+        <select
+          id="new-project"
+          className={input}
+          value={projectId}
+          onChange={(e) => setProjectId(e.target.value)}
+        >
+          <option value="">
+            {projects.isLoading ? "Loading projects…" : "Choose a project"}
+          </option>
+          {options.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.project_code} · {p.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className={label} htmlFor="new-code">
+          Formula code
+        </label>
+        <input
+          id="new-code"
+          className={input}
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="FRM-020"
+        />
+      </div>
+      <div>
+        <label className={label} htmlFor="new-name">
+          Name
+        </label>
+        <input
+          id="new-name"
+          className={input}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Lightweight polyester filler"
+        />
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:bg-slate-400"
+          disabled={
+            create.isPending || projectId === "" || code.trim() === "" || name.trim() === ""
+          }
+          onClick={() =>
+            create.create({
+              formula_code: code.trim(),
+              name: name.trim(),
+              project_id: projectId,
+            })
+          }
+        >
+          Create formula
+        </button>
+        <button
+          type="button"
+          className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
+          onClick={() => setOpen(false)}
+        >
+          Cancel
+        </button>
+      </div>
+
+      {projects.error !== null && <DataSourceError error={projects.error} />}
+      {create.error !== null && (
+        <p
+          role="alert"
+          className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
+        >
+          {serverMessage(create.error)}
+        </p>
+      )}
+      {create.error === null && create.created !== null && (
+        <p role="status" className="text-sm text-slate-700">
+          Created. It has no version yet — a formula and its first composition are
+          separate records.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function FormulationsPage() {
   const demoRows = useMemo(() => FORMULAS.map(fromDemo), []);
   const { data, source, sourceReason, isLoading, error } = useFormulas(demoRows, (live) =>
@@ -176,6 +321,10 @@ export default function FormulationsPage() {
       source={source}
       sourceReason={sourceReason}
     >
+      <div className="mb-4">
+        <CreateFormulaPanel />
+      </div>
+
       {error !== null ? (
         <DataSourceError error={error} />
       ) : data === undefined || data.length === 0 ? (

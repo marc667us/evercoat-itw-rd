@@ -64,6 +64,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
+import { serverMessage } from "@/lib/api/client";
 import { Absent } from "@/components/ui/record-link";
 import {
   StatusBadge,
@@ -354,6 +355,24 @@ function TestWorkspace({ test }: { test: TestDetail }) {
 
   const stats = test.statistics;
   const auto = test.automatic_evaluation;
+
+  /**
+   * 🔴 DERIVED FROM THE CACHE, SO ENTRY IS BLOCKED UNTIL THE CACHE IS FRESH.
+   *
+   * `replicate_number` is computed from `test.replicates`, which is a
+   * react-query cache. After a successful `recordReplicate` the invalidation
+   * refetches ASYNCHRONOUSLY — so a technician typing the next value before
+   * that lands would resubmit the same number and hit the database's
+   * uniqueness constraint. The bench is precisely where measurements are
+   * typed in quick succession, so this is not a theoretical race.
+   * Found by the Supervisor.
+   *
+   * The honest fix inside this screen is to refuse entry while a write is in
+   * flight rather than to guess a number: the server owns the sequence, and
+   * a client that incremented optimistically would be inventing an identifier
+   * for a controlled record. The button is disabled on `isPending`, and the
+   * field says why.
+   */
   const nextReplicate = test.replicates.length + 1;
 
   return (
@@ -489,7 +508,9 @@ function TestWorkspace({ test }: { test: TestDetail }) {
         <div className="mt-3 flex flex-wrap items-end gap-2">
           <div>
             <label className={LABEL} htmlFor="measured">
-              Replicate {nextReplicate} — measured value
+              {actions.isPending
+                ? "Saving the last measurement…"
+                : `Replicate ${nextReplicate} — measured value`}
             </label>
             {/*
               A TEXT input, not `type="number"`. A number input would let the
@@ -504,6 +525,9 @@ function TestWorkspace({ test }: { test: TestDetail }) {
               value={value}
               onChange={(e) => setValue(e.target.value)}
               placeholder="e.g. 12.500"
+              // Blocked while a write is in flight: the number above is read
+              // from a cache that has not refetched yet.
+              disabled={actions.isPending}
             />
           </div>
           <div>
@@ -752,7 +776,7 @@ function TestWorkspace({ test }: { test: TestDetail }) {
             role="alert"
             className="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
           >
-            {actions.error.message}
+            {serverMessage(actions.error)}
           </p>
         )}
         {actions.error === null && actions.lastAction !== null && (

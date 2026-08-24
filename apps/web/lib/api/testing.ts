@@ -110,6 +110,42 @@ export function fetchTests(
   );
 }
 
+/**
+ * A test method, for the planning form.
+ *
+ * 🔴 THIS LIST IS WHAT MAKES PLANNING A TEST POSSIBLE AT ALL. `POST /tests`
+ * requires a `method_id` and nothing returned one, so a create form could
+ * only have offered a bare UUID field — which is why the create route stayed
+ * orphaned and the Test Module could be driven only from records a seeding
+ * script had planned.
+ *
+ * `cv_limit` is a string (NUMERIC) and is shown because rule 6 of the traffic
+ * light compares a measured CV against it: a planner choosing between two
+ * methods is entitled to see which is stricter. It is displayed, never
+ * compared here.
+ */
+export const testMethodSchema = z.object({
+  id: z.string(),
+  method_code: z.string(),
+  name: z.string(),
+  canonical_unit: z.string(),
+  replicates_required: z.number(),
+  cv_limit: z.string().nullable(),
+  calibration_breach_policy: z.string().nullable(),
+});
+
+export type TestMethod = z.infer<typeof testMethodSchema>;
+
+export function fetchTestMethods(
+  credentials: ApiCredentials,
+  signal?: AbortSignal,
+): Promise<TestMethod[]> {
+  return apiRequest(
+    { path: "/api/testing/methods", credentials, signal },
+    (payload) => z.array(testMethodSchema).parse(payload),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The test detail — raw replicates, statistics, and the two status fields
 // ---------------------------------------------------------------------------
@@ -189,13 +225,34 @@ export const automaticEvaluationSchema = z.object({
  * explanation is a defect"*). It is nullable here because GREEN and RED
  * legitimately have none, not because a YELLOW may omit it.
  */
-export const dispositionSchema = z.object({
-  colour: z.string(),
-  label: z.string(),
-  reason: z.string(),
-  next_action: z.string().nullable(),
-  rule: z.number(),
-});
+export const dispositionSchema = z
+  .object({
+    colour: z.string(),
+    label: z.string(),
+    reason: z.string(),
+    next_action: z.string().nullable(),
+    rule: z.number(),
+  })
+  // 🔴 THE YELLOW INVARIANT, ENFORCED RATHER THAN ASSERTED.
+  //
+  // `next_action` is `nullable` because GREEN and RED legitimately have none.
+  // On YELLOW it is mandatory: §3.3 says *"every YELLOW states why AND what
+  // the next required action is. A yellow with no explanation is a defect."*
+  //
+  // Codex found this stated in a comment and enforced nowhere — the schema
+  // accepted the exact prohibited state, and the renderer displayed it. That
+  // is this codebase's most-repeated defect (a comment asserting a rule the
+  // code does not have), and the zod boundary exists precisely to catch a
+  // response-contract regression. So it is a refinement now: if the engine
+  // ever emits a bare amber, this fails loudly instead of rendering one.
+  .refine(
+    (d) => d.colour !== "yellow" || (d.next_action !== null && d.next_action.trim() !== ""),
+    {
+      message:
+        "a YELLOW disposition must carry a next_action — a yellow with no stated " +
+        "next step is a defect (DATA_MODEL.md §3.3), not a response to render",
+    },
+  );
 
 export type Disposition = z.infer<typeof dispositionSchema>;
 
@@ -318,18 +375,38 @@ export interface TestCreateRequest {
 /**
  * Plan a test against a physical sample.
  *
- * `sample_id` is required by the API and there is no route that invents
- * one: §5's traceability rule means a result exists only against a
- * specimen that was actually taken. The workspace therefore offers this
- * only from a sample that exists.
+ * `sample_id` is required by the API and there is no route that invents one:
+ * §5's traceability rule means a result exists only against a specimen that
+ * was actually taken. The queue therefore offers this only against a sample
+ * that exists.
+ *
+ * 🔴 THE 201 IS NOT A TEST, IT IS THREE COLUMNS. `create_test`'s
+ * `INSERT ... RETURNING` names exactly `id, test_number, project_id`, so
+ * parsing the response with `testDetailSchema` threw a validation error
+ * AFTER the row had been written — a success reported as a failure, which is
+ * the worst possible shape for a retry: the caller retries and creates a
+ * second test. Found by Codex, latent only because nothing called this yet.
+ *
+ * The caller navigates to the workspace with the returned `id`, which then
+ * fetches the full record.
  */
+export const testCreatedSchema = z
+  .object({
+    id: z.string(),
+    test_number: z.string(),
+    project_id: z.string(),
+  })
+  .passthrough();
+
+export type TestCreated = z.infer<typeof testCreatedSchema>;
+
 export function createTest(
   credentials: ApiCredentials,
   request: TestCreateRequest,
-): Promise<TestDetail> {
+): Promise<TestCreated> {
   return apiRequest(
     { path: "/api/testing/tests", method: "POST", body: request, credentials },
-    (payload) => testDetailSchema.parse(payload),
+    (payload) => testCreatedSchema.parse(payload),
   );
 }
 

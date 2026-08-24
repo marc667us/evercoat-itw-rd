@@ -46,6 +46,7 @@ import {
 import {
   authorizeBatch,
   completeBatch,
+  createBatch,
   createSample,
   fetchBatch,
   fetchBatches,
@@ -55,6 +56,7 @@ import {
   reviewBatch,
   startBatch,
   type Batch,
+  type BatchCreateRequest,
   type BatchDetail,
   type DeviationRequest,
   type ProcessParameterRequest,
@@ -63,8 +65,11 @@ import {
   type WeighingRequest,
 } from "./laboratory";
 import {
+  classifyFormula,
+  createFormula,
   createRevision,
   decideVersion,
+  fetchClassifications,
   fetchFormulas,
   fetchVersion,
   fetchVersionComparison,
@@ -73,8 +78,11 @@ import {
   putComponents,
   recordObservedEffect,
   submitVersion,
+  type Classification,
+  type ClassificationRequest,
   type ComponentInput,
   type Formula,
+  type FormulaCreateRequest,
   type FormulaVersionDetail,
   type RevisionRequest,
   type VersionComparison,
@@ -88,20 +96,16 @@ import {
   type Material,
   type Supplier,
 } from "./materials";
-import {
-  fetchThreads,
-  fetchTurns,
-  type MsdThread,
-  type MsdTurn,
-} from "./msd";
 import { fetchProjects, type Project } from "./projects";
 import { useSession } from "./session";
 import { fetchMyWork, type Task } from "./tasks";
 import {
   completeTest,
   confirmTest,
+  createTest,
   excludeReplicate,
   fetchTest,
+  fetchTestMethods,
   fetchTests,
   recordReplicate,
   recordTestDecision,
@@ -109,7 +113,10 @@ import {
   type DecisionRequest,
   type ReplicateRequest,
   type Test,
+  type TestCreated,
+  type TestCreateRequest,
   type TestDetail,
+  type TestMethod,
 } from "./testing";
 
 /**
@@ -753,7 +760,16 @@ export function useTestActions(testId: string): {
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["testing-test", testId] });
     void queryClient.invalidateQueries({ queryKey: ["testing-tests"] });
-    void queryClient.invalidateQueries({ queryKey: ["dashboards"] });
+    // 🔴 THERE IS NO `["dashboards"]` QUERY, AND THERE WAS A LINE INVALIDATING
+    // ONE. It matched nothing, under a comment claiming it kept the failure
+    // queue current — correct-looking configuration over an inert mechanism,
+    // which is exactly the state the comment said it was preventing. Removed
+    // rather than left as reassurance. Found by the Supervisor.
+    //
+    // Completing a test CAN open a failure investigation (§10), so when a
+    // dashboard or failure query exists it belongs here. `my-work` does exist
+    // and a new investigation is work assigned to somebody.
+    void queryClient.invalidateQueries({ queryKey: ["my-work"] });
   };
 
   const credentials = () => {
@@ -940,7 +956,7 @@ export function useFormulaComparison(
  */
 export function useFormulaActions(versionId: string): {
   readonly saveComponents: (components: readonly ComponentInput[]) => void;
-  readonly submit: (note?: string) => void;
+  readonly submit: () => void;
   readonly decide: (request: VersionDecisionRequest) => void;
   readonly revise: (request: RevisionRequest) => void;
   readonly recordObserved: (observedEffect: string) => void;
@@ -985,7 +1001,7 @@ export function useFormulaActions(versionId: string): {
   return {
     saveComponents: (components) =>
       run("components", () => putComponents(credentials(), versionId, components)),
-    submit: (note) => run("submit", () => submitVersion(credentials(), versionId, note)),
+    submit: () => run("submit", () => submitVersion(credentials(), versionId)),
     decide: (request) => run("decision", () => decideVersion(credentials(), versionId, request)),
     revise: (request) => run("revision", () => createRevision(credentials(), versionId, request)),
     recordObserved: (observedEffect) =>
@@ -995,89 +1011,6 @@ export function useFormulaActions(versionId: string): {
     lastAction: mutation.data ?? null,
     reset: mutation.reset,
     unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// MSD — the conversations that were recorded and never read back
-// ---------------------------------------------------------------------------
-
-/** The caller's own threads. Owner-scoped in the database. */
-export function useMsdThreads(): LiveOnly<MsdThread[]> {
-  const resolved = useCredentials();
-
-  const query = useQuery({
-    queryKey: [
-      "msd-threads",
-      resolved.ok ? resolved.credentials.organizationId : null,
-      resolved.ok ? resolved.credentials.userId : null,
-    ],
-    enabled: resolved.ok,
-    queryFn: ({ signal }) => {
-      if (!resolved.ok) {
-        throw isApiConfigured
-          ? new ApiNoSessionError(resolved.reason)
-          : new ApiNotConfiguredError();
-      }
-      return fetchThreads(resolved.credentials, signal);
-    },
-  });
-
-  if (!resolved.ok) {
-    return resolved.failed
-      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
-      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
-  }
-
-  return {
-    data: query.data,
-    isLoading: query.isPending,
-    error: (query.error as Error | null) ?? null,
-    unavailable: null,
-  };
-}
-
-/**
- * One thread's history.
- *
- * 🔴 THIS IS THE HOOK THAT GIVES MSD A MEMORY IT ALWAYS HAD. Every exchange
- * was being written to `ai.msd_turns`, and no production path ever read one
- * back — so each reload began an empty conversation on top of a complete
- * record. The assistant appeared stateless while the state existed and was
- * simply unreachable.
- */
-export function useMsdTurns(threadId: string | null): LiveOnly<MsdTurn[]> {
-  const resolved = useCredentials();
-
-  const query = useQuery({
-    queryKey: [
-      "msd-turns",
-      threadId,
-      resolved.ok ? resolved.credentials.organizationId : null,
-      resolved.ok ? resolved.credentials.userId : null,
-    ],
-    enabled: resolved.ok && (threadId?.length ?? 0) > 0,
-    queryFn: ({ signal }) => {
-      if (!resolved.ok) {
-        throw isApiConfigured
-          ? new ApiNoSessionError(resolved.reason)
-          : new ApiNotConfiguredError();
-      }
-      return fetchTurns(resolved.credentials, threadId as string, signal);
-    },
-  });
-
-  if (!resolved.ok) {
-    return resolved.failed
-      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
-      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
-  }
-
-  return {
-    data: query.data,
-    isLoading: query.isPending,
-    error: (query.error as Error | null) ?? null,
-    unavailable: null,
   };
 }
 
@@ -1097,7 +1030,7 @@ export function useMsdTurns(threadId: string | null): LiveOnly<MsdTurn[]> {
  *
  * The server REFUSES a formula that does not total 100%, and its sentence is
  * the useful part — "scaling it silently would produce masses that contradict
- * the stated percentages". It is surfaced verbatim.
+ * the stated percentages". `serverMessage` is what surfaces it.
  */
 export function useWeighUp(versionId: string): {
   readonly run: (batchMassKg: string) => void;
@@ -1123,5 +1056,253 @@ export function useWeighUp(versionId: string): {
     data: mutation.data ?? null,
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// MSD — deliberately NOT wrapped in hooks here
+// ---------------------------------------------------------------------------
+//
+// 🔴 `useMsdThreads` AND `useMsdTurns` LIVED HERE AND NOTHING CALLED THEM.
+//
+// `MsdPanel` hydrates its history inside an effect, because its unit is an
+// EXCHANGE — a question folded together with its answer — and not a rendered
+// query result. It therefore calls `fetchThreads` and `fetchTurns` directly.
+// The two hooks written beside them were never reached by anything: dead code
+// duplicating a live path, which is the same defect this whole commit exists
+// to remove, one layer further down.
+//
+// Deleted rather than left "for later". A second way to load the same data is
+// how two screens end up disagreeing about what a conversation contains.
+
+// ---------------------------------------------------------------------------
+// Creation — the routes that turn a screen from a viewer into a workspace
+// ---------------------------------------------------------------------------
+//
+// 🔴 THESE EXIST BECAUSE A CLIENT FUNCTION IS NOT A CALLER.
+//
+// The first version of this work declared `createBatch`, `createTest`,
+// `createFormula` and `classifyFormula` in the api-client files and stopped
+// there — and then claimed all thirty-seven endpoints had a production
+// caller. Codex checked the claim and found the four names appeared nowhere
+// but at their own definitions.
+//
+// That is the very defect the work set out to fix, committed one layer up:
+// an unreachable capability with a function standing where the caller should
+// be. A route is reachable when a person can press something.
+
+/** The methods a test can be planned against. */
+export function useTestMethods(): LiveOnly<TestMethod[]> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "testing-methods",
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchTestMethods(resolved.credentials, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/** The classification ladder, in rank order. */
+export function useClassifications(): LiveOnly<Classification[]> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "formulation-classifications",
+      resolved.ok ? resolved.credentials.organizationId : null,
+    ],
+    enabled: resolved.ok,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchClassifications(resolved.credentials, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * Plan a test against a sample.
+ *
+ * Returns the created id so the caller can navigate to the workspace. The
+ * 201 carries three columns, not a test — see `createTest`.
+ */
+export function usePlanTest(): {
+  readonly plan: (request: TestCreateRequest) => void;
+  readonly created: TestCreated | null;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (request: TestCreateRequest) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return createTest(resolved.credentials, request);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["testing-tests"] });
+    },
+  });
+
+  return {
+    plan: (request) => mutation.mutate(request),
+    created: mutation.data ?? null,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+/**
+ * Create a lab batch against a formula VERSION.
+ *
+ * 🔴 OFFERED FROM THE FORMULA WORKSPACE, NOT FROM THE BATCH QUEUE, AND THAT
+ * IS THE DIGITAL THREAD RATHER THAN A LAYOUT PREFERENCE. §2: a batch exists
+ * against a formula version, and the version id is the one thing the queue
+ * does not have. Putting the control where the version already is means the
+ * link is never typed by hand.
+ */
+export function useCreateBatch(): {
+  readonly create: (request: BatchCreateRequest) => void;
+  readonly created: { id: string } | null;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (request: BatchCreateRequest) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return createBatch(resolved.credentials, request);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["laboratory-batches"] });
+    },
+  });
+
+  return {
+    create: (request) => mutation.mutate(request),
+    created: mutation.data ?? null,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+/** Create a formula inside a project. */
+export function useCreateFormula(): {
+  readonly create: (request: FormulaCreateRequest) => void;
+  readonly created: { id: string } | null;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (request: FormulaCreateRequest) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return createFormula(resolved.credentials, request);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["formulations"] });
+    },
+  });
+
+  return {
+    create: (request) => mutation.mutate(request),
+    created: mutation.data ?? null,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+/**
+ * Reclassify a formula.
+ *
+ * The reason is mandatory server-side and audited: a confidentiality level
+ * that changed with no recorded justification cannot be reviewed later.
+ */
+export function useClassifyFormula(formulaId: string): {
+  readonly classify: (request: ClassificationRequest) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly done: boolean;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (request: ClassificationRequest) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return classifyFormula(resolved.credentials, formulaId, request);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["formulations"] });
+      void queryClient.invalidateQueries({ queryKey: ["formulation-version"] });
+    },
+  });
+
+  return {
+    classify: (request) => mutation.mutate(request),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    done: mutation.isSuccess,
   };
 }

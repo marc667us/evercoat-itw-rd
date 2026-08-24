@@ -45,6 +45,7 @@ from app.domains.formulations.service import (
     evaluate_version,
     export_version,
     get_version,
+    list_classifications,
     list_formulas,
     record_observed_effect,
     revise_version,
@@ -152,6 +153,25 @@ def get_formulas(
     session: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     return list_formulas(session, organization_id=principal.organization_id, project_id=project_id)
+
+
+@router.get("/classifications", tags=["formulations"])
+def get_classifications(
+    principal: Principal = Depends(require_permission("formula.view")),
+    session: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """The classification ladder, in rank order.
+
+    🔴 DECLARED BEFORE `/{formula_id}/classification` for the same reason the
+    testing route is: a literal segment registered after a path parameter is
+    shadowed by it.
+
+    Authenticated but not privileged: knowing that a level named
+    `FORMULA_RESTRICTED` exists is not a disclosure, and the reclassification
+    route itself is gated on `formula.classify`. Hiding the vocabulary would
+    only stop the person who is allowed to change it from seeing the options.
+    """
+    return list_classifications(session)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, tags=["formulations"])

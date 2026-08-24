@@ -447,17 +447,28 @@ export function putComponents(
   );
 }
 
-/** Submit a draft for approval. The server re-runs every submission block. */
+/**
+ * Submit a draft for approval. The server re-runs every submission block.
+ *
+ * 🔴 THERE IS NO NOTE PARAMETER, BECAUSE THE ROUTE HAS NOWHERE TO PUT ONE.
+ * `post_submission` declares no request body at all, so FastAPI ignored
+ * anything sent — a caller passing a submission note got a 200 and no note
+ * recorded. A parameter with no destination is a promise the API does not
+ * keep, and the honest fix is to stop offering it rather than to keep posting
+ * a field nothing reads. Found by the Supervisor.
+ *
+ * A blocked submission answers 422 listing EVERY block; `serverMessage`
+ * renders them all.
+ */
 export function submitVersion(
   credentials: ApiCredentials,
   versionId: string,
-  note?: string,
 ): Promise<unknown> {
   return apiRequest(
     {
       path: `/api/formulations/versions/${versionId}/submission`,
       method: "POST",
-      body: note ? { note } : {},
+      body: {},
       credentials,
     },
     (payload) => payload,
@@ -493,10 +504,40 @@ export function decideVersion(
   );
 }
 
+/**
+ * 🔴 THREE FIELDS ARE REQUIRED, NOT ONE, AND THE TYPE NOW SAYS SO.
+ *
+ * `RevisionCreate` on the server requires `change_reason`,
+ * `technical_hypothesis` AND `driver_type`, none with a default. This
+ * interface declared the first as required, the second as optional and the
+ * third not at all — so the type system could not catch it, and the only UI
+ * path that creates a revision returned 422 "Field required" every single
+ * time, on the operation the workspace itself calls "the only way a formula
+ * changes". Found by the Supervisor.
+ *
+ * `driver_type` has no default deliberately, and the server's comment says
+ * why: §2 requires a revision to show *"exactly which failure or improvement
+ * objective caused it"*, `change_reason` is prose, and this is the link that
+ * makes "why was F008 created?" answerable by query. *"A default would answer
+ * the question on the chemist's behalf."*
+ */
+export type RevisionDriver =
+  | "failure"
+  | "requirement"
+  | "optimization"
+  | "cost"
+  | "regulatory"
+  | "customer_request"
+  | "other";
+
 export interface RevisionRequest {
   readonly change_reason: string;
-  readonly technical_hypothesis?: string;
+  readonly technical_hypothesis: string;
+  readonly driver_type: RevisionDriver;
+  readonly driver_failure_id?: string;
+  readonly driver_requirement_id?: string;
   readonly expected_effect?: string;
+  readonly version_code?: string;
 }
 
 /**
@@ -544,6 +585,36 @@ export function recordObservedEffect(
       credentials,
     },
     (payload) => payload,
+  );
+}
+
+/**
+ * The classification ladder, in RANK order.
+ *
+ * 🔴 THE ORDER IS THE MEANING, so it is preserved rather than re-sorted. The
+ * export ceiling is expressed as a rank comparison — not a list of level
+ * names — precisely so that inserting a level between two others does not
+ * silently widen it. A screen that sorted these alphabetically would put
+ * `CONFIDENTIAL` above `DIRECTOR_CONTROLLED` and teach the reader the ladder
+ * backwards.
+ *
+ * Without this list, reclassifying a formula could only have been a free-text
+ * field — and a mistyped level is a confidentiality decision made by a typo.
+ */
+export const classificationSchema = z.object({
+  code: z.string(),
+  rank: z.number(),
+});
+
+export type Classification = z.infer<typeof classificationSchema>;
+
+export function fetchClassifications(
+  credentials: ApiCredentials,
+  signal?: AbortSignal,
+): Promise<Classification[]> {
+  return apiRequest(
+    { path: "/api/formulations/classifications", credentials, signal },
+    (payload) => z.array(classificationSchema).parse(payload),
   );
 }
 

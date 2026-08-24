@@ -1,6 +1,78 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-## ▶▶ SESSION CLOSE 2026-08-23 — START HERE
+## ▶▶ SESSION CLOSE 2026-08-24 — START HERE
+
+Tip **`a14c95f`**. One commit: **23 of 37 endpoints across Laboratory,
+Testing, Formulations and MSD had no browser caller.** All 37 do now.
+
+| Module | Endpoints | Reachable before | Now |
+|---|---|---|---|
+| Laboratory | 11 | 10 | **11** |
+| Testing | 9 | **1** | **9** |
+| Formulations | 13 | **1** | **13** |
+| MSD | 4 | 2 | **4** |
+
+Local gates: API **671 passed / 0 failed / 11 skipped**, web **137 / 0**,
+`next lint` + ruff + ruff format + mypy (86 files) all green.
+
+### 🔴 The orphaned routes were hiding real defects
+
+Six, and the first two are the ones to remember.
+
+* **I84 — every measurement on those routes was a FLOAT.** The formulations
+  service had **no Decimal→string helper at all**, and `get_test` built its
+  statistics *after* the row-level one had run. Measured against the running
+  service: `percentage 2.5`, `theoretical_density_g_cm3
+  1.0906918323011936`. §5 was satisfied in the database, satisfied in the
+  engine, and **satisfied nowhere in between**. It is the same defect
+  `test_laboratory_testing_serialisation.py` was written for on 08-19 —
+  whose own header says it survived because *"no screen was wired to these
+  routes yet"*. That fix reached exactly as far as the routes wired that day.
+* **I85 — then the strings carried 28 significant digits** from inputs
+  recorded to four. Quantized to `0.0001` at the response boundary, never in
+  the engine (`binder_to_filler_ratio` must stay exactly 40/60). Four places
+  is the scale `build_demo_formulations.py` already uses — the fixture and
+  the live API render onto the **same screens**.
+* **I86 — the formula list could not reach the workspace, which is why there
+  was none.** Twelve of thirteen routes are keyed by `version_id`;
+  `list_formulas` returned the version *code*. Not a missing screen: a
+  missing column that made the screen unbuildable, with a fixture standing in.
+* **I87 — the difference engine shipped without Δ and %Δ**, behind a
+  correct-sounding comment that named the engine as the only place allowed
+  to subtract two percentages. No such function had ever been written.
+* **I88 — MSD had a complete memory and no way to read it.** Both history
+  routes existed with no caller, so every reload began an empty conversation
+  on top of a full record.
+* **I89 — the bench could do everything to a batch except create one** (Codex).
+
+### ⚠️ Two operational findings
+
+* **Last session's dev server was still running and holding ~2 GB** of this
+  3.78 GB host. It starved Keycloak into `BlockedThreadChecker` warnings and
+  made every gate crawl. **Check for a stale `next dev` before blaming the
+  machine.**
+* **Two pytest runs against the same database disagreed with each other** —
+  one reported an error on `test_audit_update_and_delete_are_refused` that
+  the other did not. Concurrent suites on one database produce numbers that
+  are not evidence. Run the suite alone.
+
+### Built
+
+* **`/testing/test?id=…`** — both status fields side by side and labelled
+  (F31), raw replicates with the mandatory exclusion reason, statistics with
+  `null` rendered as a named absence rather than zero, the snapshotted
+  approval ladder including **undecided** steps, all seven decision types,
+  and the number of the rule that decided the colour.
+* **`/formulations/formula?version=…`** — live composition, derived
+  properties (each a value **or** the engine's own sentence saying why not),
+  the weigh-up sheet, and the parent difference with both delta columns.
+* Query parameters, not `[id]` — under `output: "export"` a dynamic segment
+  must enumerate params at build time, so it would pre-render the seeded
+  records and 404 every real one.
+
+---
+
+## SESSION CLOSE 2026-08-23
 
 Tip **`ab9621e`**, tree clean, all pushed. **Nine commits.**
 

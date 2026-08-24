@@ -50,10 +50,16 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
+import { serverMessage } from "@/lib/api/client";
 import { Absent } from "@/components/ui/record-link";
 import { StatusBadge, type StatusBadgeInput } from "@/components/ui/status-badge";
-import { useBatch, useBatchActions } from "@/lib/api/hooks";
-import type { BatchComponent, BatchDetail } from "@/lib/api/laboratory";
+import {
+  useBatch,
+  useBatchActions,
+  usePlanTest,
+  useTestMethods,
+} from "@/lib/api/hooks";
+import type { BatchComponent, BatchDetail, BatchSample } from "@/lib/api/laboratory";
 
 /**
  * The batch lifecycle as a status a reader can act on.
@@ -122,6 +128,174 @@ const BUTTON =
 const BUTTON_QUIET =
   "rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium " +
   "text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400";
+
+/**
+ * Plan a test against ONE sample from this batch.
+ *
+ * 🔴 THE THREAD RUNS SAMPLE -> TEST, SO THE CONTROL BELONGS TO THE SAMPLE.
+ * `POST /api/testing/tests` requires a `sample_id`, and §5's traceability
+ * rule means a result exists only against a specimen that was actually
+ * taken — *"no test result without traceability to the physical sample"*.
+ * Offering this on the test queue would mean asking a person to paste a
+ * sample UUID; offering it here means the link cannot be wrong.
+ *
+ * ⚠️ THE METHOD LIST IS WHY THIS IS POSSIBLE AT ALL. Until `GET
+ * /api/testing/methods` existed, a planning form had no method to offer and
+ * the create route stayed unreachable — the "editable in Administration"
+ * gap §H warns about, where a configuration value is referenced everywhere
+ * and read by nothing.
+ */
+function PlanTestForSample({ sample }: { sample: BatchSample }) {
+  const methods = useTestMethods();
+  const [open, setOpen] = useState(false);
+  const [methodId, setMethodId] = useState("");
+  const [number, setNumber] = useState("");
+  const [purpose, setPurpose] = useState("oversight");
+  const [authority, setAuthority] = useState("development");
+  const plan = usePlanTest();
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="mt-1 text-xs font-medium text-slate-700 underline underline-offset-2"
+        onClick={() => setOpen(true)}
+      >
+        Plan a test…
+      </button>
+    );
+  }
+
+  const options = methods.data ?? [];
+
+  return (
+    <div className="mt-2 grid gap-2 border-t border-slate-200 pt-2">
+      <div>
+        <label className={LABEL} htmlFor={`method-${sample.id}`}>
+          Method
+        </label>
+        <select
+          id={`method-${sample.id}`}
+          className={INPUT}
+          value={methodId}
+          onChange={(e) => setMethodId(e.target.value)}
+        >
+          <option value="">
+            {methods.isLoading ? "Loading methods…" : "Choose a method"}
+          </option>
+          {options.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.method_code} · {m.name} ({m.canonical_unit}, {m.replicates_required}×)
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className={LABEL} htmlFor={`tnum-${sample.id}`}>
+          Test number
+        </label>
+        <input
+          id={`tnum-${sample.id}`}
+          className={INPUT}
+          value={number}
+          onChange={(e) => setNumber(e.target.value)}
+          placeholder="T-2026-001"
+        />
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <div className="flex-1">
+          {/* Purpose and authority are ORTHOGONAL (§10): a green screening
+              test is never qualification evidence, so both are chosen and
+              neither defaults silently to the other's meaning. */}
+          <label className={LABEL} htmlFor={`purpose-${sample.id}`}>
+            Purpose
+          </label>
+          <select
+            id={`purpose-${sample.id}`}
+            className={INPUT}
+            value={purpose}
+            onChange={(e) => setPurpose(e.target.value)}
+          >
+            {["screening", "oversight", "confirmation", "improvement"].map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex-1">
+          <label className={LABEL} htmlFor={`authority-${sample.id}`}>
+            Authority
+          </label>
+          <select
+            id={`authority-${sample.id}`}
+            className={INPUT}
+            value={authority}
+            onChange={(e) => setAuthority(e.target.value)}
+          >
+            {[
+              "preliminary",
+              "development",
+              "controlled",
+              "validation",
+              "qualification",
+              "release",
+            ].map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className={BUTTON}
+          disabled={plan.isPending || methodId === "" || number.trim().length < 3}
+          onClick={() =>
+            plan.plan({
+              test_number: number.trim(),
+              sample_id: sample.id,
+              method_id: methodId,
+              test_purpose: purpose,
+              authority_level: authority,
+            })
+          }
+        >
+          Plan the test
+        </button>
+        <button type="button" className={BUTTON_QUIET} onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+
+      {methods.error !== null && <DataSourceError error={methods.error} />}
+      {plan.error !== null && (
+        <p
+          role="alert"
+          className="rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-900"
+        >
+          {serverMessage(plan.error)}
+        </p>
+      )}
+      {plan.error === null && plan.created !== null && (
+        <p role="status" className="text-xs text-slate-700">
+          Planned {plan.created.test_number}.{" "}
+          <Link
+            href={`/testing/test?id=${plan.created.id}`}
+            className="font-medium underline underline-offset-2"
+          >
+            Open the test →
+          </Link>
+        </p>
+      )}
+    </div>
+  );
+}
 
 /** One weigh-up line, with the entry field the technician actually uses. */
 function ComponentRow({
@@ -389,7 +563,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
         */}
         {actions.error !== null && (
           <p role="alert" className="mt-3 text-sm text-red-700">
-            {actions.error.message}
+            {serverMessage(actions.error)}
           </p>
         )}
       </section>
@@ -642,7 +816,10 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
         ) : (
           <ul className="mt-2 flex flex-wrap gap-2">
             {batch.samples.map((s) => (
-              <li key={s.id} className="rounded border border-slate-200 bg-white px-3 py-1.5 text-sm">
+              <li
+                key={s.id}
+                className="w-full max-w-md rounded border border-slate-200 bg-white px-3 py-1.5 text-sm"
+              >
                 <span className="font-medium tabular-nums text-slate-900">
                   {s.sample_number}
                 </span>
@@ -653,6 +830,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
                 {s.purpose !== null && (
                   <span className="block text-xs text-slate-500">{s.purpose}</span>
                 )}
+                <PlanTestForSample sample={s} />
               </li>
             ))}
           </ul>

@@ -1164,6 +1164,46 @@ def get_test(session: Session, *, test_id: uuid.UUID, organization_id: uuid.UUID
     return test
 
 
+def list_methods(
+    session: Session, *, organization_id: uuid.UUID, limit: int = 200
+) -> list[dict[str, Any]]:
+    """The test methods this organization can plan a test against.
+
+    🔴 WITHOUT THIS, PLANNING A TEST WAS NOT SOMETHING A BROWSER COULD OFFER.
+
+    `POST /api/testing/tests` requires a `method_id`, and no route returned
+    one. A form could only have presented a bare UUID field, which is not a
+    control a person can use -- so the create route stayed orphaned, and the
+    Test Module could be driven only from a record a seeding script had
+    already planned.
+
+    This is the shape §H warns about in its own words: *"an administrator who
+    can be read but never granted does not exist, and every 'editable in
+    Administration' escape hatch resolved to a screen nobody was scheduled to
+    create."* Test methods are Slice 5's Administration section; this is the
+    read half, which is what the planning form actually needs.
+
+    `cv_limit` comes along because rule 6 of the traffic light compares a
+    measured CV against it, and a planner choosing between two methods is
+    entitled to see which one is stricter.
+    """
+    rows = session.execute(
+        text(
+            """
+            SELECT id, method_code, name, canonical_unit, replicates_required,
+                   cv_limit, calibration_breach_policy
+            FROM testing.test_methods
+            WHERE organization_id = :org
+            ORDER BY method_code
+            LIMIT :limit
+            """
+        ),
+        {"org": organization_id, "limit": limit},
+    ).mappings()
+    # `cv_limit` is NUMERIC -- a string, or the encoder makes it a float (I84).
+    return [_decimal_strings(r) for r in rows]
+
+
 def list_tests(
     session: Session,
     *,

@@ -80,16 +80,36 @@ function pairTurns(turns: readonly MsdTurn[]): Exchange[] {
       continue;
     }
 
+    // 🔴 NO FALLBACK. THE LABEL IS THE RECORD'S OR THERE IS NO ANSWER.
+    //
+    // This used to read `turn.disclaimer ?? "AI-generated recommendation …"`
+    // under a comment claiming it never used a constant. Codex caught the
+    // contradiction. Substituting the text would make an unlabelled AI answer
+    // look exactly like a labelled one — the single distinction §7 exists to
+    // protect — so a turn that somehow lacks its label is surfaced as an
+    // error and its body is NOT rendered. `msdTurnSchema` already refuses
+    // such a row, so this is the second of two locks rather than the first.
+    // Bound to a local so TypeScript actually narrows it. `(x ?? "").trim()`
+    // reads as a guard and narrows nothing — the Supervisor caught the build
+    // breaking on exactly that, which is the useful kind of failure: the
+    // compiler refusing to let an unlabelled answer through.
+    const label = turn.disclaimer;
+    if (label === null || label.trim() === "") {
+      out.push({
+        question: "",
+        answer: null,
+        error:
+          "A stored assistant turn is missing the label it was recorded with, " +
+          "so it is not shown. AI output is never displayed unlabelled.",
+      });
+      continue;
+    }
+
     const answer: MsdAnswer = {
       turn_id: turn.id,
       body: turn.body,
-      // 🔴 FROM THE STORED TURN, NEVER A CONSTANT. The database refuses an
-      // assistant turn with a NULL disclaimer, so this is present in practice;
-      // the fallback exists so that a schema change can never render an
-      // unlabelled AI answer, which is the one outcome §7 forbids outright.
-      disclaimer:
-        turn.disclaimer ??
-        "AI-generated recommendation — requires technical review.",
+      // The record's own label, and nothing else.
+      disclaimer: label,
       // Not stored per turn. `intent`, `href` and `suggestions` shape the LIVE
       // response's follow-up controls; replaying them from a past conversation
       // would offer navigation decided for a question asked hours ago.

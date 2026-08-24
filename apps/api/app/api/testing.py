@@ -66,6 +66,7 @@ from app.domains.testing.service import (
     create_test,
     exclude_replicate,
     get_test,
+    list_methods,
     list_tests,
     record_decision,
     record_replicate,
@@ -74,7 +75,19 @@ from app.domains.testing.service import (
 
 router = APIRouter()
 
-__all__ = ["router"]
+# 🔴 A SECOND ROUTER, BECAUSE A METHOD IS NOT A SUB-RESOURCE OF A TEST.
+#
+# `router` is mounted at `/api/testing/tests`, so a `/methods` path declared on
+# it would answer at `/api/testing/tests/methods` — which reads as "the methods
+# of a test", is not what it is, and 404s the honest URL. Measured: the first
+# attempt did exactly that.
+#
+# Test methods are reference data belonging to the module, not to any one test,
+# so they get their own router mounted one level up at `/api/testing`. Widening
+# the existing prefix instead would have moved every test route.
+reference_router = APIRouter()
+
+__all__ = ["reference_router", "router"]
 
 # WHICH PERMISSION EACH APPROVAL AUTHORITY REQUIRES.
 #
@@ -195,6 +208,24 @@ def get_tests(
         project_id=project_id,
         review_state=review_state,
     )
+
+
+@reference_router.get("/methods", tags=["testing"])
+def get_methods(
+    principal: Principal = Depends(require_permission("test.view")),
+    session: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """The methods a test can be planned against.
+
+    On `reference_router`, so this answers at `/api/testing/methods` rather
+    than `/api/testing/tests/methods` -- see the routers above.
+
+    Gated on `test.view` rather than `method.manage`: choosing a method is
+    part of planning and reading, and requiring the administration permission
+    merely to SEE the list would put the planning form out of reach of the
+    Engineer who uses it.
+    """
+    return list_methods(session, organization_id=principal.organization_id)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, tags=["testing"])

@@ -54,6 +54,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
+import { serverMessage } from "@/lib/api/client";
 import { Absent } from "@/components/ui/record-link";
 import { StatusBadge, type StatusBadgeInput } from "@/components/ui/status-badge";
 import {
@@ -61,10 +62,14 @@ import {
   type DerivedProperty,
   type FormulaComponent,
   type FormulaVersionDetail,
+  type RevisionDriver,
   type VersionComparison,
   type VersionEvaluation,
 } from "@/lib/api/formulations";
 import {
+  useClassifications,
+  useClassifyFormula,
+  useCreateBatch,
   useFormulaActions,
   useFormulaComparison,
   useFormulaEvaluation,
@@ -367,7 +372,7 @@ function WeighUpPanel({ versionId }: { versionId: string }) {
             The server's own sentence. It refuses an off-100% formula and
             explains why, which is far more useful than "could not scale".
           */}
-          {sheet.error.message}
+          {serverMessage(sheet.error)}
         </p>
       )}
 
@@ -407,16 +412,192 @@ function WeighUpPanel({ versionId }: { versionId: string }) {
   );
 }
 
+/**
+ * Create a lab batch from THIS version.
+ *
+ * 🔴 THE CONTROL LIVES HERE BECAUSE THE VERSION ID DOES. `POST /batches`
+ * needs a `formula_version_id`, and the batch queue is the one screen that
+ * does not have one — which is why `POST /api/laboratory/batches` sat with no
+ * caller while the other ten laboratory routes had one, and every batch on
+ * screen had been written by a seeding script. §2's thread runs formula
+ * version -> batch; putting the control where the version already is means
+ * the link is never typed by hand and never typed wrong.
+ */
+function CreateBatchPanel({
+  versionId,
+  versionCode,
+}: {
+  versionId: string;
+  versionCode: string;
+}) {
+  const [number, setNumber] = useState("");
+  const [mass, setMass] = useState("");
+  const batch = useCreateBatch();
+
+  return (
+    <>
+      <div className="flex flex-wrap items-end gap-2">
+        <div>
+          <label className={LABEL} htmlFor="batch-number">
+            Batch number
+          </label>
+          <input
+            id="batch-number"
+            className={INPUT + " w-48"}
+            value={number}
+            onChange={(e) => setNumber(e.target.value)}
+            placeholder="LB-2026-001"
+          />
+        </div>
+        <div>
+          <label className={LABEL} htmlFor="planned-kg">
+            Planned quantity (kg)
+          </label>
+          {/* Text, not number — a controlled mass keeps its recorded scale. */}
+          <input
+            id="planned-kg"
+            className={INPUT + " w-36"}
+            inputMode="decimal"
+            value={mass}
+            onChange={(e) => setMass(e.target.value)}
+            placeholder="10.0000"
+          />
+        </div>
+        <button
+          type="button"
+          className={BUTTON}
+          disabled={batch.isPending || number.trim().length < 3 || mass.trim() === ""}
+          onClick={() =>
+            batch.create({
+              formula_version_id: versionId,
+              batch_number: number.trim(),
+              planned_quantity_kg: mass.trim(),
+              purpose: `Batch of ${versionCode}`,
+            })
+          }
+        >
+          Create batch
+        </button>
+      </div>
+
+      {batch.error !== null && (
+        <p
+          role="alert"
+          className="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
+        >
+          {serverMessage(batch.error)}
+        </p>
+      )}
+      {batch.error === null && batch.created !== null && (
+        <p role="status" className="mt-3 text-sm text-slate-700">
+          Created.{" "}
+          <Link
+            href={`/laboratory/batch?id=${batch.created.id}`}
+            className="font-medium underline underline-offset-2"
+          >
+            Open it on the bench →
+          </Link>
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * Reclassify the formula.
+ *
+ * ⚠️ THE LEVELS COME FROM THE SERVER, IN RANK ORDER. Free text here would
+ * make a confidentiality decision available to a typo, and the export ceiling
+ * is a rank comparison — so the order shown is the order that matters.
+ * `reason` is mandatory server-side and audited.
+ */
+function ClassifyPanel({ formulaId }: { formulaId: string }) {
+  const levels = useClassifications();
+  const [code, setCode] = useState("");
+  const [reason, setReason] = useState("");
+  const classify = useClassifyFormula(formulaId);
+
+  const options = levels.data ?? [];
+
+  return (
+    <>
+      <div className="flex flex-wrap items-end gap-2">
+        <div>
+          <label className={LABEL} htmlFor="classification">
+            Classification
+          </label>
+          <select
+            id="classification"
+            className={INPUT + " w-56"}
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+          >
+            <option value="">
+              {levels.isLoading ? "Loading levels…" : "Choose a level"}
+            </option>
+            {options.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.code}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex-1">
+          <label className={LABEL} htmlFor="classify-reason">
+            Reason (required, and audited)
+          </label>
+          <input
+            id="classify-reason"
+            className={INPUT}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="why this level is correct now"
+          />
+        </div>
+        <button
+          type="button"
+          className={BUTTON_QUIET}
+          disabled={classify.isPending || code === "" || reason.trim().length < 3}
+          onClick={() => classify.classify({ classification: code, reason: reason.trim() })}
+        >
+          Reclassify
+        </button>
+      </div>
+
+      {levels.error !== null && <DataSourceError error={levels.error} />}
+      {classify.error !== null && (
+        <p
+          role="alert"
+          className="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
+        >
+          {serverMessage(classify.error)}
+        </p>
+      )}
+      {classify.error === null && classify.done && (
+        <p role="status" className="mt-3 text-sm text-slate-700">
+          Classification recorded.
+        </p>
+      )}
+    </>
+  );
+}
+
 function FormulaWorkspace({
   version,
   evaluation,
+  evaluationError,
+  evaluationLoading,
 }: {
   version: FormulaVersionDetail;
   evaluation: VersionEvaluation | undefined;
+  evaluationError: Error | null;
+  evaluationLoading: boolean;
 }) {
   const actions = useFormulaActions(version.id);
   const comparison = useFormulaComparison(version.id, version.parent_version_id);
   const [reason, setReason] = useState("");
+  const [hypothesis, setHypothesis] = useState("");
+  const [driver, setDriver] = useState<RevisionDriver | "">("");
   const [observed, setObserved] = useState("");
 
   const components = [...version.components].sort(
@@ -443,8 +624,16 @@ function FormulaWorkspace({
           Every figure below is computed by the Python engine and rendered exactly as
           received. Nothing on this page performs formulation arithmetic.
         </p>
-        {evaluation === undefined ? (
-          <p className="mt-2 text-sm text-slate-600">Calculating…</p>
+        {evaluationError !== null ? (
+          <div className="mt-2">
+            <DataSourceError error={evaluationError} />
+          </div>
+        ) : evaluation === undefined ? (
+          <p className="mt-2 text-sm text-slate-600">
+            {evaluationLoading
+              ? "Calculating…"
+              : "The derived properties could not be loaded."}
+          </p>
         ) : Object.keys(evaluation.properties).length === 0 ? (
           <p className="mt-2 text-sm text-slate-600">
             This version has no components yet, so there is nothing to calculate.
@@ -555,6 +744,26 @@ function FormulaWorkspace({
 
       {/* ---------------------------------------------------------------- */}
       <section className="mt-6">
+        <h2 className="text-sm font-semibold text-slate-900">Take it to the bench</h2>
+        <p className="mt-1 text-xs text-slate-600">
+          A lab batch is made against a formula <strong>version</strong>, which is why
+          this control lives here and not on the batch queue.
+        </p>
+        <div className="mt-2">
+          <CreateBatchPanel versionId={version.id} versionCode={version.version_code} />
+        </div>
+      </section>
+
+      {/* ---------------------------------------------------------------- */}
+      <section className="mt-6">
+        <h2 className="text-sm font-semibold text-slate-900">Classification</h2>
+        <div className="mt-2">
+          <ClassifyPanel formulaId={version.formula_id} />
+        </div>
+      </section>
+
+      {/* ---------------------------------------------------------------- */}
+      <section className="mt-6">
         <h2 className="text-sm font-semibold text-slate-900">Lifecycle</h2>
         <p className="mt-1 text-xs text-slate-600">
           An approved formulation is <strong>never edited in place</strong>. It is
@@ -590,25 +799,93 @@ function FormulaWorkspace({
         </div>
 
         <div className="mt-4 grid gap-3 sm:max-w-2xl">
-          <div>
-            <label className={LABEL} htmlFor="change-reason">
-              Revise — change reason (required by the server)
-            </label>
-            <input
-              id="change-reason"
-              className={INPUT}
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="why this formula needs to change"
-            />
-            <button
-              type="button"
-              className={BUTTON + " mt-2"}
-              disabled={actions.isPending || reason.trim() === ""}
-              onClick={() => actions.revise({ change_reason: reason.trim() })}
-            >
-              Create revision
-            </button>
+          {/*
+            🔴 THREE FIELDS, BECAUSE THE SERVER REQUIRES THREE. This form used
+            to send only `change_reason` and returned 422 every time — on the
+            operation this page calls "the only way a formula changes".
+
+            `driver_type` is not defaulted here for the same reason it is not
+            defaulted on the server: §2 requires a revision to show which
+            objective caused it, and a default would answer that on the
+            chemist's behalf.
+          */}
+          <div className="grid gap-2 rounded border border-slate-200 p-3">
+            <p className="text-xs font-medium text-slate-700">
+              Revise — an approved formula is never edited in place
+            </p>
+            <div>
+              <label className={LABEL} htmlFor="change-reason">
+                Change reason
+              </label>
+              <input
+                id="change-reason"
+                className={INPUT}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="why this formula needs to change"
+              />
+            </div>
+            <div>
+              <label className={LABEL} htmlFor="hypothesis">
+                Technical hypothesis
+              </label>
+              <input
+                id="hypothesis"
+                className={INPUT}
+                value={hypothesis}
+                onChange={(e) => setHypothesis(e.target.value)}
+                placeholder="what you expect the change to do, and why"
+              />
+            </div>
+            <div>
+              <label className={LABEL} htmlFor="driver">
+                What drove this revision
+              </label>
+              <select
+                id="driver"
+                className={INPUT}
+                value={driver}
+                onChange={(e) => setDriver(e.target.value as RevisionDriver)}
+              >
+                <option value="">Choose a driver</option>
+                {(
+                  [
+                    "failure",
+                    "requirement",
+                    "optimization",
+                    "cost",
+                    "regulatory",
+                    "customer_request",
+                    "other",
+                  ] as const
+                ).map((d) => (
+                  <option key={d} value={d}>
+                    {words(d)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <button
+                type="button"
+                className={BUTTON}
+                disabled={
+                  actions.isPending ||
+                  reason.trim().length < 3 ||
+                  hypothesis.trim().length < 3 ||
+                  driver === ""
+                }
+                onClick={() =>
+                  actions.revise({
+                    change_reason: reason.trim(),
+                    technical_hypothesis: hypothesis.trim(),
+                    driver_type: driver as RevisionDriver,
+                  })
+                }
+              >
+                Create revision
+              </button>
+            </div>
           </div>
 
           <div>
@@ -638,7 +915,7 @@ function FormulaWorkspace({
             role="alert"
             className="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
           >
-            {actions.error.message}
+            {serverMessage(actions.error)}
           </p>
         )}
         {actions.error === null && actions.lastAction !== null && (
@@ -684,7 +961,19 @@ function FormulaScreen() {
           {isLoading ? "Loading the version…" : "That version could not be found."}
         </p>
       ) : (
-        <FormulaWorkspace version={data} evaluation={evaluation.data} />
+        <FormulaWorkspace
+          version={data}
+          evaluation={evaluation.data}
+          // 🔴 THE EVALUATION'S FAILURE WAS BEING DISCARDED. Only `.data` was
+          // passed, so a 403 or 500 on `/evaluation` left `undefined` forever
+          // and the derived-properties panel showed "Calculating…"
+          // indefinitely — while the composition and weigh-up kept working, so
+          // it read as a slow calculation rather than a failure. Found by the
+          // Supervisor. A gap that is named is a gap; one that looks like
+          // progress is a defect.
+          evaluationError={evaluation.error}
+          evaluationLoading={evaluation.isLoading}
+        />
       )}
     </LiveOnlyPage>
   );

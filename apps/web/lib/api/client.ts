@@ -268,6 +268,69 @@ export async function apiHealth(
 }
 
 /** Best-effort detail from an error response; never throws. */
+/**
+ * What the SERVER said, not what this client guessed.
+ *
+ * 🔴 THE SENTENCE WAS BEING THROWN AWAY WHILE FOUR SCREENS CLAIMED TO SHOW IT.
+ *
+ * `apiRequest` throws `ApiError` with a generic message — "the API refused
+ * this request (422)" — and puts the server's own explanation in `detail`,
+ * which nothing read. So a formulation screen rendered `error.message` under a
+ * comment saying *"the server's own sentence … explains why"*, and displayed
+ * the status code instead. The test workspace did the same under *"a 403 is
+ * surfaced as the sentence the server sent"*, losing the ADR-019
+ * segregation-of-duties distinction that is the entire reason a 403 there is
+ * interesting. Found by the Supervisor; it is this codebase's most-repeated
+ * defect — a comment asserting a rule the code does not have.
+ *
+ * FastAPI's `detail` takes three shapes here and all three matter:
+ *
+ *   "a plain sentence"                          — most routes
+ *   {"message": "...", "blocks": [{...}, ...]}  — a blocked submission, whose
+ *                                                 blocks were discarded entirely
+ *   undefined                                   — a non-JSON body
+ *
+ * Falls back to the generic message rather than inventing one, so a caller
+ * always has something to render.
+ */
+export function serverMessage(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  const detail = (error.detail as { detail?: unknown } | undefined)?.detail ?? error.detail;
+
+  if (typeof detail === "string" && detail.trim() !== "") {
+    return detail;
+  }
+
+  if (detail !== null && typeof detail === "object") {
+    const shaped = detail as { message?: unknown; blocks?: unknown };
+    const message = typeof shaped.message === "string" ? shaped.message : null;
+    // EVERY block, not the first. The route says so itself: returning one
+    // "would make the chemist discover them one request at a time, which is
+    // how a form teaches people to distrust it."
+    const blocks = Array.isArray(shaped.blocks)
+      ? shaped.blocks
+          .map((b) => {
+            const row = b as { code?: unknown; message?: unknown };
+            const code = typeof row.code === "string" ? row.code : null;
+            const text = typeof row.message === "string" ? row.message : null;
+            return code && text ? `${code} — ${text}` : (text ?? code);
+          })
+          .filter((line): line is string => typeof line === "string")
+      : [];
+
+    if (message !== null && blocks.length > 0) {
+      return `${message}: ${blocks.join("; ")}`;
+    }
+    if (message !== null) return message;
+    if (blocks.length > 0) return blocks.join("; ");
+  }
+
+  return error.message;
+}
+
 async function readDetail(response: Response): Promise<unknown> {
   try {
     return await response.json();

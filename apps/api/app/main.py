@@ -37,6 +37,7 @@ from app.api.msd import router as msd_router
 from app.api.opportunities import router as opportunities_router
 from app.api.projects import router as projects_router
 from app.api.tasks import router as tasks_router
+from app.api.testing import reference_router as testing_reference_router
 from app.api.testing import router as testing_router
 from app.core.config import settings
 from app.core.logging import configure_logging
@@ -255,6 +256,9 @@ def create_app() -> FastAPI:
     # was taken from, so RLS applies the membership predicate to every row
     # and the prefix carries no project segment.
     application.include_router(testing_router, prefix="/api/testing/tests")
+    # Reference data for the module, one level up: a test METHOD is not a
+    # sub-resource of a test. See `app/api/testing.py`.
+    application.include_router(testing_reference_router, prefix="/api/testing")
     # Slice 6. Failure investigation, and the ONE shared approval engine —
     # polymorphic over (entity_type, entity_id) so Validation, Pilot,
     # Qualification and Release add zero approval infrastructure (§9).

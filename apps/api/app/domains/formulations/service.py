@@ -38,7 +38,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import text
@@ -334,6 +334,28 @@ def create_formula(
         "formula_code": spec.formula_code,
         "version_code": f"{spec.formula_code}-V001",
     }
+
+
+def list_classifications(session: Session) -> list[dict[str, Any]]:
+    """The classification ladder, in rank order.
+
+    🔴 THE SAME GAP AS `list_methods`. `POST /{formula_id}/classification`
+    takes a level from `core.classifications` and nothing returned that list,
+    so reclassifying a formula could only ever have been a free-text field --
+    and a mistyped level is a confidentiality decision made by a typo.
+
+    Returned in RANK order rather than alphabetically, because the ladder is
+    ordered and the order is the meaning: `EXPORT_WITHOUT_SECOND_APPROVAL_
+    CEILING` is expressed as a rank comparison precisely so that inserting a
+    level between two others does not silently widen it.
+
+    Not tenant-scoped: `core.classifications` is a platform-wide vocabulary,
+    not an organization's data.
+    """
+    rows = session.execute(
+        text("SELECT code, rank FROM core.classifications ORDER BY rank")
+    ).mappings()
+    return [dict(r) for r in rows]
 
 
 def list_formulas(
@@ -1633,7 +1655,15 @@ def _try(fn: Any) -> dict[str, Any]:
     """
     try:
         value = fn()
-    except (ValueError, ZeroDivisionError) as exc:
+        # 🔴 THE QUANTIZE IS INSIDE THE GUARD, NOT AFTER IT. `Decimal.quantize`
+        # raises `InvalidOperation` — which is NOT a `ValueError` — when the
+        # result needs more digits than the context allows, so leaving it
+        # outside turned this function's "a value or a stated reason" contract
+        # into a 500 on `/evaluation`. Unlikely given the column bounds, but
+        # the contract is that this never propagates. Raised by the Supervisor.
+        if isinstance(value, Decimal):
+            value = value.quantize(PROPERTY_SCALE)
+    except (ValueError, ZeroDivisionError, InvalidOperation) as exc:
         return {"value": None, "unavailable_reason": str(exc)}
     # A STRING, QUANTIZED TO FOUR PLACES (I84 / I85).
     #
@@ -1666,5 +1696,5 @@ def _try(fn: Any) -> dict[str, Any]:
     # answering that exactly. Presentation scale is the API's business;
     # exactness is the engine's.
     if isinstance(value, Decimal):
-        return {"value": str(value.quantize(PROPERTY_SCALE)), "unavailable_reason": None}
+        return {"value": str(value), "unavailable_reason": None}
     return {"value": value, "unavailable_reason": None}
