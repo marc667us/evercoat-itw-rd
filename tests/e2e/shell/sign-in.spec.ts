@@ -28,10 +28,14 @@
  * acceptance of the redirect_uri, the proxy's route back to the callback, and
  * the application's own token exchange.
  *
- * ⚠️ IT SKIPS WITHOUT CREDENTIALS, AND A SKIP IS NOT A PASS. `live-suite.sh`
- * reports skipped as its own number for exactly this reason. If this file
- * skips in a live run, the sign-in flow was NOT verified — treat that as a
- * gap, not as a green.
+ * ⚠️ ONLY THE ROUND TRIP SKIPS WITHOUT CREDENTIALS, AND A SKIP IS NOT A PASS.
+ * `live-suite.sh` reports skipped as its own number for exactly this reason.
+ * If the round trip skips in a LIVE run, the sign-in flow was NOT verified —
+ * treat that as a gap, not as a green.
+ *
+ * The callback guard below needs no password and therefore **runs everywhere,
+ * including CI**. The two used to skip together, which meant a green CI badge
+ * protected the sign-in flow from nothing at all.
  *
  * 🔴 THE PASSWORD IS NEVER HARD-CODED. This repository is public. It comes
  * from `TEST_KEYCLOAK_PASSWORD`, which `live-suite.sh` already exports.
@@ -47,14 +51,25 @@ const USERNAME_FIELD = "#username, input[name='username']";
 const PASSWORD_FIELD = "#password, input[name='password']";
 
 test.describe("signing in through the real identity provider", () => {
-  test.skip(
-    PASSWORD === "",
-    "TEST_KEYCLOAK_PASSWORD is not set — the sign-in round trip was NOT verified",
-  );
-
+  /**
+   * 🔴 THE SKIP IS ON THIS TEST, NOT ON THE FILE.
+   *
+   * It used to sit at `describe` level, which skipped the callback guard
+   * below with it — so in CI, where `TEST_KEYCLOAK_PASSWORD` is unset, BOTH
+   * tests reported `skipped` and a green CI badge protected the sign-in flow
+   * from nothing at all. A skip is not a pass, and a skip that takes an
+   * unrelated test with it is worse: it is invisible.
+   *
+   * The round trip genuinely needs a live realm and a password. The guard
+   * does not, so it runs everywhere.
+   */
   test("a person can press Sign in, authenticate, and come back signed in", async ({
     page,
   }) => {
+    test.skip(
+      PASSWORD === "",
+      "TEST_KEYCLOAK_PASSWORD is not set — the sign-in round trip was NOT verified",
+    );
     await page.goto("/");
 
     // 1 — the control a human actually presses.
@@ -114,13 +129,25 @@ test.describe("signing in through the real identity provider", () => {
   });
 
   /**
-   * The narrow regression guard for I96 specifically.
+   * The narrow regression guard for I96 — and it runs EVERYWHERE, including CI.
    *
-   * The round trip above proves the whole chain, but it needs a live realm and
-   * a password. This one needs neither: it asks the deployment for its own
-   * callback path and requires the APPLICATION to answer. If the identity
-   * proxy ever reclaims `/auth/*` wholesale, this fails immediately and says
-   * exactly which layer moved.
+   * It asks the deployment for its own callback path and requires the
+   * APPLICATION to answer. No realm, no password, no browser session.
+   *
+   * ⚠️ WHAT IT PROVES DEPENDS ON WHERE IT RUNS, AND THAT IS WORTH BEING EXACT
+   * ABOUT RATHER THAN LETTING A GREEN TICK IMPLY MORE THAN IT DOES:
+   *
+   *   - LIVE (`PLAYWRIGHT_BASE_URL` set, behind Caddy): this is the real I96
+   *     guard. Caddy proxies `/auth/*` to Keycloak, and if the more specific
+   *     `/auth/callback*` route is ever lost, Keycloak answers 404 and this
+   *     fails. Verified by deliberately removing that route: 2 failed.
+   *
+   *   - CI / local (no proxy in front of Next): there is no Caddy to get
+   *     wrong, so this does NOT exercise the proxy. What it still pins is
+   *     that the application serves its own `CALLBACK_PATH` — a renamed or
+   *     deleted `app/auth/callback/page.tsx`, or a `trailingSlash` change
+   *     that stops `/auth/callback/` resolving, fails here. That is a real
+   *     regression class and it is not the one I96 was.
    */
   test("the callback path is served by the app, not by the identity proxy", async ({
     request,
