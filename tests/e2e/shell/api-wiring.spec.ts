@@ -380,6 +380,22 @@ test.describe("the screens wired in S2", () => {
     // NOT NULL in formulations.formulas, and the schema now enforces it.
     owner_user_id: "44444444-4444-4444-4444-444444444444",
     updated_at: "2026-08-01T10:00:00Z",
+    // 🔴 THE KEY, AND ITS ABSENCE BROKE THIS STUB WHEN THE SCHEMA GREW (I86).
+    //
+    // `list_formulas` returns the latest version's id, and the workspace link
+    // is built from it — a `version_code` is unique per formula, not per
+    // organization, so it is a label and not a key. `formulaWithCoherentVersion`
+    // requires all FOUR latest-version fields present or all four null, so a
+    // stub carrying only three fails to parse and the row silently does not
+    // render.
+    //
+    // ⚠️ THIS IS THE THIRD COPY OF THIS SHAPE. The real server, the unit
+    // fixture in `lib/api/schemas.test.ts`, and this stub all have to agree,
+    // and only the first two were updated — so the LIVE suite passed (it runs
+    // against the real API, which returns the field) while CI failed (it runs
+    // against this stub, which did not). *Two literals in two files cannot be
+    // type-checked into agreement*, and here there are three.
+    latest_version_id: "00000000-0000-0000-0000-0000000000b7",
     latest_version_code: "FRM-LIVE-01-v7",
     latest_version_number: 7,
     latest_version_status: "draft",
