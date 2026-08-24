@@ -1,12 +1,32 @@
 # TODO — EvercoatITWRD APP
 
-**Updated 2026-08-22. CI GREEN (6/6). Slice 8 — the RAG — BUILT, REVIEWED and the web half DEPLOYED.** Read `RESUME_HERE.md` first.
+**Updated 2026-08-24. CI GREEN (6/6). Tip `cab4c1c`, pushed.** Read `RESUME_HERE.md` first.
 
-▶ **Live suite on the deployed site: 31 passed / 0 failed / 2 skipped.** Both skips are the absent API. `/knowledge/` serves 200. **I74 and I75 are closed**; new **I76–I79** are in §1 P2, and **D1** below is the API deploy.
+▶ **Live suite on the running site: 713 passed / 0 failed / 0 skipped** (`api-live` 682, e2e 31), zero skipped. Counts verified against each tool's own output, not the harness summary.
 
-🔴 **The API and Keycloak still are not deployed, and on Render at zero cost they cannot be.** Re-measured 2026-08-21 against the live API: `POST /services plan=free` → **400 "free tier usage quota has been exhausted"**, and a free database is refused because `autoworkshop-postgres` holds the **one** free slot and expires 2026-09-01. So even after the instance-hour quota resets, Evercoat can only get a free database by **taking the slot a live AutoWorkshop needs back**. See I13 and the report at `Desktop\Evercoat-Hosting-Options-2026-08-21.pdf`.
+▶ **All four target modules are wired.** 23 of 37 endpoints across Laboratory, Testing, Formulations and MSD had **no browser caller**; all 37 do now (Laboratory 10→11, Testing **1→9**, Formulations **1→13**, MSD 2→4). New workspaces at `/testing/test?id=…` and `/formulations/formula?version=…`.
 
-▶ **NEW THIS SESSION: the local database works.** `evercoat-postgres` was OOM-killed and Docker had never been started — it was recorded as "wedged", which was wrong. It is now at migration head and the API suite runs **413 passed / 0 failed / 0 skipped** locally, the first fully green local run this project has had. Start it with `docker start evercoat-postgres` (port **55432**); test env vars are in the session note.
+🔴 **713 GREEN AND BROWSER SIGN-IN WAS 404 (I96).** Caddy's `/auth/*` identity prefix swallowed the app's own OIDC callback. Nothing in the suite traversed it — `api-live` uses direct grant, the e2e shell suite uses a seam compiled out of production builds. **I97 closed it** with a real sign-in test, proven to fail in both broken states. *Verify the path a human uses, not the one that is easy to script.*
+
+▶ **The demo stack now OUTLIVES the session.** `powershell -File scripts\demo-up.ps1` starts cloudflared + API + web **detached**, derives the tunnel hostname from cloudflared's own log, repoints all four things that carry it, and **verifies the Keycloak client by read-back**. Containers carry `--restart unless-stopped`. Full notes: `Documents/session-archives/2026-08-24/RESTART_THE_DEMO.md`.
+
+⏳ **The API + Keycloak Render deploy still waits for 2026-09-01** — see D1 below. Nothing about the local/tunnel demo depends on it.
+
+---
+
+## ▶ NEXT SESSION — do these in this order
+
+| # | Task | Why now |
+|---|---|---|
+| 1 | **I95** — `serverMessage` in `app/knowledge/page.tsx` (3 places) | Same defect as I91, one line each. Left undone on purpose: Knowledge was outside the four modules under review, and a silent drive-by edit to an unreviewed module is how scope stops being measurable. |
+| 2 | **I79** — `/api/me` returns roles but no permissions | Every new workspace shows ALL controls and lets the server refuse. Correct per §6, but it means a user sees buttons that will 403. Blocks honest UI gating everywhere. |
+| 3 | **I83** (P1) — cross-tenant email existence oracle | A globally-unique `users_email_key` is enforced outside RLS; 201 vs 409 discloses whether a named individual is on the platform. Emails are guessable where a subject UUID is not. Needs a schema decision, not a patch. |
+| 4 | **I81 / I82** | 044's read policy grants the row where its justification needs only the name; `user_id_for_subject` hands out a uuid. |
+| 5 | **I76 / I77** | MSD relevance still lexical — a neural embedder is the real fix. |
+| 6 | **I56 / I58** — FORCE RLS cutover | `core.users` and `core.user_id_for_subject` are now in its scope. |
+| 7 | **`TODO.md` D1** — deploy API + Keycloak | **On/after 2026-09-01**, when Render frees the one free-tier database slot. |
+
+**Standing obligation each session:** run the full live suite after any deploy and report **passed / failed / skipped as three numbers**. And now also: **run the sign-in test** — the suite's 713 cannot see that flow.
 
 ---
 

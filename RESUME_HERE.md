@@ -2,20 +2,24 @@
 
 ## ▶▶ SESSION CLOSE 2026-08-24 — START HERE
 
-Tip **`7c2c453`**. Two commits: **23 of 37 endpoints across Laboratory,
-Testing, Formulations and MSD had no browser caller.** All 37 do now — and
-the second commit exists because the first one *claimed* that and was wrong.
+Tip **`cab4c1c`**, pushed, tree clean, **CI 6/6 green**. Eight commits.
 
-| Module | Endpoints | Reachable before | Now |
-|---|---|---|---|
-| Laboratory | 11 | 10 | **11** |
-| Testing | 9 | **1** | **9** |
-| Formulations | 13 | **1** | **13** |
-| MSD | 4 | 2 | **4** |
+▶ **Restart the demo — ONE command now:**
+`powershell -File scripts\demo-up.ps1` (prints the URL, writes
+`tmp/tunnel_url.txt`). Full notes and every trap:
+`Documents/session-archives/2026-08-24/RESTART_THE_DEMO.md`
+Session record: `.../2026-08-24/README.md` · Progress report (PDF):
+`Desktop/Evercoat-Progress-2026-08-24.pdf`
 
-Local gates: API **671 passed / 0 failed / 11 skipped** (run ALONE — 139s),
-web **137 / 0**, `tsc` exit 0, `next lint` + ruff + ruff format + mypy
-(86 files) all green.
+▶ **Next session's ranked task list is at the top of `TODO.md`.**
+
+### What shipped
+
+**23 of 37 endpoints across Laboratory, Testing, Formulations and MSD had no
+browser caller.** All 37 do now — Laboratory 10→11, Testing **1→9**,
+Formulations **1→13**, MSD 2→4. New workspaces at `/testing/test?id=…` and
+`/formulations/formula?version=…`, plus plan-a-test, create-batch,
+create-formula and reclassify.
 
 ### ✅ THE LIVE SUITE — 713 / 0 / 0, AND THE STACK IS STILL UP
 
