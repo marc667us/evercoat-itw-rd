@@ -17,57 +17,33 @@ Local gates: API **671 passed / 0 failed / 11 skipped** (run ALONE — 139s),
 web **137 / 0**, `tsc` exit 0, `next lint` + ruff + ruff format + mypy
 (86 files) all green.
 
-### 🔴 THE LIVE SUITE DID NOT FINISH — AND ITS e2e NUMBERS DO NOT EXIST
+### ✅ THE LIVE SUITE — COMPLETE, ON THE RESTORED TUNNEL
 
-Run against the tunnel, `full` profile:
+`scripts/live-suite.sh <url> full`:
 
-| phase | result |
-|---|---|
-| health / mount probes | `/`, `/health/live`, `/docs`, `/dashboard/` all **200** |
-| **`api-live`** | **682 passed / 0 failed / 0 skipped** (rc=0) — COMPLETE and valid |
-| **e2e (Playwright)** | 🔴 **KILLED MID-FLIGHT. `e2e.log` is 0 bytes. NO COUNTS.** |
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **682** | 0 | 0 |
+| e2e (Playwright) | **31** | 0 | 0 |
+| **TOTAL** | **713** | **0** | **0** |
 
-The session's background tasks were stopped while Playwright was ~7 minutes
-into its run, exactly as happened twice on 08-23. **A run killed mid-flight
-has void numbers** — there is no e2e figure to quote and none is quoted.
+Health and mount probes green first (`/`, `/health/live`, `/docs`,
+`/dashboard/` all 200), and auth verified end to end through the tunnel before
+the run: a real token minted, `/api/me` 200, and **the served bundle confirmed
+to carry the tunnel host** — the check that matters, because `NEXT_PUBLIC_*` is
+compile-time and a stale bundle serves a perfect-looking site that cannot sign
+in.
 
-`api-live` is reported because that phase FINISHED and the script printed its
-own three numbers before the stop. It is up from 670 on 08-23, still with
-**zero skipped**.
+⚠️ **The counts were checked against each tool's OWN output, not the harness
+summary** — `pytest` printed `682 passed`, and Playwright's JSON reported
+`expected: 31, unexpected: 0, skipped: 0`. On 08-23 a fully green 31-test run
+reported nothing and passed, because Playwright writes one JSON document per
+project and a strict `json.load` died on the second. The decoder used here
+reads them one at a time.
 
-▶ **OUTSTANDING: one complete live-suite run.** Bring the stack back up (the
-API and the tunnel are down; Postgres, Keycloak, Caddy and the web server
-survived) and re-run `scripts/live-suite.sh <url> full`.
-
-### 🔴 The orphaned routes were hiding real defects
-
-Six, and the first two are the ones to remember.
-
-* **I84 — every measurement on those routes was a FLOAT.** The formulations
-  service had **no Decimal→string helper at all**, and `get_test` built its
-  statistics *after* the row-level one had run. Measured against the running
-  service: `percentage 2.5`, `theoretical_density_g_cm3
-  1.0906918323011936`. §5 was satisfied in the database, satisfied in the
-  engine, and **satisfied nowhere in between**. It is the same defect
-  `test_laboratory_testing_serialisation.py` was written for on 08-19 —
-  whose own header says it survived because *"no screen was wired to these
-  routes yet"*. That fix reached exactly as far as the routes wired that day.
-* **I85 — then the strings carried 28 significant digits** from inputs
-  recorded to four. Quantized to `0.0001` at the response boundary, never in
-  the engine (`binder_to_filler_ratio` must stay exactly 40/60). Four places
-  is the scale `build_demo_formulations.py` already uses — the fixture and
-  the live API render onto the **same screens**.
-* **I86 — the formula list could not reach the workspace, which is why there
-  was none.** Twelve of thirteen routes are keyed by `version_id`;
-  `list_formulas` returned the version *code*. Not a missing screen: a
-  missing column that made the screen unbuildable, with a fixture standing in.
-* **I87 — the difference engine shipped without Δ and %Δ**, behind a
-  correct-sounding comment that named the engine as the only place allowed
-  to subtract two percentages. No such function had ever been written.
-* **I88 — MSD had a complete memory and no way to read it.** Both history
-  routes existed with no caller, so every reload began an empty conversation
-  on top of a full record.
-* **I89 — the bench could do everything to a batch except create one** (Codex).
+▶ An earlier attempt this session was **killed mid-Playwright** when the
+session's background tasks were stopped; its numbers were void and were
+recorded as such rather than quoted. This run is the complete one.
 
 ### 🔴 The review round — read this before trusting a claim of mine
 
