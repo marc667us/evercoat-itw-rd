@@ -120,9 +120,35 @@ Set-Content -Path (Join-Path $RepoRoot "tmp\tunnel_url.txt") -Value $PublicUrl -
 $clientId = (& $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh get clients -r evercoat `
                 -q clientId=evercoat-web --fields id --format csv --noquotes) -replace "`r", ""
 if (-not $clientId) { throw "could not resolve the evercoat-web client id -- is Keycloak up?" }
-& $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh update "clients/$clientId" -r evercoat `
-    -s "redirectUris=[`"$PublicUrl/auth/callback/`",`"$PublicUrl/auth/callback`",`"$PublicUrl/*`",`"http://localhost:3000/auth/callback/`"]" `
-    -s "webOrigins=[`"$PublicUrl`",`"http://localhost:3000`"]" | Out-Null
+# 🔴 THE UPDATE GOES IN AS A JSON FILE, NOT AS `-s` ARGUMENTS.
+#
+# The `-s "redirectUris=[`"...`"]"` form CANNOT WORK from PowerShell 5.1.
+# Passing a string containing embedded double quotes to a NATIVE executable
+# goes through a CommandLineToArgvW round-trip that strips them, so kcadm
+# received `redirectUris=[https://...,...]` and answered:
+#
+#     Cannot parse the JSON [unknown_error]
+#
+# The read-back below caught it -- which is the whole reason the read-back
+# exists -- but the call could never have succeeded. Reproduced 2026-08-25
+# with a single-element array, so it is the quoting and not the length.
+#
+# A file has no quoting problem. `ascii` again, never `utf8`: 5.1 writes a
+# BOM and a BOM in front of `{` is not JSON either.
+$kcBody = [ordered]@{
+    redirectUris = @(
+        "$PublicUrl/auth/callback/",
+        "$PublicUrl/auth/callback",
+        "$PublicUrl/*",
+        "http://localhost:3000/auth/callback/"
+    )
+    webOrigins = @("$PublicUrl", "http://localhost:3000")
+} | ConvertTo-Json -Compress
+$kcFile = Join-Path $RepoRoot "tmp\kc-client-update.json"
+Set-Content -Path $kcFile -Value $kcBody -Encoding ascii -NoNewline
+& $docker cp $kcFile evercoat-demo-keycloak:/tmp/kc-client-update.json | Out-Null
+& $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh update "clients/$clientId" `
+    -r evercoat -f /tmp/kc-client-update.json | Out-Null
 
 # 🔴 READ IT BACK. THE UPDATE IS NOT PROOF THAT THE UPDATE HAPPENED.
 #
@@ -204,7 +230,7 @@ $webCmd = @"
 # could not sign in. Separate directories, so neither build can destroy the
 # other.
 `$env:NEXT_DIST_DIR='.next-demo';
-Set-Location '$RepoRootpps\web';
+Set-Location '$RepoRoot\apps\web';
 npx next build;
 Copy-Item -Recurse -Force '.next-demo\static' '.next-demo\standalone\.next-demo\static';
 if (Test-Path 'public') { Copy-Item -Recurse -Force 'public' '.next-demo\standalone\public' }
