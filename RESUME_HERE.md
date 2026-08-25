@@ -1,5 +1,140 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION CLOSE 2026-08-25 (part 3) — START HERE
+
+Tip **`552112d`**, pushed, **CI 6/6 green**. Two commits, both I83.
+
+▶ **Restart the demo — one command:**
+`powershell -File scripts\demo-up.ps1` (prints the URL, writes
+`tmp/tunnel_url.txt`). The stack has been up since part 1; only the API
+process was restarted, to put the I83 fix on the deployed instance before the
+live suite ran.
+
+▶ **Live suite on the deployed demo — three numbers:**
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **693** | 0 | 0 |
+| e2e (Playwright `shell`) | **34** | 0 | 0 |
+| **TOTAL** | **727** | **0** | **0** |
+
+693, not 682: eleven auth-integration tests that need a live Keycloak run
+here and skip locally, and eleven new tests shipped with I83.
+
+---
+
+### ✅ I83 CLOSED — the cross-tenant email existence oracle
+
+Migration **046 / f1000**, **ADR-028**.
+
+`core.users.email` carried `users_email_key`, **globally unique** — and unique
+constraints are enforced **outside RLS**. Measured as `evercoat_app` scoped to
+organization A: inserting an address held in organization B was **REFUSED**,
+an unused address **ACCEPTED**. The route turns those into **409** and
+**201**, so any `admin.users` holder in any tenant read platform-wide
+existence from a status code, with a throwaway subject and no row left behind.
+Squatting confirmed in the same run.
+
+🔴 **The constraint is dropped, not disguised.** Migration 044 had
+already made that refusal generic and **the oracle survived**, because the
+attacker reads the status code. A creating endpoint cannot make *created*
+indistinguishable from *not created*. Identity is `keycloak_sub`; the address
+is an attribute mirrored from the identity provider.
+
+**Replaced by two SECURITY INVOKER constraint triggers**, both advisory-locked:
+`organization_members_one_address_per_organization` (the INSERT path) and
+`users_address_stays_unique_in_organization` (the rename path).
+
+---
+
+### 🔴 What the review round found — the replacement was not a constraint, twice
+
+**Codex: FAIL, three blockers.**
+
+* **A trigger that decides by SELECT is not a unique index.** Found
+  independently before Codex answered. Two concurrent transactions both
+  committed and one organization ended with two active members at one address
+  — measured on two connections. My own comments and ADR-028 said
+  *"enforced"*. `pg_advisory_xact_lock` on (organization, address) is the
+  mechanism, the same one `audit.chain_row()` has used since 013.
+* **A rule enforced on INSERT and not on UPDATE.** Codex's catch, and the one
+  I missed. The address lives on `core.users` and the trigger was on
+  `core.organization_members`; `UPDATE core.users SET email = <a colleague's
+  address>` was **ACCEPTED** with no membership row moved. On that path 046
+  was **weaker than the constraint it removed**, because `users_email_key`
+  covered updates.
+* **The tests certified the rule while permitting both counterexamples.**
+  Three added, each falsified by removing its mechanism.
+
+🔴 **And the question Codex did not ask: does the replacement answer
+across tenants?** A guard that refuses on a row you cannot see is the oracle
+rebuilt inside its own replacement. Proven with a user active in BOTH
+organizations, renamed onto an address held only in the one the caller cannot
+see: **ACCEPTED**. It misses rather than answers — the trade ADR-028 now
+states plainly instead of glossing.
+
+---
+
+### Also found while falsifying
+
+* 🔴 **`test_023_messaging`'s fixture leaked an identity every run for
+  months** — it deleted `author` and `outsider` and not `member`. **595
+  orphaned rows against 782 users**, so any measurement over `core.users` is
+  mostly measuring test debris. Fixed; the debris is now **I101**.
+* 🔴 **A fixture that could DEADLOCK the suite.** A failing test never
+  reaches its final `rollback()`, and its row locks then block the owner-side
+  cleanup `DELETE` forever. It wedged exactly that way and had to be killed.
+  A suite that hangs on a failure never reports the failure.
+* ⚠️ **`INSERT ... RETURNING id` fails for a brand-new identity** —
+  `RETURNING` applies 044's SELECT policy and a user with no membership is
+  invisible to the connection that just created it.
+* ⚠️ **`SET LOCAL app.current_org = :param` is a syntax error.** Use
+  `set_config`, as `app/core/db.py` already says.
+
+---
+
+### ▶▶ EXACT NEXT ACTION
+
+**I81 / I82.** 044's read policy grants the whole row where its justification
+needs only the display name — every one of the eleven joins that resolve an
+actor selects `display_name` and none selects `email` or `keycloak_sub`, so
+the policy hands out contact details and an authentication identifier for a
+former member of your own organization. I82's narrower design — fold subject
+resolution into a single atomic bind so the uuid is returned only after the
+membership exists — changes the route's transaction shape, which is why the
+two belong together.
+
+Then: I76/I77, I56/I58, I78, I101, and **D1 on or after 2026-09-01**.
+
+⚠️ **I56/I58 now has more in scope.** 046 adds two SECURITY INVOKER trigger
+functions that read `core.users` and `core.organization_members`. Under FORCE
+RLS they must still see their own tenant's rows, or the address guards
+silently stop guarding.
+
+---
+
+### Carried forward
+
+* ⚠️ **`next build` rewrites `apps/web/tsconfig.json` every demo build.**
+* ⚠️ **Local migrations run as `postgres`** (`alembic_version` denies
+  `evercoat_owner`); the superuser password is in the container's environment.
+  Local is superuser, **Render is not**.
+* ⏳ **D1 deploy waits for 2026-09-01.** Do NOT delete `autoworkshop-postgres`
+  early — its app data is unarchived.
+* 🔴 **THE E2E SUITE CRASHED TWICE ON HOST PRESSURE, AND THE FAILURES LOOKED
+  LIKE APPLICATION DEFECTS.** `browserContext.newPage: Target crashed`, then
+  `worker process exited unexpectedly (code=3221225794)` — that is
+  `0xC0000142`, STATUS_DLL_INIT_FAILED, a process failing to initialise.
+  Reported **721/6/2** and then **700/7/22** with sign-in among the
+  casualties. The same two sign-in tests then passed **in 30 seconds in
+  isolation**, and the whole shell project passed 34/34 alone. Nothing was
+  wrong with the application. ⚠️ **Do not run the live e2e beside pytest
+  suites or Codex** — this host is 8 GB with Docker holding ~900 MB, and
+  Chromium loses. Run it alone, and treat a crashed worker as a VOID
+  measurement rather than a red.
+
+---
+
 ## ▶▶ SESSION CLOSE 2026-08-25 (part 2) — START HERE
 
 Tip **`8edee9b`**, tree clean. Two commits, both I100.
