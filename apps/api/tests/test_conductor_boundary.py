@@ -365,3 +365,44 @@ def test_the_analysis_conductor_passes_the_callers_permissions_through() -> None
         f"held_permissions reached the builder as {seen['held_permissions']!r}, "
         "not the caller's own set"
     )
+
+
+def test_the_analysis_department_is_actually_reached_by_a_route() -> None:
+    """🔴 THE DEFECT THIS CLOSES: A LAYER WITH NO CALLER.
+
+    The analysis conductor was written, gated, tested — and NOTHING CALLED
+    IT. `app/api/dashboards.py` imported the domain service and built the
+    dashboard itself, so the "analysis department" was a Python module you
+    could not reach from anywhere in the running product. Codex raised it as
+    I103 and the operator put it more plainly: there was no analysis to see.
+
+    A layer with no caller is the same defect as a route with no caller, and
+    this repository has a standing rule about asking *which production path
+    actually reaches this?*
+
+    So: the dashboards route must reach the orchestrator, and must NOT reach
+    the service directly. `test_no_api_route_reaches_past_the_orchestrator`
+    already forbids importing a conductor; this is the positive half, and
+    without it deleting the call entirely would satisfy every other test here.
+    """
+    imports = _imports_of("dashboards.py")
+
+    assert "app.agents.orchestrators.root_orchestrator" in imports, (
+        "app/api/dashboards.py no longer reaches the analysis department "
+        "through the root orchestrator, so the conductor is unreachable again"
+    )
+    assert "app.domains.dashboards.service" not in imports, (
+        "app/api/dashboards.py imports the dashboards service directly, which "
+        "is the bypass that made the analysis conductor decoration"
+    )
+
+
+def _imports_of(module: str) -> set[str]:
+    path = Path(__file__).resolve().parents[1] / "app" / "api" / module
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module)
+        elif isinstance(node, ast.Import):
+            found.update(a.name for a in node.names)
+    return found

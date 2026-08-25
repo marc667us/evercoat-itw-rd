@@ -22,11 +22,13 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agents.conductors import analysis_conductor, laboratory_conductor, testing_conductor
+from app.agents.conductors.analysis_conductor import UnknownDashboardError
 from app.agents.conductors.msd_conductor import MsdAnswer
 from app.agents.conductors.msd_conductor import answer as msd_answer
 from app.agents.ports import LanguageModelPort
 
 __all__ = [
+    "UnknownDashboardError",
     "analysis_dashboard",
     "answer_question",
     "laboratory_batch",

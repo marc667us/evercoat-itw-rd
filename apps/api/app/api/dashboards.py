@@ -29,8 +29,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.agents.orchestrators.root_orchestrator import UnknownDashboardError, analysis_dashboard
 from app.core.security import Principal, get_db, require_permission
-from app.domains.dashboards.service import ROLE_DASHBOARDS
 
 router = APIRouter()
 
@@ -54,24 +54,49 @@ def get_role_dashboard(
     that dashboards "drill down to real source records" is satisfiable by the
     client without a second round trip to work out what it is looking at.
     """
-    builder = ROLE_DASHBOARDS.get(role)
-    if builder is None:
+    # 🔴 THROUGH THE ORCHESTRATOR, NOT STRAIGHT INTO THE SERVICE (§0.2, I103).
+    #
+    # This route imported `app.domains.dashboards.service` and called the
+    # builder itself. The analysis conductor existed and NOTHING CALLED IT --
+    # a layer with no caller, which is the same defect as a route with no
+    # caller, and it meant the "analysis department" was a Python module you
+    # could not reach from anywhere in the running product.
+    #
+    # §0.2 says API routes never call specialists directly. This is the second
+    # route to obey it (msd.py was the first), and `tests/test_agent_topology`
+    # already forbids importing a conductor here -- so the import is the
+    # ORCHESTRATOR, which owns the department gate.
+    #
+    # ⚠️ `require_permission("project.view")` ABOVE STAYS. The conductor
+    # asserts the same permission, and that is deliberate defence in depth,
+    # not duplication: this dependency is what refuses an unauthenticated
+    # caller before any handler runs, and the conductor is what refuses on the
+    # paths that have no route at all. `analysis_conductor.VIEW` is pinned to
+    # this literal by a test that reads this file's source, so they cannot
+    # drift apart.
+    try:
+        return analysis_dashboard(
+            session,
+            name=role,
+            user_id=principal.user_id,
+            organization_id=principal.organization_id,
+            # THE CALLER'S PERMISSIONS, because §11's counts are of ACTIONABLE
+            # items and RLS cannot answer that question. RLS says what may be
+            # SEEN; a permission says what may be DONE. Without this the
+            # approvals panel offered steps the engine would refuse and the
+            # reviews panel counted work the caller cannot perform. Raised by
+            # Codex -- and dropping it silently is exactly what the analysis
+            # conductor's first draft did.
+            permissions=principal.permissions,
+        )
+    except UnknownDashboardError as exc:
         # 404 names the four rather than echoing the input back: a message
         # that repeats an arbitrary path segment is a reflected-content
         # smell, and naming the valid set is more useful anyway.
+        #
+        # Translated HERE rather than left to escape, because the department's
+        # error type is not this endpoint's public contract.
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=(f"no such dashboard; the roles with a dashboard are {sorted(ROLE_DASHBOARDS)}"),
-        )
-
-    return builder(
-        session,
-        user_id=principal.user_id,
-        organization_id=principal.organization_id,
-        # 🔴 THE CALLER'S PERMISSIONS, because §11's counts are of ACTIONABLE
-        # items and RLS cannot answer that question. RLS says what may be
-        # SEEN; a permission says what may be DONE. Without this the approvals
-        # panel offered steps the engine would refuse and the reviews panel
-        # counted work the caller cannot perform. Raised by Codex.
-        held_permissions=principal.permissions,
-    )
+            detail=str(exc),
+        ) from exc
