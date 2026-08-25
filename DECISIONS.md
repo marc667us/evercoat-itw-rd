@@ -326,6 +326,35 @@ false, because a comment claiming INVOKER proves nothing.
 * One organization still cannot hold the same address twice among **active**
   members. Scoped to active so offboarding somebody does not lock their address
   out of the tenant.
+
+  🔴 **CORRECTED AFTER REVIEW — the first version of this ADR claimed that
+  and the code did not implement it, two ways.** Codex found both; both were
+  then measured rather than argued about.
+
+  **(a) A trigger that decides by SELECT is not a unique index.** Under READ
+  COMMITTED neither of two concurrent transactions sees the other's
+  uncommitted row, so both `EXISTS` came back empty and both committed —
+  measured on two connections, two active members of one organization ended
+  up holding the address. `pg_advisory_xact_lock` on (organization, address)
+  is the mechanism that makes the claim true; the second writer waits, then
+  sees the committed row and is refused. Same pattern as `audit.chain_row()`
+  in migration 013, for the same reason.
+
+  **(b) The address lives on `core.users`, and the trigger was on
+  `core.organization_members`.** `evercoat_app` holds UPDATE on `core.users`
+  and 044's policy admits a user sharing your organization, so
+  `UPDATE core.users SET email = <a colleague's address>` was accepted and no
+  membership row moved. Measured: accepted, two active holders. On that path
+  046 was briefly **weaker than the constraint it removed**, because
+  `users_email_key` covered updates too. A second trigger,
+  `users_address_stays_unique_in_organization`, closes it. **A rule enforced
+  on INSERT and not on UPDATE is a shape this repository has shipped before.**
+
+  What remains, stated rather than glossed: both guards are SECURITY INVOKER,
+  so they enforce within organizations the writer can see and **miss** a
+  collision in an organization they cannot. That is the deliberate trade —
+  missing inside your own tenant beats answering across one — and it is a
+  weaker guarantee than a unique index, not an equal one.
 * `POST /api/admin/members` gained a second, distinguishable 409: "another active
   member of this organization already uses that email address". Naming it is safe
   **here** and was not safe before, because `list_members` already shows this

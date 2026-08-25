@@ -73,6 +73,15 @@ def downgrade() -> None:
         )
     )
     op.execute(text("DROP FUNCTION IF EXISTS core.deny_duplicate_address_in_organization()"))
+    # BOTH halves. 046 enforces one-address-per-organization with two triggers,
+    # because the address lives on core.users and can be changed there without
+    # touching a membership row (Codex, measured). A downgrade that removed one
+    # would leave a rule enforced on INSERT and not on UPDATE, which is a shape
+    # this repository has already shipped once.
+    op.execute(
+        text("DROP TRIGGER IF EXISTS users_address_stays_unique_in_organization ON core.users")
+    )
+    op.execute(text("DROP FUNCTION IF EXISTS core.deny_address_collision_on_rename()"))
 
     duplicates = (
         op.get_bind()

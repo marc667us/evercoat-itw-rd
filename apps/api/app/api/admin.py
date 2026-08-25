@@ -279,13 +279,16 @@ def invite_member(
                 # -- see its header for why email is an attribute and
                 # `keycloak_sub` is the identity.
                 #
-                # So this branch no longer has an email case. `core.users` now
-                # carries exactly one unique constraint the caller can hit,
-                # `users_keycloak_sub_key`, which is the race handled above;
-                # reaching here means the INSERT failed integrity for a reason
-                # this route does not model. The detail stays generic -- it is
-                # not a channel, and the driver message names tables and
-                # columns.
+                # So this branch no longer has an email case. The expected
+                # uniqueness race is `users_keycloak_sub_key`, handled above.
+                #
+                # ⚠️ NOT "the only constraint the caller can hit", which is what
+                # this said until Codex pointed out that it ignores the primary
+                # key and anything a later migration adds. The branch is
+                # DEFENSIVE, not dead: any other integrity failure on
+                # `core.users` arrives here, and it must answer something rather
+                # than 500. The detail stays generic -- it is not a channel, and
+                # the driver message names tables and columns.
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="the user record could not be created",

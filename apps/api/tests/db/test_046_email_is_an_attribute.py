@@ -29,13 +29,14 @@ reasoning is written out at length in `test_032` and `test_044`.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Iterator
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 
 @pytest.fixture
@@ -200,27 +201,34 @@ def test_the_replacement_guard_is_not_a_security_definer(owner_session: Session)
               JOIN pg_namespace n ON n.oid = p.pronamespace
               JOIN pg_roles r     ON r.oid = p.proowner
              WHERE n.nspname = 'core'
-               AND p.proname = 'deny_duplicate_address_in_organization'
+               AND p.proname = ANY(:names)
             """
+        ),
+        {
+            "names": [
+                "deny_duplicate_address_in_organization",
+                "deny_address_collision_on_rename",
+            ]
+        },
+    ).all()
+    assert len(row) == 2, (
+        "046 installs TWO guards -- one on core.organization_members for the "
+        "INSERT path and one on core.users for the rename path -- and this "
+        f"database has {len(row)}. A rule enforced on INSERT and not on UPDATE "
+        "is bypassed by changing the address in place."
+    )
+    for prosecdef, owner in row:
+        assert prosecdef is False, (
+            "an address guard is SECURITY DEFINER. Both read core.users and "
+            "core.organization_members and refuse on what they find, so as "
+            "definers they answer questions about EVERY tenant -- rebuilding "
+            "I83's oracle inside a trigger."
         )
-    ).one_or_none()
-    assert row is not None, (
-        "core.deny_duplicate_address_in_organization does not exist. Migration "
-        "046 dropped users_email_key and this is what replaced it; without it "
-        "one organization's member list can hold the same address twice."
-    )
-    prosecdef, owner = row
-    assert prosecdef is False, (
-        "the per-organization address guard is SECURITY DEFINER. It reads "
-        "core.users and core.organization_members and refuses on what it "
-        "finds, so as a definer it answers questions about EVERY tenant -- "
-        "rebuilding I83's oracle inside a trigger."
-    )
-    assert owner == "evercoat_owner", (
-        f"the guard is owned by {owner!r}, not evercoat_owner. 046 states the "
-        "owner explicitly; an unstated owner is how a function ends up owned "
-        "by whoever ran the migration."
-    )
+        assert owner == "evercoat_owner", (
+            f"a guard is owned by {owner!r}, not evercoat_owner. 046 states the "
+            "owner explicitly; an unstated owner is how a function ends up "
+            "owned by whoever ran the migration."
+        )
 
 
 def test_the_oracle_is_closed(app_session: Session, two_orgs_one_address: dict) -> None:
@@ -231,27 +239,54 @@ def test_the_oracle_is_closed(app_session: Session, two_orgs_one_address: dict) 
     refused by `users_email_key` and the route turned it into 409, while an
     unused address returned 201 -- the difference IS the oracle.
 
-    Both must now be accepted, and accepted identically. Asserting only that
+    Both must now be accepted, and accepted IDENTICALLY. Asserting only that
     the known address works would pass against a database with no users at
-    all, so the control case is asserted beside it.
+    all, so the control case is measured beside it.
+
+    🔴 THE OUTCOMES ARE CAPTURED AND COMPARED, NOT LEFT TO AN EXCEPTION.
+    The first version ended each iteration with `assert True, label`, which
+    Codex correctly called an assertion incapable of failing. The test still
+    failed when the fix was reverted -- the insert raised -- but nothing in it
+    stated the property, and "it happens to raise before reaching a no-op
+    assert" is not a test of indistinguishability. Both outcomes are now
+    recorded and required to be the same.
     """
     fx = two_orgs_one_address
     _scope(app_session, fx["org_a"], fx["admin_a"])
     suffix = fx["suffix"]
 
+    outcomes: dict[str, str] = {}
     for label, email in (
         ("an address held in ANOTHER organization", fx["victim_email"]),
         ("an address nobody holds", f"nobody-{suffix}@competitor.example"),
     ):
-        app_session.execute(
-            text("INSERT INTO core.users (keycloak_sub, email, display_name) VALUES (:s,:e,:n)"),
-            {"s": f"i83-probe-{uuid.uuid4().hex[:8]}-{suffix}", "e": email, "n": "throwaway"},
-        )
-        # Reached without an IntegrityError: the two cases are indistinguishable
-        # to the caller, which is the whole point. A failure here surfaces as
-        # the exception itself, naming the constraint that answered.
-        assert True, label
+        try:
+            app_session.execute(
+                text(
+                    "INSERT INTO core.users (keycloak_sub, email, display_name) VALUES (:s,:e,:n)"
+                ),
+                {
+                    "s": f"i83-probe-{uuid.uuid4().hex[:8]}-{suffix}",
+                    "e": email,
+                    "n": "throwaway",
+                },
+            )
+            outcomes[label] = "accepted"
+        except IntegrityError as exc:
+            app_session.rollback()
+            _scope(app_session, fx["org_a"], fx["admin_a"])
+            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            outcomes[label] = f"refused by {constraint}"
 
+    assert len(set(outcomes.values())) == 1, (
+        "the two cases are DISTINGUISHABLE, which is the oracle: an "
+        "admin.users holder submits a throwaway subject with a guessed "
+        f"address and reads existence from the difference. {outcomes}"
+    )
+    assert set(outcomes.values()) == {"accepted"}, (
+        "both cases were refused. The oracle is closed, but creating an "
+        f"identity no longer works at all: {outcomes}"
+    )
     app_session.rollback()
 
 
@@ -394,3 +429,252 @@ def test_an_inactive_member_does_not_block_the_address(
         {"o": fx["org_a"], "u": joiner},
     )
     app_session.rollback()
+
+
+def test_an_address_cannot_be_taken_by_renaming(
+    app_session: Session, two_orgs_one_address: dict
+) -> None:
+    """🔴 THE MEMBERSHIP TRIGGER IS BYPASSED BY CHANGING THE ADDRESS IN PLACE.
+
+    Raised by Codex and measured before the second trigger existed:
+    `evercoat_app` holds UPDATE on `core.users` and 044's UPDATE policy admits
+    a user who shares an organization with the writer, so
+
+        UPDATE core.users SET email = <a colleague's address> WHERE id = ...
+
+    was ACCEPTED and left two active members of one organization holding it.
+    No membership row moved, so the trigger on `core.organization_members`
+    never fired.
+
+    That path also made the schema WEAKER than before 046, because
+    `users_email_key` covered updates as well as inserts. A rule enforced on
+    INSERT and not on UPDATE is a shape this repository has shipped before.
+    """
+    fx = two_orgs_one_address
+    _scope(app_session, fx["org_a"], fx["admin_a"])
+    suffix = fx["suffix"]
+    taken = f"taken-{suffix}@example.test"
+
+    holder = _new_identity(app_session, f"i83-holder-{suffix}", taken, "Holder")
+    renamer = _new_identity(
+        app_session, f"i83-renamer-{suffix}", f"renamer-{suffix}@example.test", "Renamer"
+    )
+    for uid in (holder, renamer):
+        app_session.execute(
+            text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
+            {"o": fx["org_a"], "u": uid},
+        )
+
+    with pytest.raises(IntegrityError) as caught:
+        app_session.execute(
+            text("UPDATE core.users SET email = :e WHERE id = :u"),
+            {"e": taken, "u": renamer},
+        )
+    diag = getattr(caught.value.orig, "diag", None)
+    assert getattr(diag, "constraint_name", None) == (
+        "users_address_stays_unique_in_organization"
+    ), (
+        "renaming a member onto a colleague's address was refused by something "
+        f"other than the 046 rename guard: {getattr(diag, 'constraint_name', None)!r}"
+    )
+    app_session.rollback()
+
+
+def test_the_guard_holds_under_concurrency(
+    app_engine, owner_session: Session, two_orgs_one_address: dict
+) -> None:
+    """🔴 A TRIGGER THAT DECIDES BY SELECT IS NOT A UNIQUE INDEX.
+
+    Measured before the advisory lock existed, on two real connections:
+
+        session 1 inserted (uncommitted)
+        session 2 inserted (uncommitted) -- the trigger did NOT see session 1
+        session 1 committed
+        session 2 committed
+        ACTIVE members of one organization holding the address: 2
+
+    Under READ COMMITTED neither transaction sees the other's uncommitted
+    row, so both `EXISTS` come back empty and both commit. The comments and
+    ADR-028 said the rule was "enforced"; that was true serially and false
+    under concurrency — a comment asserting a rule the code did not
+    implement.
+
+    `pg_advisory_xact_lock` on (organization, address) is the mechanism that
+    makes the claim true, the same one `audit.chain_row()` uses. This test
+    asserts BOTH halves: that the second writer is made to WAIT, and that it
+    is then REFUSED. Without the wait there is nothing to refuse.
+
+    Two fresh connections, because the two sessions must be in flight at the
+    same time — a single session cannot race itself.
+    """
+    fx = two_orgs_one_address
+    suffix = fx["suffix"]
+    shared = f"race-{suffix}@example.test"
+
+    first = uuid.uuid4()
+    second = uuid.uuid4()
+    for uid, sub in ((first, "r1"), (second, "r2")):
+        owner_session.execute(
+            text(
+                "INSERT INTO core.users (id, keycloak_sub, email, display_name)"
+                " VALUES (:i,:s,:e,:n)"
+            ),
+            {"i": uid, "s": f"i83-{sub}-{suffix}", "e": shared, "n": f"Racer {sub}"},
+        )
+    owner_session.commit()
+
+    maker = sessionmaker(bind=app_engine)
+    s1, s2 = maker(), maker()
+    for s in (s1, s2):
+        s.execute(text("SELECT set_config('app.current_org', :v, true)"), {"v": str(fx["org_a"])})
+        s.execute(
+            text("SELECT set_config('app.current_user_id', :v, true)"),
+            {"v": str(fx["admin_a"])},
+        )
+
+    outcome: dict[str, str] = {}
+
+    def second_writer() -> None:
+        try:
+            s2.execute(
+                text(
+                    "INSERT INTO core.organization_members (organization_id, user_id)"
+                    " VALUES (:o,:u)"
+                ),
+                {"o": fx["org_a"], "u": second},
+            )
+            s2.commit()
+            outcome["result"] = "committed"
+        except IntegrityError:
+            outcome["result"] = "refused"
+        except Exception as exc:  # noqa: BLE001
+            outcome["result"] = f"error: {exc}"
+
+    try:
+        s1.execute(
+            text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
+            {"o": fx["org_a"], "u": first},
+        )
+
+        worker = threading.Thread(target=second_writer, daemon=True)
+        worker.start()
+        worker.join(timeout=3)
+        assert worker.is_alive(), (
+            "the second writer finished while the first still held its transaction "
+            f"open ({outcome.get('result')}). Nothing serialised the two, so the "
+            "guard is a best-effort check and not a constraint."
+        )
+
+        s1.commit()
+        worker.join(timeout=20)
+        assert outcome.get("result") == "refused", (
+            f"the second writer was not refused after the first committed: {outcome.get('result')}"
+        )
+
+        survivors = owner_session.execute(
+            text(
+                """
+                SELECT count(*) FROM core.organization_members m
+                JOIN core.users u ON u.id = m.user_id
+                WHERE m.organization_id = :o AND m.status = 'active' AND u.email = :e
+                """
+            ),
+            {"o": fx["org_a"], "e": shared},
+        ).scalar_one()
+        assert survivors == 1, (
+            f"{survivors} active members of one organization hold {shared}. Both "
+            "concurrent writers got through, so the rule is not enforced."
+        )
+    finally:
+        for s in (s1, s2):
+            try:
+                s.rollback()
+                s.close()
+            except Exception:  # noqa: BLE001, S110
+                # Best effort. These two connections exist only for this test
+                # and the owner-side cleanup below is what must not be skipped.
+                pass
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE user_id = ANY(:u)"),
+            {"u": [first, second]},
+        )
+        owner_session.execute(
+            text("DELETE FROM core.users WHERE id = ANY(:u)"), {"u": [first, second]}
+        )
+        owner_session.commit()
+
+
+def test_the_rename_guard_does_not_answer_for_another_tenant(
+    app_session: Session, owner_session: Session, two_orgs_one_address: dict
+) -> None:
+    """🔴 A GUARD THAT REFUSES ON A ROW YOU CANNOT SEE IS AN ORACLE AGAIN.
+
+    The rename guard added after review refuses when the new address already
+    belongs to an active member of an organization the writer shares with the
+    user being renamed. If it were a SECURITY DEFINER — or if its join
+    reached past RLS — it would refuse on an address held only in a tenant the
+    caller cannot see, and that refusal would tell them the address exists
+    somewhere on the platform. That is exactly the channel migration 046
+    removed, rebuilt inside its own replacement.
+
+    So the shape that makes the question live is asserted directly: a user who
+    is an active member of BOTH organizations, renamed onto an address held
+    only in the one the caller is NOT scoped to. It must be ACCEPTED.
+
+    ⚠️ Accepting it is a MISS, not a win — organization B now has two active
+    members at one address. That is the trade ADR-028 states plainly: missing
+    inside a tenant you can see beats answering about one you cannot.
+
+    Falsified by making `core.deny_address_collision_on_rename` SECURITY
+    DEFINER: the rename is then refused and this test fails.
+    """
+    fx = two_orgs_one_address
+    suffix = fx["suffix"]
+    only_in_b = f"only-in-b-{suffix}@example.test"
+
+    both = uuid.uuid4()
+    b_member = uuid.uuid4()
+    owner_session.execute(
+        text("INSERT INTO core.users (id, keycloak_sub, email, display_name) VALUES (:i,:s,:e,:n)"),
+        {"i": both, "s": f"i83-both-{suffix}", "e": f"both-{suffix}@example.test", "n": "Both"},
+    )
+    owner_session.execute(
+        text("INSERT INTO core.users (id, keycloak_sub, email, display_name) VALUES (:i,:s,:e,:n)"),
+        {"i": b_member, "s": f"i83-bonly-{suffix}", "e": only_in_b, "n": "B only"},
+    )
+    for uid, org in ((both, fx["org_a"]), (both, fx["org_b"]), (b_member, fx["org_b"])):
+        owner_session.execute(
+            text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
+            {"o": org, "u": uid},
+        )
+    owner_session.commit()
+
+    try:
+        _scope(app_session, fx["org_a"], fx["admin_a"])
+        app_session.execute(
+            text("UPDATE core.users SET email = :e WHERE id = :u"),
+            {"e": only_in_b, "u": both},
+        )
+        app_session.rollback()
+    except IntegrityError as exc:
+        app_session.rollback()
+        constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+        pytest.fail(
+            "the rename was REFUSED because the address is held in an "
+            "organization the caller cannot see "
+            f"(constraint {constraint!r}). That refusal discloses the address "
+            "exists somewhere on the platform, which re-opens I83 inside the "
+            "guard that replaced it. The guard must be SECURITY INVOKER and "
+            "must not reach past RLS."
+        )
+    finally:
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE user_id = ANY(:u)"),
+            {"u": [both, b_member]},
+        )
+        owner_session.execute(
+            text("DELETE FROM core.users WHERE id = ANY(:u)"), {"u": [both, b_member]}
+        )
+        owner_session.commit()

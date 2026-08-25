@@ -151,6 +151,39 @@ BEGIN
         RETURN NEW;
     END IF;
 
+    -- 🔴 WITHOUT THIS LOCK THE CHECK IS NOT A CONSTRAINT, AND THAT WAS
+    --    MEASURED RATHER THAN REASONED ABOUT.
+    --
+    -- A trigger that decides by SELECT is not a unique index. Under READ
+    -- COMMITTED neither of two concurrent transactions sees the other's
+    -- uncommitted row, so both EXISTS come back empty, both pass, and both
+    -- commit. Measured on two real connections before this line existed:
+    --
+    --     session 1 inserted (uncommitted)
+    --     session 2 inserted (uncommitted) -- the trigger did NOT see session 1
+    --     session 1 committed
+    --     session 2 committed
+    --     ACTIVE members of one organization holding the address: 2
+    --
+    -- The comment above this function claimed it "refuses" a duplicate. That
+    -- was true serially and false under concurrency -- a comment asserting a
+    -- rule the code did not implement, which is this repository's most
+    -- repeated defect.
+    --
+    -- The lock is the MECHANISM that makes the claim true. The second writer
+    -- blocks here until the first transaction ends; its SELECT below then
+    -- takes a fresh READ COMMITTED snapshot which includes the committed row,
+    -- and refuses. Same shape as `audit.chain_row()` in 013, and for the same
+    -- reason: concurrent writers must not fork an invariant.
+    --
+    -- Keyed on (organization, address) so it serialises only writers who
+    -- could actually collide. A hash collision costs an unnecessary wait and
+    -- never a wrong answer, because the EXISTS still compares real values.
+    PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.organization_id::TEXT),
+        hashtext(v_email::TEXT)
+    );
+
     IF EXISTS (
         SELECT 1
           FROM core.organization_members om
@@ -194,7 +227,90 @@ CREATE CONSTRAINT TRIGGER organization_members_one_address_per_organization
 COMMENT ON TRIGGER organization_members_one_address_per_organization
     ON core.organization_members IS
     'One active member per address, per organization. The tenant-scoped '
-    'replacement for users_email_key (I83, migration 046).';
+    'replacement for users_email_key (I83, migration 046). Half of the rule '
+    'only -- the other half is users_address_stays_unique_in_organization, '
+    'because the ADDRESS lives on core.users and can be changed there.';
+
+-- ---------------------------------------------------------------------
+-- 3. 🔴 THE OTHER HALF: THE ADDRESS CAN BE CHANGED WITHOUT TOUCHING
+--    THE TABLE THE TRIGGER ABOVE IS ON.
+--
+-- Raised by Codex and MEASURED. `evercoat_app` holds UPDATE on
+-- `core.users`, and 044's UPDATE policy admits a user who shares an
+-- organization with the writer. So:
+--
+--     UPDATE core.users SET email = <another active member's address>
+--      WHERE id = <a colleague's id>;
+--       -->  ACCEPTED, rows affected = 1
+--       -->  ACTIVE members of one organization holding it: 2
+--
+-- The membership trigger never fires, because no membership row moved.
+-- Without this second trigger the rule above is decorative on the exact
+-- path an administrator is most likely to take, and -- worse -- the
+-- schema would be WEAKER than before 046, since `users_email_key`
+-- covered updates as well as inserts. A guard that covers INSERT and
+-- nothing after it is a shape this repository has already shipped once.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION core.deny_address_collision_on_rename()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+-- SECURITY INVOKER for the same reason as the function above, and with a
+-- sharper consequence here: the updated user may be an active member of
+-- organizations the writer cannot see. As an INVOKER the RLS predicate on
+-- `core.organization_members` restricts both sides of the join below to
+-- the writer's own organization, so this can neither read nor answer for
+-- another tenant. It therefore MISSES a collision in an organization the
+-- writer is not in -- which is the trade this migration makes everywhere:
+-- missing inside your own tenant beats answering across one.
+SECURITY INVOKER
+AS $fn$
+BEGIN
+    PERFORM pg_advisory_xact_lock(
+        hashtext(COALESCE(core.current_org_id()::TEXT, '<none>')),
+        hashtext(NEW.email::TEXT)
+    );
+
+    IF EXISTS (
+        SELECT 1
+          FROM core.organization_members mine
+          JOIN core.organization_members other
+            ON other.organization_id = mine.organization_id
+           AND other.user_id <> NEW.id
+           AND other.status = 'active'
+          JOIN core.users u ON u.id = other.user_id
+         WHERE mine.user_id = NEW.id
+           AND mine.status = 'active'
+           AND u.email = NEW.email
+    ) THEN
+        RAISE EXCEPTION
+            'address already belongs to an active member of this organization'
+            USING ERRCODE = 'unique_violation',
+                  CONSTRAINT = 'users_address_stays_unique_in_organization';
+    END IF;
+
+    RETURN NEW;
+END $fn$;
+
+ALTER FUNCTION core.deny_address_collision_on_rename() OWNER TO evercoat_owner;
+
+COMMENT ON FUNCTION core.deny_address_collision_on_rename() IS
+    'Refuses renaming a user onto an address already held by another '
+    'ACTIVE member of an organization they both belong to. The UPDATE half '
+    'of the rule whose INSERT half is enforced on '
+    'core.organization_members. SECURITY INVOKER on purpose (I83).';
+
+DROP TRIGGER IF EXISTS users_address_stays_unique_in_organization ON core.users;
+CREATE CONSTRAINT TRIGGER users_address_stays_unique_in_organization
+    AFTER UPDATE OF email ON core.users
+    DEFERRABLE INITIALLY IMMEDIATE
+    FOR EACH ROW
+    WHEN (NEW.email IS DISTINCT FROM OLD.email)
+    EXECUTE FUNCTION core.deny_address_collision_on_rename();
+
+COMMENT ON TRIGGER users_address_stays_unique_in_organization ON core.users IS
+    'The UPDATE half of one-address-per-organization (I83, migration 046). '
+    'Without it the membership trigger is bypassed by changing the address '
+    'in place, which is the path an administrator actually takes.';
 
 COMMIT;
 
@@ -287,6 +403,31 @@ BEGIN
             'trigger and the cross-tenant oracle of I83 is still open.', v_addr;
     END;
     RAISE NOTICE '046: the same address in another organization is accepted';
+
+    -- (5) AND THE RENAME PATH IS COVERED TOO. Without the second trigger the
+    --     rule above is bypassed by changing the address in place -- measured
+    --     as `evercoat_app`: UPDATE accepted, 2 active members holding it.
+    INSERT INTO core.users (keycloak_sub, email, display_name)
+    VALUES ('p046-3-' || v_sfx, 'renamer-' || v_addr, '046 renamer')
+    RETURNING id INTO v_u3;
+    INSERT INTO core.organization_members (organization_id, user_id)
+    VALUES (v_org_a, v_u3);
+
+    v_caught := FALSE;
+    BEGIN
+        UPDATE core.users SET email = v_addr WHERE id = v_u3;
+    EXCEPTION WHEN unique_violation THEN
+        v_caught := TRUE;
+    END;
+
+    IF NOT v_caught THEN
+        RAISE EXCEPTION
+            '046 FAILED: renaming a member onto %, already held by another '
+            'active member of the same organization, was ACCEPTED. The '
+            'membership trigger is bypassed by an in-place address change, '
+            'which is the path an administrator actually takes.', v_addr;
+    END IF;
+    RAISE NOTICE '046: renaming onto a colleague''s address is refused';
 
     RAISE EXCEPTION 'probe complete, rolling back' USING ERRCODE = 'raise_exception';
 EXCEPTION
