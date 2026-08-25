@@ -39,11 +39,44 @@ set -uo pipefail
 # NOTE: deliberately NOT `set -e`. A failing test must produce a REPORT,
 # not an aborted script. Every command below checks its own status.
 
+# ---------------------------------------------------------------------
+# FLAGS FIRST, THEN POSITIONALS.
+#
+# `--allow-partial` is the ONLY way to make this script report success
+# while a capability it needs is absent. It exists because absence is
+# sometimes legitimate -- a genuinely deployed site has no local
+# database, so `tests/db` cannot run against it and never could -- and
+# the alternative designs are both worse:
+#
+#   * defaulting the missing variables aims the suite at whatever
+#     database the author had in mind, which is the wrong answer in the
+#     most convincing direction;
+#   * letting the absence pass silently is the defect this whole
+#     preflight exists to remove (I100).
+#
+# So the operator must SAY that the run is partial. The report then
+# names every absent capability instead of printing a clean green.
+ALLOW_PARTIAL="no"
+POSITIONAL=()
+while (( $# )); do
+    case "$1" in
+        --allow-partial) ALLOW_PARTIAL="yes"; shift ;;
+        --) shift; POSITIONAL+=("$@"); break ;;
+        -*) echo "unknown flag '$1' -- expected --allow-partial" >&2
+            echo "REPORT: passed=0 failed=0 skipped=0 (bad flag; suite did not run)"
+            exit 2 ;;
+        *) POSITIONAL+=("$1"); shift ;;
+    esac
+done
+set -- ${POSITIONAL[@]+"${POSITIONAL[@]}"}
+
 BASE_URL="${1:-}"
 if [[ -z "${BASE_URL}" ]]; then
-    echo "usage: $0 <deployed-base-url> [profile]" >&2
+    echo "usage: $0 [--allow-partial] <deployed-base-url> [profile]" >&2
     echo "  e.g. $0 https://evercoat.example.com web" >&2
-    echo "  profile: web | api | full   (default: full)" >&2
+    echo "  profile: web | api | full   (default: auto)" >&2
+    echo "  --allow-partial: proceed when a capability is absent," >&2
+    echo "                   naming every gap in the report." >&2
     # The three-number report prints even here. "Three numbers, always"
     # has to mean ALWAYS, or a caller scraping this output for counts
     # gets nothing back and has to infer the outcome from an exit code --
@@ -152,6 +185,221 @@ echo " LIVE SUITE -- ${BASE_URL}"
 echo "=================================================================="
 
 # ---------------------------------------------------------------------
+# 0. PREFLIGHT -- WHAT THIS RUN CAN ACTUALLY COVER, DECIDED BEFORE IT RUNS.
+#
+# 🔴 I100: THIS SUITE REPORTED GREEN WHILE MOST OF IT NEVER RAN, THREE
+#    INDEPENDENT WAYS, AND NONE OF THEM WAS A CODE DEFECT.
+#
+# Measured 2026-08-25. Every green number this script had ever printed
+# depended on environment variables supplied BY HAND at the prompt. The
+# script exported none of them and checked none of them, so running it
+# exactly as `RESUME_HERE.md` and `CLAUDE.md` §13 document it gave:
+#
+#   290 passed / 0 failed / 392 skipped
+#
+# -- a confident, zero-failure report over 290 of 682 tests, with the
+# sign-in flow unverified. The three gaps:
+#
+#   (a) `tests/db/conftest.py` reads `TEST_DB_PORT` and DEFAULTS IT TO
+#       5432. This platform's database is on 55432. The fixture times
+#       out, calls `pytest.skip`, and 341 tests vanish without a single
+#       failure.
+#   (b) `tests/e2e/shell/sign-in.spec.ts` self-skips without
+#       `TEST_KEYCLOAK_PASSWORD` -- so the test written on 08-24
+#       SPECIFICALLY to stop sign-in breaking silently does not run in
+#       the live suite that exists to catch it. Its own header says so.
+#   (c) `--project=api` does not exist in LIVE mode (`playwright.config.ts`
+#       drops it), so a total that assumes both Playwright projects ran
+#       is wrong. The projects that ran are named in the e2e step below,
+#       read from Playwright's own report rather than assumed.
+#
+# THE FIX IS NOT TO REMEMBER TO EXPORT THEM. It is to make the script
+# DEMAND what it needs and FAIL LOUDLY, which is what this section does.
+#
+# 🔴 AND THE FIX IS NOT TO DEFAULT THEM EITHER. Against a genuinely
+# deployed site there is no local database and those 341 tests
+# legitimately cannot run; hard-coding a port would aim the suite at
+# whatever database the author had in mind and call the result live
+# coverage. So absence is allowed -- but only when the operator SAYS so
+# with `--allow-partial`, and it is named in the report either way.
+#
+# THE THREE STATES AND WHAT EACH MEANS:
+#
+#   CONFIGURED  every variable present. The tests will run, and if they
+#               skip anyway that is a FAILURE, not a gap -- see the
+#               unexpected-skip guard in `run_pytest`.
+#   ABSENT      no variable present. A legitimate absence is possible,
+#               so this fails unless `--allow-partial`.
+#   PARTIAL     some present, some not. ALWAYS a hard failure: nobody
+#               half-configures a capability on purpose, and a partially
+#               configured one skips exactly like an absent one while
+#               looking, at the prompt, like it was set up.
+# ---------------------------------------------------------------------
+PREFLIGHT_FAILURES=0
+PREFLIGHT_GAPS=()
+
+preflight_fail() {
+    PREFLIGHT_FAILURES=$((PREFLIGHT_FAILURES + 1))
+    echo
+    echo "  PREFLIGHT FAILURE: $*"
+}
+
+# Does anything answer on host:port? Used to tell a legitimate absence
+# (there is no database here) from a misconfiguration (there is one, and
+# the suite was not pointed at it) -- the exact discrimination that would
+# have caught (a).
+tcp_answers() {
+    local host="$1" port="$2"
+    [[ -z "${host}" || -z "${port}" ]] && return 1
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port}" >/dev/null 2>&1
+    else
+        ( exec 3<>"/dev/tcp/${host}/${port}" ) >/dev/null 2>&1
+    fi
+}
+
+# Sets PF_STATUS and PF_UNSET, and prints one row of the coverage table.
+preflight_capability() {
+    local name="$1" governs="$2"; shift 2
+    local v
+    local -a have=() missing=()
+    for v in "$@"; do
+        if [[ -n "${!v:-}" ]]; then have+=("${v}"); else missing+=("${v}"); fi
+    done
+    if   (( ${#missing[@]} == 0 )); then PF_STATUS="CONFIGURED"
+    elif (( ${#have[@]}    == 0 )); then PF_STATUS="ABSENT"
+    else                                 PF_STATUS="PARTIAL"
+    fi
+    PF_UNSET="${missing[*]-}"
+    printf '  %-19s %-11s %s\n' "${name}" "${PF_STATUS}" "${governs}"
+    if [[ "${PF_STATUS}" != "CONFIGURED" ]]; then
+        printf '  %-19s %-11s unset: %s\n' "" "" "${PF_UNSET}"
+    fi
+}
+
+# Applies the three-state rule above to one capability.
+preflight_judge() {
+    local name="$1" status="$2" unset_vars="$3" cost="$4"
+    case "${status}" in
+        CONFIGURED) return 0 ;;
+        PARTIAL)
+            preflight_fail "${name} is HALF configured -- unset: ${unset_vars}
+    A partially configured capability skips exactly like an absent one,
+    and looks configured at the prompt. That is a misconfiguration, not a
+    legitimate absence, so --allow-partial does NOT cover it.
+    Cost if it runs anyway: ${cost}"
+            ;;
+        ABSENT)
+            if [[ "${ALLOW_PARTIAL}" == "yes" ]]; then
+                PREFLIGHT_GAPS+=("${name} -- ${cost} (unset: ${unset_vars})")
+            else
+                preflight_fail "${name} is not configured -- unset: ${unset_vars}
+    Cost: ${cost}
+    Export those variables, or re-run with --allow-partial to declare the
+    run partial. A skip is not a pass, and this script will not print a
+    clean three-number report over coverage it did not have."
+            fi
+            ;;
+    esac
+}
+
+echo
+echo "--- preflight: what this run can actually cover ---"
+printf '  %-19s %-11s %s\n' "capability" "status" "governs"
+printf '  %-19s %-11s %s\n' "-------------------" "-----------" "-------"
+
+if [[ "${RUN_API_SUITE}" == "yes" ]]; then
+    preflight_capability "api-import" "the whole api-live suite -- 682 tests" \
+        DATABASE_URL KEYCLOAK_ISSUER
+    PF_API_IMPORT="${PF_STATUS}"; PF_API_IMPORT_UNSET="${PF_UNSET}"
+
+    preflight_capability "db-suite" "tests/db -- 341 tests" \
+        TEST_DB_HOST TEST_DB_PORT POSTGRES_DB \
+        TEST_OWNER_USER TEST_OWNER_PASSWORD APP_DB_USER APP_DB_PASSWORD
+    PF_DB="${PF_STATUS}"; PF_DB_UNSET="${PF_UNSET}"
+
+    preflight_capability "auth-integration" "tests/integration -- 11 tests" \
+        TEST_KEYCLOAK_URL TEST_API_URL TEST_KEYCLOAK_PASSWORD TEST_ORGANIZATION_ID
+    PF_AUTH="${PF_STATUS}"; PF_AUTH_UNSET="${PF_UNSET}"
+else
+    echo "  (api-live not selected by profile ${PROFILE}; its capabilities are not required)"
+    PF_API_IMPORT="n/a"; PF_DB="n/a"; PF_AUTH="n/a"
+fi
+
+preflight_capability "sign-in-round-trip" \
+    "tests/e2e/shell/sign-in.spec.ts -- the flow every human uses" \
+    TEST_KEYCLOAK_PASSWORD
+PF_SIGNIN="${PF_STATUS}"; PF_SIGNIN_UNSET="${PF_UNSET}"
+
+if [[ "${RUN_API_SUITE}" == "yes" ]]; then
+    preflight_judge "api-import" "${PF_API_IMPORT}" "${PF_API_IMPORT_UNSET}" \
+        "pytest dies at COLLECTION -- app/core/config.py makes both mandatory at import time -- and the collection errors read as deployment faults"
+    preflight_judge "db-suite" "${PF_DB}" "${PF_DB_UNSET}" \
+        "341 tests skip silently; the entire RLS and tenant-isolation boundary goes unmeasured"
+    preflight_judge "auth-integration" "${PF_AUTH}" "${PF_AUTH_UNSET}" \
+        "11 tests skip; no real token is ever minted against the deployed realm"
+fi
+preflight_judge "sign-in-round-trip" "${PF_SIGNIN}" "${PF_SIGNIN_UNSET}" \
+    "the sign-in flow is NOT verified -- the gap that let 713 green sit beside a 404 sign-in on 08-24 (I96)"
+
+# 🔴 A DATABASE IS HERE AND THE SUITE WAS NOT POINTED AT IT.
+#
+# This is the discriminator that separates "no database, so those tests
+# cannot run" from "a database is running on this host and the suite
+# skipped 341 tests anyway" -- which is what happened on 08-25 and what
+# --allow-partial must NOT be able to wave through.
+if [[ "${RUN_API_SUITE}" == "yes" && "${PF_DB}" != "CONFIGURED" ]]; then
+    PF_DB_HOST="${TEST_DB_HOST:-localhost}"
+    for candidate_port in "${TEST_DB_PORT:-5432}" 55432 5432; do
+        if tcp_answers "${PF_DB_HOST}" "${candidate_port}"; then
+            preflight_fail "a database ANSWERS on ${PF_DB_HOST}:${candidate_port}, and the db-suite variables are not set.
+    That is a misconfiguration, not a legitimate absence: the 341 tests in
+    tests/db could run here and will skip instead. --allow-partial does not
+    cover it. Export TEST_DB_HOST / TEST_DB_PORT / POSTGRES_DB /
+    TEST_OWNER_USER / TEST_OWNER_PASSWORD / APP_DB_USER / APP_DB_PASSWORD."
+            break
+        fi
+    done
+fi
+
+# 🔴 AND THE MIRROR IMAGE: CONFIGURED, BUT POINTED AT A DEAD PORT.
+#
+# Exactly the 290/0/392 shape. TEST_DB_PORT defaulting to 5432 on a host
+# whose database is on 55432 produced a connection timeout inside a
+# session fixture, which pytest reports as a SKIP. Catching it here costs
+# three seconds; catching it in the report costs a session.
+if [[ "${RUN_API_SUITE}" == "yes" && "${PF_DB}" == "CONFIGURED" ]]; then
+    if ! tcp_answers "${TEST_DB_HOST}" "${TEST_DB_PORT}"; then
+        preflight_fail "db-suite is CONFIGURED but NOTHING ANSWERS on ${TEST_DB_HOST}:${TEST_DB_PORT}.
+    The session fixture will time out and pytest will report 341 SKIPS,
+    which is indistinguishable in the report from tests that were never
+    meant to run. Fix the host/port before running the suite."
+    fi
+fi
+
+if (( PREFLIGHT_FAILURES > 0 )); then
+    echo
+    echo "=================================================================="
+    echo " PREFLIGHT FAILED -- ${PREFLIGHT_FAILURES} problem(s). THE SUITE DID NOT RUN."
+    echo "=================================================================="
+    echo " This script will not report three numbers over coverage it does"
+    echo " not have. Fix the above, or pass --allow-partial to declare a"
+    echo " deliberately partial run -- which does NOT cover a PARTIAL"
+    echo " capability, nor a database that is present but unused."
+    echo "REPORT: passed=0 failed=0 skipped=0 (preflight failed; suite did not run)"
+    exit 2
+fi
+
+if (( ${#PREFLIGHT_GAPS[@]} > 0 )); then
+    echo
+    echo "  --allow-partial: proceeding with ${#PREFLIGHT_GAPS[@]} declared gap(s)."
+    echo "  These are NOT covered by any number in the report below:"
+    for gap in "${PREFLIGHT_GAPS[@]}"; do
+        echo "    - ${gap}"
+    done
+fi
+
+# ---------------------------------------------------------------------
 # 1. Wait for the site to actually be live.
 #
 # Free-tier cold starts run to ~2 minutes; a 90-second timeout is not
@@ -219,6 +467,22 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
+# 🔴 ONE SKIP CAN HIDE HUNDREDS OF TESTS, AND THE REPORT COULD NOT SAY SO.
+#
+# A capability that is absent -- no deployed API, no Playwright, no
+# DATABASE_URL -- is counted as ONE skip, because there is no run to read a
+# test count from. That is unavoidable, and it is also how `1 skipped` stood
+# in for 682 absent tests. So every such gap is NAMED here as well as
+# counted, and the report says how many of its skips are capability-level.
+# The three numbers keep their contract; they stop being the whole story on
+# their own.
+GAP_CAPABILITIES=()
+
+record_gap() {
+    GAP_CAPABILITIES+=("$1")
+    SKIPPED=$((SKIPPED + 1))
+}
+
 run_pytest() {
     local label="$1"; shift
     local logfile="${ARTIFACTS}/${label}.log"
@@ -251,7 +515,10 @@ run_pytest() {
         echo "  at import time; without them pytest fails at COLLECTION and the"
         echo "  errors read as deployment faults. Export both and re-run."
         echo "  This is a COVERAGE GAP, counted as skipped. A skip is NOT a pass."
-        SKIPPED=$((SKIPPED + 1))
+        echo "  🔴 ONE skip stands here for the WHOLE ${label} suite -- 682 tests"
+        echo "     for api-live. The preflight above exists to make this branch"
+        echo "     unreachable; if you are reading it, the preflight was bypassed."
+        record_gap "${label} -- not run at all: DATABASE_URL and/or KEYCLOAK_ISSUER unset"
         return 0
     fi
 
@@ -320,6 +587,45 @@ run_pytest() {
         f=1
     fi
 
+    # 🔴 A COUNT IS NOT AN EXPLANATION. NAME WHAT SKIPPED.
+    #
+    # `290 passed / 0 failed / 392 skipped` was an honest set of numbers and
+    # told the reader nothing about WHICH 392 or WHY, so it read as "some
+    # tests need something I have not got" rather than "the entire RLS and
+    # tenant-isolation boundary went unmeasured because a port was wrong".
+    # pytest already computes this under `-rs`; it was being written to a log
+    # nobody opened.
+    if grep -qE '^SKIPPED' "${logfile}"; then
+        echo "  --- what skipped, and why (pytest -rs) ---"
+        grep -E '^SKIPPED' "${logfile}" | sed 's/^/    /'
+    fi
+
+    # 🔴 A CAPABILITY THE PREFLIGHT CALLED CONFIGURED, WHOSE TESTS SKIPPED
+    #    ANYWAY, IS A MISCONFIGURATION WEARING A COVERAGE GAP'S CLOTHES.
+    #
+    # The preflight can only prove the variables are SET and that something
+    # answers on the port. Whether the credentials are right, the database is
+    # the right one, or the realm has the user -- only the run itself knows,
+    # and it expresses all three as a skip. So the preflight's promise is
+    # closed HERE: declared configured, then skipped, is a FAILURE.
+    local unexpected=0
+    if [[ "${PF_DB:-n/a}" == "CONFIGURED" ]] &&
+       grep -qiE 'no database available|no application-role connection' "${logfile}"; then
+        echo "  🔴 db-suite was CONFIGURED and its tests SKIPPED ANYWAY."
+        echo "     The variables are set and something answers on the port, so"
+        echo "     this is credentials, database name, or roles -- not absence."
+        echo "     COUNTED AS FAILED. A configured capability that skips is a"
+        echo "     misconfiguration, and it is exactly what I100 was."
+        unexpected=$((unexpected + 1))
+    fi
+    if [[ "${PF_AUTH:-n/a}" == "CONFIGURED" ]] &&
+       grep -qiE 'needs a running Keycloak and API' "${logfile}"; then
+        echo "  🔴 auth-integration was CONFIGURED and its tests SKIPPED ANYWAY."
+        echo "     COUNTED AS FAILED, for the same reason."
+        unexpected=$((unexpected + 1))
+    fi
+    f=$((f + unexpected))
+
     PASSED=$((PASSED + p))
     FAILED=$((FAILED + f))
     SKIPPED=$((SKIPPED + s))
@@ -342,7 +648,7 @@ else
     echo "  render.yaml deploys the web application only (ADR-009), so there"
     echo "  is nothing at ${BASE_URL} for these tests to talk to. This is a"
     echo "  COVERAGE GAP, counted as skipped. A skip is NOT a pass."
-    SKIPPED=$((SKIPPED + 1))
+    record_gap "api-live -- 682 tests not run: profile '${PROFILE}' declares no deployed API"
 fi
 
 # Playwright, if it is installed. Absence is reported as a GAP rather
@@ -535,6 +841,101 @@ PY
         E2E_F=1
     fi
 
+    # 🔴 (c) OF I100: NAME THE PROJECTS THAT ACTUALLY RAN.
+    #
+    # `--project=api` does not exist in LIVE mode -- playwright.config.ts
+    # drops it, because there is no deployed API to point it at -- so any
+    # total that assumes both projects ran is wrong by the size of the api
+    # project. Read the names out of Playwright's OWN report rather than
+    # restating what the config is believed to do; the two have disagreed
+    # before, and only one of them is what ran.
+    #
+    # The same pass lists every test Playwright marked skipped, by file, so a
+    # self-skipping spec can never again be invisible in this output.
+    if command -v python >/dev/null 2>&1; then
+        python - "${ARTIFACTS}/e2e.json" > "${ARTIFACTS}/e2e-detail.txt" 2>/dev/null <<'PYDETAIL' || true
+import json, sys
+
+def documents(text):
+    dec = json.JSONDecoder()
+    i, n = 0, len(text)
+    while i < n:
+        while i < n and text[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            return
+        try:
+            obj, end = dec.raw_decode(text, i)
+            i = end
+            if isinstance(obj, dict):
+                yield obj
+        except json.JSONDecodeError:
+            i += 1
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        raw = fh.read()
+except Exception:
+    sys.exit(0)
+
+projects, skipped = [], []
+
+def walk(suite, inherited):
+    path = suite.get("file") or inherited
+    for spec in suite.get("specs", []):
+        spec_file = spec.get("file") or path
+        for test in spec.get("tests", []):
+            if test.get("status") == "skipped":
+                skipped.append((spec_file, spec.get("title", "")))
+    for child in suite.get("suites", []):
+        walk(child, path)
+
+for report in documents(raw):
+    for project in (report.get("config") or {}).get("projects") or []:
+        name = project.get("name")
+        if name and name not in projects:
+            projects.append(name)
+    for suite in report.get("suites", []):
+        walk(suite, "")
+
+for name in projects:
+    print("PROJECT", name)
+for spec_file, title in skipped:
+    print("SKIPPED", spec_file, "::", title)
+PYDETAIL
+    fi
+
+    E2E_DETAIL="${ARTIFACTS}/e2e-detail.txt"
+    [[ -f "${E2E_DETAIL}" ]] || : > "${E2E_DETAIL}"
+    E2E_PROJECTS="$(sed -nE 's/^PROJECT (.*)$/\1/p' "${E2E_DETAIL}" | tr '\n' ' ')"
+    E2E_PROJECTS="${E2E_PROJECTS%% }"
+    if [[ -n "${E2E_PROJECTS}" ]]; then
+        echo "  e2e projects that ran: ${E2E_PROJECTS}"
+    else
+        echo "  e2e projects that ran: UNKNOWN -- Playwright's report named none."
+    fi
+    if grep -q '^SKIPPED ' "${E2E_DETAIL}"; then
+        echo "  --- e2e tests that skipped ---"
+        sed -nE 's/^SKIPPED (.*)$/    \1/p' "${E2E_DETAIL}"
+    fi
+
+    # 🔴 (b) OF I100: THE SIGN-IN ROUND TRIP SELF-SKIPS, AND A SELF-SKIP IS
+    #    INVISIBLE IN A THREE-NUMBER REPORT.
+    #
+    # sign-in.spec.ts calls `test.skip` when TEST_KEYCLOAK_PASSWORD is unset.
+    # The preflight refuses to start without it, so reaching this branch means
+    # the password was present and the test skipped for some OTHER reason --
+    # which is a failure, not a gap. Its own header states the rule this
+    # enforces: "if the round trip skips in a LIVE run, the sign-in flow was
+    # NOT verified".
+    if [[ "${PF_SIGNIN}" == "CONFIGURED" ]] &&
+       grep -qi '^SKIPPED .*sign-in\.spec\.ts' "${E2E_DETAIL}"; then
+        echo "  🔴 the sign-in round trip SKIPPED while its credentials were set."
+        echo "     This is the one flow every human uses, and the gap that let"
+        echo "     713 green sit beside a 404 sign-in on 08-24. COUNTED AS FAILED."
+        E2E_F=$((E2E_F + 1))
+    fi
+
     PASSED=$((PASSED + E2E_P))
     FAILED=$((FAILED + E2E_F))
     SKIPPED=$((SKIPPED + E2E_S))
@@ -555,12 +956,12 @@ PY
     if [[ "${PROFILE}" == "web" ]]; then
         echo "  e2e: api-wiring.spec.ts NOT RUN -- its seam is compiled out of"
         echo "       production builds. COVERAGE GAP, counted as skipped."
-        SKIPPED=$((SKIPPED + 1))
+        record_gap "e2e api-wiring.spec.ts -- excluded in LIVE mode: its seam is compiled out of production builds"
     fi
 else
     echo "  NOT RUN -- tests/e2e absent or npx unavailable."
     echo "  This is a COVERAGE GAP, counted as skipped, not as a pass."
-    SKIPPED=$((SKIPPED + 1))
+    record_gap "e2e -- the entire end-to-end suite not run: tests/e2e absent or npx unavailable"
 fi
 
 # ---------------------------------------------------------------------
@@ -576,6 +977,21 @@ echo "   passed  : ${PASSED}"
 echo "   failed  : ${FAILED}"
 echo "   skipped : ${SKIPPED}"
 echo "------------------------------------------------------------------"
+if (( ${#GAP_CAPABILITIES[@]} > 0 )); then
+    echo " ${#GAP_CAPABILITIES[@]} of those skips are CAPABILITY-LEVEL -- one skip each,"
+    echo " standing for however many tests did not run:"
+    for gap in "${GAP_CAPABILITIES[@]}"; do
+        echo "   - ${gap}"
+    done
+    echo "------------------------------------------------------------------"
+fi
+if (( ${#PREFLIGHT_GAPS[@]} > 0 )); then
+    echo " DECLARED PARTIAL (--allow-partial). Nothing above covers these:"
+    for gap in "${PREFLIGHT_GAPS[@]}"; do
+        echo "   - ${gap}"
+    done
+    echo "------------------------------------------------------------------"
+fi
 if [[ ${SKIPPED} -gt 0 ]]; then
     echo " NOTE: ${SKIPPED} skipped. A skip is not a pass -- read the logs"
     echo "       in ${ARTIFACTS} before calling this deploy finished."
