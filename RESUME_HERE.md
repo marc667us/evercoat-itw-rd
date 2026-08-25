@@ -1,5 +1,143 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION CLOSE 2026-08-25 (part 2) — START HERE
+
+Tip **`8edee9b`**, tree clean. Two commits, both I100.
+
+▶ **Restart the demo — one command:**
+`powershell -File scripts\demo-up.ps1` (prints the URL, writes
+`tmp/tunnel_url.txt`). The stack from part 1 was still up at the start of
+this session and was never restarted.
+
+▶ **Live suite on the deployed demo — three numbers:**
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **682** | 0 | 0 |
+| e2e (Playwright `shell`) | **34** | 0 | 0 |
+| **TOTAL** | **716** | **0** | **0** |
+
+Run twice, before and after the review round; identical both times. Counts
+read from each tool's own summary line.
+
+🔴 **AND FOR THE FIRST TIME THOSE NUMBERS DEFEND THEMSELVES.**
+`tmp/live-suite/e2e-detail.txt` records both tests in `sign-in.spec.ts` as
+`STATUS expected` — the flow was EXERCISED, not merely un-skipped. The
+incantation is now in `CLAUDE.md` §13; the script refuses to run without it.
+
+---
+
+### ✅ I100 CLOSED — the suite no longer reports green over coverage it lacks
+
+Every green number this script had ever printed depended on environment
+variables typed by hand. It exported none and checked none, so running it as
+`CLAUDE.md` documented it gave **290 passed / 0 failed / 392 skipped**: a
+zero-failure report over 290 of 682 tests, sign-in never exercised.
+
+`scripts/live-suite.sh` now opens with a **PREFLIGHT** that names every
+capability, the variables it needs and the tests it governs, and classifies
+each one:
+
+| | meaning | if it happens |
+|---|---|---|
+| **CONFIGURED** | every variable present | if its tests skip anyway that is a **FAILURE**, not a gap — the promise is closed after the run, because only the run knows whether the credentials, database name or realm users were right |
+| **ABSENT** | none present | a legitimate absence is possible — a deployed site has no local database — so it fails unless the operator passes `--allow-partial`, which **names every gap in the report** |
+| **PARTIAL** | some present | **always** a hard failure. Nobody half-configures a capability on purpose, and a half-configured one skips exactly like an absent one while looking, at the prompt, like it was set up. `--allow-partial` does not cover it |
+
+**Not defaults.** Hard-coding `TEST_DB_PORT=55432` would aim the suite at
+whatever database the author had in mind and call the result live coverage.
+
+Two probes separate absence from misconfiguration:
+
+* a database **answering at an address this run is already configured to
+  use** — parsed out of `DATABASE_URL`, not a guessed port list — while
+  `db-suite` is unset. Unwaivable.
+* `db-suite` set but **nothing answering** on `TEST_DB_HOST:TEST_DB_PORT`.
+  That is the exact 290/0/392 shape, now caught in three seconds.
+
+After the run: pytest's `-rs` reasons are printed instead of buried in a log
+nobody opened; a CONFIGURED capability that skips anyway is counted FAILED;
+the Playwright projects that ran are read from **Playwright's own report**
+(`--project=api` does not exist in LIVE mode); every skipped e2e test is
+listed by file; and capability-level skips are NAMED — `1 skipped` used to
+stand for 682 absent tests.
+
+---
+
+### 🔴 What the reviewers found — seventeenth session, neither alone was enough
+
+**Codex: FAIL, two blockers.**
+
+* 🔴 **My own comment asserted a rule the code did not implement.**
+  *“`--allow-partial` does NOT cover a database that is present but
+  unused”* sat one screen above code that probed three hard-coded ports. A
+  database on 15432 answers none of them. Fixed by DERIVING the probe from
+  `DATABASE_URL`; falsified with a listener on `127.0.0.1:15432`, which the
+  preflight names and no port list would have reached. This is the
+  repository's most repeated defect and I had just written another one.
+* **A guard that passed when it could not see.** The sign-in guard grepped
+  for a skip; an empty detail file — dead parser, missing python, spec never
+  collected — produced no skip and therefore no complaint about a flow it
+  never looked at. **Found independently by my own Supervisor pass before
+  Codex answered.** Both directions are asserted now, falsified four ways.
+
+Non-blockers, all real and all fixed: `tcp_answers` interpolated unvalidated
+values into `bash -c` (proven: `TEST_DB_PORT='55432; touch /tmp/pwned'` is
+refused and no file appears); its fallback is unbounded without `timeout`,
+now announced rather than denied; the skip-reason guards grepped the whole
+log where a traceback carrying the same phrase would fail the run, and now
+ask pytest's `-rs` lines; and `e2e-detail.txt` was truncated inside the
+parser rather than before it, so with python absent the guards would have
+read the **previous** run's file — `tmp/live-suite/` still holds an artifact
+from 08-18.
+
+🔴 **AND MY OWN PREFLIGHT UNDERSTATED WHAT ITS ABSENCE COSTS**, which is a
+quieter version of the defect it exists to catch. `db-suite` was labelled
+*“tests/db — 341 tests”* because that is what collection said. Measured:
+`tests/auth/conftest.py` uses the same fixtures, and `pytest tests/auth`
+without them reports **12 passed / 58 skipped**. The run that exposed I100
+skipped **392**. Corrected everywhere it appears.
+
+> **Falsify the guard, not the happy path.** Eleven runs, each removing one
+> thing: nothing set → 5 failures, all named; `TEST_DB_PORT` alone unset →
+> PARTIAL, `--allow-partial` refused; db block unset + `--allow-partial` →
+> still fails, a database answers; db set on the wrong port → fails;
+> `TEST_KEYCLOAK_PASSWORD` unset → fails twice; whole auth block unset +
+> `--allow-partial` → proceeds with both gaps named; and the sign-in guard
+> exercised in four states in isolation.
+
+---
+
+### ▶▶ EXACT NEXT ACTION
+
+**I83 (P1) — the cross-tenant email existence oracle.** `core.users.email` is
+`citext` with a **globally unique** constraint, and unique constraints are
+enforced OUTSIDE RLS: a holder of `admin.users` in any tenant can POST
+`/api/admin/members` with a throwaway `keycloak_sub` and read existence from
+201 vs 409. Emails are guessable where a subject UUID is not. The probe
+leaves no row behind, so it repeats without limit, and it doubles as a
+squatting path. **It needs a schema decision, not a patch** — the two honest
+remedies are in `TODO.md` under I83. I81/I82 fold into whichever is chosen.
+
+Ranked queue after that: I81/I82, I76/I77, I56/I58, I78, then **D1 on or
+after 2026-09-01**.
+
+---
+
+### Carried forward
+
+* ⚠️ **`next build` rewrites `apps/web/tsconfig.json` every demo build.**
+  Still undecided: commit the generated form, or ignore it.
+* ⚠️ **Local migrations run as `postgres`** — `alembic_version` denies
+  `evercoat_owner`. Local is superuser, **Render is not**; 09-01 meets this.
+* ⏳ **D1 deploy waits for 2026-09-01.** Do NOT delete
+  `autoworkshop-postgres` early — its app data is unarchived.
+* ⚠️ **A misconfigured run is SLOW, not just wrong.** Each connection to a
+  dead port costs ~21s here, so the 290/0/392 run crawled. If a suite is
+  inexplicably slow, check what it is failing to connect to.
+
+---
+
 ## ▶▶ SESSION CLOSE 2026-08-25 — START HERE
 
 Tip **`2d26b2a`**, pushed, tree clean, **CI 6/6 green**. Eight commits.
