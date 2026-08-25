@@ -74,6 +74,21 @@ export interface OrganizationChoice {
   readonly name: string;
   readonly code: string;
   readonly roles: readonly string[];
+  /**
+   * Permission codes held in THIS organization (I79).
+   *
+   * 🔴 PERMISSIONS, NOT ROLES, AND THEY ARE PER-TENANT LIKE THE ROLES ARE.
+   * §6 authorizes on permissions and never on role names; before migration
+   * 045 `/api/me` returned only roles, so the shell could either show every
+   * control or re-derive the mapping in TypeScript. It showed every control.
+   *
+   * Empty is a legitimate value and must not be confused with "unknown":
+   * a member holding no roles yet has no permissions, and the sidebar
+   * should say so rather than showing the whole module map. `undefined`
+   * organizations -- no session at all -- is the different case, handled
+   * where the sidebar chooses its fallback.
+   */
+  readonly permissions: readonly string[];
 }
 
 /** The ordinary signed-out state of a build that CAN sign in. */
@@ -218,6 +233,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         name: string;
         code: string;
         roles?: string[];
+        permissions?: string[];
       }[];
     };
 
@@ -226,6 +242,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       name: org.name,
       code: org.code,
       roles: org.roles ?? [],
+      // `?? []` and not `?? ALL_NAV_PERMISSIONS`: an API too old to send
+      // permissions must yield a shell that shows LESS, never one that shows
+      // everything. Failing open on an authorization-shaped field is how a
+      // cosmetic filter turns into a claim the server never made.
+      permissions: org.permissions ?? [],
     }));
 
     const first = choices[0];

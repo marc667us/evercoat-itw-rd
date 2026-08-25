@@ -67,6 +67,27 @@ class OrganizationMembership(BaseModel):
     #: flat role list would be wrong in a way nobody would notice until a
     #: server-side permission check disagreed with the sidebar.
     roles: list[str] = Field(default_factory=list)
+    #: Permission codes held IN THIS ORGANIZATION (I79).
+    #:
+    #: 🔴 §6 SAYS AUTHORIZE ON PERMISSIONS, NEVER ON ROLE NAMES -- AND THAT
+    #: HAS TO REACH THE BROWSER TOO. Returning roles alone left the web tier
+    #: with two bad options: show every control (which is what it did --
+    #: `layout.tsx` handed the sidebar `ALL_NAV_PERMISSIONS`), or write a
+    #: second copy of the role->permission mapping in TypeScript. The second
+    #: is the two-literals-in-two-files problem this project has already been
+    #: bitten by: one rule, two spellings, no way to type-check them into
+    #: agreement.
+    #:
+    #: Migration 045 resolves them in `core.memberships_for_subject` through
+    #: the same `member_roles -> roles -> role_permissions -> permissions`
+    #: chain `core.principal_for_subject` walks for the server-side
+    #: `Principal`, so the browser is told exactly what the API will enforce.
+    #:
+    #: This stays COSMETIC. It hides controls the caller cannot use; it
+    #: grants nothing. Every route re-authorizes independently, and the
+    #: RBAC E2E suite asserts attempted unauthorized access rather than a
+    #: hidden button.
+    permissions: list[str] = Field(default_factory=list)
 
 
 class Me(BaseModel):
@@ -135,6 +156,7 @@ async def read_me(subject: Annotated[str, Depends(get_verified_subject)]) -> Me:
                 name=row["organization_name"],
                 code=row["organization_code"],
                 roles=sorted(row["roles"]),
+                permissions=sorted(row["permissions"]),
             )
             for row in rows
         ],

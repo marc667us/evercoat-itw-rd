@@ -28,6 +28,8 @@ const ACME: OrganizationChoice = {
   name: "Acme Coatings",
   code: "ACME",
   roles: ["product_development_chemist"],
+  // I79: per-tenant, like the roles beside them.
+  permissions: ["project.view", "formula.submit"],
 };
 
 const BOREAL: OrganizationChoice = {
@@ -35,6 +37,7 @@ const BOREAL: OrganizationChoice = {
   name: "Boreal Adhesives",
   code: "BOR",
   roles: ["product_development_lead"],
+  permissions: ["project.view", "formula.approve_lab"],
 };
 
 describe("chooseOrganization", () => {
