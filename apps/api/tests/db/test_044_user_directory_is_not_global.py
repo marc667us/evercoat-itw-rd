@@ -400,8 +400,14 @@ def test_the_cross_tenant_rename_is_refused(app_engine, owner_session, two_orgs_
     # `test_the_rls_boundary_still_refuses_a_cross_tenant_update` below. Both
     # mechanisms are accepted here, and named, because either one refusing is
     # the property this test actually guards.
+    # Codex: "permission denied" alone accepts a lost INSERT grant, a lost
+    # schema USAGE, or any other unrelated privilege failure, and the
+    # unchanged-row check below cannot tell those apart. So the privilege
+    # branch must also NAME THE TABLE it was refused on.
     refusal = str(caught.value).lower()
-    assert "row-level security" in refusal or "permission denied" in refusal, (
+    assert "row-level security" in refusal or (
+        "permission denied" in refusal and "users" in refusal
+    ), (
         "the statement failed for some reason other than the RLS policy or "
         f"047's column privilege: {caught.value}. The test must fail on the "
         "boundary, not on a typo."

@@ -387,12 +387,28 @@ right.**
 | `keycloak_sub` | **none. No application query selects it anywhere.** | over-granted |
 
 **Decision: revoke SELECT and UPDATE on `core.users.keycloak_sub` from
-`evercoat_app`, `evercoat_report` and `evercoat_worker`.** RLS is row-level and
+`evercoat_app`, `evercoat_report` and `evercoat_worker`.** 🔴 **This makes the
+stored value unreadable; it does NOT make subject EXISTENCE confidential.**
+Codex, correctly: `core.user_id_for_subject` still answers for an exact
+subject, and `INSERT ... ON CONFLICT` still distinguishes a known subject from
+a new one with no SELECT privilege at all. That residue is I82, which remains
+open. Any claim here broader than *the column cannot be selected* would be
+false.
+ RLS is row-level and
 cannot express "the name but not the identifier"; column privileges can. INSERT
 keeps the column, because `invite_member` creates identities and that is the one
 path that legitimately sets it. UPDATE goes because no production code updates
 `core.users` at all, and rewriting a subject would repoint an existing row at a
 different identity — an identity swap performed by the runtime role.
+
+🔴 **CORRECTED AFTER REVIEW.** The first draft granted
+`UPDATE (email, display_name, status)`. `status` was speculative — the same
+reflex this ADR corrects on `keycloak_sub` — and Codex supplied the
+consequence: `core.users` is GLOBAL, so a session scoped to one shared
+organization could set a multi-organization user to `inactive` and disable
+that identity **in every other tenant**. A cross-tenant write, granted by
+accident, inside the migration narrowing cross-tenant reads. The grant is now
+`(email, display_name)`, and a test pins it.
 
 ⚠️ **A column-level REVOKE against a table-level GRANT does nothing.**
 PostgreSQL treats `GRANT SELECT ON core.users` as covering every column, so

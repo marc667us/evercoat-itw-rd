@@ -66,6 +66,12 @@ def test_the_columns_the_application_does_read_are_untouched(owner_session: Sess
     `admin.list_members` and `projects.list_members` both return `email`, and
     every actor-resolving join selects `display_name`. Narrowing that far
     would break stated behaviour rather than protect anything.
+
+    WARNING: THIS TEST CANNOT FAIL WHEN 047 IS REVERTED, AND THAT IS
+    DELIBERATE. f1000's table-wide grant covers every column asserted here,
+    so it guards against OVER-revocation only and is never evidence that 047
+    applied. `test_the_identifier_is_not_readable_by_any_runtime_role` is the
+    half that goes red. Raised by Codex; recorded rather than dressed up.
     """
     for column in ("id", "email", "display_name", "status"):
         readable = owner_session.execute(
@@ -105,6 +111,88 @@ def test_the_identifier_may_be_written_once_and_never_rewritten(
     )
 
 
+def test_status_is_not_updatable_because_that_row_is_global(
+    owner_session: Session,
+) -> None:
+    """The grant I made speculatively, and what it would have cost.
+
+    047's first draft granted `UPDATE (email, display_name, status)` -- the
+    same reflex it exists to correct on `keycloak_sub`, since nothing in
+    production updates `core.users` at all. Codex supplied the consequence:
+    `core.users` is GLOBAL. An `evercoat_app` session scoped to ONE shared
+    organization could set a user who belongs to several to `inactive` or
+    `archived`, disabling that identity in every other tenant -- a
+    cross-tenant WRITE granted by accident, inside the migration that
+    narrows cross-tenant reads.
+
+    `email` and `display_name` stay: 044 asserts an administrator may correct
+    a colleague's name inside their own organization, and 046's rename guard
+    exists to police the address. Both are per-row facts the owning
+    organization can already see. `status` is a platform-wide switch.
+    """
+    assert (
+        owner_session.execute(
+            text("SELECT has_column_privilege('evercoat_app','core.users','status','UPDATE')")
+        ).scalar_one()
+        is False
+    ), (
+        "evercoat_app can UPDATE core.users.status. That row is global, so one "
+        "organization can archive an identity out of every other one."
+    )
+    for column in ("email", "display_name"):
+        assert (
+            owner_session.execute(
+                text("SELECT has_column_privilege('evercoat_app','core.users',:c,'UPDATE')"),
+                {"c": column},
+            ).scalar_one()
+            is True
+        ), (
+            f"evercoat_app can no longer UPDATE {column}, so an administrator "
+            "cannot correct a colleague's record inside their own organization "
+            "(044) and 046's rename guard has nothing to police."
+        )
+
+
+def test_no_view_hands_the_identifier_back(owner_session: Session) -> None:
+    """A column revoke on a base table is not a revoke on every projection.
+
+    Raised by Codex as a future-object risk: `ALTER DEFAULT PRIVILEGES` in 001
+    grants the runtime roles SELECT on tables and views `evercoat_owner`
+    creates in `core`. A view projecting `keycloak_sub` would be readable the
+    moment it exists, handing back exactly what 047 took away, with no
+    migration appearing to change any grant.
+
+    Nothing exposes it today. This is the test that notices when something
+    does, which is the only mechanism available -- default privileges cannot
+    be made column-aware.
+    """
+    leaks = (
+        owner_session.execute(
+            text(
+                """
+            SELECT c.relname
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              JOIN pg_attribute a ON a.attrelid = c.oid
+             WHERE n.nspname = 'core'
+               AND c.relkind IN ('v', 'm')
+               AND a.attname = 'keycloak_sub'
+               AND a.attnum > 0
+               AND NOT a.attisdropped
+               AND has_column_privilege('evercoat_app', c.oid, a.attnum, 'SELECT')
+            """
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert leaks == [], (
+        "these core views project keycloak_sub and evercoat_app may read them, "
+        f"which returns what migration 047 revoked on the base table: {leaks}. "
+        "Either drop the column from the view or revoke SELECT on it."
+    )
+
+
 def test_the_application_role_is_actually_refused(app_session: Session) -> None:
     """The behavioural half. `has_column_privilege` is the catalogue's opinion."""
     with pytest.raises(DatabaseError) as caught:
@@ -127,21 +215,38 @@ def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: S
     owned by `evercoat_owner`, so they keep working — but that is an
     argument, and this is the measurement. If it is wrong, nobody can log in
     and the catalogue tests above still pass.
-    """
-    subject = owner_session.execute(
-        text("SELECT keycloak_sub FROM core.users LIMIT 1")
-    ).scalar_one_or_none()
-    if subject is None:
-        pytest.skip("no users in this database to resolve")
 
-    resolved = app_session.execute(
-        text("SELECT core.user_id_for_subject(:s)"), {"s": subject}
-    ).scalar_one_or_none()
-    assert resolved is not None, (
-        "core.user_id_for_subject returned nothing for a subject that exists. "
-        "The definer can no longer read keycloak_sub and sign-in is dead."
+    WARNING: IT CREATES ITS OWN SUBJECT RATHER THAN LOOKING FOR ONE. The first
+    version skipped when `core.users` was empty -- so on a clean CI database,
+    the one place this most needs checking, it verified nothing and still
+    reported green. Raised by Codex.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    subject = f"i81-signin-{suffix}"
+    owner_session.execute(
+        text(
+            "INSERT INTO core.users (keycloak_sub, email, display_name)"
+            " VALUES (:s, :e, 'I81 sign-in probe')"
+        ),
+        {"s": subject, "e": f"signin-{suffix}@example.test"},
     )
-    app_session.rollback()
+    owner_session.commit()
+    try:
+        resolved = app_session.execute(
+            text("SELECT core.user_id_for_subject(:s)"), {"s": subject}
+        ).scalar_one_or_none()
+        assert resolved is not None, (
+            "core.user_id_for_subject returned nothing for a subject that "
+            "exists. The definer can no longer read keycloak_sub and sign-in "
+            "is dead."
+        )
+        app_session.rollback()
+    finally:
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.users WHERE keycloak_sub = :s"), {"s": subject}
+        )
+        owner_session.commit()
 
 
 @pytest.fixture

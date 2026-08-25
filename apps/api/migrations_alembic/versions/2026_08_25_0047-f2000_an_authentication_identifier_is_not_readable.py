@@ -63,7 +63,7 @@ def downgrade() -> None:
             " ON core.users FROM evercoat_app, evercoat_report, evercoat_worker"
         )
     )
-    op.execute(text("REVOKE UPDATE (email, display_name, status) ON core.users FROM evercoat_app"))
+    op.execute(text("REVOKE UPDATE (email, display_name) ON core.users FROM evercoat_app"))
     op.execute(text("GRANT SELECT ON core.users TO evercoat_app, evercoat_report, evercoat_worker"))
     op.execute(text("GRANT UPDATE ON core.users TO evercoat_app"))
     op.execute(text("COMMENT ON COLUMN core.users.keycloak_sub IS NULL"))
@@ -107,4 +107,20 @@ def downgrade() -> None:
     )
     op.execute(
         text("ALTER FUNCTION core.deny_address_collision_on_rename() OWNER TO evercoat_owner")
+    )
+    # 🔴 THE COMMENT MUST GO BACK TOO. Raised by Codex.
+    #
+    # `CREATE OR REPLACE FUNCTION` keeps the existing COMMENT, so a downgrade
+    # that only replaced the body left 047's comment -- "scoped by its own
+    # predicate" -- describing f1000's RLS-dependent code. A comment asserting
+    # a rule the body does not implement is this repository's most repeated
+    # defect, and a downgrade is exactly where one gets left behind.
+    op.execute(
+        text(
+            "COMMENT ON FUNCTION core.deny_address_collision_on_rename() IS "
+            "'Refuses renaming a user onto an address already held by another "
+            "ACTIVE member of an organization they both belong to. The UPDATE "
+            "half of the rule whose INSERT half is enforced on "
+            "core.organization_members. SECURITY INVOKER on purpose (I83).'"
+        )
     )

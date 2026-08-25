@@ -96,7 +96,24 @@ GRANT SELECT (id, email, display_name, status, created_at, updated_at)
     ON core.users TO evercoat_app, evercoat_report, evercoat_worker;
 
 REVOKE UPDATE ON core.users FROM evercoat_app;
-GRANT UPDATE (email, display_name, status) ON core.users TO evercoat_app;
+
+-- 🔴 `status` IS NOT IN THIS LIST, AND THE FIRST DRAFT HAD IT.
+--
+-- I granted it speculatively -- exactly the reflex this migration exists to
+-- correct on `keycloak_sub`. Nothing in production updates `core.users` at
+-- all, so there is no writer to justify it. Codex then supplied the
+-- consequence I had not stated: `core.users` is GLOBAL, so an `evercoat_app`
+-- session scoped to ONE shared organization could set a user who belongs to
+-- several to `inactive` or `archived` and disable that identity in every
+-- other tenant. A cross-tenant write, granted by accident, in the migration
+-- narrowing cross-tenant reads.
+--
+-- `email` and `display_name` stay because 044 asserts an administrator may
+-- correct a colleague's name inside their own organization
+-- (`test_a_rename_inside_the_organization_still_works`), and 046's rename
+-- guard exists precisely to police the address. Both are per-row facts the
+-- owning organization can already see; `status` is a platform-wide switch.
+GRANT UPDATE (email, display_name) ON core.users TO evercoat_app;
 
 COMMENT ON COLUMN core.users.keycloak_sub IS
     'The identity provider''s subject. NOT readable by evercoat_app, '
@@ -203,6 +220,12 @@ BEGIN
         RAISE EXCEPTION
             '047 FAILED: evercoat_app can UPDATE keycloak_sub. Rewriting the '
             'subject a token is verified against is an identity swap.';
+    END IF;
+    IF has_column_privilege('evercoat_app', 'core.users', 'status', 'UPDATE') THEN
+        RAISE EXCEPTION
+            '047 FAILED: evercoat_app can UPDATE core.users.status. That row is '
+            'GLOBAL, so one organization could archive an identity out of every '
+            'other one. No production path updates core.users at all.';
     END IF;
     IF NOT has_column_privilege('evercoat_app', 'core.users', 'keycloak_sub', 'INSERT') THEN
         RAISE EXCEPTION
