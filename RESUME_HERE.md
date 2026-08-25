@@ -1,5 +1,142 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION CLOSE 2026-08-25 (part 4) — START HERE
+
+Tip **`d929293`**, pushed, **CI 6/6 green**. I100, I83 and I81 all closed today.
+
+▶ **Restart the demo — one command:**
+`powershell -File scripts\demo-up.ps1`. The stack has been up all session;
+only the API process was restarted (for I83), and I81 changed no application
+code at all — it is grants and a function body.
+
+▶ **Live suite on the deployed demo — three numbers, ONE complete run:**
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **702** | 0 | 0 |
+| e2e (Playwright `shell`) | **34** | 0 | 0 |
+| **TOTAL** | **736** | **0** | **0** |
+
+---
+
+### ✅ I81 CLOSED — an authentication identifier is not a readable column
+
+Migration **047 / f2000**, **ADR-029**.
+
+044's read policy hands over the whole `core.users` row where its
+justification — attribution in eleven joins — needs only the name.
+
+🔴 **THE OBJECTION WAS MEASURED, NOT ACCEPTED, AND IT WAS TWO-THIRDS
+RIGHT.** `display_name` has eleven readers. `email` has **two production paths
+that deliberately return it** — `admin.list_members`, and
+`projects.list_members`, which documents that it lists FORMER members on
+purpose — so removing it would break stated behaviour. `keycloak_sub` is read
+by **no application query anywhere**. Only that one is over-granted, and RLS
+cannot take a column away; column privileges can.
+
+⚠️ **A column-level REVOKE against a table-level GRANT does nothing.** The
+table grant must be dropped and replaced by an explicit column list. Written
+the other way the migration reads exactly like a fix and changes nothing —
+which is why the test asserts the PRIVILEGE, not the SQL.
+
+Sign-in is unaffected because the three readers are owner-owned SECURITY
+DEFINER functions. That is an argument, so it is also a test.
+
+---
+
+### 🔴 What the review round found
+
+**Codex: FAIL, one blocker.** I had reached it independently; Codex supplied
+the consequence I had not stated.
+
+* **I granted a CROSS-TENANT WRITE while removing a cross-tenant read.** The
+  first draft granted `UPDATE (email, display_name, status)`. `status` was
+  speculative — the same reflex 047 exists to correct on `keycloak_sub`.
+  `core.users` is GLOBAL, so a session scoped to ONE shared organization
+  could set a multi-organization user to `inactive` and disable that identity
+  **in every other tenant**. Now `(email, display_name)`, pinned by a test.
+
+Non-blockers, all acted on: the claim was broader than the code (047 makes
+the value unreadable, it does **not** make subject existence confidential —
+that residue is I82); a future view projecting `keycloak_sub` would inherit
+001's default privileges and hand it straight back, so a test now watches for
+one; the downgrade left 047's COMMENT sitting on f1000's body; the 044 upsert
+assertion accepted any "permission denied"; and two tests that cannot fail
+when 047 is reverted now say so in their own docstrings.
+
+🔴 **And measuring I82 found 046's rename guard was scoped by the CALLER,
+not by itself.** Its `mine` side relied on the RLS policy, and a trigger runs
+as whatever the current user is — inside a SECURITY DEFINER owned by the
+table owner, that user bypasses RLS. Measured: `INVOKER path ACCEPTED` /
+`DEFINER path REFUSED`, refusing on another tenant's row, which makes the
+refusal a cross-tenant existence answer — I83 rebuilt inside its own
+replacement. The predicate is explicit now.
+
+⚠️ **My first probe tested the OTHER trigger and came back clean.** Check
+which mechanism is load-bearing before a comment credits one.
+
+---
+
+### 🔴 I102 — the live suite can lock itself out, and the failure lies
+
+Found during this task's live run, which reported **700 passed / 2 failed**:
+
+    "Keycloak refused the direct grant for lead.demo:
+     401 invalid_grant — Invalid user credentials"
+
+The password was correct. Keycloak's own log, same second:
+
+    type="LOGIN_ERROR" error="user_temporarily_disabled" username="lead.demo"
+
+The realm sets `bruteForceProtected: true`, `failureFactor: 5`,
+`permanentLockout: false`, `maxFailureWaitSeconds: 900`, and the suite
+authenticates the same user repeatedly by direct grant — so one slow or
+timed-out run trips the lock and everything after it is refused with a message
+that says *wrong password*. **That makes the standing live-test rule
+non-deterministic and its failures misleading.**
+
+Cleared by hand and the suite then ran 736/0/0:
+
+```bash
+TOK=$(curl -s -X POST "$U/auth/realms/master/protocol/openid-connect/token" \
+  -d client_id=admin-cli -d username=admin -d password=demo-admin-pw \
+  -d grant_type=password | python -c "import json,sys;print(json.load(sys.stdin)['access_token'])")
+curl -X DELETE "$U/auth/admin/realms/evercoat/attack-detection/brute-force/users" \
+  -H "Authorization: Bearer $TOK"        # 204
+```
+
+**It is now task 1.** Two honest fixes: clear the lockout in `live-suite.sh`
+before the run, and/or mint one token per user per session instead of one per
+test.
+
+---
+
+### ▶▶ EXACT NEXT ACTION
+
+**I102** — make the live suite deterministic, per above. It is small, and
+everything else this project measures depends on those three numbers meaning
+something.
+
+Then **I82**, whose proposed design is now recorded as **rejected on
+evidence** in ADR-029 — an atomic bind inside a SECURITY DEFINER would have
+re-opened I83. It needs a different design, not the one in the plan.
+
+Then I76/I77, I56/I58, I78, I101, and **D1 on or after 2026-09-01**.
+
+---
+
+### Carried forward
+
+* ⚠️ **Do not run the live e2e beside pytest or Codex.** Chromium crashes on
+  this 8 GB host with `0xC0000142` and the failures read like application
+  defects. A crashed worker is a VOID measurement, not a red.
+* ⚠️ **`next build` rewrites `apps/web/tsconfig.json` every demo build.**
+* ⚠️ **Local migrations run as `postgres`**; the superuser password is in the
+  container environment. Local is superuser, **Render is not**.
+* ⏳ **D1 waits for 2026-09-01.** Do NOT delete `autoworkshop-postgres` early.
+
+---
+
 ## ▶▶ SESSION CLOSE 2026-08-25 (part 3) — START HERE
 
 Tip **`552112d`**, pushed, **CI 6/6 green**. Two commits, both I83.
