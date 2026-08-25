@@ -262,6 +262,34 @@ def test_a_signed_in_user_can_discover_their_organizations() -> None:
     assert uuid.UUID(org["organization_id"])
     assert org["name"], "an organization with no name cannot be offered in a picker"
 
+    # 🔴 THE PERMISSIONS ARE PART OF THE CONTRACT NOW (I79), AND THIS IS THE
+    # ONLY PLACE THE PYTHON/SQL RESPONSE EDGE IS ASSERTED END TO END.
+    #
+    # Raised by Codex against migration 045: the web tier maps a missing
+    # `permissions` field to `[]`, which is the right failure mode and also
+    # means the field could silently disappear -- from a bad migration, a
+    # dropped column, a rewritten query -- and every screen would quietly
+    # gate on nothing while this suite stayed green.
+    #
+    # `roles` is asserted beside it because 045 added two one-to-many joins
+    # underneath it, and a missing DISTINCT there would repeat every role
+    # once per permission.
+    assert "permissions" in org, (
+        "GET /api/me no longer returns permissions. Every workspace then "
+        "gates on an empty set and a signed-in user sees an empty sidebar."
+    )
+    assert org["permissions"], (
+        "a lead resolved to ZERO permissions. Either the role_permissions "
+        "join in migration 045 is broken, or this user holds no roles -- "
+        "and both render as an application with nothing in it."
+    )
+    assert org["permissions"] == sorted(set(org["permissions"])), (
+        "permissions are not sorted-unique, so the 045 aggregate lost its DISTINCT or its ORDER BY"
+    )
+    assert org["roles"] == sorted(set(org["roles"])), (
+        "roles are not sorted-unique -- 045's one-to-many joins are multiplying them"
+    )
+
 
 def test_the_organization_from_me_is_accepted_by_a_real_route() -> None:
     """🔴 THE WHOLE POINT: the value handed out must actually work.

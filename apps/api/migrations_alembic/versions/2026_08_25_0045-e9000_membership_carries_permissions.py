@@ -102,6 +102,20 @@ def downgrade() -> None:
             """
         )
     )
+    # 🔴 THE COMMENT IS PART OF WHAT THE DROP TOOK, AND THE FIRST DRAFT OF THIS
+    # DOWNGRADE LEFT IT OUT -- in a function whose own docstring is about not
+    # forgetting what a DROP removes. Raised by Codex. 024's text, restored
+    # verbatim, so a downgraded database describes itself the way 024 did
+    # rather than carrying no description at all.
+    op.execute(
+        text(
+            "COMMENT ON FUNCTION core.memberships_for_subject(TEXT) IS "
+            "'Organizations a verified Keycloak subject may act in. SECURITY DEFINER '"
+            "'because it must answer BEFORE an organization has been chosen, when no '"
+            "'RLS GUC is set. Scoped strictly to the subject argument; takes no '"
+            "'organization argument.'"
+        )
+    )
     op.execute(text("ALTER FUNCTION core.memberships_for_subject(TEXT) OWNER TO evercoat_owner"))
     op.execute(text("REVOKE ALL ON FUNCTION core.memberships_for_subject(TEXT) FROM PUBLIC"))
     op.execute(text("GRANT EXECUTE ON FUNCTION core.memberships_for_subject(TEXT) TO evercoat_app"))

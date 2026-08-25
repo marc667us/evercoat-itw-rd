@@ -112,14 +112,31 @@ describe("effectiveNavPermissions", () => {
     expect(effectiveNavPermissions(anonymous, [], FULL_MAP)).toBe(FULL_MAP);
   });
 
-  it("keeps the full map when the active tenant is not in the list", () => {
-    // A defect state rather than a permission state: we do not know what
-    // this caller may do, so we do not pretend to. Asserted so the choice
-    // is deliberate and visible rather than an accident of optional
-    // chaining.
-    expect(
-      effectiveNavPermissions(authenticated(OTHER_ID), [TECHNICIAN], FULL_MAP),
-    ).toBe(FULL_MAP);
+  it("🔴 FAILS CLOSED when the active tenant is not in the list", () => {
+    // Raised by Codex against the first version, which returned the full map
+    // here and justified it as "we do not know". That contradicts the rule
+    // in auth-provider.tsx -- an API that cannot report permissions must
+    // show LESS, never everything -- and it masks a broken session behind a
+    // menu on which every control 403s.
+    //
+    // The fallback is for ABSENCE OF A SESSION, not for a broken one.
+    const result = effectiveNavPermissions(
+      authenticated(OTHER_ID),
+      [TECHNICIAN],
+      FULL_MAP,
+    );
+
+    expect(result.size).toBe(0);
+    expect(result).not.toBe(FULL_MAP);
+  });
+
+  it("🔴 FAILS CLOSED when the organization list is empty but a session exists", () => {
+    // The fifth state Codex named: authenticated while `organizations` is
+    // temporarily empty or stale. It used to collapse into the same
+    // full-map branch.
+    const result = effectiveNavPermissions(authenticated(ACME_ID), [], FULL_MAP);
+
+    expect(result.size).toBe(0);
   });
 
   it("reads the ACTIVE tenant, never simply the first", () => {

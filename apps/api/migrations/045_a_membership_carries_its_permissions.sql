@@ -72,9 +72,22 @@ AS $$
            om.organization_id,
            o.name,
            o.code,
-           COALESCE(array_agg(DISTINCT r.code)
+           -- 🔴 THE `ORDER BY` IS EXPLICIT, NOT INHERITED.
+           --
+           -- `array_agg(DISTINCT x)` does come back sorted -- PostgreSQL has
+           -- to sort in order to deduplicate, measured on 16.14: reversing the
+           -- input leaves the output identical while a plain `array_agg`
+           -- follows its input. So Codex's concern that the new one-to-many
+           -- joins could reorder `roles` does not reproduce.
+           --
+           -- But that is an IMPLEMENTATION BEHAVIOUR, not a documented
+           -- contract, and this project's own rule is that a guarantee must
+           -- be a mechanism rather than an argument. Stating the order costs
+           -- nothing and makes the function's contract true by construction
+           -- instead of true by observation.
+           COALESCE(array_agg(DISTINCT r.code ORDER BY r.code)
                     FILTER (WHERE r.code IS NOT NULL), '{}'),
-           COALESCE(array_agg(DISTINCT p.code)
+           COALESCE(array_agg(DISTINCT p.code ORDER BY p.code)
                     FILTER (WHERE p.code IS NOT NULL), '{}')
     FROM core.users u
     JOIN core.organization_members om

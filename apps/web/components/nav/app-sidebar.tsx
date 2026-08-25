@@ -69,13 +69,24 @@ export function effectiveNavPermissions(
   );
 
   if (active === undefined) {
-    // Authenticated, but the active tenant is not in the list `/api/me`
-    // returned. That is a defect state rather than a permission state --
-    // we do not know what this caller may do, so we do not pretend to.
-    // Falls back rather than hiding everything, for the same reason as
-    // above, and is called out here so the choice is visible instead of
-    // being an accident of `?.` chaining.
-    return fallback;
+    // 🔴 FAIL CLOSED. The first version returned `fallback` here and called
+    // that "we do not know, so we do not pretend to" -- which sounds careful
+    // and is backwards. Codex caught it, and it directly contradicts the
+    // rule written one file away in `auth-provider.tsx`: an API that cannot
+    // report permissions must yield a shell that shows LESS, never one that
+    // shows everything.
+    //
+    // Authenticated with an active tenant that `/api/me` did not return is a
+    // BROKEN state -- a stale organization id, a revoked membership, a list
+    // that has not loaded. Every request made in it carries an organization
+    // header the API will refuse, so showing the full module map offers a
+    // menu on which nothing works. Showing nothing is the honest rendering
+    // of "you have no access here", and unlike the signed-out case it does
+    // not strand a legitimate reader: a signed-in user whose tenant is
+    // missing has no working destination to be stranded from.
+    //
+    // The fallback exists for ABSENCE OF A SESSION, not for a broken one.
+    return new Set();
   }
 
   // 🔴 AN EMPTY SET HERE IS AN ANSWER, NOT AN ABSENCE. A member who holds
