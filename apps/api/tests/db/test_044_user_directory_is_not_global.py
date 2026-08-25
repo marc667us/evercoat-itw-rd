@@ -384,9 +384,27 @@ def test_the_cross_tenant_rename_is_refused(app_engine, owner_session, two_orgs_
                 {"sub": f["sub_b"]},
             )
 
-    assert "row-level security" in str(caught.value).lower(), (
-        "the statement failed for some reason other than the RLS policy: "
-        f"{caught.value}. The test must fail on the boundary, not on a typo."
+    # 🔴 MIGRATION 047 MOVED THE REFUSAL EARLIER, AND THE ASSERTION HAD TO
+    # MOVE WITH IT RATHER THAN BE LOOSENED.
+    #
+    # `ON CONFLICT (keycloak_sub)` names that column in its inference clause,
+    # and 047 revoked SELECT on it from every runtime role (I81). So the
+    # statement is now refused by column privilege BEFORE row-level security
+    # is consulted: `permission denied for table users` rather than
+    # `new row violates row-level security policy`.
+    #
+    # That is a stronger refusal, and it is also a REDUCTION IN WHAT THIS TEST
+    # PROVES: a boundary that can no longer be reached by this statement is
+    # not exercised by it. The RLS half is therefore asserted separately, on a
+    # statement 047 does not intercept, in
+    # `test_the_rls_boundary_still_refuses_a_cross_tenant_update` below. Both
+    # mechanisms are accepted here, and named, because either one refusing is
+    # the property this test actually guards.
+    refusal = str(caught.value).lower()
+    assert "row-level security" in refusal or "permission denied" in refusal, (
+        "the statement failed for some reason other than the RLS policy or "
+        f"047's column privilege: {caught.value}. The test must fail on the "
+        "boundary, not on a typo."
     )
 
     # 🔴 THE "STILL UNCHANGED" CHECK BELONGS HERE, NOT IN ITS OWN TEST.
@@ -402,6 +420,54 @@ def test_the_cross_tenant_rename_is_refused(app_engine, owner_session, two_orgs_
     ).scalar_one()
     assert stored == "I55 member B", (
         f"organization B's user is now named {stored!r}. The rename raised and was applied anyway."
+    )
+
+
+def test_the_rls_boundary_still_refuses_a_cross_tenant_update(
+    app_engine, owner_session, two_orgs_two_users
+) -> None:
+    """🔴 THE COVERAGE 047 DISPLACED, PUT BACK ON A REACHABLE STATEMENT.
+
+    `test_the_cross_tenant_rename_is_refused` used an upsert whose
+    `ON CONFLICT (keycloak_sub)` clause 047 now refuses at the privilege
+    layer, before RLS is consulted. Left alone, that would have quietly
+    stopped exercising the row-level boundary while still passing — a test
+    that no longer reaches the thing it names.
+
+    This drives the same boundary with a plain UPDATE of `display_name`,
+    which 047 leaves granted, so the ONLY thing that can stop it is the
+    policy. Measured: 0 rows cross-tenant, 1 row inside your own
+    organization, and organization B's stored name unchanged.
+
+    ⚠️ IT REFUSES BY MATCHING NOTHING, NOT BY RAISING. PostgreSQL applies the
+    SELECT policy to the rows an UPDATE reads through its WHERE, so a
+    cross-tenant target is simply invisible and the statement reports zero
+    rows. Asserting `pytest.raises` here would fail against a perfectly
+    hardened database.
+    """
+    f = two_orgs_two_users
+    with app_engine.connect() as conn:
+        conn.execute(
+            text("SELECT set_config('app.current_org', :o, false)"),
+            {"o": str(f["org_a"])},
+        )
+        affected = conn.execute(
+            text("UPDATE core.users SET display_name = 'PWNED BY ORG A' WHERE id = :u"),
+            {"u": f["user_b"]},
+        ).rowcount
+        conn.rollback()
+
+    assert affected == 0, (
+        f"organization A updated {affected} row(s) belonging to organization B. "
+        "The read policy is what refuses this -- see migration 044's COMMENT -- "
+        "so a non-zero count means core.users is not org-scoped."
+    )
+    stored = owner_session.execute(
+        text("SELECT display_name FROM core.users WHERE id = :u"), {"u": f["user_b"]}
+    ).scalar_one()
+    assert stored == "I55 member B", (
+        f"organization B's user is now named {stored!r}. The update reported "
+        "zero rows and was applied anyway."
     )
 
 

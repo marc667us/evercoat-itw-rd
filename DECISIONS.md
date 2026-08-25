@@ -363,3 +363,88 @@ false, because a comment claiming INVOKER proves nothing.
 * **The downgrade can legitimately fail** and says so, naming the duplicate
   addresses. It will not delete user records to make a constraint fit.
 * I81 and I82 are unchanged by this and still stand.
+
+---
+
+### ADR-029 — an authentication identifier is not a readable column, and a guard's tenant scope must be its own predicate · Accepted 2026-08-25
+
+**Closes I81.** Hardens ADR-028's rename guard. Implemented by migration 047 (`f2000`).
+
+**Context.** 044's read policy admits a user when the reader shares an
+organization with them, with no `status` filter — deliberately, because eleven
+INNER joins resolve an actor through `core.users` and filtering would drop the
+*records* from every list rather than merely blanking a name. The objection
+recorded as I81 was that those joins need only the NAME while the policy hands
+over the whole row, including `email` and `keycloak_sub`.
+
+🔴 **The objection was measured, not accepted, and it was only two-thirds
+right.**
+
+| column | readers | verdict |
+|---|---|---|
+| `display_name` | all eleven joins | attribution — correct |
+| `email` | **two production paths that deliberately return it** — `admin.list_members`, and `projects.list_members`, which documents that it lists FORMER members on purpose because "who has ever had access" is the question asked after an incident. Messaging also matches on its local part. | has real consumers; removing it would break stated behaviour |
+| `keycloak_sub` | **none. No application query selects it anywhere.** | over-granted |
+
+**Decision: revoke SELECT and UPDATE on `core.users.keycloak_sub` from
+`evercoat_app`, `evercoat_report` and `evercoat_worker`.** RLS is row-level and
+cannot express "the name but not the identifier"; column privileges can. INSERT
+keeps the column, because `invite_member` creates identities and that is the one
+path that legitimately sets it. UPDATE goes because no production code updates
+`core.users` at all, and rewriting a subject would repoint an existing row at a
+different identity — an identity swap performed by the runtime role.
+
+⚠️ **A column-level REVOKE against a table-level GRANT does nothing.**
+PostgreSQL treats `GRANT SELECT ON core.users` as covering every column, so
+`REVOKE SELECT (keycloak_sub)` on top of it is silently ineffective. The
+table-level grant is dropped and replaced by an explicit column list. A
+migration written the other way reads exactly like this one and changes nothing.
+
+The three functions that DO read the column — `principal_for_subject`,
+`memberships_for_subject`, `user_id_for_subject` — are SECURITY DEFINER owned by
+`evercoat_owner`, so sign-in is unaffected. That is an argument, so it is also a
+test: `test_047` resolves a real subject as `evercoat_app` after the revoke.
+
+**Consequence, found by the test suite rather than by reasoning.** 044's
+cross-tenant upsert test uses `ON CONFLICT (keycloak_sub)`, whose inference
+clause needs SELECT on that column. It is now refused by privilege *before* RLS
+is consulted — a stronger refusal, and **a reduction in what that test proves**,
+since a boundary it can no longer reach is not exercised by it. The RLS half is
+now asserted separately on a plain `UPDATE display_name`, which 047 leaves
+granted: 0 rows cross-tenant, 1 row inside your own organization.
+
+---
+
+**And a second finding, from measuring I82 rather than I81.**
+
+I82 proposes folding subject resolution into "a single atomic bind so the id is
+returned only after the membership exists". The obvious implementation is a
+SECURITY DEFINER. **Measured before building it, and it would have re-opened
+I83.**
+
+ADR-028's two guards are SECURITY INVOKER so they cannot answer for another
+tenant. But `deny_duplicate_address_in_organization` scopes itself
+(`om.organization_id = NEW.organization_id`) while
+`deny_address_collision_on_rename` did **not** — its `mine` side was restricted
+only by the RLS policy on `core.organization_members`. A trigger runs as
+whatever the current user is, and inside a definer owned by the table owner that
+user bypasses RLS while FORCE is off. Same data, both paths:
+
+```
+INVOKER path  : ACCEPTED  <- tenant-scoped, correct
+DEFINER path  : REFUSED   <- refused on organization B's row
+```
+
+The refusal then discloses that the address exists somewhere — I83's oracle,
+rebuilt inside the guard that replaced it, by any future definer that writes to
+`core.users`.
+
+🔴 **Check which mechanism is load-bearing before a comment credits one.** RLS
+was doing the scoping and ADR-028 credited the INVOKER choice. Both were true;
+only one survives being wrapped. 047 makes the predicate explicit, so the scope
+travels with the function rather than with the caller's role — and it is equally
+correct under the FORCE RLS cutover of I56/I58, which would otherwise have
+changed this behaviour a third time.
+
+**I82 remains open**, and its proposed design is now recorded as rejected on
+evidence rather than left to be discovered by whoever builds it.
