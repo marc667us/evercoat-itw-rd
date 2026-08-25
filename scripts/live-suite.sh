@@ -457,6 +457,84 @@ if [[ "${RUN_API_SUITE}" == "yes" && "${PF_DB}" == "CONFIGURED" ]]; then
     fi
 fi
 
+# ---------------------------------------------------------------------
+# 🔴 CLEAR KEYCLOAK'S BRUTE-FORCE LOCKOUT BEFORE THE RUN (I102).
+#
+# The realm sets `bruteForceProtected: true` with `failureFactor: 5`, and
+# this suite authenticates the same handful of users by direct grant many
+# times. Measured 2026-08-25: a run reported
+#
+#     api-live: passed=700 failed=2
+#     "Keycloak refused the direct grant for lead.demo:
+#      401 invalid_grant -- Invalid user credentials"
+#
+# with the CORRECT password. Keycloak's own log, same second:
+#
+#     type="LOGIN_ERROR" error="user_temporarily_disabled" username="lead.demo"
+#
+# So a slow run locks the account and every later authentication is refused
+# with a message that says WRONG PASSWORD. The suite whose entire job is to
+# report three trustworthy numbers was failing itself and misnaming the
+# cause -- and a previous run's damage carried into the next one.
+#
+# This clears the lockout so each run starts from a known state. It is
+# HYGIENE, NOT COVERAGE: unlike the capabilities above, its absence cannot
+# make the report claim something untrue, so it warns and proceeds rather
+# than failing the preflight. A run that cannot clear the lockout is still
+# a valid run; it is just more likely to hit one.
+#
+# Credentials come from the environment and are never defaulted -- this
+# repository is public, and a hard-coded admin password here would be a
+# secret in source rather than a convenience.
+# ---------------------------------------------------------------------
+clear_keycloak_lockouts() {
+    local realm_base="${TEST_KEYCLOAK_URL:-}"
+    local admin_user="${KEYCLOAK_ADMIN_USER:-}"
+    local admin_pass="${KEYCLOAK_ADMIN_PASSWORD:-}"
+    local realm="${KEYCLOAK_REALM:-evercoat}"
+
+    if [[ -z "${realm_base}" ]]; then
+        echo "  brute-force reset SKIPPED -- TEST_KEYCLOAK_URL is not set."
+        return 0
+    fi
+    if [[ -z "${admin_user}" || -z "${admin_pass}" ]]; then
+        echo "  brute-force reset SKIPPED -- KEYCLOAK_ADMIN_USER / "
+        echo "  KEYCLOAK_ADMIN_PASSWORD are not set, so a lockout left by an"
+        echo "  earlier run will fail this one as 'Invalid user credentials'."
+        echo "  This is hygiene, not coverage; the run continues. See I102."
+        return 0
+    fi
+
+    local token
+    token="$(curl -s --max-time 30 \
+        -X POST "${realm_base}/realms/master/protocol/openid-connect/token" \
+        -d "client_id=admin-cli" \
+        --data-urlencode "username=${admin_user}" \
+        --data-urlencode "password=${admin_pass}" \
+        -d "grant_type=password" \
+        | sed -nE 's/.*"access_token":"([^"]+)".*/\1/p')" || token=""
+
+    if [[ -z "${token}" ]]; then
+        echo "  brute-force reset FAILED -- could not obtain an admin token."
+        echo "  Hygiene only; the run continues. See I102."
+        return 0
+    fi
+
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+        -X DELETE "${realm_base}/admin/realms/${realm}/attack-detection/brute-force/users" \
+        -H "Authorization: Bearer ${token}")" || code="000"
+
+    if [[ "${code}" == "204" ]]; then
+        echo "  brute-force lockouts cleared for realm '${realm}' (HTTP 204)"
+    else
+        echo "  brute-force reset returned HTTP ${code} -- not 204. Hygiene"
+        echo "  only; the run continues, but a lockout may still be in force."
+    fi
+}
+
+clear_keycloak_lockouts
+
 if (( PREFLIGHT_FAILURES > 0 )); then
     echo
     echo "=================================================================="

@@ -80,8 +80,32 @@ def test_the_endpoint_under_test_actually_exists() -> None:
     )
 
 
+# 🔴 ONE TOKEN PER USER PER SESSION, NOT ONE PER TEST (I102).
+#
+# This file made twelve direct-grant calls per run for a handful of users,
+# and the realm sets `bruteForceProtected: true` with `failureFactor: 5`.
+# Measured 2026-08-25: a live run reported
+#
+#     "Keycloak refused the direct grant for lead.demo:
+#      401 invalid_grant -- Invalid user credentials"
+#
+# with the CORRECT password, while Keycloak's own log for the same second
+# said `error="user_temporarily_disabled"`. Five failures -- a slow run, a
+# timeout, a retry -- lock the account, and every later attempt is refused
+# with a message that says WRONG PASSWORD. The suite locked itself out and
+# then lied about why.
+#
+# Caching does not fix the lockout (live-suite.sh clears it), but it removes
+# the volume that makes it likely, and twelve authentications of the same
+# user proved nothing that one does.
+_TOKENS: dict[str, str] = {}
+
+
 def _token(username: str) -> str:
-    """A real access token, from a real identity provider."""
+    """A real access token, from a real identity provider. Cached per user."""
+    cached = _TOKENS.get(username)
+    if cached is not None:
+        return cached
     response = httpx.post(
         f"{KEYCLOAK_URL}/realms/{REALM}/protocol/openid-connect/token",
         data={
@@ -93,10 +117,23 @@ def _token(username: str) -> str:
         },
         timeout=30.0,
     )
+    # ⚠️ `invalid_grant / Invalid user credentials` DOES NOT MEAN THE PASSWORD
+    # IS WRONG. Keycloak returns exactly that for a brute-force lockout, so
+    # the obvious reading of this failure sends the reader to check a password
+    # that was correct all along. Say so here, where it is read.
     assert response.status_code == 200, (
-        f"Keycloak refused the direct grant for {username}: {response.status_code} {response.text}"
+        f"Keycloak refused the direct grant for {username}: "
+        f"{response.status_code} {response.text}\n"
+        "If this says 'invalid_grant / Invalid user credentials', check the "
+        "password LAST: Keycloak returns the same error for a brute-force "
+        "lockout (bruteForceProtected=true, failureFactor=5). Its own log "
+        'will say error="user_temporarily_disabled". Clear it with '
+        "DELETE /admin/realms/<realm>/attack-detection/brute-force/users, "
+        "which live-suite.sh now does before every run. See I102."
     )
-    return str(response.json()["access_token"])
+    token = str(response.json()["access_token"])
+    _TOKENS[username] = token
+    return token
 
 
 def _auth(username: str) -> dict[str, str]:
