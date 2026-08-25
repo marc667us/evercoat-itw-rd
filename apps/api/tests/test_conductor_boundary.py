@@ -385,13 +385,19 @@ def test_the_analysis_department_is_actually_reached_by_a_route() -> None:
     already forbids importing a conductor; this is the positive half, and
     without it deleting the call entirely would satisfy every other test here.
     """
-    imports = _imports_of("dashboards.py")
+    for module in ("dashboards.py", "laboratory.py", "testing.py"):
+        imports = _imports_of(module)
+        assert "app.agents.orchestrators.root_orchestrator" in imports, (
+            f"app/api/{module} no longer reaches its department through the "
+            "root orchestrator, so that conductor is unreachable again"
+        )
 
-    assert "app.agents.orchestrators.root_orchestrator" in imports, (
-        "app/api/dashboards.py no longer reaches the analysis department "
-        "through the root orchestrator, so the conductor is unreachable again"
-    )
-    assert "app.domains.dashboards.service" not in imports, (
+    # ⚠️ ONLY dashboards.py IS FULLY OFF ITS SERVICE. laboratory.py and
+    # testing.py still import theirs, and that is CORRECT: §4 keeps every
+    # write-side function off the orchestrator door, so authorize_batch,
+    # confirm_test and the rest must still be called directly. Asserting
+    # "imports no service" there would be asserting a §4 violation.
+    assert "app.domains.dashboards.service" not in _imports_of("dashboards.py"), (
         "app/api/dashboards.py imports the dashboards service directly, which "
         "is the bypass that made the analysis conductor decoration"
     )
@@ -406,3 +412,82 @@ def _imports_of(module: str) -> set[str]:
         elif isinstance(node, ast.Import):
             found.update(a.name for a in node.names)
     return found
+
+
+def test_the_report_needs_report_generate_not_merely_view() -> None:
+    """🔴 `report.generate`'s FIRST ENFORCEMENT POINT, ANYWHERE.
+
+    Measured before the report was written: `report.generate` is granted to
+    FIVE roles, `analytics.portfolio` to two, `analytics.view` to nine — and
+    not one of the three was referenced by a single line of application code.
+    Permissions with no production path that reads them: this repository's
+    most-repeated question, turned on the permission catalogue itself.
+
+    Generating a report aggregates across records and is the thing a person
+    exports and sends onwards, so it takes its own permission rather than
+    riding on the dashboard's `project.view`. Holding VIEW must NOT be enough.
+    """
+    assert analysis_conductor.REPORT == "report.generate"
+    assert analysis_conductor.REPORT != analysis_conductor.VIEW, (
+        "the report rides on the dashboard's permission, so report.generate still enforces nothing"
+    )
+
+    # VIEW alone is refused...
+    with pytest.raises(DepartmentDeniedError) as caught:
+        analysis_conductor.report(
+            _ExplodingSession(),
+            organization_id=ORG,
+            permissions=frozenset({analysis_conductor.VIEW}),
+        )
+    assert caught.value.permission == analysis_conductor.REPORT
+
+    # ...and REPORT reaches the service, proving the gate opens rather than
+    # refusing everyone. Same both-directions rule as every gate above.
+    with pytest.raises(AssertionError) as reached:
+        analysis_conductor.report(
+            _ExplodingSession(),
+            organization_id=ORG,
+            permissions=frozenset({analysis_conductor.REPORT}),
+        )
+    assert "reached the database" in str(reached.value)
+
+
+def test_the_report_route_is_reachable_and_gated_identically() -> None:
+    """The route lands with the report, and asks for the same permission.
+
+    The analysis conductor was written with no caller once already. This
+    asserts the endpoint exists, reaches the orchestrator, and requires the
+    permission the conductor requires — two literals in two files that a test
+    keeps in agreement.
+    """
+    imports = _imports_of("analysis.py")
+    assert "app.agents.orchestrators.root_orchestrator" in imports, (
+        "app/api/analysis.py does not reach the analysis department through the root orchestrator"
+    )
+    assert not any(m.startswith("app.domains.reporting") for m in imports), (
+        "app/api/analysis.py imports the reporting service directly, which "
+        "bypasses the conductor's report.generate gate"
+    )
+
+    route_perms = _route_permissions("analysis.py")
+    assert analysis_conductor.REPORT in route_perms, (
+        f"app/api/analysis.py does not require {analysis_conductor.REPORT!r} "
+        f"(it requires {sorted(route_perms)}), so the route and the conductor "
+        "disagree about who may generate a report"
+    )
+
+
+def test_the_report_router_is_actually_registered() -> None:
+    """A router written and not included is the no-caller defect one level up."""
+    main = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+    # Split, because ruff is right that a compound assertion cannot say WHICH
+    # half failed -- and "the router is missing" and "it is mounted at the
+    # wrong prefix" are different bugs with different fixes.
+    assert "analysis_router" in main, (
+        "app/main.py does not import the analysis router, so the report "
+        "endpoint does not exist on the running API"
+    )
+    assert '"/api/analysis"' in main, (
+        "app/main.py imports the analysis router but does not mount it at "
+        "/api/analysis, so the report endpoint answers 404"
+    )

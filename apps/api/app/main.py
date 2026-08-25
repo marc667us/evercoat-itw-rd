@@ -22,6 +22,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from app.api.admin import router as admin_router
 from app.api.admin_reference_data import router as admin_reference_data_router
 from app.api.admin_stage_gates import router as admin_stage_gates_router
+from app.api.analysis import router as analysis_router
 from app.api.dashboards import router as dashboards_router
 from app.api.failures import approvals_router
 from app.api.failures import router as failures_router
@@ -234,6 +235,9 @@ def create_app() -> FastAPI:
     # app/api/me.py and migration 024.
     application.include_router(me_router, prefix="/api/me")
     application.include_router(dashboards_router, prefix="/api/dashboards")
+    # Registered in the SAME change as the report it serves. A router
+    # written and not included is the "no caller" defect one level up.
+    application.include_router(analysis_router, prefix="/api/analysis")
     application.include_router(projects_router, prefix="/api/projects")
     application.include_router(opportunities_router, prefix="/api/opportunities")
     # My Work. Mounted at its own prefix rather than under /api/projects

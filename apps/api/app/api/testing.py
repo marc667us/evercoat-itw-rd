@@ -43,6 +43,30 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+# 🔴 THE READS GO THROUGH THE ORCHESTRATOR (§0.2, I103).
+#
+# This module called its domain service directly, and the department
+# conductor written for it had NO CALLERS -- a layer nothing reaches is the
+# same defect as a route nothing calls, which is a rule this repository
+# already has. `app/api/dashboards.py` was wired first; this is the same
+# move.
+#
+# ⚠️ THE WRITES DELIBERATELY DO NOT. §4: humans approve, and AI must not
+# authorize a batch, confirm a test or move a result from YELLOW to GREEN.
+# So the orchestrator exposes no write-side entry point at all, and every
+# mutation below still calls the domain service directly. The asymmetry is
+# the rule, not an omission -- if a write ever appears on that door, it is a
+# §4 violation and not a convenience.
+#
+# ⚠️ `require_permission(...)` ON EACH ROUTE STAYS. The conductor asserts the
+# same permission; that is defence in depth. The dependency refuses an
+# unauthenticated caller before any handler runs, and the conductor refuses on
+# the paths that have no route.
+from app.agents.orchestrators.root_orchestrator import (
+    testing_methods,
+    testing_test,
+    testing_tests,
+)
 from app.core.security import (
     PermissionDenied,
     Principal,
@@ -65,9 +89,6 @@ from app.domains.testing.service import (
     confirm_test,
     create_test,
     exclude_replicate,
-    get_test,
-    list_methods,
-    list_tests,
     record_decision,
     record_replicate,
     start_execution,
@@ -202,9 +223,10 @@ def get_tests(
     `review_state` is filterable because the review queue — "what is
     waiting for me" — is the screen this module is used from most.
     """
-    return list_tests(
+    return testing_tests(
         session,
         organization_id=principal.organization_id,
+        permissions=principal.permissions,
         project_id=project_id,
         review_state=review_state,
     )
@@ -225,7 +247,11 @@ def get_methods(
     merely to SEE the list would put the planning form out of reach of the
     Engineer who uses it.
     """
-    return list_methods(session, organization_id=principal.organization_id)
+    return testing_methods(
+        session,
+        organization_id=principal.organization_id,
+        permissions=principal.permissions,
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, tags=["testing"])
@@ -264,7 +290,12 @@ def get_one_test(
     only one of them is rendering half the truth.
     """
     try:
-        return get_test(session, test_id=test_id, organization_id=principal.organization_id)
+        return testing_test(
+            session,
+            test_id=test_id,
+            organization_id=principal.organization_id,
+            permissions=principal.permissions,
+        )
     except TestNotFoundError as exc:
         raise _missing(exc) from exc
 

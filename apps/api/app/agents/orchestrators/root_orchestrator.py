@@ -30,6 +30,7 @@ from app.agents.ports import LanguageModelPort
 __all__ = [
     "UnknownDashboardError",
     "analysis_dashboard",
+    "analysis_report",
     "answer_question",
     "laboratory_batch",
     "laboratory_batches",
@@ -207,4 +208,22 @@ def analysis_dashboard(
         user_id=user_id,
         organization_id=organization_id,
         permissions=permissions,
+    )
+
+
+def analysis_report(
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    permissions: frozenset[str],
+    project_id: uuid.UUID | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """The test-results report, through the analysis conductor."""
+    return analysis_conductor.report(
+        session,
+        organization_id=organization_id,
+        permissions=permissions,
+        project_id=project_id,
+        limit=limit,
     )

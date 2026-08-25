@@ -34,6 +34,29 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+# 🔴 THE READS GO THROUGH THE ORCHESTRATOR (§0.2, I103).
+#
+# This module called its domain service directly, and the department
+# conductor written for it had NO CALLERS -- a layer nothing reaches is the
+# same defect as a route nothing calls, which is a rule this repository
+# already has. `app/api/dashboards.py` was wired first; this is the same
+# move.
+#
+# ⚠️ THE WRITES DELIBERATELY DO NOT. §4: humans approve, and AI must not
+# authorize a batch, confirm a test or move a result from YELLOW to GREEN.
+# So the orchestrator exposes no write-side entry point at all, and every
+# mutation below still calls the domain service directly. The asymmetry is
+# the rule, not an omission -- if a write ever appears on that door, it is a
+# §4 violation and not a convenience.
+#
+# ⚠️ `require_permission(...)` ON EACH ROUTE STAYS. The conductor asserts the
+# same permission; that is defence in depth. The dependency refuses an
+# unauthenticated caller before any handler runs, and the conductor refuses on
+# the paths that have no route.
+from app.agents.orchestrators.root_orchestrator import (
+    laboratory_batch,
+    laboratory_batches,
+)
 from app.core.security import (
     PermissionDenied,
     Principal,
@@ -55,8 +78,6 @@ from app.domains.laboratory.service import (
     complete_batch,
     create_batch,
     create_sample,
-    get_batch,
-    list_batches,
     raise_deviation,
     record_process_parameter,
     record_weighing,
@@ -150,9 +171,10 @@ def get_batches(
     queue actionable — CLAUDE.md §11 requires counts to represent items
     needing action, not total rows.
     """
-    return list_batches(
+    return laboratory_batches(
         session,
         organization_id=principal.organization_id,
+        permissions=principal.permissions,
         project_id=project_id,
         status=status_filter,
     )
@@ -202,7 +224,12 @@ def get_one_batch(
     """The sheet, what was weighed against it, process data, deviations,
     samples — and each line's deviation computed at read time."""
     try:
-        return get_batch(session, batch_id=batch_id, organization_id=principal.organization_id)
+        return laboratory_batch(
+            session,
+            batch_id=batch_id,
+            organization_id=principal.organization_id,
+            permissions=principal.permissions,
+        )
     except BatchNotFoundError as exc:
         raise _missing(exc) from exc
 

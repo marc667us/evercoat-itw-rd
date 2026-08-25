@@ -62,8 +62,9 @@ from sqlalchemy.orm import Session
 
 from app.agents.boundary import require
 from app.domains.dashboards.service import ROLE_DASHBOARDS
+from app.domains.reporting.service import test_results_report
 
-__all__ = ["DEPARTMENT", "VIEW", "UnknownDashboardError", "dashboard"]
+__all__ = ["DEPARTMENT", "REPORT", "VIEW", "UnknownDashboardError", "dashboard", "report"]
 
 DEPARTMENT = "analysis"
 
@@ -72,6 +73,21 @@ DEPARTMENT = "analysis"
 # A constant named once here and asserted against the route there is the only
 # arrangement in which the two cannot drift apart unnoticed.
 VIEW = "project.view"
+
+# 🔴 `report.generate`'s FIRST ENFORCEMENT POINT, ANYWHERE.
+#
+# Measured before writing this: `report.generate` is granted to FIVE roles,
+# `analytics.portfolio` to two and `analytics.view` to nine -- and not one of
+# the three is referenced by a single line of application code. They were
+# permissions with no production path that reads them, which is this
+# repository's most-repeated question turned on the permission catalogue
+# itself: *ask of every role, which production path enforces it?*
+#
+# Generating a report is a distinct act from reading a dashboard -- it
+# aggregates across records and is the thing a person exports and sends
+# onwards -- so it takes the permission the catalogue already reserved for
+# it rather than riding on VIEW.
+REPORT = "report.generate"
 
 
 class UnknownDashboardError(ValueError):
@@ -103,4 +119,32 @@ def dashboard(
         user_id=user_id,
         organization_id=organization_id,
         held_permissions=permissions,
+    )
+
+
+def report(
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    permissions: frozenset[str],
+    project_id: uuid.UUID | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Test results, aggregated by their derived disposition.
+
+    Gated on `report.generate`, not `VIEW`: see REPORT above. A caller who may
+    read a dashboard is not automatically a caller who may generate a report
+    over the whole portfolio.
+
+    ⚠️ THE REPORT READS §10's DERIVATION, IT DOES NOT REPEAT IT. See
+    `app/domains/reporting/service.py` -- a report that regrouped tests by
+    re-implementing the fourteen ordered rules would be the second answer
+    `app/calculations/testing.py` exists to prevent.
+    """
+    require(permissions, department=DEPARTMENT, permission=REPORT)
+    return test_results_report(
+        session,
+        organization_id=organization_id,
+        project_id=project_id,
+        limit=limit,
     )
