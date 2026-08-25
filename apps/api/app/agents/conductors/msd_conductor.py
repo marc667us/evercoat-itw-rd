@@ -301,7 +301,32 @@ def answer(
             tool_calls=({"tool": "material_safety", "returned": len(materials)},),
         )
 
-    if intent == "explain_result":
+    if intent == "explain_result" and "test.view" in permissions:
+        # 🔴 §7 AGAIN, AND THE THIRD TIME THIS FILE HAS HAD THIS DEFECT.
+        #
+        # `GET /api/testing/tests/{id}` requires `test.view`. Without this
+        # condition a caller holding `msd.use` and NOT `test.view` could ask
+        # "why did T-2026-0041 fail" and be handed the raw replicates, the
+        # statistics, the requirement, the automatic evaluation and the final
+        # disposition -- everything the screen would have refused them.
+        #
+        # Codex found it, exactly as it found the `knowledge_search` case
+        # thirty lines below and the `formula.view_cost` case before that.
+        # The pattern is settled and this branch simply did not follow the
+        # precedent beside it: *a permission governing a surface must be
+        # enforced on the assistant that reads the same table, not only on the
+        # surface.*
+        #
+        # ⚠️ AND IT IS WHY THE NEW `testing_conductor` GATE WAS NOT
+        # LOAD-BEARING. That conductor guards a door; this was the door
+        # callers actually use. A gate on an unused path is not a boundary,
+        # it is decoration -- which is the exact thing the conductor tier was
+        # written to avoid being.
+        #
+        # Falling through to the refusal rather than raising, for the same
+        # reason as `knowledge_search`: a person without the permission should
+        # learn that MSD cannot answer that, not that the result exists and
+        # they may not see it.
         number = _test_number_in(question.lower())
         # Named `explained`, not `found`: a later branch binds `found` to a
         # list of records in the same function scope, and reusing the name

@@ -1,74 +1,81 @@
 """Analysis — the department conductor. NEW.
 
-The fourth department, and the first one that did not already exist as a
-route-backed surface. Structural, like laboratory and testing: the
+The fourth department, and the first that did not already exist as a
+route-backed agent surface. Structural, like laboratory and testing: the
 department's permission gate plus dispatch to
-`app.domains.dashboards.service`.
+`app.domains.dashboards.service`. The reasoning for why the conductor tier
+owns the gate is in `app/agents/boundary.py`.
 
-🔴 WHY THE ANALYSIS DEPARTMENT IS `analytics.view`, NOT A ROLE.
+🔴 THE GATE IS `project.view`, AND THE FIRST DRAFT GOT IT WRONG.
 
-The dashboards are named after roles — `chemist_dashboard`, `lead_dashboard`,
-`engineer_dashboard`, `director_dashboard` — and it would be easy to gate
-them by role name. §6 forbids exactly that: *authorize on permissions, not
-role names.* A product_development_lead who has not been granted
-`analytics.view` must not read the lead dashboard because of what they are
-called.
+I gated this on `analytics.view` because the permission catalogue files the
+dashboards under the `analytics` domain. `app/api/dashboards.py` — the route
+that has been serving these same dashboards — gates on **`project.view`**.
+Two boundaries answering the same question differently is not a style
+difference, and measured against the seeded roles they come apart in BOTH
+directions:
 
-So the caller names which dashboard they want, and the gate is the
-permission. The role in the function name describes the SHAPE of the
-answer — which panels, which queues — not who may ask for it.
+    procurement_specialist   analytics.view  YES   project.view  NO
+    laboratory_technician    analytics.view  NO    project.view  YES
 
-⚠️ A DASHBOARD'S FAILURE MODE IS AN EMPTY PANEL, NOT AN ERROR.
-That is recorded from 2026-08-21 and it is why this conductor returns the
-service's answer unchanged rather than "helpfully" substituting anything for
-an empty section. A panel that shows demonstration figures when the real
-query returned nothing is the defect this project has already shipped once
-(08-19: a failed `/api/me` turned into demonstration data). Empty is an
-answer; invented is not.
+So the first draft would have **granted a procurement specialist a dashboard
+the route refuses them**, and refused a laboratory technician one the route
+allows. The route is the shipped contract; the conductor matches it. When
+`analytics.view` should gate something, it will gate it in both places at
+once or not at all.
+
+🔴 AND THE TABLE IS THE SERVICE'S, NOT A SECOND COPY.
+
+The first draft wrote out its own `{"lead": lead_dashboard, ...}` mapping
+beside the service's `ROLE_DASHBOARDS`, which the route already uses. Two
+literals in two files cannot be type-checked into agreement — this
+repository's own most-repeated defect, and it would have meant a dashboard
+added to one and not the other. There is one table, and it lives with the
+service that owns it.
+
+⚠️ `held_permissions` IS PASSED, AND OMITTING IT FAILS SILENTLY.
+The builders gate individual panels on it — `"test.review" in
+held_permissions`, `held_permissions & {"batch.execute", "batch.complete"}`,
+`"opportunity.view" in held_permissions` — and it DEFAULTS TO `frozenset()`.
+The first draft did not pass it, so the conductor returned the same dashboard
+with several panels quietly missing: correct-looking, smaller, and wrong. It
+failed closed, which is why nothing raised, and *"a dashboard's failure mode
+is an EMPTY PANEL"* is exactly the lesson this project already recorded.
+
+⚠️ A DASHBOARD'S EMPTY SECTION IS AN ANSWER; AN INVENTED ONE IS NOT. The
+service's result is returned unchanged. Substituting anything for an empty
+panel is the defect shipped on 08-19, when a failed `/api/me` turned into
+demonstration data.
 
 ⚠️ AND IT IS THE CALLER'S OWN RLS-SCOPED SESSION, always. Analytics reads
-across more tables than any other department, so a conductor here that
-borrowed a privileged connection would aggregate other tenants' work into a
-single number and be very hard to notice.
+across more tables than any other department, so a conductor that borrowed a
+privileged connection would aggregate other tenants' work into one number and
+be very hard to notice.
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.agents.boundary import require
-from app.domains.dashboards import service as dashboards
+from app.domains.dashboards.service import ROLE_DASHBOARDS
 
-# A named alias rather than `dict[str, Any]`: with Any the dispatch below
-# returns Any, mypy's --strict rightly objects, and the obvious silencer is
-# a cast that would also hide a genuinely wrong return type.
-_DashboardFn = Callable[..., dict[str, Any]]
-
-__all__ = ["DASHBOARDS", "DEPARTMENT", "UnknownDashboardError", "dashboard"]
+__all__ = ["DEPARTMENT", "VIEW", "UnknownDashboardError", "dashboard"]
 
 DEPARTMENT = "analysis"
 
-VIEW = "analytics.view"
-
-# The dashboards this conductor will serve, by name. Written out rather than
-# resolved with `getattr(dashboards, f"{name}_dashboard")`: a dynamic lookup
-# turns any attribute of the service module into a reachable endpoint, which
-# is how a private helper becomes public without anyone deciding it should
-# be. The same reasoning `_RESOLVERS` uses in messaging/service.py.
-DASHBOARDS: dict[str, _DashboardFn] = {
-    "chemist": dashboards.chemist_dashboard,
-    "engineer": dashboards.engineer_dashboard,
-    "lead": dashboards.lead_dashboard,
-    "director": dashboards.director_dashboard,
-}
+# 🔴 Kept identical to `app/api/dashboards.py`'s dependency on purpose, and
+# `tests/test_conductor_boundary.py` reads that route's source to prove it.
+# A constant named once here and asserted against the route there is the only
+# arrangement in which the two cannot drift apart unnoticed.
+VIEW = "project.view"
 
 
 class UnknownDashboardError(ValueError):
-    """A dashboard name this conductor does not serve."""
+    """A dashboard name the service does not build."""
 
 
 def dashboard(
@@ -81,17 +88,19 @@ def dashboard(
 ) -> dict[str, Any]:
     """One dashboard, by name, for the calling user.
 
-    `user_id` comes from the verified principal and is passed to the service,
-    which uses it for "assigned to me" style panels. A caller that could name
-    somebody else's `user_id` here would be asking what is waiting for a
-    colleague — the same hole `root_orchestrator` already warns about.
+    `user_id` comes from the verified principal. A caller that could name
+    somebody else's would be asking what is waiting for a colleague — the
+    hole `root_orchestrator` already warns about.
     """
     require(permissions, department=DEPARTMENT, permission=VIEW)
-    try:
-        build = DASHBOARDS[name]
-    except KeyError:
+    build = ROLE_DASHBOARDS.get(name)
+    if build is None:
         raise UnknownDashboardError(
-            f"{name!r} is not a dashboard this conductor serves; "
-            f"expected one of {sorted(DASHBOARDS)}"
-        ) from None
-    return build(session, user_id=user_id, organization_id=organization_id)
+            f"no such dashboard; the roles with a dashboard are {sorted(ROLE_DASHBOARDS)}"
+        )
+    return build(
+        session,
+        user_id=user_id,
+        organization_id=organization_id,
+        held_permissions=permissions,
+    )
