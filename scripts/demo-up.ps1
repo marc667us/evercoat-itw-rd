@@ -179,26 +179,44 @@ $kcUpdateExit = $LASTEXITCODE
 #     update leaves the previous run's correct-looking value in place and the
 #     guard reports success on config it did not write.
 #
-# `.Contains()` and not `-like`: one expected value is `$PublicUrl/*`, and as
-# a `-like` PATTERN that trailing `*` matches anything, so the check would
-# have passed on `/auth/callback`. A wildcard inside the needle is how a
-# check quietly stops being one -- this project's own most repeated lesson.
+# 🔴 AND IT PARSES THE JSON RATHER THAN SUBSTRING-MATCHING THE BLOB.
+#
+# The first attempt at this stronger guard tested `$stored.Contains($value)`
+# over the whole response, and it was STILL not a check. Falsified against a
+# synthetic config with `webOrigins: []` -- which breaks CORS completely --
+# and it PASSED, because every webOrigin is a PREFIX of a redirect URI:
+# "http://localhost:3000" is inside "http://localhost:3000/auth/callback/".
+# A substring test cannot say WHICH FIELD a value appeared in, so it silently
+# graded `webOrigins` against `redirectUris`.
+#
+# Two guards in a row that read as verification and could not fail. Parse the
+# document and assert each field, and note `-contains` is an EXACT element
+# match on an array, so a wildcard in the value cannot spread.
 $stored = (& $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh get "clients/$clientId" `
               -r evercoat --fields redirectUris,webOrigins) -join ""
-$kcExpected = @(
+$kcClient = $null
+try { $kcClient = $stored | ConvertFrom-Json } catch { }
+if ($null -eq $kcClient) {
+    throw "could not parse the evercoat-web client read-back as JSON. It reads: $stored"
+}
+$kcWantRedirects = @(
     "$PublicUrl/auth/callback/",
     "$PublicUrl/auth/callback",
     "$PublicUrl/*",
-    "http://localhost:3000/auth/callback/",
-    "$PublicUrl",
-    "http://localhost:3000"
+    "http://localhost:3000/auth/callback/"
 )
-$kcMissing = @($kcExpected | Where-Object { -not $stored.Contains($_) })
+$kcWantOrigins = @("$PublicUrl", "http://localhost:3000")
+$kcMissing = @()
+$kcMissing += @($kcWantRedirects | Where-Object { $kcClient.redirectUris -notcontains $_ } |
+                ForEach-Object { "redirectUris:$_" })
+$kcMissing += @($kcWantOrigins   | Where-Object { $kcClient.webOrigins   -notcontains $_ } |
+                ForEach-Object { "webOrigins:$_" })
 if ($kcUpdateExit -ne 0 -or $kcMissing.Count -gt 0) {
     throw ("the evercoat-web client was NOT repointed (kcadm exit $kcUpdateExit). " +
            "Missing: $($kcMissing -join ', '). It reads: $stored")
 }
-Write-Host "  keycloak client repointed ($($kcExpected.Count)/$($kcExpected.Count) values verified by read-back)"
+$kcChecked = $kcWantRedirects.Count + $kcWantOrigins.Count
+Write-Host "  keycloak client repointed ($kcChecked/$kcChecked values verified per field by read-back)"
 
 & $docker rm -f evercoat-demo-keycloak | Out-Null
 & $docker run -d --restart unless-stopped --name evercoat-demo-keycloak -p 18080:8080 `
