@@ -250,3 +250,87 @@ owner action, and support for an iterative deploy loop — is in
 
 **Do not restart the Railway path.** If a future session finds ADR-026 and not
 this ADR, that is the failure mode this record exists to prevent.
+
+---
+
+### ADR-028 — an email address is an attribute, not a global key · Accepted 2026-08-25
+
+**Closes I83.** Implemented by migration 046 (`f1000`).
+
+**Context — measured, not assumed.** `core.users.email` was CITEXT carrying
+`users_email_key`, a **globally unique** constraint. Unique constraints are
+enforced **outside row-level security**: the index is consulted whatever the
+reader may see. Measured as `evercoat_app` scoped to organization A, against an
+address belonging to a member of organization B:
+
+```
+INSERT INTO core.users (keycloak_sub, email, display_name)
+VALUES ('throwaway', 'victim@competitor.example', 'throwaway');
+  -->  REFUSED by "users_email_key"        --> POST /api/admin/members answers 409
+
+... the same statement with an address nobody holds:
+  -->  ACCEPTED                            --> the route answers 201
+```
+
+So a holder of `admin.users` in **any** tenant — including a self-service one —
+read platform-wide existence from a status code, with a throwaway subject and no
+row left behind, repeatable without limit. **Emails are guessable where a subject
+UUID is not.** The same run confirmed the squatting half: organization A can
+pre-insert a junk identity holding a competitor's address, after which
+organization B can never onboard that person.
+
+**Decision: drop `users_email_key`. Identity is `keycloak_sub`; email is an
+attribute mirrored from the identity provider.** One-address-per-organization is
+enforced instead by a SECURITY INVOKER constraint trigger on
+`core.organization_members`.
+
+**Why not the alternative — a definer plus one indistinguishable 409.** It was on
+the table and it does not work, and the evidence is in the record rather than in
+an argument: **migration 044 had already made that refusal generic**, and the
+oracle survived. It survived because the attacker does not read the message; they
+read **201 against 409**, and no wording closes that gap while a globally enforced
+constraint decides which one they get. A creating endpoint cannot make "created"
+indistinguishable from "not created". That option also leaves the squatting path
+completely untouched.
+
+**A global unique constraint on an attribute is a cross-tenant channel by
+construction, not by accident.** §5 already says every code is tenant-scoped and
+that a globally unique batch number "would stop Org B creating LB001 because Org A
+has one — and the constraint violation itself discloses another tenant's record".
+`core.users.email` was the same rule, unnoticed because `core.users` is not
+tenant-keyed.
+
+**The stated cost did not exist.** `TODO.md` recorded that dropping the constraint
+"reaches messaging/service.py's @mention resolution, which matches on the local
+part of core.users.email". Measured: that query matches `split_part(email,'@',1)`
+and the constraint is on the **whole address**, so it never protected it. Two
+members of one organization at `chris@one.example` and `chris@two.example` — both
+always permitted — already returned 2 rows into a `.one_or_none()`, a **latent 500
+on posting a message**, independent of this ADR and fixed in the same commit. An
+ambiguous handle now resolves to nobody, because notifying the wrong person is
+worse than an unresolved handle.
+
+**The replacement is deliberately not a SECURITY DEFINER.** It refuses a write
+based on rows it can read; as a definer it would read every tenant and refuse on
+what it found there, rebuilding the oracle inside a trigger. As an invoker it sees
+only what the writing role may see — within one organization, every member — so it
+does not miss in practice, and where RLS does hide a row it passes silently rather
+than answering. **Prefer a guard that can miss inside your own tenant over one that
+can answer across tenants.** `tests/db/test_046` asserts `pg_proc.prosecdef` is
+false, because a comment claiming INVOKER proves nothing.
+
+**Consequences.**
+
+* Two identities may now hold the same address. That is the point, and Keycloak —
+  where identity lives — is where realm-wide address uniqueness belongs.
+* One organization still cannot hold the same address twice among **active**
+  members. Scoped to active so offboarding somebody does not lock their address
+  out of the tenant.
+* `POST /api/admin/members` gained a second, distinguishable 409: "another active
+  member of this organization already uses that email address". Naming it is safe
+  **here** and was not safe before, because `list_members` already shows this
+  caller every member of their own organization with their address. That is the
+  whole difference between this message and the constraint being removed.
+* **The downgrade can legitimately fail** and says so, naming the duplicate
+  addresses. It will not delete user records to make a constraint fit.
+* I81 and I82 are unchanged by this and still stand.

@@ -510,7 +510,25 @@ def _resolve_mentions(
     """
     notified: list[dict[str, Any]] = []
     for handle in dict.fromkeys(_MENTION.findall(body)):
-        user = (
+        # 🔴 AN AMBIGUOUS HANDLE RESOLVES TO NOBODY, AND THIS USED TO BE A 500.
+        #
+        # `.one_or_none()` raises `MultipleResultsFound` the moment two active
+        # members of ONE organization share an email local part, and posting a
+        # message that mentions them died with a 500.
+        #
+        # ⚠️ THAT WAS ALREADY TRUE BEFORE MIGRATION 046 -- it is not a
+        # consequence of dropping `users_email_key`. Measured 2026-08-25 with
+        # `jane@one.example` and `jane@two.example`, two addresses the global
+        # constraint has always permitted, both members of one organization:
+        # this query returned 2 rows. The constraint was on the WHOLE ADDRESS
+        # and this matches the LOCAL PART, so it never protected this call.
+        #
+        # `LIMIT 2` and "two means nobody", rather than picking one: an
+        # arbitrary winner would notify the WRONG PERSON and record a mention
+        # link naming them, which is worse than an unresolved handle. This is
+        # the same outcome the function already gives a handle that matches
+        # nobody -- the text of the message is untouched either way.
+        candidates = (
             session.execute(
                 text(
                     """
@@ -520,15 +538,17 @@ def _resolve_mentions(
                       ON m.user_id = u.id AND m.organization_id = :org
                      AND m.status = 'active'
                     WHERE split_part(u.email, '@', 1) = :handle
+                    LIMIT 2
                     """
                 ),
                 {"org": organization_id, "handle": handle},
             )
             .mappings()
-            .one_or_none()
+            .all()
         )
-        if user is None:
+        if len(candidates) != 1:
             continue
+        user = candidates[0]
 
         session.execute(
             text(

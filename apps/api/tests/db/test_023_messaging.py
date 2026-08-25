@@ -167,8 +167,17 @@ def channel_fixture(owner_session: Session, app_session: Session) -> Iterator[di
     owner_session.execute(
         text("ALTER TABLE messaging.messages ENABLE TRIGGER messages_are_a_record")
     )
+    # 🔴 ALL THREE, NOT TWO. THIS FIXTURE LEAKED A USER ROW ON EVERY RUN.
+    #
+    # `member` was created beside `author` and `outsider` and then not
+    # deleted, so each execution of this file left one orphaned identity
+    # behind. Measured 2026-08-25: **595** `msg-member%` rows in the
+    # development database, against 782 users in total — the population is
+    # mostly this fixture's debris, which quietly makes every "N users
+    # checked" measurement over `core.users` a measurement of test garbage.
     owner_session.execute(
-        text("DELETE FROM core.users WHERE id IN (:a, :b)"), {"a": author, "b": outsider}
+        text("DELETE FROM core.users WHERE id = ANY(:ids)"),
+        {"ids": [author, outsider, member]},
     )
     owner_session.execute(text("DELETE FROM core.organizations WHERE id = :o"), {"o": org})
     owner_session.commit()
@@ -624,3 +633,84 @@ def test_promoting_to_someone_outside_a_restricted_project_does_not_notify_them(
     assert leaked == 0, (
         "somebody outside a restricted project was sent a notification naming its work"
     )
+
+
+def test_an_ambiguous_handle_resolves_to_nobody(
+    app_session: Session, owner_session: Session, channel_fixture: dict[str, uuid.UUID]
+) -> None:
+    """🔴 THIS USED TO BE A 500 ON POSTING A MESSAGE, AND STILL WOULD BE.
+
+    `_resolve_mentions` matched on the LOCAL PART of `core.users.email` and
+    called `.one_or_none()`, which raises `MultipleResultsFound` the moment
+    two active members of one organization share it.
+
+    ⚠️ THAT WAS NOT CAUSED BY MIGRATION 046. `users_email_key` was on the
+    WHOLE ADDRESS, so `chris@one.example` and `chris@two.example` have always
+    been permitted, and two such people in one organization have always
+    broken this call. Measured 2026-08-25 while closing I83: the query
+    returned 2 rows. The constraint never protected this.
+
+    An arbitrary winner is not the fix -- it would notify the WRONG PERSON
+    and record a mention link naming them, which is worse than an unresolved
+    handle. Ambiguous now resolves to nobody, exactly as an unknown handle
+    does, and the message text is untouched either way.
+
+    Falsified by restoring `.one_or_none()`: this test then errors with
+    MultipleResultsFound instead of passing.
+    """
+    fx = channel_fixture
+    suffix = uuid.uuid4().hex[:8]
+    handle = f"chris{suffix}"
+
+    # Two ACTIVE members of ONE organization whose addresses differ but whose
+    # local parts do not. Both would have been accepted by users_email_key.
+    twins: list[uuid.UUID] = []
+    owner_session.begin()
+    for domain in ("one.example", "two.example"):
+        uid = owner_session.execute(
+            text(
+                "INSERT INTO core.users (keycloak_sub, email, display_name)"
+                " VALUES (:s,:e,:n) RETURNING id"
+            ),
+            {"s": f"msg-twin-{domain}-{suffix}", "e": f"{handle}@{domain}", "n": f"Chris {domain}"},
+        ).scalar_one()
+        twins.append(uid)
+        owner_session.execute(
+            text(
+                "INSERT INTO core.organization_members (organization_id, user_id, status)"
+                " VALUES (:o,:u,'active')"
+            ),
+            {"o": fx["org"], "u": uid},
+        )
+    owner_session.commit()
+
+    try:
+        channel = create_channel(
+            app_session,
+            organization_id=fx["org"],
+            actor_id=fx["author"],
+            spec=ChannelInput(channel_type="project", name="Ambiguity", project_id=fx["project"]),
+        )
+        result = post_message(
+            app_session,
+            channel_id=channel["id"],
+            organization_id=fx["org"],
+            actor_id=fx["author"],
+            spec=MessageInput(body=f"@{handle} please review"),
+        )
+        app_session.commit()
+
+        assert result["mentions"] == [], (
+            "an ambiguous handle resolved to somebody. Two active members of "
+            "this organization answer to it, so any choice is a guess -- and a "
+            "guess here notifies the wrong person and records a mention link "
+            f"naming them: {result['mentions']}"
+        )
+    finally:
+        app_session.rollback()
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE user_id = ANY(:u)"), {"u": twins}
+        )
+        owner_session.execute(text("DELETE FROM core.users WHERE id = ANY(:u)"), {"u": twins})
+        owner_session.commit()

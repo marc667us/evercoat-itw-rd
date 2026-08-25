@@ -261,17 +261,31 @@ def invite_member(
                 {"sub": payload.keycloak_sub},
             ).scalar_one_or_none()
             if raced is None:
-                # Not the subject race. `core.users` carries a SECOND unique
-                # constraint -- `users_email_key` -- so this is reached when a
-                # DIFFERENT subject already holds the submitted email address.
-                # Raised by Codex as an exact-email existence oracle, and it is
-                # one: unique constraints are enforced outside RLS, so the
-                # refusal is observable across tenants. It is answered with a
-                # deliberately GENERIC message that does not say which
-                # constraint failed, so an `admin.users` holder cannot tell an
-                # email collision from a subject collision from any other
-                # failure -- the same reasoning as I72. The driver message is
-                # never passed through; it names tables and columns.
+                # 🔴 THIS USED TO BE THE CROSS-TENANT EMAIL ORACLE (I83).
+                #
+                # `core.users` carried a SECOND unique constraint --
+                # `users_email_key`, GLOBAL -- so this branch was reached
+                # whenever a different subject anywhere on the platform already
+                # held the submitted address. Unique constraints are enforced
+                # outside RLS, so the refusal was observable across tenants: an
+                # `admin.users` holder in any organization POSTed a throwaway
+                # subject with a guessed address and read platform-wide
+                # existence from 201 against 409.
+                #
+                # A generic message did not close it, and that is measured
+                # rather than argued: migration 044 already made this detail
+                # generic, and the oracle survived, because the attacker reads
+                # the STATUS CODE. Migration 046 drops the constraint instead
+                # -- see its header for why email is an attribute and
+                # `keycloak_sub` is the identity.
+                #
+                # So this branch no longer has an email case. `core.users` now
+                # carries exactly one unique constraint the caller can hit,
+                # `users_keycloak_sub_key`, which is the race handled above;
+                # reaching here means the INSERT failed integrity for a reason
+                # this route does not model. The detail stays generic -- it is
+                # not a channel, and the driver message names tables and
+                # columns.
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="the user record could not be created",
@@ -320,6 +334,31 @@ def invite_member(
                 {"org": principal.organization_id, "uid": user_id},
             ).scalar_one()
     except IntegrityError as exc:
+        # 🔴 TWO DIFFERENT REFUSALS ARRIVE HERE NOW, AND ONE OF THEM WOULD BE
+        # DESCRIBED WRONGLY BY THE OTHER'S MESSAGE.
+        #
+        # Migration 046 replaced the global `users_email_key` with a
+        # PER-ORGANIZATION guard on this table: a second ACTIVE member of the
+        # same organization may not hold the same address. It raises
+        # `unique_violation` from a trigger, so it lands in this handler beside
+        # the `organization_members_unique` race -- and "user is already a
+        # member of this organization" is false for it. A different person
+        # holds that address; this subject is not a member at all.
+        #
+        # Telling the two apart is safe HERE in a way it was not before,
+        # because both facts are already visible to this caller: `list_members`
+        # returns every member of their own organization with their address.
+        # The guard is tenant-scoped by construction (see 046), so naming it
+        # discloses nothing across a boundary. That is the whole difference
+        # between this message and the global constraint I83 removed.
+        constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+        if constraint == "organization_members_one_address_per_organization":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "another active member of this organization already uses that email address"
+                ),
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="user is already a member of this organization",
