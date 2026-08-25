@@ -251,12 +251,42 @@ preflight_fail() {
 tcp_answers() {
     local host="$1" port="$2"
     [[ -z "${host}" || -z "${port}" ]] && return 1
+    # 🔴 VALIDATED, BECAUSE THIS IS THE ONE PLACE IN THE PREFLIGHT WHERE AN
+    # ENVIRONMENT VARIABLE BECOMES SHELL TEXT. `bash -c` interpolates both,
+    # so a host carrying shell syntax would be EXECUTED. And an IPv6 literal
+    # cannot be spelled in /dev/tcp/HOST/PORT at all: unvalidated it would
+    # read as a refused connection, silently turning a misconfiguration into
+    # a "legitimate absence" -- the exact conversion this preflight exists to
+    # prevent. Raised by Codex.
+    [[ "${host}" =~ ^[A-Za-z0-9._-]+$ ]] || return 2
+    [[ "${port}" =~ ^[0-9]+$ ]] || return 2
     if command -v timeout >/dev/null 2>&1; then
         timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port}" >/dev/null 2>&1
     else
+        # Bounded by the operating system's TCP timeout, NOT by three
+        # seconds. Announced above rather than claimed away here.
         ( exec 3<>"/dev/tcp/${host}/${port}" ) >/dev/null 2>&1
     fi
 }
+
+# 🔴 THE ADDRESS THE APPLICATION ITSELF IS POINTED AT.
+#
+# Codex, correctly: probing a hard-coded list of well-known ports cannot
+# support the categorical claim that --allow-partial "does not cover a
+# database that is present but unused". A database on 15432 would answer
+# nothing on that list and the declared gap would be granted -- a comment
+# asserting a rule the code did not implement, which is this repository's
+# most repeated defect, written by me one screen above the code.
+#
+# DATABASE_URL is mandatory whenever the api-live suite runs, and it names
+# the database this very run talks to. So the probe target is DERIVED from
+# the configuration the run already has, not guessed.
+DB_URL_HOST=""
+DB_URL_PORT=""
+if [[ "${DATABASE_URL:-}" =~ @([A-Za-z0-9._-]+):([0-9]+)/ ]]; then
+    DB_URL_HOST="${BASH_REMATCH[1]}"
+    DB_URL_PORT="${BASH_REMATCH[2]}"
+fi
 
 # Sets PF_STATUS and PF_UNSET, and prints one row of the coverage table.
 preflight_capability() {
@@ -305,6 +335,12 @@ preflight_judge() {
 
 echo
 echo "--- preflight: what this run can actually cover ---"
+if ! command -v timeout >/dev/null 2>&1; then
+    echo "  NOTE: 'timeout' is unavailable here, so the database probes below"
+    echo "        are bounded by the operating system's TCP timeout rather"
+    echo "        than by three seconds. They cannot hang forever, but they"
+    echo "        can be slow against a filtered address."
+fi
 printf '  %-19s %-11s %s\n' "capability" "status" "governs"
 printf '  %-19s %-11s %s\n' "-------------------" "-----------" "-------"
 
@@ -313,7 +349,12 @@ if [[ "${RUN_API_SUITE}" == "yes" ]]; then
         DATABASE_URL KEYCLOAK_ISSUER
     PF_API_IMPORT="${PF_STATUS}"; PF_API_IMPORT_UNSET="${PF_UNSET}"
 
-    preflight_capability "db-suite" "tests/db -- 341 tests" \
+    # 🔴 NOT JUST tests/db. This said "341 tests" until it was measured:
+    # tests/auth/conftest.py uses the SAME owner/app fixtures, and without
+    # them `pytest tests/auth` reports 12 passed / 58 skipped. The run that
+    # exposed I100 skipped 392, and a preflight that understates what its own
+    # absence costs is a quieter version of the defect it exists to catch.
+    preflight_capability "db-suite" "tests/db (341) + tests/auth's db-backed tests -- 392 skipped when this broke" \
         TEST_DB_HOST TEST_DB_PORT POSTGRES_DB \
         TEST_OWNER_USER TEST_OWNER_PASSWORD APP_DB_USER APP_DB_PASSWORD
     PF_DB="${PF_STATUS}"; PF_DB_UNSET="${PF_UNSET}"
@@ -335,28 +376,67 @@ if [[ "${RUN_API_SUITE}" == "yes" ]]; then
     preflight_judge "api-import" "${PF_API_IMPORT}" "${PF_API_IMPORT_UNSET}" \
         "pytest dies at COLLECTION -- app/core/config.py makes both mandatory at import time -- and the collection errors read as deployment faults"
     preflight_judge "db-suite" "${PF_DB}" "${PF_DB_UNSET}" \
-        "341 tests skip silently; the entire RLS and tenant-isolation boundary goes unmeasured"
+        "392 tests skipped silently the day this was measured -- all 341 in tests/db, plus 58 of the 70 in tests/auth, which shares the same fixtures. The entire RLS and tenant-isolation boundary goes unmeasured"
     preflight_judge "auth-integration" "${PF_AUTH}" "${PF_AUTH_UNSET}" \
         "11 tests skip; no real token is ever minted against the deployed realm"
 fi
+# Stricter than before, on purpose: a live run that cannot exercise sign-in
+# must not print a clean three-number report. --allow-partial still runs the
+# spec's password-free callback guard, which is the narrow I96 regression
+# test; what it cannot run is the round trip. Codex flagged the change in
+# behaviour, and the answer is to state what the operator gets, not to
+# soften the default.
 preflight_judge "sign-in-round-trip" "${PF_SIGNIN}" "${PF_SIGNIN_UNSET}" \
-    "the sign-in flow is NOT verified -- the gap that let 713 green sit beside a 404 sign-in on 08-24 (I96)"
+    "the sign-in ROUND TRIP is NOT verified -- the gap that let 713 green sit beside a 404 sign-in on 08-24 (I96). The password-free callback guard in the same spec still runs under --allow-partial"
+
+# A port that is not a number never reaches the probe below. /dev/tcp is
+# opened through `bash -c` with the value interpolated, so a junk value is
+# both a guaranteed connection failure -- reported, confusingly, as "nothing
+# answers there" -- and the one place in this preflight where an environment
+# variable becomes shell text.
+if [[ "${RUN_API_SUITE}" == "yes" && -n "${TEST_DB_PORT:-}" ]] &&
+   [[ ! "${TEST_DB_PORT}" =~ ^[0-9]+$ ]]; then
+    preflight_fail "TEST_DB_PORT is not a number: '${TEST_DB_PORT}'.
+    Every db-suite connection would fail and pytest would report those 341
+    tests as SKIPPED, which is the shape this preflight exists to catch."
+    TEST_DB_PORT=""
+fi
 
 # 🔴 A DATABASE IS HERE AND THE SUITE WAS NOT POINTED AT IT.
 #
 # This is the discriminator that separates "no database, so those tests
-# cannot run" from "a database is running on this host and the suite
-# skipped 341 tests anyway" -- which is what happened on 08-25 and what
-# --allow-partial must NOT be able to wave through.
+# cannot run" from "a database is running within this run's reach and the
+# suite skipped 341 tests anyway" -- which is what happened on 08-25 and
+# what --allow-partial must NOT be able to wave through.
+#
+# WHAT IS PROBED, EXACTLY -- so this comment states the code and not a wish:
+#   1. the host:port inside DATABASE_URL, which the api-live suite is
+#      already talking to and therefore proves a database is in reach.
+#      A URL with NO explicit port does not match, and falls through to
+#      the guesses below rather than assuming 5432 -- named here because
+#      an undocumented blind spot is how the last version of this comment
+#      came to claim more than the code did;
+#   2. TEST_DB_HOST:TEST_DB_PORT, where a half-configured attempt points;
+#   3. TEST_DB_HOST at 55432 and 5432, this platform's two ports.
+# A database on some other address reachable by neither the application nor
+# any of the variables is NOT detected, and that is the honest boundary of
+# this check rather than a claim about every database in the world.
 if [[ "${RUN_API_SUITE}" == "yes" && "${PF_DB}" != "CONFIGURED" ]]; then
     PF_DB_HOST="${TEST_DB_HOST:-localhost}"
+    PF_PROBES=()
+    [[ -n "${DB_URL_HOST}" ]] && PF_PROBES+=("${DB_URL_HOST}:${DB_URL_PORT}")
     for candidate_port in "${TEST_DB_PORT:-5432}" 55432 5432; do
-        if tcp_answers "${PF_DB_HOST}" "${candidate_port}"; then
-            preflight_fail "a database ANSWERS on ${PF_DB_HOST}:${candidate_port}, and the db-suite variables are not set.
+        PF_PROBES+=("${PF_DB_HOST}:${candidate_port}")
+    done
+    for probe in "${PF_PROBES[@]}"; do
+        if tcp_answers "${probe%:*}" "${probe##*:}"; then
+            preflight_fail "a database ANSWERS on ${probe}, and the db-suite variables are not set.
     That is a misconfiguration, not a legitimate absence: the 341 tests in
-    tests/db could run here and will skip instead. --allow-partial does not
-    cover it. Export TEST_DB_HOST / TEST_DB_PORT / POSTGRES_DB /
-    TEST_OWNER_USER / TEST_OWNER_PASSWORD / APP_DB_USER / APP_DB_PASSWORD."
+    tests/db, and the 58 of 70 in tests/auth that share its fixtures, could
+    run against a database this run can already reach, and will skip
+    instead. --allow-partial does not cover it. Export
+    TEST_DB_HOST / TEST_DB_PORT / POSTGRES_DB / TEST_OWNER_USER /
+    TEST_OWNER_PASSWORD / APP_DB_USER / APP_DB_PASSWORD."
             break
         fi
     done
@@ -371,7 +451,7 @@ fi
 if [[ "${RUN_API_SUITE}" == "yes" && "${PF_DB}" == "CONFIGURED" ]]; then
     if ! tcp_answers "${TEST_DB_HOST}" "${TEST_DB_PORT}"; then
         preflight_fail "db-suite is CONFIGURED but NOTHING ANSWERS on ${TEST_DB_HOST}:${TEST_DB_PORT}.
-    The session fixture will time out and pytest will report 341 SKIPS,
+    The session fixture will time out and pytest will report ~392 SKIPS,
     which is indistinguishable in the report from tests that were never
     meant to run. Fix the host/port before running the suite."
     fi
@@ -385,7 +465,8 @@ if (( PREFLIGHT_FAILURES > 0 )); then
     echo " This script will not report three numbers over coverage it does"
     echo " not have. Fix the above, or pass --allow-partial to declare a"
     echo " deliberately partial run -- which does NOT cover a PARTIAL"
-    echo " capability, nor a database that is present but unused."
+    echo " capability, nor a database reachable at an address this run"
+    echo " is already configured to use."
     echo "REPORT: passed=0 failed=0 skipped=0 (preflight failed; suite did not run)"
     exit 2
 fi
@@ -610,7 +691,8 @@ run_pytest() {
     # closed HERE: declared configured, then skipped, is a FAILURE.
     local unexpected=0
     if [[ "${PF_DB:-n/a}" == "CONFIGURED" ]] &&
-       grep -qiE 'no database available|no application-role connection' "${logfile}"; then
+       grep -E '^SKIPPED' "${logfile}" |
+       grep -qiE 'no database available|no application-role connection'; then
         echo "  🔴 db-suite was CONFIGURED and its tests SKIPPED ANYWAY."
         echo "     The variables are set and something answers on the port, so"
         echo "     this is credentials, database name, or roles -- not absence."
@@ -619,7 +701,8 @@ run_pytest() {
         unexpected=$((unexpected + 1))
     fi
     if [[ "${PF_AUTH:-n/a}" == "CONFIGURED" ]] &&
-       grep -qiE 'needs a running Keycloak and API' "${logfile}"; then
+       grep -E '^SKIPPED' "${logfile}" |
+       grep -qiE 'needs a running Keycloak and API'; then
         echo "  🔴 auth-integration was CONFIGURED and its tests SKIPPED ANYWAY."
         echo "     COUNTED AS FAILED, for the same reason."
         unexpected=$((unexpected + 1))
@@ -852,8 +935,16 @@ PY
     #
     # The same pass lists every test Playwright marked skipped, by file, so a
     # self-skipping spec can never again be invisible in this output.
+    # 🔴 TRUNCATE BEFORE, NOT INSIDE. `tmp/live-suite/` persists between runs,
+    # and if python is absent the redirect below never happens -- so the
+    # guards would read the PREVIOUS run's detail file and answer questions
+    # about a run that is not this one. Stale artifacts faking a result is a
+    # defect this platform has shipped before.
+    E2E_DETAIL="${ARTIFACTS}/e2e-detail.txt"
+    : > "${E2E_DETAIL}"
+
     if command -v python >/dev/null 2>&1; then
-        python - "${ARTIFACTS}/e2e.json" > "${ARTIFACTS}/e2e-detail.txt" 2>/dev/null <<'PYDETAIL' || true
+        python - "${ARTIFACTS}/e2e.json" > "${E2E_DETAIL}" 2>/dev/null <<'PYDETAIL' || true
 import json, sys
 
 def documents(text):
@@ -878,15 +969,20 @@ try:
 except Exception:
     sys.exit(0)
 
-projects, skipped = [], []
+projects, statuses = [], []
 
 def walk(suite, inherited):
     path = suite.get("file") or inherited
     for spec in suite.get("specs", []):
         spec_file = spec.get("file") or path
         for test in spec.get("tests", []):
-            if test.get("status") == "skipped":
-                skipped.append((spec_file, spec.get("title", "")))
+            # EVERY test, not only the skipped ones. A guard that can only
+            # see skips cannot tell "this test ran and passed" from "the
+            # parser produced nothing", and those must never be the same
+            # answer -- that is how a suite reporting no tests read as a
+            # pass twice in this repository already.
+            statuses.append((test.get("status") or "unknown",
+                             spec_file, spec.get("title", "")))
     for child in suite.get("suites", []):
         walk(child, path)
 
@@ -900,13 +996,11 @@ for report in documents(raw):
 
 for name in projects:
     print("PROJECT", name)
-for spec_file, title in skipped:
-    print("SKIPPED", spec_file, "::", title)
+for status, spec_file, title in statuses:
+    print("STATUS", status, spec_file, "::", title)
 PYDETAIL
     fi
 
-    E2E_DETAIL="${ARTIFACTS}/e2e-detail.txt"
-    [[ -f "${E2E_DETAIL}" ]] || : > "${E2E_DETAIL}"
     E2E_PROJECTS="$(sed -nE 's/^PROJECT (.*)$/\1/p' "${E2E_DETAIL}" | tr '\n' ' ')"
     E2E_PROJECTS="${E2E_PROJECTS%% }"
     if [[ -n "${E2E_PROJECTS}" ]]; then
@@ -914,9 +1008,9 @@ PYDETAIL
     else
         echo "  e2e projects that ran: UNKNOWN -- Playwright's report named none."
     fi
-    if grep -q '^SKIPPED ' "${E2E_DETAIL}"; then
+    if grep -q '^STATUS skipped ' "${E2E_DETAIL}"; then
         echo "  --- e2e tests that skipped ---"
-        sed -nE 's/^SKIPPED (.*)$/    \1/p' "${E2E_DETAIL}"
+        sed -nE 's/^STATUS skipped (.*)$/    \1/p' "${E2E_DETAIL}"
     fi
 
     # 🔴 (b) OF I100: THE SIGN-IN ROUND TRIP SELF-SKIPS, AND A SELF-SKIP IS
@@ -928,12 +1022,39 @@ PYDETAIL
     # which is a failure, not a gap. Its own header states the rule this
     # enforces: "if the round trip skips in a LIVE run, the sign-in flow was
     # NOT verified".
-    if [[ "${PF_SIGNIN}" == "CONFIGURED" ]] &&
-       grep -qi '^SKIPPED .*sign-in\.spec\.ts' "${E2E_DETAIL}"; then
-        echo "  🔴 the sign-in round trip SKIPPED while its credentials were set."
-        echo "     This is the one flow every human uses, and the gap that let"
-        echo "     713 green sit beside a 404 sign-in on 08-24. COUNTED AS FAILED."
-        E2E_F=$((E2E_F + 1))
+    # 🔴 ASK WHETHER IT RAN, NOT ONLY WHETHER IT SKIPPED.
+    #
+    # An absence-only test passes against an empty page, and a skip-only
+    # guard passes against an empty report: if the JSON is unparseable, or
+    # python is missing, or the spec was never collected, the detail file is
+    # empty, `grep` finds no skip, and the guard reports nothing wrong about
+    # a flow it never saw. So BOTH directions are asserted -- at least one
+    # test in that file finished as `expected`, and none of them skipped.
+    #
+    # sign-in.spec.ts holds two tests: the round trip, which self-skips
+    # without TEST_KEYCLOAK_PASSWORD, and a callback guard that needs no
+    # password. Requiring only "one of them ran" would be satisfied by the
+    # guard alone while the round trip skipped -- the exact thing being
+    # checked for -- which is why the no-skips half is not redundant.
+    if [[ "${PF_SIGNIN}" == "CONFIGURED" ]]; then
+        SIGNIN_RAN="$(grep -c '^STATUS expected .*sign-in\.spec\.ts' "${E2E_DETAIL}")" || SIGNIN_RAN=0
+        SIGNIN_SKIPPED="$(grep -c '^STATUS skipped .*sign-in\.spec\.ts' "${E2E_DETAIL}")" || SIGNIN_SKIPPED=0
+        if (( SIGNIN_SKIPPED > 0 )); then
+            echo "  🔴 ${SIGNIN_SKIPPED} test(s) in sign-in.spec.ts SKIPPED while their"
+            echo "     credentials were set. That spec's own header states the rule:"
+            echo "     a skip there means the sign-in flow was NOT verified. It is the"
+            echo "     gap that let 713 green sit beside a 404 sign-in on 08-24."
+            echo "     COUNTED AS FAILED."
+            E2E_F=$((E2E_F + SIGNIN_SKIPPED))
+        fi
+        if (( SIGNIN_RAN == 0 )); then
+            echo "  🔴 NO test in sign-in.spec.ts is reported as having RUN."
+            echo "     Either the spec was not collected, or this detail file could"
+            echo "     not be produced -- and 'the flow is fine' and 'nothing looked"
+            echo "     at the flow' must never be the same outcome. COUNTED AS FAILED."
+            echo "     Detail file: ${E2E_DETAIL}"
+            E2E_F=$((E2E_F + 1))
+        fi
     fi
 
     PASSED=$((PASSED + E2E_P))
@@ -978,8 +1099,13 @@ echo "   failed  : ${FAILED}"
 echo "   skipped : ${SKIPPED}"
 echo "------------------------------------------------------------------"
 if (( ${#GAP_CAPABILITIES[@]} > 0 )); then
-    echo " ${#GAP_CAPABILITIES[@]} of those skips are CAPABILITY-LEVEL -- one skip each,"
-    echo " standing for however many tests did not run:"
+    if (( ${#GAP_CAPABILITIES[@]} == 1 )); then
+        echo " 1 of those skips is CAPABILITY-LEVEL -- one skip standing for"
+        echo " however many tests did not run:"
+    else
+        echo " ${#GAP_CAPABILITIES[@]} of those skips are CAPABILITY-LEVEL -- one skip each,"
+        echo " standing for however many tests did not run:"
+    fi
     for gap in "${GAP_CAPABILITIES[@]}"; do
         echo "   - ${gap}"
     done

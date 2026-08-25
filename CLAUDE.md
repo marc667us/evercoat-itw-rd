@@ -287,6 +287,38 @@ npx playwright show-report               # traces and screenshots of failures
 ./scripts/live-suite.sh <deployed-url>   # full suite against a DEPLOYED site
 ```
 
+🔴 **THE LIVE SUITE NEEDS ENVIRONMENT, AND IT NOW REFUSES TO RUN WITHOUT IT.**
+Run as the one line above, it used to report **290 passed / 0 failed / 392
+skipped** — a zero-failure green over 290 of 682 tests, with sign-in never
+exercised (I100, 2026-08-25). `tests/db` skipped because `TEST_DB_PORT`
+defaults to 5432 and this host's database is on 55432; `sign-in.spec.ts`
+self-skipped without `TEST_KEYCLOAK_PASSWORD`. Neither was a code defect and
+neither produced a single failure.
+
+The script now runs a PREFLIGHT that names every capability, the variables it
+needs and the tests it governs, and exits 2 rather than report three numbers
+over coverage it does not have. Give it what it needs:
+
+```bash
+U=https://<deployed-host>
+TEST_DB_HOST=localhost TEST_DB_PORT=55432 POSTGRES_DB=evercoat_itw_rd \
+TEST_OWNER_USER=evercoat_owner TEST_OWNER_PASSWORD=ci-owner \
+APP_DB_USER=evercoat_app APP_DB_PASSWORD=ci-app \
+DATABASE_URL="postgresql+psycopg://evercoat_app:ci-app@localhost:55432/evercoat_itw_rd" \
+KEYCLOAK_ISSUER="$U/auth/realms/evercoat" \
+TEST_KEYCLOAK_URL="$U/auth" TEST_API_URL="http://localhost:18000" \
+TEST_KEYCLOAK_PASSWORD='<demo password>' \
+TEST_ORGANIZATION_ID='<demo org uuid>' \
+./scripts/live-suite.sh "$U"
+```
+
+Where a capability genuinely cannot exist — a deployed site with no local
+database — pass `--allow-partial`. It proceeds and NAMES every gap in the
+report. It does **not** cover a half-configured capability, nor an absent
+`db-suite` while a database is answering on the host: both are
+misconfigurations rather than legitimate absences, and both stay hard
+failures.
+
 **Quality**
 ```bash
 cd apps/api && ruff check . && ruff format --check . && mypy app
