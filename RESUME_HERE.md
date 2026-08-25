@@ -1,6 +1,247 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-## ▶▶ SESSION CLOSE 2026-08-24 — START HERE
+## ▶▶ SESSION CLOSE 2026-08-25 — START HERE
+
+Tip **`2d26b2a`**, pushed, tree clean, **CI 6/6 green**. Eight commits.
+
+▶ **Restart the demo — one command:**
+`powershell -File scripts\demo-up.ps1` (prints the URL, writes
+`tmp/tunnel_url.txt`). 🔴 **The launcher was BROKEN TWO WAYS at the start of
+today and one half had never run at all** — both fixed, see I99 below.
+
+▶ **Live suite on the deployed demo — three numbers:**
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **682** | 0 | 0 |
+| e2e (Playwright `shell`) | **34** | 0 | 0 |
+| **TOTAL** | **716** | **0** | **0** |
+
+Counts read from each tool's OWN summary line.
+
+---
+
+### 🔴 READ THIS FIRST — I100: THE LIVE SUITE REPORTS GREEN WHILE MOST OF IT NEVER RUNS
+
+**Every number above depends on environment variables I supplied BY HAND.**
+`scripts/live-suite.sh` exports none of them. Run it as documented and you get
+a confident green covering **290 of 682** tests with sign-in unverified.
+
+Three independent gaps, none of them a code defect:
+
+1. **`tests/db/conftest.py` reads `TEST_DB_PORT`, defaulting to `5432`** — this
+   machine's database is on **55432**. It times out and **skips**. First run
+   today: **290 passed / 0 failed / 392 skipped.** 392 of 682 tests silently
+   absent, zero failures reported.
+2. **`tests/e2e/shell/sign-in.spec.ts` self-skips without
+   `TEST_KEYCLOAK_PASSWORD`** — so the test written on 08-24 *specifically to
+   stop sign-in breaking silently* **does not run in the live suite that
+   exists to catch it.** Its own header says so: *"if the round trip skips in
+   a LIVE run, the sign-in flow was NOT verified."*
+3. **`--project=api` does not exist against a deployed URL**
+   (`Available projects: "shell"`), so any total assuming both Playwright
+   projects ran is wrong. Live browser coverage is the 34 `shell` tests; the
+   deployed API surface is `api-live`.
+
+**The incantation that actually works** (also at `RESUME_HERE.md` §db-suite):
+
+```bash
+cd apps/api
+TEST_DB_HOST=localhost TEST_DB_PORT=55432 POSTGRES_DB=evercoat_itw_rd \
+TEST_OWNER_USER=evercoat_owner TEST_OWNER_PASSWORD=ci-owner \
+APP_DB_USER=evercoat_app APP_DB_PASSWORD=ci-app \
+DATABASE_URL="postgresql+psycopg://evercoat_app:ci-app@localhost:55432/evercoat_itw_rd" \
+KEYCLOAK_ISSUER="<tunnel>/auth/realms/evercoat" LIVE_BASE_URL="<tunnel>" \
+TEST_KEYCLOAK_URL="<tunnel>/auth" TEST_API_URL="http://localhost:18000" \
+TEST_KEYCLOAK_PASSWORD='EvercoatDemo-2026!' \
+TEST_ORGANIZATION_ID='c6031e4b-eff3-4aa6-a87b-697b6941c6e9' \
+python -m pytest tests -m "live or not live" -q --no-header -rs
+```
+
+```bash
+TEST_KEYCLOAK_PASSWORD='EvercoatDemo-2026!' \
+PLAYWRIGHT_BASE_URL="<tunnel>" npx playwright test --project=shell
+```
+
+▶ **THE FIX IS TO MAKE THE SCRIPT DEMAND WHAT IT NEEDS AND FAIL LOUDLY**, not
+to remember to export it. That is the top task next session.
+
+#### ▶▶ EXACT NEXT ACTION — the I100 fix, designed but NOT started
+
+Nothing has been changed. `scripts/live-suite.sh` is untouched (587 lines) and
+the tree is clean at `2d26b2a`. Resume by editing that file:
+
+**Add a PREFLIGHT section after the profile block (~line 146, before
+`echo " LIVE SUITE -- "`)** that names every capability and what its absence
+costs, then decides:
+
+| capability | required env | if missing |
+|---|---|---|
+| api-live imports | `DATABASE_URL`, `KEYCLOAK_ISSUER` | already handled at `run_pytest` (~line 248) — but it counts **one** skip for **392 tests** |
+| `tests/db/*` | `TEST_DB_HOST` `TEST_DB_PORT` `POSTGRES_DB` `TEST_OWNER_USER` `TEST_OWNER_PASSWORD` `APP_DB_USER` `APP_DB_PASSWORD` | **392 tests skip silently** |
+| sign-in round trip | `TEST_KEYCLOAK_PASSWORD` | **the flow is NOT verified** |
+| auth integration | `TEST_KEYCLOAK_URL` `TEST_API_URL` `TEST_KEYCLOAK_PASSWORD` `TEST_ORGANIZATION_ID` | 11 tests skip |
+
+🔴 **THE DESIGN DECISION THAT MATTERS.** Do **not** simply export defaults —
+against a genuinely deployed site there is no local database, so those 392
+tests legitimately cannot run, and hard-coding a port would aim the suite at
+whatever database the author had in mind. Instead:
+
+1. **Preflight prints a coverage table** — each capability CONFIGURED or
+   ABSENT, with the test count it governs.
+2. **Half-configured is a hard FAIL**, because it is a misconfiguration rather
+   than a legitimate absence: if a database ANSWERS on `TEST_DB_PORT` (or on
+   55432) while the test variables are unset, exit non-zero and say so.
+3. **`TEST_KEYCLOAK_PASSWORD` unset must not report success.** Either exit
+   non-zero, or require an explicit `--allow-partial` flag to proceed — the
+   suite must never print a clean three-number report while the sign-in round
+   trip skipped.
+4. `run_pytest`'s current gate counts **one** skip for a whole suite. Make the
+   skip count reflect the tests actually not run, or name them; `1 skipped`
+   for 392 absent tests is the number that hid this.
+
+**Verify by falsification, as everything else this session was:** run it with
+each variable removed in turn and confirm it FAILS and names the gap. A
+preflight that cannot fail is the third guard this session that read as
+verification and was not.
+
+**The 11 auth integration tests that had NEVER ONCE RUN now run and pass.**
+`evercoat-test` was already in the realm as a public direct-grant client; the
+demo org is `c6031e4b-eff3-4aa6-a87b-697b6941c6e9` (`EVERCOAT-DEMO`, all ten
+`*.demo` users).
+
+---
+
+### What shipped
+
+**I95 + I98 — the server's sentence now reaches every READ path.**
+`DataSourceError` rendered `{error.message}` and is called from **fifteen
+sites across eleven screens**, so every failed read showed *"the API refused
+this request (403)"* instead of the reason, discarding a blocked submission's
+entire block list. I91 fixed the four WRITE screens on 08-24 and missed the
+shared read component. 🔴 **Codex was asked this exact question on 08-24 and
+answered NONE** — it matched the literal `.error.message` while the component
+reads `{error.message}`. The Supervisor pass found it.
+
+🔴 **AND THE REASON IT COULD HIDE: NO COMPONENT HAD EVER BEEN RENDERED BY A
+TEST.** `vitest.config.ts` was `environment: "node"` with no React plugin and
+there were **zero `.test.tsx` files**, while `@testing-library/react`, `jsdom`
+and `@vitejs/plugin-react` had been devDependencies all along — installed,
+never wired.
+
+**I98b — my own fix regressed the commonest error on a tunnelled demo.**
+`serverMessage` mines `error.detail`, but `detail` is not always a response
+body: `ApiUnreachableError` stores the caught `TypeError` there and
+`ApiShapeError` a `SyntaxError`/`ZodError`. All carry `.message`, so the
+component began rendering the browser's raw **"Failed to fetch"** in place of
+*"the API could not be reached"*. Guarded at source.
+
+**I99 — `scripts/demo-up.ps1` was broken two ways, and one half had NEVER RUN.**
+(a) Line 207 held a literal **BEL byte (0x07)** where `\a` belongs —
+`Set-Location '$RepoRoot<BEL>pps\web'` — introduced by `c98290f` at 08-24
+12:52, **four minutes after the last successful web build**. (b) The Keycloak
+repoint **could not work from PowerShell 5.1**: embedded double quotes passed
+to a native exe are stripped by the `CommandLineToArgvW` round-trip and
+`kcadm` answered `Cannot parse the JSON`. Now a `docker cp`'d ASCII JSON file
+applied with `-f`. **The read-back guard is what caught (b).**
+
+**I99b/c — TWO SUCCESSIVE GUARDS THAT READ AS VERIFICATION AND COULD NOT FAIL.**
+Codex found the first (`-notlike "*$PublicUrl*"` never looked at `webOrigins`,
+passed with three of four URIs missing, and with a NAMED tunnel would pass on
+stale config). My fix for it **still walked through the empty-`webOrigins`
+case**, because every webOrigin is a PREFIX of a redirect URI — a substring
+test cannot say WHICH FIELD a value came from. Now `ConvertFrom-Json` with
+per-field `-notcontains`, falsified four ways.
+
+**I79 — a membership carries its permissions.** Migration **045 / e9000**.
+`core.memberships_for_subject` returns permission codes per organization,
+resolved through the same chain `core.principal_for_subject` (033) walks — ONE
+definition rather than a TypeScript copy. Measured: `lead.demo` **38**,
+`tech.demo` **11**. Proven **e9000 → e8000 → e9000** with shape, owner, ACL and
+comment asserted at each end; **the downgrade had never been run before**.
+
+---
+
+### 🔴 What the reviewers found — sixteenth session, neither alone was enough
+
+**Round 1 (I98):** Codex FAIL, 2 blockers — the `ApiUnreachableError` trap
+(which I had found independently) extended to `ApiShapeError`, and the weak
+read-back guard. It also **corrected my call-site count, 19 → 15**; I had
+counted import lines.
+
+**Round 2 (I79):** Codex FAIL, 2 blockers, and the round split THREE ways:
+
+* 🔴 **Codex was RIGHT and I had contradicted myself.** Authenticated with an
+  active tenant absent from `/api/me` returned the FULL module map, justified
+  in my own comment as *"we do not know, so we do not pretend to"* — which
+  directly contradicts what I had written one file away in
+  `auth-provider.tsx`: an API that cannot report permissions must show
+  **LESS, never everything**. Failing open on an authorization-shaped
+  decision, beside my own note not to. Now fails closed.
+* 🔴 **Codex was WRONG on the facts, and the measurement says so.** It argued
+  `roles` might reorder because `array_agg(DISTINCT)` has no `ORDER BY`.
+  Measured on PG 16.14: DISTINCT aggregation **must sort to deduplicate**, so
+  reversing the input leaves the output identical. It does not reproduce.
+  **But its reasoning was right** — that is behaviour, not contract — so the
+  `ORDER BY` is now explicit. *A guarantee must be a mechanism, not an
+  argument.*
+* Two non-blockers, both real: the downgrade lost 024's `COMMENT`, and the
+  `/api/me` contract test never asserted `permissions`.
+
+🔴 **AND MY OWN SUPERVISOR PASS FOUND THAT MY VERIFICATION PROVED LESS THAN IT
+READ.** *"747 users checked, 0 role-set mismatches"* sounds conclusive. That
+population contains **no** user with two roles in one organization, **no** user
+in two organizations and **no** role with zero permissions — exactly the shapes
+a missing DISTINCT breaks. Built all three synthetically in a rolled-back
+transaction to get a real answer.
+
+> **A measurement over a population that cannot exercise the risk is not
+> evidence, however large the number is.**
+
+---
+
+### 🔴 The composition, not the parts
+
+Every LAYER of I79 was verified and the JOIN between them was not — which is
+the shape that produced 713/0/0 alongside a 404 sign-in on 08-24. So
+`tests/e2e/shell/permissions.spec.ts` drives the real path: `tech.demo` signs
+in through the real realm and the sidebar is read.
+
+It asserts **both directions** — Laboratory must be PRESENT (`batch.view`) as
+well as Administration ABSENT (`admin.users`), because an absence-only test
+passes against an empty or broken sidebar. And it deliberately does **not**
+use `TEST_SIGNIN_USER`, which defaults to `lead.demo` and would have passed
+against the unfixed code.
+
+**Falsified end to end, with a full rebuild and redeploy per direction:**
+
+| bundle | result |
+|---|---|
+| I79 fixed | 1 passed |
+| reverted to the pre-I79 pass-through, rebuilt, redeployed | **1 FAILED**, with its own diagnostic and a screenshot |
+| restored, rebuilt | **34 passed** |
+
+---
+
+### ⚠️ Carried forward
+
+* **`next build` rewrites `apps/web/tsconfig.json` on EVERY demo build.**
+  Reverted four times today; `cab4c1c` reverted it last session. It will keep
+  returning until someone commits the generated form or ignores it
+  deliberately. Right now it is a trap that invites an unreviewed change into
+  a commit.
+* **Local migrations run as `postgres`, not `evercoat_owner`** —
+  `alembic_version` is owned by `postgres` and denies `evercoat_owner`
+  outright. Local is superuser; **Render is not**, so the 09-01 deploy meets
+  that ownership question for real.
+* **The tunnel is still a QUICK tunnel** — the hostname lives only as long as
+  that `cloudflared` process. `cloudflared tunnel login` once ends the
+  repointing tax.
+
+
+---
+
+## SESSION CLOSE 2026-08-24
 
 Tip **`cab4c1c`**, pushed, tree clean, **CI 6/6 green**. Eight commits.
 
