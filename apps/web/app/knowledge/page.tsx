@@ -33,7 +33,7 @@
 import { useMemo, useState } from "react";
 
 import { LiveOnlyPage } from "@/components/ui/data-source-banner";
-import { ApiError } from "@/lib/api/client";
+import { ApiError, serverMessage } from "@/lib/api/client";
 import {
   useIngestKnowledgeDocument,
   useKnowledgeDocuments,
@@ -377,7 +377,7 @@ function AddDocument() {
             <p role="alert" className="text-sm text-red-700">
               {forbidden
                 ? "You do not have permission to add documents to the knowledge library (knowledge.ingest). A Lead, Director, QA or Administrator can."
-                : `The document was not added: ${ingest.error.message}`}
+                : `The document was not added: ${serverMessage(ingest.error)}`}
             </p>
           )}
         </form>
@@ -475,7 +475,7 @@ export default function KnowledgePage() {
 
         {search.error && (
           <p role="alert" className="mt-3 text-sm text-red-700">
-            The search failed: {search.error.message}
+            The search failed: {serverMessage(search.error)}
           </p>
         )}
         {search.isLoading && (
@@ -518,7 +518,7 @@ export default function KnowledgePage() {
 
         {documents.error && (
           <p role="alert" className="mt-2 text-sm text-red-700">
-            The library could not be loaded: {documents.error.message}
+            The library could not be loaded: {serverMessage(documents.error)}
           </p>
         )}
         {documents.isLoading && (

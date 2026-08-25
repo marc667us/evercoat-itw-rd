@@ -44,6 +44,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { serverMessage } from "@/lib/api/client";
 import { useSession } from "@/lib/api/session";
 import {
   askMsd,
@@ -253,8 +254,16 @@ export function MsdPanel({ onClose }: { onClose: () => void }) {
           {
             question: asked,
             answer: null,
+            // `serverMessage`, not `.message` (I98) -- MSD's refusals are the
+            // ones most worth reading, because §7's authorization boundary is
+            // what produces them and "the API refused this request (403)"
+            // does not say a boundary was hit. The non-Error branch keeps its
+            // own fallback, which `serverMessage` would replace with
+            // `String(error)`.
             error:
-              error instanceof Error ? error.message : "MSD could not answer.",
+              error instanceof Error
+                ? serverMessage(error)
+                : "MSD could not answer.",
           },
         ]);
       } finally {

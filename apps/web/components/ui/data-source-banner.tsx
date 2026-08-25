@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { serverMessage } from "@/lib/api/client";
 import type { DataSource } from "@/lib/api/config";
 import { DEMO_NOTICE } from "@/lib/demo/dataset";
 
@@ -110,7 +111,20 @@ export function DataSourceError({ error }: { error: Error }): ReactNode {
       <p className="font-semibold">
         <span aria-hidden>✕</span> This data could not be loaded
       </p>
-      <p className="mt-1 text-red-800">{error.message}</p>
+      {/*
+        🔴 `serverMessage`, NEVER `error.message` (I98). `apiRequest` throws
+        `ApiError` with a deliberately generic message -- "the API refused
+        this request (403)" -- and puts the server's own sentence in
+        `.detail`. This component is the READ-path error surface for nineteen
+        call sites across eleven screens, so rendering `.message` meant every
+        failed read in the product reported a status code and threw the reason
+        away, including a blocked submission's entire block list.
+
+        I91 fixed the four WRITE screens on 2026-08-24 and missed this one.
+        Both reviewers missed it too; the Supervisor found it on 08-25.
+        `components/ui/data-source-banner.test.tsx` fails if it comes back.
+      */}
+      <p className="mt-1 text-red-800">{serverMessage(error)}</p>
       <p className="mt-2 text-[11px] text-red-700">
         Nothing is shown below rather than something that might be wrong. No
         demonstration figures have been substituted.
