@@ -1,10 +1,12 @@
 # TODO — EvercoatITWRD APP
 
-**Updated 2026-08-25. Tip `8edee9b`, pushed.** Read `RESUME_HERE.md` first.
+**Updated 2026-08-25. Tip `72627c7`, pushed, CI 6/6.** Read `RESUME_HERE.md` first.
+
+✅ **Closed today: I100** (the live suite refuses to report green over coverage it lacks), **I83** (the cross-tenant email oracle), **I81** (an authentication identifier is not a readable column). 🔴 **Open at the top: I102** — the live suite can lock itself out of Keycloak and the failure says *wrong password*.
 
 🔴 **I100 CLOSED — the live suite no longer reports green over coverage it does not have.** `scripts/live-suite.sh` now runs a PREFLIGHT that names every capability, the variables it needs and the tests it governs, and exits 2 rather than print three numbers it cannot back. Half-configured is always a hard failure; absent needs an explicit `--allow-partial`, which names every gap in the report and cannot waive a database the run can already reach. Falsified in eleven directions, not asserted.
 
-▶ **Live suite on the deployed demo: 716 passed / 0 failed / 0 skipped** (`api-live` 682, e2e `shell` 34). Counts read from each tool's own summary line. 🔴 **And this time the numbers are backed by a preflight that would have REFUSED to print them** if the environment their coverage depends on were missing — the e2e detail file records both sign-in tests as having RUN, not merely as “not skipped”.
+▶ **Live suite on the deployed demo: 736 passed / 0 failed / 0 skipped** (`api-live` 702, e2e `shell` 34). Counts read from each tool's own summary line. 🔴 **And this time the numbers are backed by a preflight that would have REFUSED to print them** if the environment their coverage depends on were missing — the e2e detail file records both sign-in tests as having RUN, not merely as “not skipped”.
 
 ▶ **All four target modules are wired.** 23 of 37 endpoints across Laboratory, Testing, Formulations and MSD had **no browser caller**; all 37 do now (Laboratory 10→11, Testing **1→9**, Formulations **1→13**, MSD 2→4). New workspaces at `/testing/test?id=…` and `/formulations/formula?version=…`.
 
