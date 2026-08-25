@@ -115,7 +115,7 @@ export function DataSourceError({ error }: { error: Error }): ReactNode {
         🔴 `serverMessage`, NEVER `error.message` (I98). `apiRequest` throws
         `ApiError` with a deliberately generic message -- "the API refused
         this request (403)" -- and puts the server's own sentence in
-        `.detail`. This component is the READ-path error surface for nineteen
+        `.detail`. This component is the READ-path error surface for FIFTEEN
         call sites across eleven screens, so rendering `.message` meant every
         failed read in the product reported a status code and threw the reason
         away, including a blocked submission's entire block list.

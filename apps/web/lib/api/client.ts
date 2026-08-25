@@ -298,6 +298,25 @@ export function serverMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
 
+  // 🔴 `detail` IS NOT ALWAYS A RESPONSE BODY, AND MINING IT WHEN IT IS NOT
+  // THROWS AWAY THE SENTENCE THAT MATTERS.
+  //
+  // `ApiUnreachableError` stores the CAUGHT EXCEPTION here -- a `TypeError`
+  // from `fetch` -- and a TypeError is an object carrying a `.message`. So
+  // the object branch below happily returned the browser's raw "Failed to
+  // fetch" in place of "the API could not be reached", which this file
+  // deliberately produces because a CORS refusal and an offline network
+  // "mean the same thing to the reader ... reported as one state rather
+  // than guessed between". "Failed to fetch" is exactly that guess, and it
+  // is the most common error on a tunnelled demo.
+  //
+  // Caught on 2026-08-25 by the Supervisor pass over the I98 commit, before
+  // it reached anyone. Guarded here rather than at the call site because
+  // every future caller of `serverMessage` inherits the guard.
+  if (error.detail instanceof Error) {
+    return error.message;
+  }
+
   const detail = (error.detail as { detail?: unknown } | undefined)?.detail ?? error.detail;
 
   if (typeof detail === "string" && detail.trim() !== "") {

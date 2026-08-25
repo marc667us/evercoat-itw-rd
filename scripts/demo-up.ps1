@@ -146,9 +146,12 @@ $kcBody = [ordered]@{
 } | ConvertTo-Json -Compress
 $kcFile = Join-Path $RepoRoot "tmp\kc-client-update.json"
 Set-Content -Path $kcFile -Value $kcBody -Encoding ascii -NoNewline
+if (-not (Test-Path $kcFile)) { throw "could not write $kcFile" }
 & $docker cp $kcFile evercoat-demo-keycloak:/tmp/kc-client-update.json | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "docker cp of the client body failed ($LASTEXITCODE)" }
 & $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh update "clients/$clientId" `
     -r evercoat -f /tmp/kc-client-update.json | Out-Null
+$kcUpdateExit = $LASTEXITCODE
 
 # 🔴 READ IT BACK. THE UPDATE IS NOT PROOF THAT THE UPDATE HAPPENED.
 #
@@ -162,12 +165,40 @@ Set-Content -Path $kcFile -Value $kcBody -Encoding ascii -NoNewline
 # Fixing the stderr trap removed the failure detection with it. So the check
 # is explicit now, and it asserts the STORED value rather than the call's
 # exit: a check that cannot fail is not a check.
+# 🔴 AND IT ASSERTS EVERY VALUE, NOT MERELY THAT THE HOSTNAME APPEARS.
+#
+# Raised by Codex on 2026-08-25 against the first version of this guard, which
+# tested `$stored -notlike "*$PublicUrl*"`. Three ways that is weaker than it
+# reads:
+#
+#   · it never looked at `webOrigins` at all, so a CORS failure would sail
+#     through a "verified" line;
+#   · it passed if the hostname appeared ANYWHERE, so three of the four
+#     redirect URIs could be missing;
+#   · with `-TunnelName` the hostname is STABLE, so a completely failed
+#     update leaves the previous run's correct-looking value in place and the
+#     guard reports success on config it did not write.
+#
+# `.Contains()` and not `-like`: one expected value is `$PublicUrl/*`, and as
+# a `-like` PATTERN that trailing `*` matches anything, so the check would
+# have passed on `/auth/callback`. A wildcard inside the needle is how a
+# check quietly stops being one -- this project's own most repeated lesson.
 $stored = (& $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh get "clients/$clientId" `
-              -r evercoat --fields redirectUris) -join ""
-if ($stored -notlike "*$PublicUrl*") {
-    throw "the evercoat-web client was NOT repointed -- it still reads: $stored"
+              -r evercoat --fields redirectUris,webOrigins) -join ""
+$kcExpected = @(
+    "$PublicUrl/auth/callback/",
+    "$PublicUrl/auth/callback",
+    "$PublicUrl/*",
+    "http://localhost:3000/auth/callback/",
+    "$PublicUrl",
+    "http://localhost:3000"
+)
+$kcMissing = @($kcExpected | Where-Object { -not $stored.Contains($_) })
+if ($kcUpdateExit -ne 0 -or $kcMissing.Count -gt 0) {
+    throw ("the evercoat-web client was NOT repointed (kcadm exit $kcUpdateExit). " +
+           "Missing: $($kcMissing -join ', '). It reads: $stored")
 }
-Write-Host "  keycloak client repointed (verified by read-back)"
+Write-Host "  keycloak client repointed ($($kcExpected.Count)/$($kcExpected.Count) values verified by read-back)"
 
 & $docker rm -f evercoat-demo-keycloak | Out-Null
 & $docker run -d --restart unless-stopped --name evercoat-demo-keycloak -p 18080:8080 `
