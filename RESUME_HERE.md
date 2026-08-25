@@ -1,5 +1,99 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION CLOSE 2026-08-25 (part 5) — START HERE
+
+Tip **`e9e471e`**, pushed, **CI 6/6 green**.
+Closed today: **I100**, **I83**, **I81**, **I102** — and §0.2's conductor tier
+is complete.
+
+▶ **Live suite on the deployed demo — three numbers, ONE complete run:**
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **716** | 0 | 0 |
+| e2e (Playwright `shell`) | **34** | 0 | 0 |
+| **TOTAL** | **750** | **0** | **0** |
+
+Both sign-in tests recorded as `STATUS expected` — exercised, not un-skipped.
+
+⚠️ **The API process must be restarted after any change under `apps/api/app/`.**
+`scripts/demo-up.ps1` starts it detached; the conductor work needed a restart
+and the I81 work did not (grants only). Check the LISTENER on :18000, not the
+log.
+
+---
+
+### ✅ I102 CLOSED — the suite locked itself out and blamed the password
+
+The realm sets `bruteForceProtected: true`, `failureFactor: 5`, and the auth
+tests made **twelve** direct-grant calls per run. The client was told
+*"invalid_grant — Invalid user credentials"* with the CORRECT password, while
+Keycloak's log said `error="user_temporarily_disabled"`.
+
+🔴 **Keycloak returns the same error for a lockout as for a wrong
+password.** Fixed two ways: `_token()` caches per username, and
+`live-suite.sh` clears the lockout before each run — **hygiene, not
+coverage**, so it warns and proceeds rather than failing the preflight.
+Proven by deliberately locking `lead.demo` and running 750/0/0 from that
+state.
+
+---
+
+### ✅ §0.2's conductor tier is complete
+
+Four departments: **laboratory**, **testing**, **MSD**, and a new
+**analysis**. Each is structural — a permission gate plus dispatch to the
+domain service — with `app/agents/boundary.py` owning §7's rule that the
+agent tier runs under the caller's own authorization boundary.
+
+🔴 **AND THE REVIEW FOUND MY GATE GUARDED A DOOR NOBODY USED.**
+`msd_conductor`'s `explain_result` called the testing tool with **no**
+permission check, so `msd.use` without `test.view` returned raw replicates,
+statistics and the final disposition. I wrote a testing conductor gating on
+`test.view` and the real path went around it. **The third instance of that
+shape in that file**, after `knowledge.view` and `formula.view_cost` — the
+precedent was thirty lines below the bug. Now gated, falling through to the
+refusal as `knowledge_search` does.
+
+Two more, one of which I caught first: the analysis department was gated on
+`analytics.view` while the route has always required `project.view`, and
+measured against the seeded roles those come apart **both ways** — a
+`procurement_specialist` would have been *granted* a dashboard the route
+refuses. And omitting `held_permissions` returned the same dashboard with
+panels silently missing.
+
+---
+
+### ▶▶ EXACT NEXT ACTION — I103
+
+🔴 **Nothing routes through the new conductors.** The three orchestrator
+entry points have no callers; routes still reach their domain services
+directly. Codex raised it and it is true: **a layer with no caller is the
+same defect as a route with no caller.** Either route something through it —
+the obvious candidate is `app/api/dashboards.py`, whose permission the
+analysis conductor now matches exactly — or state plainly what the tier is
+for and stop implying it is the single door.
+
+Then **I104** (the orchestrator trusts its `permissions`/`user_id`
+arguments), **I82**, I76/I77, I56/I58, I78, I101, and **D1 on or after
+2026-09-01**.
+
+---
+
+### Carried forward
+
+* ⚠️ **Do not run the live e2e beside pytest or Codex** — Chromium dies with
+  `0xC0000142` on this 8 GB host and the failures read like app defects. **A
+  crashed worker is a VOID measurement.**
+* ⚠️ **`scripts/live-suite.sh` holds a deliberate literal CR** inside
+  `$'<CR>'` — read/write it with `open(..., newline="")`.
+* ⚠️ **Local migrations run as `postgres`**; password in the container env.
+  Local is superuser, **Render is not**.
+* ⚠️ **A column-level REVOKE against a table-level GRANT does nothing.**
+* ⏳ **D1 waits for 2026-09-01.** Do NOT delete `autoworkshop-postgres` early.
+
+---
+
 ## ▶▶ SESSION CLOSE 2026-08-25 (part 4) — START HERE
 
 Tip **`d929293`**, pushed, **CI 6/6 green**. I100, I83 and I81 all closed today.
