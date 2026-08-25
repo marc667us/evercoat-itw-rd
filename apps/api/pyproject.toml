@@ -103,6 +103,16 @@ ignore = [
 # Tests assert on internals and use bare asserts by definition.
 "tests/**" = ["S101", "PT012"]
 
+# PT028 is a pytest-style rule: "test function parameter has a default
+# argument". It matches on the NAME, so it fires on any production function
+# called `test*` -- and the testing department's conductor is full of them
+# (`testing_tests`, `testing_test`, `testing_methods`). They are not tests.
+#
+# Scoped off for `app/**` rather than renaming a department around a linter,
+# and rather than ignoring PT028 globally, which would stop it catching the
+# real thing in `tests/**` where it belongs.
+"app/**" = ["PT028"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
