@@ -32,19 +32,26 @@ runtime roles at all -- `test_the_global_attributes_are_not_readable` is the
 test that goes red if 052 is reverted, and every behavioural test here rides
 on it rather than restating it.
 
-🔴 AND THAT CLOSES THE TABLE, NOT EVERY PATH TO THE VALUE. Codex, reviewing
-052, produced one that survives: `core.memberships_for_subject(TEXT)` and
-`core.principal_for_subject(TEXT, UUID)` are definers granted to
-`evercoat_app` that take a subject as an ARGUMENT and cannot bind it to their
-caller. Measured, and it discloses the person's organizations by name as well
-as their address. It is filed as I109 and pinned open by
-`test_the_sign_in_definers_still_answer_for_any_subject`, because a file whose
-title says an identity has no readable attributes must say where that is
+🔴 AND IT CLOSED THE TABLE, NOT EVERY PATH TO THE VALUE. Codex, reviewing 052,
+produced one that survived it: `core.memberships_for_subject(TEXT)` and
+`core.principal_for_subject(TEXT, UUID)` are definers that take a subject as an
+ARGUMENT and cannot bind it to their caller, and both were granted to
+`evercoat_app`. Measured -- it disclosed the person's organizations by NAME as
+well as their address. Filed as I109 and pinned OPEN by a test, because a file
+whose title says an identity has no readable attributes must say where that is
 false.
 
-Everything runs as `evercoat_app`, the non-superuser runtime role. A privilege
-test performed as a superuser proves nothing; the `app_session` fixture
-asserts `rolsuper = false` before yielding.
+✅ **I109 IS NOW CLOSED, BY MIGRATION 053 (ADR-032), and that pinned-open test
+has been inverted rather than deleted** -- it is
+`test_the_sign_in_definers_no_longer_answer_to_the_runtime_role`, and the two
+controls beside it are what stop the closure being indistinguishable from an
+outage. EXECUTE moved to `evercoat_auth`, reachable only on a separate pool,
+because privilege has to follow the CONNECTION: a GUC or a `SET ROLE` is
+settable by anything that can run SQL as `evercoat_app`.
+
+Most tests here run as `evercoat_app`, the non-superuser runtime role; the
+sign-in ones run as `evercoat_auth`. A privilege test performed as a superuser
+proves nothing, so both fixtures assert `rolsuper = false` before yielding.
 """
 
 from __future__ import annotations
@@ -668,64 +675,104 @@ def test_no_view_hands_the_attributes_back(owner_session: Session) -> None:
     )
 
 
-def test_the_sign_in_definers_still_answer_for_any_subject(
+def test_the_sign_in_definers_no_longer_answer_to_the_runtime_role(
     app_session: Session, tenants: _Tenants
 ) -> None:
-    """🔴 A CHANNEL THAT IS STILL OPEN, PINNED OPEN ON PURPOSE. FILED AS I109.
+    """🔴 I109, CLOSED — AND THIS TEST IS THE ONE THAT WAS PINNED OPEN.
 
-    Raised by Codex reviewing 052 and MEASURED before it was accepted, as an
-    ordinary member of organization A holding nothing::
+    It used to be `test_the_sign_in_definers_still_answer_for_any_subject`, and
+    it asserted the channel was OPEN. That was deliberate: 052 claimed the
+    global attributes were unreadable, which was true of the TABLE and not of
+    every path, and a file whose title says an identity has no readable
+    attributes must say where that is false. The note in ADR-031 said this test
+    "MUST go red when I109 closes". Migration 053 closed it, and it did.
+
+    What was measured before the fix, as an ordinary member of organization A
+    holding no permission at all::
 
         direct read of B's memberships          : 0 rows
-        core.memberships_for_subject(<B's sub>) : org='...B' code='...'
+        core.memberships_for_subject(<B's sub>) : org  ='...B'
+                                                  code ='...'
                                                   email='secret.person@competitor.example'
-                                                  name='Confidential B Person'
+                                                  name ='Confidential B Person'
 
-    Both sign-in lookups are SECURITY DEFINER, take a subject as an ARGUMENT,
-    and are granted EXECUTE to `evercoat_app`. Neither can bind that argument
-    to the caller, because both exist precisely to answer BEFORE a session has
-    an organization -- there is nothing yet to compare against. So the runtime
-    role can ask about any subject it can name.
+    Both functions take a SUBJECT AS AN ARGUMENT and cannot bind it to their
+    caller, because both answer BEFORE a session has an organization. So the
+    fix could not be a check inside them:
 
-    ⚠️ AND IT DISCLOSES MORE THAN THE ADDRESS. `memberships_for_subject`
-    returns the NAME and CODE of every organization that subject belongs to,
-    which is a larger fact than the email 052 is about.
+      * a GUC naming the verified subject is settable by `evercoat_app`;
+      * `SET ROLE` is available to anything that can run SQL as `evercoat_app`.
 
-    **This is not something 052 introduced** -- the functions date from 024,
-    033 and 045, and before 052 they read `core.users` directly. What 052 does
-    is make the claim above it false if it goes unstated: this file asserts
-    the global attributes are unreadable, and that is true of the TABLE and not
-    of every path. A test that pins a known-open channel open is the only
-    honest way to hold both.
-
-    The bound is real and it comes from 047: `keycloak_sub` is not readable by
-    any runtime role, so an `evercoat_app` session cannot enumerate subjects
-    from the database at all and must already know an opaque Keycloak uuid.
-    **A bound is not a closure.** The fix is a separate database role holding
-    EXECUTE on these two functions and used only by the authentication path,
-    which is a change to `app/core/db.py` with its own measurement -- I109.
-
-    THIS TEST MUST GO RED WHEN I109 IS CLOSED. That is what it is for.
+    Both are misuse barriers. Privilege had to follow the CONNECTION, so 053
+    moved EXECUTE to `evercoat_auth` and the application reaches it on a
+    separate pool. An injected statement on the runtime connection cannot get
+    there at all.
     """
     _scope(app_session, org=tenants.a, user=tenants.admin)
-    rows = app_session.execute(
-        text(
-            "SELECT organization_id, organization_name, email, display_name"
-            " FROM core.memberships_for_subject(:s)"
+
+    for sql, label in (
+        ("SELECT * FROM core.memberships_for_subject(:s)", "memberships_for_subject"),
+        (
+            "SELECT * FROM core.principal_for_subject(:s, :o)",
+            "principal_for_subject",
         ),
+    ):
+        with pytest.raises(ProgrammingError) as caught:
+            app_session.execute(text(sql), {"s": tenants.foreign_sub, "o": tenants.b})
+        refusal = str(caught.value).lower()
+        assert "permission denied" in refusal, (
+            f"{label} failed for some reason other than a privilege: {caught.value}"
+        )
+        assert label in refusal, f"something other than {label} refused the call: {caught.value}"
+        app_session.rollback()
+
+
+def test_sign_in_still_works_for_the_role_that_signs_in(
+    auth_session: Session, tenants: _Tenants
+) -> None:
+    """🔴 THE CONTROL, AND WITHOUT IT 053 IS INDISTINGUISHABLE FROM AN OUTAGE.
+
+    The test above is satisfied by a database in which the functions were
+    simply dropped, or in which nobody holds EXECUTE. That schema passes every
+    isolation assertion in this file and cannot authenticate a single person.
+
+    `evercoat_auth` is the role the application signs in with, and this is the
+    call `/api/me` makes.
+    """
+    rows = auth_session.execute(
+        text("SELECT organization_id, email, display_name FROM core.memberships_for_subject(:s)"),
         {"s": tenants.foreign_sub},
     ).all()
     assert [r.organization_id for r in rows] == [tenants.b], (
-        f"memberships_for_subject returned {[r.organization_id for r in rows]} "
-        "for a subject belonging only to organization B. If it returned "
-        "NOTHING, I109 has been closed and this test should be deleted along "
-        "with the note in ADR-031; if it returned MORE, something else changed."
+        f"the sign-in role got {[r.organization_id for r in rows]} for a subject "
+        "belonging only to organization B. If it got NOTHING, 053 removed the "
+        "capability instead of moving it and nobody can sign in."
     )
-    assert rows[0].email == tenants.foreign_email, (
-        "the definer no longer discloses the foreign address. If that is "
-        "deliberate, I109 is closed -- delete this test."
-    )
-    app_session.rollback()
+    assert rows[0].email == tenants.foreign_email
+    auth_session.rollback()
+
+
+def test_the_sign_in_role_can_do_nothing_else(auth_session: Session) -> None:
+    """🔴 IT MUST NOT HAVE BECOME A SECOND, UNSCOPED APPLICATION ROLE.
+
+    This connection never sets a tenant GUC -- it cannot, since it runs before
+    an organization is chosen. A role that could also read tables there would
+    be a bigger hole than the one 053 closed: every tenant's rows, on a session
+    with no tenant.
+
+    It needs no table privilege at all, because both functions are SECURITY
+    DEFINER owned by `evercoat_owner` and run as that owner. Asserted
+    behaviourally here, and over the whole `core` schema in the migration's own
+    probe -- the catalogue answer and the refusal are different claims, and 047
+    is the reason this project asserts both.
+    """
+    for table in ("core.users", "core.organization_members", "core.organizations"):
+        with pytest.raises(ProgrammingError) as caught:
+            auth_session.execute(text(f"SELECT 1 FROM {table} LIMIT 1"))  # noqa: S608
+        assert "permission denied" in str(caught.value).lower(), (
+            f"reading {table} as the sign-in role failed for another reason: {caught.value}"
+        )
+        auth_session.rollback()
 
 
 def test_the_bind_is_still_the_only_thing_that_creates_identities(

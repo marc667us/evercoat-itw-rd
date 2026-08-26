@@ -310,9 +310,20 @@ async def get_principal(
     # core.users / core.organization_members and returns nothing from any
     # project-scoped table, which is why this is a safe exception to the
     # session_scope() rule.
-    from app.core.db import unscoped_session_scope
+    #
+    # 🔴 ON THE SIGN-IN POOL, NOT THE RUNTIME ONE (I109, migration 053).
+    #
+    # `core.principal_for_subject` takes a SUBJECT AND AN ORGANIZATION as
+    # arguments and cannot check its caller -- it has to answer before the
+    # session has either. Reachable from the runtime pool, that made it an
+    # enumeration primitive: measured, an ordinary member of one organization
+    # read a foreign subject's address and every organization it belongs to.
+    # A GUC or a `SET ROLE` would not have closed it, because anything able to
+    # run SQL as `evercoat_app` can set either. Privilege follows the
+    # CONNECTION, so `evercoat_app` no longer holds EXECUTE at all.
+    from app.core.db import auth_session_scope
 
-    with unscoped_session_scope() as session:
+    with auth_session_scope() as session:
         row = (
             session.execute(_PRINCIPAL_SQL, {"sub": sub, "org_id": org_id}).mappings().one_or_none()
         )

@@ -121,7 +121,12 @@ jobs:
           psql -h localhost -U postgres -d evercoat_itw_rd -v ON_ERROR_STOP=1 <<'SQL'
           ALTER ROLE evercoat_owner LOGIN PASSWORD 'ci-owner';
           ALTER ROLE evercoat_app   LOGIN PASSWORD 'ci-app';
-          GRANT CONNECT ON DATABASE evercoat_itw_rd TO evercoat_owner, evercoat_app;
+          -- Sign-in only (I109, migration 053). It holds EXECUTE on two
+          -- functions and no table privilege at all; evercoat_app no longer
+          -- holds EXECUTE on either, so without this nobody can authenticate.
+          ALTER ROLE evercoat_auth  LOGIN PASSWORD 'ci-auth';
+          GRANT CONNECT ON DATABASE evercoat_itw_rd
+            TO evercoat_owner, evercoat_app, evercoat_auth;
           SQL
 
       - name: Tests
@@ -135,6 +140,7 @@ jobs:
           APP_DB_USER: evercoat_app
           APP_DB_PASSWORD: ci-app
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
+          AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:18080/realms/evercoat
         run: |
           # -rs so SKIPPED tests are named, not just counted. A suite that
@@ -153,6 +159,7 @@ jobs:
           APP_DB_USER: evercoat_app
           APP_DB_PASSWORD: ci-app
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
+          AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:18080/realms/evercoat
         run: |
           set -euo pipefail
@@ -397,6 +404,7 @@ jobs:
           # stop. The job is what was wrong.
           psql -h localhost -U postgres -d evercoat_itw_rd -v ON_ERROR_STOP=1 <<'SQL'
           ALTER ROLE evercoat_app LOGIN PASSWORD 'ci-app';
+          ALTER ROLE evercoat_auth LOGIN PASSWORD 'ci-auth';
           GRANT CONNECT ON DATABASE evercoat_itw_rd TO evercoat_app;
           SQL
 
@@ -419,6 +427,7 @@ jobs:
           # itself and the API refuses a superuser connection string, so
           # this must match what production actually connects as.
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
+          AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://127.0.0.1:1/realms/evercoat
           # CI supplies a real database, so readiness reporting 503 here
           # means something is genuinely broken. Locally the suite tolerates
@@ -608,6 +617,7 @@ jobs:
           set -euo pipefail
           psql -h localhost -U postgres -d evercoat_itw_rd -v ON_ERROR_STOP=1 <<'SQL'
           ALTER ROLE evercoat_app LOGIN PASSWORD 'ci-app';
+          ALTER ROLE evercoat_auth LOGIN PASSWORD 'ci-auth';
           GRANT CONNECT ON DATABASE evercoat_itw_rd TO evercoat_app;
           SQL
 
@@ -650,6 +660,7 @@ jobs:
         working-directory: apps/api
         env:
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
+          AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:8080/realms/evercoat
           KEYCLOAK_AUDIENCE: evercoat-api
         run: |

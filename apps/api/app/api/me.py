@@ -50,7 +50,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from app.core.db import unscoped_session_scope
+from app.core.db import auth_session_scope
 from app.core.security import get_verified_subject
 
 router = APIRouter()
@@ -126,14 +126,24 @@ async def read_me(subject: Annotated[str, Depends(get_verified_subject)]) -> Me:
     in as somebody this database has never heard of", which otherwise
     present identically.
     """
-    # unscoped_session_scope() rather than get_db(), and named ugly on
-    # purpose so a reviewer stops here. get_db depends on get_principal,
-    # so it cannot be used before an organization exists -- that is the
-    # circularity this route breaks. Safety does not come from the
-    # session: it comes from the SECURITY DEFINER function, which is
-    # scoped strictly to the verified subject and accepts no organization
-    # argument. Do NOT add another query to this session.
-    with unscoped_session_scope() as session:
+    # auth_session_scope() rather than get_db(), and named ugly on purpose
+    # so a reviewer stops here. get_db depends on get_principal, so it cannot
+    # be used before an organization exists -- that is the circularity this
+    # route breaks. Safety does not come from the session: it comes from the
+    # SECURITY DEFINER function, which is scoped strictly to the verified
+    # subject and accepts no organization argument. Do NOT add another query
+    # to this session.
+    #
+    # 🔴 THE SIGN-IN POOL, NOT THE RUNTIME ONE (I109, migration 053).
+    #
+    # "Scoped strictly to the verified subject" was true of what this route
+    # passes and NOT of what the function permits: it takes the subject as an
+    # ARGUMENT, so any caller holding EXECUTE could name somebody else's and
+    # learn the NAME and CODE of every organization they belong to. Measured
+    # from an ordinary member's session. `evercoat_app` no longer holds
+    # EXECUTE; `evercoat_auth` does, and it can reach nothing else in the
+    # database -- not one table.
+    with auth_session_scope() as session:
         rows = session.execute(_ME_SQL, {"sub": subject}).mappings().all()
 
     if not rows:

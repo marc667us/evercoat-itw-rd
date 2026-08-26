@@ -279,13 +279,20 @@ def test_the_application_role_is_actually_refused(app_session: Session) -> None:
     app_session.rollback()
 
 
-def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: Session) -> None:
+def test_sign_in_still_resolves_a_subject(auth_session: Session, owner_session: Session) -> None:
     """🔴 THE REVOKE MUST NOT HAVE KILLED SIGN-IN.
 
     `principal_for_subject` and `memberships_for_subject` read `keycloak_sub`.
     They are SECURITY DEFINER owned by `evercoat_owner`, so they keep working
     — but that is an argument, and this is the measurement. If it is wrong,
     nobody can log in and the catalogue tests above still pass.
+
+    ⚠️ AND IT RUNS AS `evercoat_auth` SINCE MIGRATION 053. Both functions take
+    a SUBJECT AS AN ARGUMENT and cannot check their caller, so on the runtime
+    connection they enumerated identities (I109) -- `evercoat_app` no longer
+    holds EXECUTE. Running this as the app role would now assert the revoke and
+    silently stop asserting that sign-in works, which is the opposite of what
+    the heading says.
 
     ⚠️ THIS TEST USED TO EXERCISE A THIRD FUNCTION, `user_id_for_subject`.
     Migration 049 DROPPED it: it was I82's oracle, answering for an exact
@@ -341,7 +348,7 @@ def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: S
         #
         # So the probe subject is given a real membership and both functions
         # must FIND it.
-        principal = app_session.execute(
+        principal = auth_session.execute(
             text("SELECT user_id, organization_id FROM core.principal_for_subject(:s, :o)"),
             {"s": subject, "o": org_id},
         ).one_or_none()
@@ -363,7 +370,7 @@ def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: S
             "subject. Sign-in would authenticate the wrong person."
         )
 
-        memberships = app_session.execute(
+        memberships = auth_session.execute(
             text("SELECT * FROM core.memberships_for_subject(:s)"), {"s": subject}
         ).all()
         assert memberships, (
@@ -379,7 +386,7 @@ def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: S
             "core.memberships_for_subject returned something other than this "
             f"subject's single membership: {memberships}"
         )
-        app_session.rollback()
+        auth_session.rollback()
     finally:
         owner_session.rollback()
         owner_session.execute(

@@ -66,6 +66,66 @@ def app_engine():
     engine.dispose()
 
 
+@pytest.fixture(scope="session")
+def auth_engine():
+    """The sign-in role's connection (I109, migration 053).
+
+    `core.principal_for_subject` and `core.memberships_for_subject` take a
+    SUBJECT AS AN ARGUMENT and cannot check their caller, so migration 053
+    moved EXECUTE off `evercoat_app` and onto `evercoat_auth`, reachable only
+    on a separate pool.
+
+    🔴 SIGN-IN TESTS MUST USE THIS, NOT `owner_session` AND NOT `app_engine`.
+    The owner bypasses non-forced RLS, so a test written against it stays green
+    even if the function were changed to SECURITY INVOKER -- Codex raised
+    exactly that about `test_sign_in_still_works`. `app_engine` no longer holds
+    EXECUTE at all, so it now proves the revoke rather than the sign-in path.
+    This role is the one production authenticates with.
+    """
+    engine = create_engine(
+        _url("AUTH_DB_USER", "AUTH_DB_PASSWORD", "evercoat_auth"),
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+    )
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"no sign-in-role connection available for db tests: {exc}")
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def auth_session(auth_engine) -> Iterator[Session]:
+    """Sign-in-role session. Rolls back, like every other session fixture.
+
+    Asserts the role is not a superuser first, for the same reason
+    ``app_session`` does: a misconfigured database that handed this role
+    superuser would make every privilege assertion here vacuous, and vacuous
+    green is worse than not running.
+    """
+    session = sessionmaker(bind=auth_engine)()
+    session.begin()
+
+    is_super = session.execute(
+        text("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+    ).scalar_one()
+    if is_super:
+        session.rollback()
+        session.close()
+        pytest.fail(
+            "the sign-in role is a superuser; it is supposed to hold EXECUTE "
+            "on two functions and no table privilege at all"
+        )
+
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
+
+
 @pytest.fixture
 def owner_session(owner_engine) -> Iterator[Session]:
     session = sessionmaker(bind=owner_engine)()

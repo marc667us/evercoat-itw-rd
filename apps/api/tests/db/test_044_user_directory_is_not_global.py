@@ -798,7 +798,7 @@ def test_the_replacement_runs_as_a_non_superuser_and_only_for_the_app(owner_sess
     assert can["evercoat_report"] is False, "the reporting role can bind memberships"
 
 
-def test_sign_in_still_works(app_engine, owner_session) -> None:
+def test_sign_in_still_works(auth_engine, owner_session) -> None:
     """🔴 The thing 044 was shaped not to break — AS THE ROLE THAT SIGNS IN.
 
     `core.memberships_for_subject` runs BEFORE an organization is chosen — it
@@ -810,9 +810,16 @@ def test_sign_in_still_works(app_engine, owner_session) -> None:
     🔴 THE FIRST VERSION CALLED IT THROUGH `owner_session` AND PROVED NOTHING.
     Raised by Codex: the owner bypasses non-forced RLS anyway, so that version
     stayed green even if the function were changed to SECURITY INVOKER — while
-    the real sign-in path, `evercoat_app` with no tenant GUC, would return zero
-    rows and 404 every user. It now runs on `app_engine`, with no GUC, which is
-    exactly what `GET /api/me` does.
+    the real sign-in path, with no tenant GUC, would return zero rows and 404
+    every user. It runs on the role that actually signs in, which is exactly
+    what `GET /api/me` does.
+
+    ⚠️ THAT ROLE CHANGED IN MIGRATION 053 AND THIS TEST MOVED WITH IT. It was
+    `evercoat_app` until I109 showed that a lookup taking a SUBJECT AS AN
+    ARGUMENT, reachable from the runtime connection, is an
+    identity-enumeration primitive. `evercoat_auth` holds EXECUTE now — and
+    pointing this at `app_engine` would quietly stop asserting that anybody
+    can sign in, while still passing for the opposite reason.
 
     Builds its own subject: CI's database is migrated and not seeded, and a
     version that read a seeded user would fail there reporting a security
@@ -844,7 +851,7 @@ def test_sign_in_still_works(app_engine, owner_session) -> None:
     owner_session.commit()
 
     try:
-        with app_engine.connect() as conn:
+        with auth_engine.connect() as conn:
             # Deliberately NO app.current_org. That absence is the point: the
             # browser has not chosen an organization yet, and this lookup is
             # what offers it the list.

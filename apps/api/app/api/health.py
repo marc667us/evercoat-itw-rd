@@ -26,7 +26,7 @@ import structlog
 from fastapi import APIRouter, Response, status
 from sqlalchemy import text
 
-from app.core.db import unscoped_session_scope
+from app.core.db import AuthConnectionNotConfiguredError, auth_session_scope, unscoped_session_scope
 
 router = APIRouter()
 log = structlog.get_logger(__name__)
@@ -80,14 +80,62 @@ def _check_migrations() -> tuple[bool, str]:
         return False, "unavailable"
 
 
+def _check_sign_in() -> tuple[bool, str]:
+    """Confirm the sign-in connection exists and may do its one job.
+
+    🔴 A DEPLOYMENT WITHOUT THIS IS NOT "DEGRADED", IT CANNOT AUTHENTICATE.
+
+    Migration 053 moved EXECUTE on `core.principal_for_subject` and
+    `core.memberships_for_subject` to `evercoat_auth` (I109), because both take
+    a subject as an ARGUMENT and cannot check their caller. The application
+    therefore needs a second connection. Without `AUTH_DATABASE_URL` every
+    authenticated request fails at `get_principal` -- a 403 for every user,
+    which reads like a broken realm or a bad token and sends whoever is on call
+    to Keycloak.
+
+    Readiness is the right place to say so: "can this serve traffic" is false
+    for a deployment where nobody can sign in. `_check_migrations` makes the
+    same argument about a database that answers `SELECT 1` with no RLS.
+
+    ⚠️ IT ASKS THE PRIVILEGE, NOT JUST THE CONNECTION. A URL pointing at the
+    runtime role would connect happily and then be refused at the first
+    sign-in; `has_function_privilege` for the connected role turns that into a
+    startup-time answer instead of a user-facing one.
+    """
+    try:
+        with auth_session_scope() as session:
+            allowed = session.execute(
+                text(
+                    "SELECT has_function_privilege("
+                    "  current_user,"
+                    "  'core.principal_for_subject(TEXT, UUID)',"
+                    "  'EXECUTE')"
+                )
+            ).scalar_one()
+        if not allowed:
+            log.warning("health_sign_in_role_lacks_execute")
+            return False, "sign-in role cannot execute the principal lookup"
+        return True, "ok"
+    except AuthConnectionNotConfiguredError:
+        # Named separately from a connection failure: one is a missing
+        # setting, the other is an unreachable database, and they are fixed
+        # in different places.
+        log.warning("health_sign_in_not_configured")
+        return False, "not configured"
+    except Exception as exc:  # noqa: BLE001
+        log.warning("health_sign_in_unavailable", error=str(exc))
+        return False, "unavailable"
+
+
 @router.get("/ready", include_in_schema=False)
 async def ready(response: Response) -> dict[str, Any]:
     checks: dict[str, str] = {}
 
     db_ok, checks["database"] = _check_database()
     mig_ok, checks["migrations"] = _check_migrations()
+    auth_ok, checks["sign_in"] = _check_sign_in()
 
-    healthy = db_ok and mig_ok
+    healthy = db_ok and mig_ok and auth_ok
     if not healthy:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 

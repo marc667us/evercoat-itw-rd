@@ -46,12 +46,29 @@ __all__ = [
     "RequestContext",
     "SessionLocal",
     "apply_context",
+    "auth_session_scope",
+    "get_auth_engine",
     "get_engine",
     "guarded_write",
     "session_scope",
     "set_local",
     "unscoped_session_scope",
 ]
+
+
+class AuthConnectionNotConfiguredError(RuntimeError):
+    """Raised when the sign-in connection is needed and not configured.
+
+    🔴 IT IS A DISTINCT TYPE SO THE FAILURE CAN BE NAMED, NOT GUESSED AT.
+
+    Migration 053 revoked EXECUTE on the two sign-in lookups from
+    `evercoat_app` (I109), so an environment that omits ``AUTH_DATABASE_URL``
+    fails either way. The difference is the message: without this it fails as
+    ``permission denied for function principal_for_subject`` on the runtime
+    pool, which reads like a broken migration rather than like a missing
+    setting. ``/health/ready`` reports the same condition before any user
+    meets it.
+    """
 
 
 class MissingContextError(RuntimeError):
@@ -138,6 +155,96 @@ def SessionLocal() -> Session:  # noqa: N802 - kept as a callable factory name
         get_engine()
     assert _session_factory is not None  # noqa: S101 - narrowed by get_engine
     return _session_factory()
+
+
+# ---------------------------------------------------------------------------
+# The sign-in connection (I109, migration 053)
+# ---------------------------------------------------------------------------
+
+_auth_engine: Engine | None = None
+_auth_session_factory: sessionmaker[Session] | None = None
+
+
+def get_auth_engine() -> Engine:
+    """The pool that may execute the two subject-argument lookups.
+
+    🔴 A SEPARATE POOL IS THE MECHANISM. NOT A SEPARATE CODE PATH.
+
+    `core.principal_for_subject` and `core.memberships_for_subject` cannot
+    check their caller -- they answer before a session has an organization, so
+    there is nothing to compare a subject against. Restricting them by GUC or
+    by `SET ROLE` would be a misuse barrier, because anything able to run SQL
+    as `evercoat_app` can set a GUC or assume a role. Privilege follows the
+    CONNECTION, so an injected statement on the runtime pool cannot reach
+    these two functions at all.
+
+    ⚠️ DELIBERATELY TINY. This pool serves two queries per sign-in and nothing
+    else; sizing it like the runtime pool would hold connections open on a
+    free-tier database for no reason.
+    """
+    global _auth_engine, _auth_session_factory
+    if _auth_engine is not None:
+        return _auth_engine
+
+    if not settings.auth_database_url:
+        raise AuthConnectionNotConfiguredError(
+            "AUTH_DATABASE_URL is not set. Migration 053 moved EXECUTE on "
+            "core.principal_for_subject and core.memberships_for_subject to "
+            "the evercoat_auth role (I109), so sign-in needs its own "
+            "connection. Set AUTH_DATABASE_URL to a URL for that role."
+        )
+
+    _auth_engine = create_engine(
+        settings.auth_database_url,
+        pool_pre_ping=True,
+        pool_size=2,
+        max_overflow=2,
+        pool_reset_on_return="rollback",
+        echo=settings.db_echo,
+    )
+
+    @event.listens_for(_auth_engine, "checkin")
+    def _scrub_auth_connection(dbapi_connection, connection_record) -> None:  # type: ignore[no-untyped-def]
+        """Same scrub as the runtime pool, for the same reason."""
+        try:
+            with dbapi_connection.cursor() as cur:
+                cur.execute("DISCARD ALL")
+        except Exception:  # noqa: BLE001
+            connection_record.invalidate()
+
+    _auth_session_factory = sessionmaker(bind=_auth_engine, expire_on_commit=False, class_=Session)
+    return _auth_engine
+
+
+@contextmanager
+def auth_session_scope() -> Iterator[Session]:
+    """A session on the sign-in pool. Two callers, and there must be no third.
+
+    `get_principal` resolves the caller's own principal; `/api/me` lists the
+    organizations the caller's own subject may act in. Both take the subject
+    from a signature-verified token.
+
+    🔴 DO NOT REACH FOR THIS BECAUSE A QUERY IS AWKWARD TO SCOPE. This
+    connection never sets a tenant GUC, and the role it uses exists precisely
+    so that it can do nothing except call two functions -- it holds no table
+    privilege at all, so a query added here fails rather than reads
+    cross-tenant. That is intentional: the emptiness of `evercoat_auth` is
+    what keeps this from becoming a second, unscoped application role, and
+    migration 053's probe asserts it.
+    """
+    if _auth_session_factory is None:
+        get_auth_engine()
+    assert _auth_session_factory is not None  # noqa: S101 - narrowed by get_auth_engine
+    session = _auth_session_factory()
+    try:
+        session.begin()
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def set_local(session: Session, guc: str, value: uuid.UUID) -> None:

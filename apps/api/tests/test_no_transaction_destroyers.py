@@ -42,12 +42,19 @@ import pathlib
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 
-# `session_scope` and `unscoped_session_scope` OWN the request transaction, so
-# they are the only functions with the standing to end one. Named individually
-# rather than exempting the whole module: a future helper added beside them
-# must not inherit the exemption by living in the same file. Raised by Codex.
+# `session_scope`, `unscoped_session_scope` and `auth_session_scope` OWN the
+# transaction they open, so they are the only functions with the standing to
+# end one. Named individually rather than exempting the whole module: a future
+# helper added beside them must not inherit the exemption by living in the same
+# file. Raised by Codex.
+#
+# ✅ AND THAT DESIGN PAID OFF. `auth_session_scope` was added for I109
+# (migration 053) and this test failed on it immediately, exactly as intended --
+# the author has to look at the new helper and decide whether it really owns a
+# transaction rather than having the exemption applied silently by proximity.
+# It does: it opens its own, on its own pool, for one query.
 ROLLBACK_ALLOWED: dict[str, set[str]] = {
-    "core/db.py": {"session_scope", "unscoped_session_scope"},
+    "core/db.py": {"session_scope", "unscoped_session_scope", "auth_session_scope"},
 }
 
 # Nodes that open a new scope. `ast.walk` crosses these happily, which would

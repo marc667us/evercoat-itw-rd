@@ -127,6 +127,11 @@ services:
       # FORCE RLS. Developing as superuser hides exactly the defects RLS
       # exists to catch (ADR-017).
       DATABASE_URL: postgresql+psycopg://${APP_DB_USER:-evercoat_app}:${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-evercoat_itw_rd}
+      # Sign-in only, and a DIFFERENT role on a DIFFERENT connection (I109).
+      # Privilege follows the connection: an injected statement on the runtime
+      # pool cannot reach the two subject-argument lookups, which is the whole
+      # mechanism. Required -- /health/ready is not ready without it.
+      AUTH_DATABASE_URL: postgresql+psycopg://${AUTH_DB_USER:-evercoat_auth}:${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-evercoat_itw_rd}
       VALKEY_URL: redis://valkey:6379/0
       KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://keycloak:8080/realms/evercoat}
       KEYCLOAK_AUDIENCE: ${KEYCLOAK_AUDIENCE:-evercoat-api}

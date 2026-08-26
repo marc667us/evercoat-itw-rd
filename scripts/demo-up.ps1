@@ -237,6 +237,11 @@ Write-Host "  keycloak recreated on $PublicUrl/auth (6-15 min to boot)"
 # ----------------------------------------------------------------------- api
 $apiCmd = @"
 `$env:DATABASE_URL='postgresql+psycopg://evercoat_app:ci-app@localhost:55432/evercoat_itw_rd';
+# Sign-in only (I109, migration 053). evercoat_app no longer holds EXECUTE on
+# core.principal_for_subject or core.memberships_for_subject, so without this
+# the demo starts, serves /health/live, and refuses every authenticated
+# request. /health/ready reports it rather than leaving that to a user.
+`$env:AUTH_DATABASE_URL='postgresql+psycopg://evercoat_auth:ci-auth@localhost:55432/evercoat_itw_rd';
 `$env:KEYCLOAK_ISSUER='$PublicUrl/auth/realms/evercoat';
 `$env:CORS_ALLOWED_ORIGINS='[\"$PublicUrl\",\"http://localhost:3000\"]';
 `$env:APP_ENV='development'; `$env:LOG_FORMAT='console';

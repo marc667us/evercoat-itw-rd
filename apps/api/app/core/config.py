@@ -45,6 +45,33 @@ class Settings(BaseSettings):
     db_max_overflow: int = 5
     db_echo: bool = False
 
+    # 🔴 A SECOND CONNECTION, FOR SIGN-IN ONLY (I109, migration 053).
+    #
+    # `core.principal_for_subject` and `core.memberships_for_subject` take a
+    # SUBJECT AS AN ARGUMENT and cannot check their caller -- they exist to
+    # answer before a session has an organization, so there is nothing yet to
+    # compare against. On the runtime connection that made them an
+    # identity-enumeration primitive: an ordinary member could read any named
+    # subject's address and every organization it belongs to.
+    #
+    # Neither a GUC nor `SET ROLE` closes that, because anything able to run
+    # SQL as `evercoat_app` can set either. Privilege has to follow the
+    # CONNECTION. `evercoat_auth` holds EXECUTE on exactly those two functions
+    # and no table privilege at all.
+    #
+    # ⚠️ OPTIONAL HERE, AND ENFORCED BY THE DATABASE INSTEAD. Making it
+    # required would turn every unconfigured tool that imports `settings` --
+    # seed scripts, one-off maintenance, `alembic` -- into an import error for
+    # a connection it never opens. Migration 053 has already revoked EXECUTE
+    # from `evercoat_app`, so an environment that omits this cannot sign
+    # anybody in whatever this field says: there is no configuration in which
+    # the fix reads as applied and the old privilege still works. The failure
+    # is surfaced early by `/health/ready`, which reports this connection.
+    auth_database_url: str | None = Field(
+        default=None,
+        description="SQLAlchemy URL for the sign-in role (evercoat_auth). I109.",
+    )
+
     # --- Keycloak -------------------------------------------------------
     keycloak_issuer: str = Field(..., description="Realm issuer URL")
     keycloak_audience: str = Field(default="evercoat-api")

@@ -83,13 +83,29 @@ def test_execute_is_not_public(owner_session) -> None:
 
 
 def test_only_the_application_role_may_execute_it(owner_session) -> None:
-    """`evercoat_worker` and `evercoat_report` must NOT hold EXECUTE.
+    """Only the SIGN-IN role holds EXECUTE. Not the app, worker or reporter.
 
-    The worker never serves `/api/me`. An RLS-bypassing lookup that worker
-    code can call for an arbitrary subject is an identity-enumeration
-    primitive sitting in a process with no use for it.
+    The reasoning that excluded `evercoat_worker` was right and did not go far
+    enough: "an RLS-bypassing lookup that can be called for an ARBITRARY
+    SUBJECT is an identity-enumeration primitive sitting in a process with no
+    use for it". Every word of that is also true of `evercoat_app`, which
+    serves `/api/me` — and it was measured (I109): an ordinary member read a
+    foreign subject's address and the name and code of every organization it
+    belongs to.
+
+    🔴 The function cannot check its caller, because it answers BEFORE a
+    session has an organization. A GUC or a `SET ROLE` would be a misuse
+    barrier — anything running SQL as `evercoat_app` can set either. Privilege
+    has to follow the CONNECTION, so migration 053 moved EXECUTE to
+    `evercoat_auth`, which the application reaches on a separate pool and which
+    holds no table privilege at all.
     """
-    for role, expected in (("evercoat_app", True), ("evercoat_worker", False)):
+    for role, expected in (
+        ("evercoat_auth", True),
+        ("evercoat_app", False),
+        ("evercoat_worker", False),
+        ("evercoat_report", False),
+    ):
         granted = owner_session.execute(
             text(
                 "SELECT has_function_privilege(:role, "
