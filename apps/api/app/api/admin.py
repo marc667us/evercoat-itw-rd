@@ -198,55 +198,74 @@ def invite_member(
             detail=f"unknown roles: {sorted(unknown)}",
         )
 
-    # 🔴 This was an upsert, and the upsert was a cross-tenant write (I80).
+    # 🔴 ONE STATEMENT: RESOLVE, CREATE IF NEW, AND BIND (I82).
     #
-    #     INSERT ... ON CONFLICT (keycloak_sub) DO UPDATE
-    #         SET display_name = EXCLUDED.display_name
-    #     RETURNING id
+    # This used to be `core.user_id_for_subject(:sub)` followed by a
+    # conditional INSERT and then a separate membership INSERT. That resolver
+    # answered, for an exact subject in ANY organization, with the user's uuid
+    # and their existence -- on a SELECT, leaving no row behind. Narrow (it
+    # needs `admin.users` and the exact subject) but an oracle, and the shape
+    # migration 048 had just gone out of its way to avoid.
     #
-    # Measured 2026-08-23 as `evercoat_app` under organization A's GUC, naming
-    # a subject who is a member only of organization B: it renamed that user
-    # to the caller's supplied string and returned B's real email address.
-    # `core.users` carried no RLS at the time, so nothing refused it.
+    # `core.bind_subject_to_organization` returns the identifier only after
+    # the membership exists. If the bind fails the whole thing rolls back and
+    # nothing is returned; if it succeeds, the caller shares an organization
+    # with that user and 044's read policy admits them anyway. So the id is
+    # never learned by someone not entitled to it.
     #
-    # Migration 044's UPDATE policy now refuses that statement, but a route
-    # that relies on the database raising is a route that answers 500 to an
-    # ordinary administrative action. So the two cases are separated here and
-    # neither one edits a row this organization does not own.
+    # ⚠️ THE ORGANIZATION IS NOT PASSED. It comes from `app.current_org`
+    # inside the function. A SECURITY DEFINER taking an organization argument
+    # would create memberships in any tenant the caller named -- a
+    # cross-tenant WRITE inside the change that removes a cross-tenant READ,
+    # which is the exact reflex ADR-029 caught in its own first draft.
     #
-    # `core.user_id_for_subject` exists because 044's read policy makes an
-    # existing user in ANOTHER organization invisible, and a human legitimately
-    # belongs to several. It resolves an exact subject to an id and returns no
-    # personal data — see its COMMENT in 044.
-    existing_user_id = session.execute(
-        text("SELECT core.user_id_for_subject(:sub)"),
-        {"sub": payload.keycloak_sub},
-    ).scalar_one_or_none()
+    # ⚠️ AND IT STILL RACES, SO IT IS STILL GUARDED. Two administrators
+    # inviting the same brand-new subject concurrently both find no row and
+    # both insert; the loser hits `users_keycloak_sub_key`. Atomicity removes
+    # the read-then-write GAP within one call, not the contention between two.
+    # `guarded_write` keeps the violation from destroying the request
+    # transaction (I30), and the retry re-resolves through the same function.
+    try:
+        with guarded_write(session):
+            bound = session.execute(
+                text(
+                    """
+                    SELECT user_id, member_id, identity_created
+                    FROM core.bind_subject_to_organization(:sub, :email, :name)
+                    """
+                ),
+                {
+                    "sub": payload.keycloak_sub,
+                    "email": payload.email,
+                    "name": payload.display_name,
+                },
+            ).one()
+    except IntegrityError as exc:
+        # 🔴 THREE DIFFERENT REFUSALS ARRIVE HERE, AND TWO OF THEM WOULD BE
+        # DESCRIBED WRONGLY BY THE THIRD'S MESSAGE.
+        #
+        #   organization_members_unique .............. already a member
+        #   organization_members_one_address_per_org . 046's per-tenant guard
+        #   users_keycloak_sub_key ................... the concurrent-invite race
+        #
+        # The first two are told apart because BOTH facts are already visible
+        # to this caller -- `list_members` returns every member of their own
+        # organization with their address -- so naming them discloses nothing
+        # across a boundary. That is the whole difference between these
+        # messages and the GLOBAL constraint I83 removed.
+        constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
 
-    if existing_user_id is None:
-        # ⚠️ LOOKUP-THEN-INSERT REINTRODUCED A RACE THE UPSERT DID NOT HAVE.
-        # Two administrators inviting the same brand-new subject at once both
-        # resolve NULL, both INSERT, and the loser hits the `keycloak_sub`
-        # unique constraint -- which the old `ON CONFLICT` absorbed and this
-        # does not. Unhandled, that is a 500 on an ordinary action.
-        #
-        # `guarded_write` puts the INSERT in a SAVEPOINT so the violation
-        # refuses the statement instead of destroying the request transaction
-        # (see its docstring: `session.rollback()` here would discard the
-        # topmost transaction, which is I30's lesson).
-        #
-        # The retry is sound rather than hopeful: PostgreSQL raises a unique
-        # violation only once the conflicting transaction has COMMITTED -- while
-        # it is still in flight the INSERT blocks. So by the time we are in this
-        # handler the other administrator's row exists and resolves.
-        try:
+        if constraint == "users_keycloak_sub_key":
+            # The other administrator's transaction has COMMITTED by the time
+            # this handler runs -- PostgreSQL raises a unique violation only
+            # then; while it is in flight the INSERT blocks. So the identity
+            # now exists and one retry through the same function binds it.
             with guarded_write(session):
-                user_id = session.execute(
+                bound = session.execute(
                     text(
                         """
-                        INSERT INTO core.users (keycloak_sub, email, display_name)
-                        VALUES (:sub, :email, :name)
-                        RETURNING id
+                        SELECT user_id, member_id, identity_created
+                        FROM core.bind_subject_to_organization(:sub, :email, :name)
                         """
                     ),
                     {
@@ -254,118 +273,26 @@ def invite_member(
                         "email": payload.email,
                         "name": payload.display_name,
                     },
-                ).scalar_one()
-        except IntegrityError as exc:
-            raced = session.execute(
-                text("SELECT core.user_id_for_subject(:sub)"),
-                {"sub": payload.keycloak_sub},
-            ).scalar_one_or_none()
-            if raced is None:
-                # 🔴 THIS USED TO BE THE CROSS-TENANT EMAIL ORACLE (I83).
-                #
-                # `core.users` carried a SECOND unique constraint --
-                # `users_email_key`, GLOBAL -- so this branch was reached
-                # whenever a different subject anywhere on the platform already
-                # held the submitted address. Unique constraints are enforced
-                # outside RLS, so the refusal was observable across tenants: an
-                # `admin.users` holder in any organization POSTed a throwaway
-                # subject with a guessed address and read platform-wide
-                # existence from 201 against 409.
-                #
-                # A generic message did not close it, and that is measured
-                # rather than argued: migration 044 already made this detail
-                # generic, and the oracle survived, because the attacker reads
-                # the STATUS CODE. Migration 046 drops the constraint instead
-                # -- see its header for why email is an attribute and
-                # `keycloak_sub` is the identity.
-                #
-                # So this branch no longer has an email case. The expected
-                # uniqueness race is `users_keycloak_sub_key`, handled above.
-                #
-                # ⚠️ NOT "the only constraint the caller can hit", which is what
-                # this said until Codex pointed out that it ignores the primary
-                # key and anything a later migration adds. The branch is
-                # DEFENSIVE, not dead: any other integrity failure on
-                # `core.users` arrives here, and it must answer something rather
-                # than 500. The detail stays generic -- it is not a channel, and
-                # the driver message names tables and columns.
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="the user record could not be created",
-                ) from exc
-            user_id = raced
-    else:
-        # The identity already exists. Bind it to this organization; do NOT
-        # touch its email or display name, which belong to whoever created it.
-        user_id = existing_user_id
-
-    existing = session.execute(
-        text(
-            """
-            SELECT id FROM core.organization_members
-            WHERE organization_id = :org AND user_id = :uid
-            """
-        ),
-        {"org": principal.organization_id, "uid": user_id},
-    ).scalar_one_or_none()
-
-    if existing is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="user is already a member of this organization",
-        )
-
-    # ⚠️ The check above is not the guarantee; `organization_members_unique`
-    # (organization_id, user_id) is. Two administrators inviting the same user
-    # concurrently both read no row and both insert, and the loser violates
-    # that constraint. Raised by Codex, and PRE-EXISTING -- the old upsert
-    # covered the `core.users` half of this race and never covered this half.
-    #
-    # Translated to the SAME 409 the explicit check returns, because it means
-    # the same thing to the caller: somebody is already a member. The driver
-    # message is not passed through; it names tables and constraints.
-    try:
-        with guarded_write(session):
-            member_id = session.execute(
-                text(
-                    """
-                    INSERT INTO core.organization_members (organization_id, user_id)
-                    VALUES (:org, :uid)
-                    RETURNING id
-                    """
-                ),
-                {"org": principal.organization_id, "uid": user_id},
-            ).scalar_one()
-    except IntegrityError as exc:
-        # 🔴 TWO DIFFERENT REFUSALS ARRIVE HERE NOW, AND ONE OF THEM WOULD BE
-        # DESCRIBED WRONGLY BY THE OTHER'S MESSAGE.
-        #
-        # Migration 046 replaced the global `users_email_key` with a
-        # PER-ORGANIZATION guard on this table: a second ACTIVE member of the
-        # same organization may not hold the same address. It raises
-        # `unique_violation` from a trigger, so it lands in this handler beside
-        # the `organization_members_unique` race -- and "user is already a
-        # member of this organization" is false for it. A different person
-        # holds that address; this subject is not a member at all.
-        #
-        # Telling the two apart is safe HERE in a way it was not before,
-        # because both facts are already visible to this caller: `list_members`
-        # returns every member of their own organization with their address.
-        # The guard is tenant-scoped by construction (see 046), so naming it
-        # discloses nothing across a boundary. That is the whole difference
-        # between this message and the global constraint I83 removed.
-        constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-        if constraint == "organization_members_one_address_per_organization":
+                ).one()
+        elif constraint == "organization_members_one_address_per_organization":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
                     "another active member of this organization already uses that email address"
                 ),
             ) from exc
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="user is already a member of this organization",
-        ) from exc
+        else:
+            # `organization_members_unique`, and anything a later migration
+            # adds. DEFENSIVE, not dead: an unexpected integrity failure must
+            # answer something rather than 500, and the detail stays generic
+            # because the driver message names tables and columns.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="user is already a member of this organization",
+            ) from exc
+
+    user_id = bound.user_id
+    member_id = bound.member_id
 
     for role_code in payload.roles:
         _grant_role(session, member_id, role_code)

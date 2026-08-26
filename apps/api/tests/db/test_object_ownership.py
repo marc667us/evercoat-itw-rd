@@ -132,7 +132,16 @@ DEFINER_OWNED_BY_DESIGN = {
     # is ENABLED and not FORCED, and
     # `tests/db/test_044_user_directory_is_not_global.py` asserts the owner is
     # not a superuser and fails the moment that changes.
-    "core.user_id_for_subject",
+    # Migration 049 DROPPED `core.user_id_for_subject` -- it was I82's oracle,
+    # answering for an exact subject in any organization with a uuid and an
+    # existence, on a SELECT that left no row behind. A capability nothing
+    # calls is still a capability, so it was removed rather than orphaned.
+    #
+    # Its replacement is below: same reason for being a definer (044 makes a
+    # user in another organization invisible and a human legitimately belongs
+    # to several), but it WRITES and returns the identifier only after the
+    # membership exists.
+    "core.bind_subject_to_organization",
     # Migration 048. The FIFTH instance, and this test caught it as designed.
     #
     # It returns BOTH role codes and permission codes. The first draft

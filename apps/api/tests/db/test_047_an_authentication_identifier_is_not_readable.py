@@ -210,11 +210,18 @@ def test_the_application_role_is_actually_refused(app_session: Session) -> None:
 def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: Session) -> None:
     """🔴 THE REVOKE MUST NOT HAVE KILLED SIGN-IN.
 
-    `principal_for_subject`, `memberships_for_subject` and
-    `user_id_for_subject` all read `keycloak_sub`. They are SECURITY DEFINER
-    owned by `evercoat_owner`, so they keep working — but that is an
-    argument, and this is the measurement. If it is wrong, nobody can log in
-    and the catalogue tests above still pass.
+    `principal_for_subject` and `memberships_for_subject` read `keycloak_sub`.
+    They are SECURITY DEFINER owned by `evercoat_owner`, so they keep working
+    — but that is an argument, and this is the measurement. If it is wrong,
+    nobody can log in and the catalogue tests above still pass.
+
+    ⚠️ THIS TEST USED TO EXERCISE A THIRD FUNCTION, `user_id_for_subject`.
+    Migration 049 DROPPED it: it was I82's oracle, answering for an exact
+    subject in any organization with a uuid and an existence, on a SELECT that
+    left no row behind. It was never part of sign-in — `get_principal` calls
+    `principal_for_subject`, and `/api/me` calls `memberships_for_subject`.
+    So the coverage that matters is unchanged, and the assertion is narrower
+    and still true rather than broader and stale.
 
     WARNING: IT CREATES ITS OWN SUBJECT RATHER THAN LOOKING FOR ONE. The first
     version skipped when `core.users` was empty -- so on a clean CI database,
@@ -232,13 +239,24 @@ def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: S
     )
     owner_session.commit()
     try:
-        resolved = app_session.execute(
-            text("SELECT core.user_id_for_subject(:s)"), {"s": subject}
-        ).scalar_one_or_none()
-        assert resolved is not None, (
-            "core.user_id_for_subject returned nothing for a subject that "
-            "exists. The definer can no longer read keycloak_sub and sign-in "
-            "is dead."
+        # The function `get_principal` actually calls. It needs an organization
+        # too, and this probe subject has no membership — so `one_or_none()`
+        # returning nothing is the CORRECT answer here, and what is being
+        # measured is that it ANSWERS rather than raising `permission denied`
+        # on `keycloak_sub`.
+        app_session.execute(
+            text("SELECT * FROM core.principal_for_subject(:s, :o)"),
+            {"s": subject, "o": uuid.uuid4()},
+        ).all()
+
+        # The function `/api/me` calls, which resolves before a tenant is
+        # chosen and therefore reads `keycloak_sub` with no GUC set at all.
+        memberships = app_session.execute(
+            text("SELECT * FROM core.memberships_for_subject(:s)"), {"s": subject}
+        ).all()
+        assert memberships == [], (
+            "a subject with no membership resolved to something; the fixture "
+            "or the function has changed shape"
         )
         app_session.rollback()
     finally:

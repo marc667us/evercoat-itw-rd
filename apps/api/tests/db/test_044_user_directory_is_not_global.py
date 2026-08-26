@@ -517,142 +517,128 @@ def test_a_rename_inside_the_organization_still_works(app_engine, two_orgs_two_u
     )
 
 
-def test_the_binding_lookup_resolves_an_id_and_nothing_else(app_engine, two_orgs_two_users):
-    """`core.user_id_for_subject` — without it, 044 would break a feature.
+def test_the_feature_survives_the_oracle_being_removed(app_engine, two_orgs_two_users):
+    """🔴 044's REAL CONCERN, REDIRECTED TO ITS REPLACEMENT (I82 / 049).
 
-    044's read policy makes an existing user in another organization
-    invisible, and `keycloak_sub` is globally unique, so an administrator
-    could neither find nor create them: multi-organization membership would
-    become impossible. That is why `core.users` has no `organization_id` in
-    the first place, so removing the disclosure by removing the feature is not
-    a fix.
+    This test used to exercise `core.user_id_for_subject`, and its point was
+    never that function: it was that **044 must not close a disclosure by
+    deleting a feature.** 044's read policy makes a user in another
+    organization invisible while `keycloak_sub` stays globally unique, so
+    without SOME privileged resolution an administrator could neither find nor
+    create a human who already has an account elsewhere — and
+    multi-organization membership is the reason `core.users` has no
+    `organization_id` at all.
 
-    What the function may return is exactly one uuid. If it ever grows a
-    row-returning signature, this test is where that gets caught.
+    Migration 049 removed that function because it was an oracle (I82) and
+    replaced it with `core.bind_subject_to_organization`, which resolves and
+    binds atomically. So the concern is unchanged and the subject moves: a
+    subject that exists ONLY in organization B must still be bindable into
+    organization A.
+
+    ⚠️ WRITING THIS FOUND A GAP IN 049's OWN TESTS. They covered a brand-new
+    subject and a duplicate bind, and never the case this file has always
+    cared about — an EXISTING identity in another tenant. That case is the
+    entire justification for the function being SECURITY DEFINER.
     """
     f = two_orgs_two_users
     with app_engine.connect() as conn:
         conn.execute(
-            text("SELECT set_config('app.current_org', :o, false)"),
-            {"o": str(f["org_a"])},
+            text("SELECT set_config('app.current_org', :o, false)"), {"o": str(f["org_a"])}
         )
-        resolved = conn.execute(
-            text("SELECT core.user_id_for_subject(:s)"), {"s": f["sub_b"]}
-        ).scalar_one()
-        missing = conn.execute(
-            text("SELECT core.user_id_for_subject(:s)"), {"s": f"nobody-{uuid.uuid4().hex}"}
-        ).scalar_one_or_none()
-
-    assert resolved == f["user_b"], (
-        "the binding lookup could not resolve a subject in another "
-        "organization, so an administrator cannot invite an existing human. "
-        "044 has closed a disclosure by deleting a feature."
-    )
-    assert missing is None, "an unknown subject resolved to something."
-
-    ret = None
-    with app_engine.connect() as conn:
-        ret = conn.execute(
+        conn.execute(
+            text("SELECT set_config('app.current_user_id', :u, false)"),
+            {"u": str(f["user_a"])},
+        )
+        row = conn.execute(
             text(
                 """
-                SELECT pg_get_function_result(p.oid)
-                  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-                 WHERE n.nspname = 'core' AND p.proname = 'user_id_for_subject'
+                SELECT user_id, member_id, identity_created
+                  FROM core.bind_subject_to_organization(:s, :e, :n)
                 """
-            )
-        ).scalar_one()
-    assert ret == "uuid", (
-        f"core.user_id_for_subject now returns {ret!r}. It is SECURITY DEFINER "
-        "and therefore outside RLS; it may return an identifier and never a "
-        "record. Anything wider is a cross-tenant read channel."
+            ),
+            {"s": f["sub_b"], "e": "rebind-b@example.test", "n": "B, invited into A"},
+        ).one()
+        conn.rollback()
+
+    assert row.user_id == f["user_b"], (
+        "an administrator in organization A could not bind a human who already "
+        "has an identity in organization B. 044 has closed a disclosure by "
+        "deleting a feature, which is exactly what this test exists to prevent."
+    )
+    assert row.identity_created is False, (
+        "a DUPLICATE identity was created for a subject that already exists. "
+        "`keycloak_sub` is globally unique and one human is one row; this is "
+        "the failure multi-organization membership is designed around."
+    )
+    assert row.member_id is not None, "resolved an identity without binding it"
+
+
+def test_the_replacement_returns_an_identifier_and_never_a_record(owner_session):
+    """It may return identifiers. It may not return a person.
+
+    `core.user_id_for_subject` was pinned to `RETURNS uuid` for this reason:
+    it is SECURITY DEFINER and therefore outside RLS, so anything wider is a
+    cross-tenant read channel. The replacement returns three columns and the
+    same rule applies to each — two identifiers and a boolean, and nothing
+    that carries an email, a display name or a subject.
+    """
+    result = owner_session.execute(
+        text(
+            """
+            SELECT pg_get_function_result(p.oid)
+              FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'core' AND p.proname = 'bind_subject_to_organization'
+            """
+        )
+    ).scalar_one()
+
+    normalised = result.lower().replace("table(", "").replace(")", "")
+    returned = {c.strip().split()[-1] for c in normalised.split(",")}
+    assert returned <= {"uuid", "boolean"}, (
+        f"core.bind_subject_to_organization returns {result!r}. It is SECURITY "
+        "DEFINER and therefore outside RLS; it may return identifiers and a "
+        "flag, never a record. Anything wider is a cross-tenant read channel."
     )
 
 
-def test_the_binding_lookup_runs_as_a_non_superuser_and_only_for_the_app(owner_session):
-    """🔴 THE DEFECT THIS MIGRATION ALMOST SHIPPED, PINNED AS A TEST.
+def test_the_replacement_runs_as_a_non_superuser_and_only_for_the_app(owner_session):
+    """🔴 THE DEFECT 044 ALMOST SHIPPED, STILL PINNED — ON THE NEW FUNCTION.
 
-    `core.user_id_for_subject` is SECURITY DEFINER, which means it runs as its
-    OWNER. The owner is whoever executed `CREATE FUNCTION` unless it is pinned,
-    and this database applies migrations as `postgres`. Measured after the
-    first apply: the function was owned by **postgres**, `rolsuper = true`,
-    `rolbypassrls = true` -- outside RLS permanently, including after the I58
-    FORCE cutover. That is I56, and migration 044's comment claimed
-    `evercoat_owner` the whole time. Migration 033 had already written the rule
-    three migrations earlier.
+    SECURITY DEFINER runs as its OWNER, and the owner is whoever executed
+    CREATE FUNCTION unless pinned. This database applies migrations as
+    `postgres`. Measured after 044's first apply: the function was owned by
+    **postgres**, `rolsuper = true`, `rolbypassrls = true` — outside RLS
+    permanently, including after the I58 cutover. That is I56, and 044's
+    comment claimed `evercoat_owner` the whole time. Neither reviewer found
+    it; `pg_proc` did.
 
-    Neither reviewer found it; `pg_proc` did.
-
-    The privilege half was raised by Codex separately: asserting only that
-    PUBLIC cannot execute passes while `evercoat_worker` or `evercoat_report`
-    can. Assert the WHOLE access list.
+    The privilege half was Codex's: asserting only that PUBLIC cannot execute
+    passes while `evercoat_worker` or `evercoat_report` can. Assert the WHOLE
+    access list.
     """
-    owner, secdef, volatility, config = owner_session.execute(
+    owner, secdef, config, acl = owner_session.execute(
         text(
             """
-            SELECT pg_get_userbyid(p.proowner), p.prosecdef, p.provolatile,
-                   COALESCE(array_to_string(p.proconfig, ','), '')
+            SELECT pg_get_userbyid(p.proowner), p.prosecdef,
+                   COALESCE(array_to_string(p.proconfig, ','), ''),
+                   COALESCE(p.proacl::text[], ARRAY[]::text[])
               FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-             WHERE n.nspname = 'core' AND p.proname = 'user_id_for_subject'
+             WHERE n.nspname = 'core' AND p.proname = 'bind_subject_to_organization'
             """
         )
     ).one()
 
-    assert owner == "evercoat_owner", (
-        f"core.user_id_for_subject is owned by {owner!r}. SECURITY DEFINER runs "
-        "as the owner; migration 044 must pin it with ALTER FUNCTION ... OWNER TO."
-    )
+    assert owner == "evercoat_owner", f"owned by {owner!r}, not evercoat_owner"
+    assert secdef is True, "not SECURITY DEFINER; it cannot resolve across tenants"
+    assert "search_path=core, pg_temp" in config, f"search_path is {config!r}"
 
-    is_super = owner_session.execute(
-        text("SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = :r"),
-        {"r": owner},
-    ).scalar_one()
-    assert is_super is False, (
-        f"core.user_id_for_subject runs as {owner!r}, which is a superuser or "
-        "holds BYPASSRLS. A definer owned by such a role is outside RLS "
-        "permanently -- I56, and the reason I58 has to re-owner all four."
+    grantees = {e.split("=")[0] for e in acl if "=" in e}
+    assert grantees <= {"evercoat_owner", "evercoat_app"}, (
+        f"EXECUTE is held by {sorted(grantees)}. Only the runtime role needs "
+        "it; `evercoat_worker` and `evercoat_report` binding memberships is "
+        "not a capability anything asked for."
     )
-
-    assert secdef is True, "the function is no longer SECURITY DEFINER"
-    assert volatility == "s", (
-        f"volatility is {volatility!r}, not STABLE. A VOLATILE definer can be "
-        "given side effects without this test noticing."
-    )
-    assert "search_path=core, pg_temp" in config, (
-        f"proconfig is {config!r}. A SECURITY DEFINER function without a pinned "
-        "search_path can be redirected by a caller-controlled schema."
-    )
-
-    # The COMPLETE access list, not just PUBLIC. Only the owner and the runtime
-    # role may execute it; `evercoat_worker`, `evercoat_report` and
-    # `evercoat_breakglass` must not.
-    grantees = set(
-        owner_session.execute(
-            text(
-                """
-                SELECT r.rolname
-                  FROM pg_roles r
-                 WHERE has_function_privilege(
-                           r.rolname, 'core.user_id_for_subject(text)', 'EXECUTE')
-                   AND NOT r.rolsuper
-                """
-            )
-        )
-        .scalars()
-        .all()
-    )
-    assert grantees == {"evercoat_owner", "evercoat_app"}, (
-        f"core.user_id_for_subject is executable by {sorted(grantees)}. It is "
-        "SECURITY DEFINER and reads across every tenant by design; only the "
-        "runtime role may call it."
-    )
-
-    public_can = owner_session.execute(
-        text("SELECT has_function_privilege('public', 'core.user_id_for_subject(text)', 'EXECUTE')")
-    ).scalar_one()
-    assert public_can is False, (
-        "core.user_id_for_subject is executable by PUBLIC -- the same finding "
-        "migration 035 had to fix for principal_for_subject after it shipped."
-    )
+    assert not [e for e in acl if e.startswith("=")], f"PUBLIC can execute it: {acl}"
 
 
 def test_sign_in_still_works(app_engine, owner_session) -> None:
