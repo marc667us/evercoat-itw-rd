@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters to the checker
     from app.agents.principal import AgentPrincipal
 
-__all__ = ["DepartmentDeniedError", "require"]
+__all__ = ["DepartmentDeniedError", "UnverifiedPrincipalError", "require"]
 
 
 class DepartmentDeniedError(PermissionError):
@@ -52,6 +52,25 @@ class DepartmentDeniedError(PermissionError):
         self.department = department
         self.permission = permission
         super().__init__(f"the {department} department requires the {permission!r} permission")
+
+
+class UnverifiedPrincipalError(PermissionError):
+    """A gate was asked to consult a permission set the database never saw.
+
+    🔴 THIS IS WHAT STOPS I105 COMING BACK.
+
+    `AgentPrincipal.of(principal)` carries the permissions the request
+    resolved — true for a legitimate caller, and still only Python.
+    `authorize(session)` replaces them with the set
+    `core.permissions_for_current_session()` returns for the session's own
+    GUC. Only the second is `verified`.
+
+    Without this error, a conductor written next month that forgot
+    `authorize()` would gate on the claimed set and pass every test, because
+    for a legitimate caller the two sets are identical. It would be wrong only
+    for a forged principal — which is the one case no test naturally covers.
+    A missing line must be LOUD, not silently equivalent.
+    """
 
 
 def require(caller: AgentPrincipal, *, department: str, permission: str) -> None:
@@ -74,5 +93,17 @@ def require(caller: AgentPrincipal, *, department: str, permission: str) -> None
     A conductor that returned data and trusted its caller to discard it would
     be the "filter after generation" mistake with extra steps.
     """
+    # 🔴 THE SET MUST HAVE COME FROM THE DATABASE (I105).
+    #
+    # Checked BEFORE the permission itself, so "you forgot to authorize" can
+    # never be reported as "you lack the permission" — two very different
+    # facts, and conflating them would send the next reader looking at role
+    # grants for a bug in the conductor.
+    if not caller.verified:
+        raise UnverifiedPrincipalError(
+            f"the {department} department was reached with a principal whose "
+            "permissions the database has not confirmed. Call "
+            "AgentPrincipal.authorize(session) first — see I105."
+        )
     if permission not in caller.permissions:
         raise DepartmentDeniedError(department, permission)

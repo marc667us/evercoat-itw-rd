@@ -72,10 +72,23 @@ def caller(*permissions: str) -> AgentPrincipal:
 
 
 class _ScopedSession:
-    """Answers the RLS identity probe as ORG/USER. Touches no database."""
+    """Answers `authorize()`'s probe as ORG/USER, granting `granted`.
+
+    🔴 THE PERMISSIONS COME FROM HERE, NOT FROM THE PRINCIPAL (I105).
+
+    `authorize()` replaces the claimed set with the one
+    `core.permissions_for_current_session()` returns for the session's GUC, so
+    a test that granted `knowledge.view` on the principal alone would now be
+    testing a refusal. What the assistant may do is stated on the SESSION.
+
+    Touches no database: it answers that one query and nothing else.
+    """
+
+    def __init__(self, *granted: str) -> None:
+        self._granted = ["msd.use", *granted]
 
     def execute(self, _statement: object, *args: object, **kwargs: object) -> object:
-        row = SimpleNamespace(org=str(ORG), usr=str(USER))
+        row = SimpleNamespace(org=str(ORG), usr=str(USER), perms=list(self._granted))
         return SimpleNamespace(one=lambda: row)
 
 
@@ -184,9 +197,13 @@ def test_the_refusal_test_can_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     result = answer(
-        session=_ScopedSession(),
+        # 🔴 GRANTED ON THE SESSION (I105). `authorize()` discards what the
+        # principal claims, so `caller("knowledge.view")` alone would make
+        # this a refusal — and the test is named for the fact that it CAN
+        # fail, which is only meaningful when it fails for the right reason.
+        session=_ScopedSession("knowledge.view"),
         question="thoughts on the weather",
-        caller=caller("knowledge.view"),
+        caller=caller(),
     )
 
     assert result.intent == "knowledge_search"

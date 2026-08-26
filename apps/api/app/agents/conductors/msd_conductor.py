@@ -265,16 +265,16 @@ def answer(
     that sentence is checked rather than asserted. Every tool that touches
     records depends on it and none of them re-checks permissions in Python,
     so a session belonging to somebody else would have made every one of them
-    answer for the wrong person. `caller.bind(session)` asks PostgreSQL, not
-    the caller.
+    answer for the wrong person. `caller.authorize(session)` asks PostgreSQL, not
+    the caller — and since I105 it takes the permission set from there too.
 
     The four values the body reads are unpacked from the verified principal
     rather than accepted as arguments (I104). They are the same names as
     before on purpose: the change is where they come from, not what the
     composition below does with them.
     """
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=USE)
-    session = caller.bind(session)
     organization_id = caller.organization_id
     user_id = caller.user_id
     role_codes = caller.roles
@@ -1181,7 +1181,7 @@ def threads(session: Session, *, caller: AgentPrincipal, limit: int = 50) -> lis
 
     ⚠️ "OWN" IS RLS's ANSWER, NOT THIS FUNCTION'S. `list_threads` filters on
     `organization_id` alone and says so — *"RLS makes 'own' true, not the
-    query"*. `caller.bind()` is what now makes that sentence checkable: it
+    query"*. `caller.authorize()` is what now makes that sentence checkable: it
     refuses a session whose `app.current_user_id` is not this principal's,
     which is precisely the input that would have made the owner policy
     answer for somebody else.
@@ -1199,10 +1199,9 @@ def threads(session: Session, *, caller: AgentPrincipal, limit: int = 50) -> lis
     # doing, and not worth doing silently inside a change about permissions.
     from app.domains.msd import service as msd_records
 
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=USE)
-    return msd_records.list_threads(
-        caller.bind(session), organization_id=caller.organization_id, limit=limit
-    )
+    return msd_records.list_threads(session, organization_id=caller.organization_id, limit=limit)
 
 
 def turns(
@@ -1218,9 +1217,10 @@ def turns(
     """
     from app.domains.msd import service as msd_records  # see `threads` above
 
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=USE)
     return msd_records.list_turns(
-        caller.bind(session),
+        session,
         organization_id=caller.organization_id,
         thread_id=thread_id,
         limit=limit,

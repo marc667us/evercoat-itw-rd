@@ -49,9 +49,10 @@ def tests(
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """The test queue this caller may see."""
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=VIEW)
     return testing.list_tests(
-        caller.bind(session),
+        session,
         organization_id=caller.organization_id,
         project_id=project_id,
         review_state=review_state,
@@ -70,10 +71,9 @@ def test(
     Returned as the domain service computed them. See the module docstring:
     this conductor does not derive status and does not confirm one.
     """
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=VIEW)
-    return testing.get_test(
-        caller.bind(session), test_id=test_id, organization_id=caller.organization_id
-    )
+    return testing.get_test(session, test_id=test_id, organization_id=caller.organization_id)
 
 
 def methods(
@@ -83,7 +83,6 @@ def methods(
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Test methods, with the limits §10's derivation reads."""
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=VIEW)
-    return testing.list_methods(
-        caller.bind(session), organization_id=caller.organization_id, limit=limit
-    )
+    return testing.list_methods(session, organization_id=caller.organization_id, limit=limit)

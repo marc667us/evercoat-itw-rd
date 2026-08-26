@@ -132,6 +132,7 @@ def dashboard(
     somebody else's would be asking what is waiting for a colleague — the
     hole `root_orchestrator` already warns about.
     """
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=VIEW)
     build = ROLE_DASHBOARDS.get(name)
     if build is None:
@@ -139,7 +140,7 @@ def dashboard(
             f"no such dashboard; the roles with a dashboard are {sorted(ROLE_DASHBOARDS)}"
         )
     return build(
-        caller.bind(session),
+        session,
         user_id=caller.user_id,
         organization_id=caller.organization_id,
         held_permissions=caller.permissions,
@@ -164,9 +165,10 @@ def report(
     re-implementing the fourteen ordered rules would be the second answer
     `app/calculations/testing.py` exists to prevent.
     """
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=REPORT)
     return test_results_report(
-        caller.bind(session),
+        session,
         organization_id=caller.organization_id,
         project_id=project_id,
         limit=limit,
@@ -228,11 +230,11 @@ def analytics(
     "this organization has no projects", which is a different claim and
     usually a false one.
     """
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=ANALYTICS)
-    bound = caller.bind(session)
 
     result = activity_analytics(
-        bound,
+        session,
         organization_id=caller.organization_id,
         project_id=project_id,
         limit=limit,
@@ -261,7 +263,7 @@ def analytics(
 
     if held:
         by_project, portfolio_truncated = portfolio_by_project(
-            bound, organization_id=caller.organization_id, limit=limit
+            session, organization_id=caller.organization_id, limit=limit
         )
         result["by_project"] = by_project
         result["portfolio_truncated"] = portfolio_truncated

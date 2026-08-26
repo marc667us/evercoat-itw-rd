@@ -27,11 +27,19 @@ it, and a conductor that reached around it would return another tenant's
 work to an agent that then reasoned over it.
 
 That used to be this paragraph and nothing else — a comment asserting a rule
-the code did not have. `caller.bind(session)` now asks PostgreSQL, through
-`app.current_org` and `app.current_user_id`, whether the session really is
-this principal's, and refuses if it is not. It returns the session, so the
-check cannot be skipped by forgetting a line: there is no other expression
-here that yields something to pass to the service.
+the code did not have. `caller.authorize(session)` now asks PostgreSQL,
+through `app.current_org` and `app.current_user_id`, whether the session
+really is this principal's, and refuses if it is not.
+
+🔴 AND SINCE I105 IT ALSO TAKES THE PERMISSIONS FROM THE DATABASE, which is
+why it runs BEFORE the gate rather than beside it. The gate is only as true as
+the set it consults, and until 048 that set had never left Python.
+
+⚠️ FORGETTING THE LINE IS LOUD, NOT SILENT. `require()` refuses a principal
+that has not been authorized (`UnverifiedPrincipalError`) — because for a
+legitimate caller the claimed and derived sets are identical, so a conductor
+that skipped this would pass every ordinary test and be wrong only for a
+forgery.
 """
 
 from __future__ import annotations
@@ -64,9 +72,10 @@ def batches(
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Lab batches this caller may see."""
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=VIEW)
     return laboratory.list_batches(
-        caller.bind(session),
+        session,
         organization_id=caller.organization_id,
         project_id=project_id,
         status=status,
@@ -81,7 +90,6 @@ def batch(
     caller: AgentPrincipal,
 ) -> dict[str, Any]:
     """One batch, with whatever the domain service considers its detail."""
+    caller = caller.authorize(session)
     require(caller, department=DEPARTMENT, permission=VIEW)
-    return laboratory.get_batch(
-        caller.bind(session), batch_id=batch_id, organization_id=caller.organization_id
-    )
+    return laboratory.get_batch(session, batch_id=batch_id, organization_id=caller.organization_id)

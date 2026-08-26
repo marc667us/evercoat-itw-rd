@@ -30,7 +30,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agents.boundary import DepartmentDeniedError
+from app.agents.boundary import DepartmentDeniedError, UnverifiedPrincipalError, require
 from app.agents.conductors import (
     analysis_conductor,
     laboratory_conductor,
@@ -46,9 +46,8 @@ from app.domains.dashboards.service import ROLE_DASHBOARDS
 class _ExplodingSession:
     """A session that fails loudly if anything touches the database.
 
-    The point of the gate is that it runs FIRST. A conductor that called its
-    service and filtered afterwards would pass a test using a real session and
-    an empty result set; it cannot pass this one.
+    Used only where NOTHING should reach the database at all — the
+    `authorize()` identity checks below, which must refuse before querying.
     """
 
     def __getattr__(self, name: str) -> object:  # pragma: no cover - defensive
@@ -65,14 +64,19 @@ THING = uuid.uuid4()
 
 
 def principal(*permissions: str, user_id: uuid.UUID = USER, org: uuid.UUID = ORG) -> AgentPrincipal:
-    """A verified caller holding exactly these permissions.
+    """A caller CLAIMING these permissions.
+
+    🔴 SINCE I105 THE CLAIM IS NOT WHAT THE GATE CONSULTS, AND THAT IS THE
+    WHOLE POINT. `authorize()` replaces this set with the one
+    `core.permissions_for_current_session()` returns for the session's own
+    GUC. So in every conductor test below, what this helper claims and what
+    `_ProbeSession` reports are supplied SEPARATELY — and
+    `test_the_gate_ignores_a_claimed_permission_the_database_denies` sets them
+    in deliberate opposition.
 
     🔴 GOING THROUGH `Principal` IS THE TEST OBEYING THE RULE IT CHECKS (I104).
-
-    `AgentPrincipal` refuses direct construction, so even the tests cannot
-    assemble one from loose values — they must state an identity first. If
-    that ever stops being true, `test_an_agent_principal_cannot_be_forged`
-    below fails before any of these do.
+    `AgentPrincipal` refuses direct construction, so even the tests must state
+    an identity rather than assemble one.
     """
     return AgentPrincipal.of(
         Principal(
@@ -87,26 +91,33 @@ def principal(*permissions: str, user_id: uuid.UUID = USER, org: uuid.UUID = ORG
     )
 
 
-class _IdentitySession:
-    """Answers the I104 identity probe, then explodes like `_ExplodingSession`.
+class _ProbeSession:
+    """Answers `authorize()`'s one query, then explodes.
 
-    🔴 WHY THE ALLOWED CASES NEEDED A SECOND STUB.
+    🔴 WHY THE STUBS HAD TO CHANGE FOR I105.
 
-    `caller.bind(session)` now runs between the gate and the domain service,
-    and it issues a real `current_setting` query. Against `_ExplodingSession`
-    every ALLOWED case would still have raised "reached the database" — from
-    `bind`, never from the service — so the test asserting the gate OPENS
-    would have passed without the conductor ever dispatching. A test that
-    passes for the wrong reason is the failure mode this whole file is about.
+    `authorize()` now runs BEFORE the gate and asks the database two things in
+    one round trip: whose session this is, and what that person may do. So a
+    session that explodes on first touch can no longer be used to prove the
+    gate fires early — it would refuse the authorize query itself.
 
-    So this one answers the identity probe truthfully and explodes on
-    everything after it. Reaching the explosion therefore proves three things
-    in order: the gate opened, the session identity matched, and the service
-    was called.
+    This answers exactly that one query and explodes on everything after it.
+    Reaching the explosion therefore proves, in order: the identity matched,
+    the database supplied a permission set, the gate opened, and the domain
+    service was called. Refusing before it proves the gate closed without any
+    domain read — which is what §7 requires.
+
+    ⚠️ `granted` IS THE DATABASE'S ANSWER, deliberately independent of what
+    the principal claims.
     """
 
-    def __init__(self, *, org: uuid.UUID = ORG, user: uuid.UUID = USER) -> None:
-        self._row = SimpleNamespace(org=str(org), usr=str(user))
+    def __init__(
+        self,
+        *granted: str,
+        org: uuid.UUID = ORG,
+        user: uuid.UUID = USER,
+    ) -> None:
+        self._row = SimpleNamespace(org=str(org), usr=str(user), perms=list(granted))
         self._probed = False
 
     def execute(self, _statement: object, *args: object, **kwargs: object) -> object:
@@ -131,44 +142,44 @@ class _IdentitySession:
 DENIED_CASES = [
     (
         "laboratory.batches",
-        lambda: laboratory_conductor.batches(_ExplodingSession(), caller=principal()),
+        lambda: laboratory_conductor.batches(_ProbeSession(), caller=principal()),
     ),
     (
         "laboratory.batch",
-        lambda: laboratory_conductor.batch(_ExplodingSession(), batch_id=THING, caller=principal()),
+        lambda: laboratory_conductor.batch(_ProbeSession(), batch_id=THING, caller=principal()),
     ),
     (
         "testing.tests",
-        lambda: testing_conductor.tests(_ExplodingSession(), caller=principal()),
+        lambda: testing_conductor.tests(_ProbeSession(), caller=principal()),
     ),
     (
         "testing.test",
-        lambda: testing_conductor.test(_ExplodingSession(), test_id=THING, caller=principal()),
+        lambda: testing_conductor.test(_ProbeSession(), test_id=THING, caller=principal()),
     ),
     (
         "testing.methods",
-        lambda: testing_conductor.methods(_ExplodingSession(), caller=principal()),
+        lambda: testing_conductor.methods(_ProbeSession(), caller=principal()),
     ),
     (
         "analysis.dashboard",
-        lambda: analysis_conductor.dashboard(_ExplodingSession(), name="lead", caller=principal()),
+        lambda: analysis_conductor.dashboard(_ProbeSession(), name="lead", caller=principal()),
     ),
     (
         "analysis.report",
-        lambda: analysis_conductor.report(_ExplodingSession(), caller=principal()),
+        lambda: analysis_conductor.report(_ProbeSession(), caller=principal()),
     ),
     (
         "analysis.analytics",
-        lambda: analysis_conductor.analytics(_ExplodingSession(), caller=principal()),
+        lambda: analysis_conductor.analytics(_ProbeSession(), caller=principal()),
     ),
     # MSD -- the department that was NOT on this gate until it was brought on.
     (
         "msd.threads",
-        lambda: msd_conductor.threads(_ExplodingSession(), caller=principal()),
+        lambda: msd_conductor.threads(_ProbeSession(), caller=principal()),
     ),
     (
         "msd.turns",
-        lambda: msd_conductor.turns(_ExplodingSession(), caller=principal(), thread_id=THING),
+        lambda: msd_conductor.turns(_ProbeSession(), caller=principal(), thread_id=THING),
     ),
 ]
 
@@ -184,18 +195,20 @@ ALLOWED_CASES = [
     (
         "laboratory.batches",
         "batch.view",
-        lambda: laboratory_conductor.batches(_IdentitySession(), caller=principal("batch.view")),
+        lambda: laboratory_conductor.batches(
+            _ProbeSession("batch.view"), caller=principal("batch.view")
+        ),
     ),
     (
         "testing.tests",
         "test.view",
-        lambda: testing_conductor.tests(_IdentitySession(), caller=principal("test.view")),
+        lambda: testing_conductor.tests(_ProbeSession("test.view"), caller=principal("test.view")),
     ),
     (
         "analysis.dashboard",
         analysis_conductor.VIEW,
         lambda: analysis_conductor.dashboard(
-            _IdentitySession(),
+            _ProbeSession(analysis_conductor.VIEW),
             name="lead",
             # Read from the conductor rather than restated: the point of the
             # drift test below is that this literal has exactly one home.
@@ -206,26 +219,29 @@ ALLOWED_CASES = [
         "analysis.report",
         analysis_conductor.REPORT,
         lambda: analysis_conductor.report(
-            _IdentitySession(), caller=principal(analysis_conductor.REPORT)
+            _ProbeSession(analysis_conductor.REPORT), caller=principal(analysis_conductor.REPORT)
         ),
     ),
     (
         "analysis.analytics",
         analysis_conductor.ANALYTICS,
         lambda: analysis_conductor.analytics(
-            _IdentitySession(), caller=principal(analysis_conductor.ANALYTICS)
+            _ProbeSession(analysis_conductor.ANALYTICS),
+            caller=principal(analysis_conductor.ANALYTICS),
         ),
     ),
     (
         "msd.threads",
         msd_conductor.USE,
-        lambda: msd_conductor.threads(_IdentitySession(), caller=principal(msd_conductor.USE)),
+        lambda: msd_conductor.threads(
+            _ProbeSession(msd_conductor.USE), caller=principal(msd_conductor.USE)
+        ),
     ),
     (
         "msd.turns",
         msd_conductor.USE,
         lambda: msd_conductor.turns(
-            _IdentitySession(), caller=principal(msd_conductor.USE), thread_id=THING
+            _ProbeSession(msd_conductor.USE), caller=principal(msd_conductor.USE), thread_id=THING
         ),
     ),
 ]
@@ -243,7 +259,7 @@ def test_the_gate_is_the_permission_and_not_a_blanket_refusal(
     -- a department nobody can reach, and a green suite. So each gate is also
     shown to OPEN for the right permission.
 
-    It opens onto `_ExplodingSession`, so the proof that the gate passed is
+    It opens onto `_ProbeSession`, so the proof that the gate passed is
     the session's own AssertionError rather than a query result. That keeps
     this free of a database while still telling "refused by the gate" apart
     from "allowed through it" -- and it is why the assertion below checks the
@@ -437,11 +453,14 @@ def test_the_analysis_conductor_passes_the_callers_permissions_through() -> None
     ROLE_DASHBOARDS["lead"] = _spy  # type: ignore[assignment]
     try:
         analysis_conductor.dashboard(
-            # 🔴 A REAL SESSION STUB NOW, NOT `object()`. The identity check
-            # runs between the gate and the builder, so a bare object would
-            # fail on `.execute` before this test could observe anything --
-            # and passing it anyway would mean the spy proved nothing.
-            _IdentitySession(),
+            # 🔴 THE GRANT IS ON THE SESSION, NOT ON THE PRINCIPAL (I105).
+            # `authorize()` replaces the claimed set with the database's, so
+            # what reaches the builder as `held_permissions` must come from
+            # here. Both are listed on the principal too, so that this test
+            # would still pass if the direction were reversed -- it is
+            # asserting the ARGUMENT is passed, not where it came from; the
+            # test below asserts the direction.
+            _ProbeSession(analysis_conductor.VIEW, "test.review"),
             name="lead",
             caller=principal(analysis_conductor.VIEW, "test.review"),
         )
@@ -525,13 +544,17 @@ def test_the_report_needs_report_generate_not_merely_view() -> None:
 
     # VIEW alone is refused...
     with pytest.raises(DepartmentDeniedError) as caught:
-        analysis_conductor.report(_ExplodingSession(), caller=principal(analysis_conductor.VIEW))
+        analysis_conductor.report(
+            _ProbeSession(analysis_conductor.VIEW), caller=principal(analysis_conductor.VIEW)
+        )
     assert caught.value.permission == analysis_conductor.REPORT
 
     # ...and REPORT reaches the service, proving the gate opens rather than
     # refusing everyone. Same both-directions rule as every gate above.
     with pytest.raises(AssertionError) as reached:
-        analysis_conductor.report(_IdentitySession(), caller=principal(analysis_conductor.REPORT))
+        analysis_conductor.report(
+            _ProbeSession(analysis_conductor.REPORT), caller=principal(analysis_conductor.REPORT)
+        )
     assert "reached the database" in str(reached.value)
 
 
@@ -664,7 +687,7 @@ def test_the_session_must_belong_to_the_principal(
             return SimpleNamespace(one=lambda: SimpleNamespace(org=org, usr=usr))
 
     with pytest.raises(SessionIdentityError) as caught:
-        principal("batch.view").bind(_Session())
+        principal("batch.view").authorize(_Session())
     assert expected in str(caught.value), (
         f"{label} was refused, but by the wrong check: {caught.value}. The "
         "branch this case exists to cover has been removed or reordered."
@@ -672,9 +695,12 @@ def test_the_session_must_belong_to_the_principal(
 
 
 def test_the_session_check_admits_the_callers_own_session() -> None:
-    """The other direction — otherwise `bind` could be a bare `raise` and pass."""
-    session = _IdentitySession()
-    assert principal("batch.view").bind(session) is session
+    """The other direction — otherwise `authorize` could be a bare `raise`."""
+    verified = principal().authorize(_ProbeSession("batch.view"))
+    assert verified.verified, "authorize returned an unverified principal"
+    assert verified.permissions == frozenset({"batch.view"}), (
+        "authorize did not take the permission set FROM THE DATABASE"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1021,9 +1047,9 @@ def test_the_factory_token_is_valid_exactly_once() -> None:
     from app.agents import principal as module
 
     token = module._mint()
-    AgentPrincipal(ORG, USER, frozenset(), frozenset({"batch.view"}), token)
+    AgentPrincipal(ORG, USER, frozenset(), frozenset({"batch.view"}), False, token)
     with pytest.raises(TypeError):
-        AgentPrincipal(ORG, USER, frozenset(), frozenset({"test.confirm"}), token)
+        AgentPrincipal(ORG, USER, frozenset(), frozenset({"test.confirm"}), False, token)
 
 
 def test_object_new_still_bypasses_the_guard_and_that_is_documented() -> None:
@@ -1062,7 +1088,7 @@ def test_object_new_still_bypasses_the_guard_and_that_is_documented() -> None:
     # And it still cannot get past the DATABASE check, which is the half that
     # does not live in Python.
     with pytest.raises(SessionIdentityError):
-        forged.bind(_IdentitySession(user=uuid.uuid4()))
+        forged.authorize(_ProbeSession(user=uuid.uuid4()))
 
 
 def test_the_analytics_response_reports_the_cap_it_applied() -> None:
@@ -1104,4 +1130,116 @@ def test_the_analytics_response_reports_the_cap_it_applied() -> None:
     assert 'capped at {"200"}' not in code, "the analytics page hardcodes a truncation limit again"
     assert "capped at {data.testing.limit}" in code, (
         "the analytics page does not render the server's own cap"
+    )
+
+
+# ---------------------------------------------------------------------------
+# I105 — the gate consults the database, not the caller
+# ---------------------------------------------------------------------------
+#
+# 🔴 THE HALF I104 LEFT OPEN, IN CODEX'S OWN WORDS:
+#
+#     bind() validates only organization and user; it never validates roles or
+#     permissions. A forged principal using the real session identity
+#     therefore passes bind() while claiming arbitrary authorization.
+#
+# Everything above proves the gate refuses and opens. These prove WHOSE ANSWER
+# it is using — which is the only question I105 asked, and the one no test
+# here could previously distinguish, because for a legitimate caller the
+# claimed set and the real set are identical.
+
+
+def test_the_gate_ignores_a_claimed_permission_the_database_denies() -> None:
+    """🔴 THE I105 REGRESSION TEST. Claim and reality set in opposition.
+
+    The principal claims `report.generate` — the exact escalation that would
+    hand somebody the whole test-results report. The session's own GUC grants
+    nothing. Before 048 the conductor consulted the claim and opened.
+    """
+    with pytest.raises(DepartmentDeniedError) as caught:
+        analysis_conductor.report(
+            _ProbeSession(),  # the database grants NOTHING
+            caller=principal(analysis_conductor.REPORT),  # the caller claims it
+        )
+    assert caught.value.permission == analysis_conductor.REPORT
+
+
+def test_the_gate_honours_a_permission_the_database_grants_and_the_caller_omits() -> None:
+    """The other direction, and it is not symmetric decoration.
+
+    A test that only proved "a claimed permission is ignored" is satisfied by
+    a gate that refuses everyone. This one is satisfied only by a gate reading
+    the database: the principal claims NOTHING and the session grants
+    `report.generate`, so reaching the domain service can have exactly one
+    explanation.
+
+    ⚠️ This is also the shape that makes revocation work. A permission set
+    computed at the start of a request is a statement about the past;
+    `authorize()` re-reads it, which is why `get_principal`'s rule — *"a JWT is
+    not a current statement about authorization"* — now holds for permissions
+    too.
+    """
+    with pytest.raises(AssertionError) as reached:
+        analysis_conductor.report(
+            _ProbeSession(analysis_conductor.REPORT),  # the database grants it
+            caller=principal(),  # the caller claims nothing at all
+        )
+    assert "identity check passed" in str(reached.value)
+
+
+def test_a_conductor_that_forgets_to_authorize_fails_loudly() -> None:
+    """🔴 A MISSING LINE MUST NOT BE SILENTLY EQUIVALENT.
+
+    For a legitimate caller the claimed set and the derived set are identical,
+    so a conductor written next month that skipped `authorize()` would pass
+    every ordinary test and be wrong only for a forgery — the one case no test
+    naturally covers. `require()` therefore refuses an unverified principal
+    outright.
+
+    ⚠️ AND IT IS A DIFFERENT ERROR FROM A DENIAL, deliberately. Reporting "you
+    forgot to authorize" as "you lack the permission" would send the next
+    reader to the role grants to debug a bug in the conductor.
+    """
+    with pytest.raises(UnverifiedPrincipalError) as caught:
+        require(principal("batch.view"), department="laboratory", permission="batch.view")
+    assert "authorize" in str(caught.value)
+
+    # ...and the same principal, once authorized, is accepted.
+    verified = principal().authorize(_ProbeSession("batch.view"))
+    require(verified, department="laboratory", permission="batch.view")
+
+
+def test_every_conductor_entry_point_authorizes_before_it_gates() -> None:
+    """The order is load-bearing, so it is read from the source.
+
+    `require()` on an unverified principal raises, so a conductor that gated
+    FIRST and authorized afterwards could not work at all — this would be
+    caught by the tests above. What this adds is the stronger property that
+    every public conductor function does it, including any added later, and
+    that the two calls are adjacent rather than separated by a domain read.
+    """
+    conductors = (Path(__file__).resolve().parents[1] / "app" / "agents" / "conductors").glob(
+        "*_conductor.py"
+    )
+
+    missing: list[str] = []
+    for path in conductors:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or node.name.startswith("_"):
+                continue
+            body = ast.dump(node)
+            if "require" not in body:
+                continue  # not a gated entry point
+            if "authorize" not in body:
+                missing.append(f"{path.name}::{node.name}")
+                continue
+            # `authorize` must come before `require`, textually within the body.
+            src = ast.unparse(node)
+            if src.index("authorize") > src.index("require("):
+                missing.append(f"{path.name}::{node.name} (gates before authorizing)")
+
+    assert not missing, (
+        "these conductor entry points gate on a permission set the database "
+        f"has not supplied: {missing}"
     )

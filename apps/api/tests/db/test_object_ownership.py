@@ -133,6 +133,32 @@ DEFINER_OWNED_BY_DESIGN = {
     # `tests/db/test_044_user_directory_is_not_global.py` asserts the owner is
     # not a superuser and fails the moment that changes.
     "core.user_id_for_subject",
+    # Migration 048. The FIFTH instance, and this test caught it as designed.
+    #
+    # Why it must be a definer: role and permission rows are tenant-scoped,
+    # and the runtime role must not need SELECT on `core.member_roles`,
+    # `core.roles`, `core.role_permissions` or `core.permissions` merely to
+    # learn what the CALLER may do. Granting those tables to `evercoat_app`
+    # to avoid a definer would hand the runtime the whole authorization
+    # catalogue, which is a wider change than this one.
+    #
+    # 🔴 IT DIFFERS FROM THE FOUR ABOVE IN THE WAY THAT MATTERS. Those three
+    # `*_for_subject` functions exist because they must answer BEFORE a tenant
+    # is chosen, so no GUC is set and an invoker-rights read returns nothing.
+    # This one is the opposite: the GUC IS set, and the GUC is its ONLY input.
+    # It takes no arguments at all, which is what stops it being the oracle
+    # `core.user_id_for_subject` is (I82) — there is no parameter with which
+    # to aim it at somebody else.
+    #
+    # ⚠️ AND ITS BEHAVIOUR UNDER THE I56/I58 FORCE CUTOVER MUST BE MEASURED,
+    # NOT ASSUMED — for a different reason from the others. They are exempt
+    # only while RLS is ENABLED and not FORCED, and lose their exemption at
+    # the cutover. This one runs WITH the caller's GUC set, so under FORCE it
+    # degrades to "what that caller can see" rather than to nothing — which
+    # for this query may well still be the right answer. *May well* is not a
+    # measurement. `tests/db/test_048_session_permissions.py` compares it
+    # against the authoritative join and will say plainly which it is.
+    "core.permissions_for_current_session",
     # Migration 015. The trigger that freezes the composition of a
     # non-draft formula version looks that version up before deciding.
     # As SECURITY INVOKER, a session whose RLS view of

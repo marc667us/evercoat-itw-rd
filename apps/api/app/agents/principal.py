@@ -160,6 +160,18 @@ class AgentPrincipal:
     user_id: uuid.UUID
     roles: frozenset[str]
     permissions: frozenset[str]
+    # 🔴 WHETHER THE DATABASE HAS AGREED TO `permissions` (I105).
+    #
+    # False from `of()`: those permissions came from the request's own
+    # `Principal`, which is true for a legitimate caller and is still only
+    # Python. True from `authorize()`, which replaces the set with one read
+    # from `core.permissions_for_current_session()`.
+    #
+    # `app/agents/boundary.py::require` REFUSES an unverified principal. That
+    # is what stops a conductor written next month from gating on a claimed
+    # set by simply forgetting a line — the failure is loud instead of silent,
+    # which is the difference between this and the docstring I104 replaced.
+    verified: bool = False
     # Not an identity field. It exists so that the generated `__init__`
     # cannot be called successfully without a value only this module holds.
     # Excluded from repr so it never reaches a log line, and from equality
@@ -211,6 +223,7 @@ class AgentPrincipal:
             user_id=principal.user_id,
             roles=frozenset(principal.roles),
             permissions=frozenset(principal.permissions),
+            verified=False,
             _guard=_mint(),
         )
 
@@ -218,38 +231,71 @@ class AgentPrincipal:
         """Mirrors `Principal.has`, so the two read the same at call sites."""
         return permission in self.permissions
 
-    def bind(self, session: Session) -> Session:
-        """Refuse unless PostgreSQL agrees this session is this caller's.
+    def authorize(self, session: Session) -> AgentPrincipal:
+        """Refuse unless PostgreSQL agrees, and take the permissions FROM it.
 
-        🔴 THE CHECK IS AGAINST THE DATABASE, NOT AGAINST AN ARGUMENT.
+        🔴 THIS IS I105, AND IT IS THE HALF I104 LEFT OPEN.
 
-        `app.current_org` and `app.current_user_id` are set by
-        `app/core/db.py::set_context` inside the transaction and are what
-        every RLS policy actually reads. If they disagree with this
-        principal, then the rows this session can see are not the rows this
-        principal may see — which is the precise condition under which a
-        conductor's gate would be answering for one person while the query
-        answers for another.
+        I104 made the identity checkable: the two GUCs `app/core/db.py` sets
+        and every RLS policy reads must agree with this principal, so
+        substituting a colleague means disagreeing with the database rather
+        than passing a different argument.
+
+        It did not check PERMISSIONS. Codex said so exactly — *"a forged
+        principal using the real session identity therefore passes bind()
+        while claiming arbitrary authorization"* — and the conductor gate then
+        consulted the forged set. So this no longer VALIDATES the set it was
+        given; it REPLACES it with one read from
+        `core.permissions_for_current_session()`, keyed on the same GUC.
+
+        ⚠️ DERIVE, NOT COMPARE. Comparing the claimed set against the database
+        would also refuse a forgery, and it would additionally refuse a
+        LEGITIMATE caller whose membership changed mid-request — reading it as
+        an attack. Deriving makes revocation take effect instead, which is
+        what `get_principal` already says it wants: *"A JWT is a statement
+        about identity; it is not a current statement about authorization."*
+        The same is true of a permission set computed a few milliseconds ago.
 
         ⚠️ AN ABSENT GUC IS A FAILURE, NOT A PASS. `current_setting(..., true)`
         returns NULL rather than raising when the GUC was never set, and an
-        unscoped session is exactly the case this must catch — it is the one
-        `unscoped_session_scope()` opens, which sees across tenants. *A guard
-        that passes when it cannot see is not a guard.*
+        unscoped session — the one `unscoped_session_scope()` opens, which
+        sees across tenants — is exactly the case this must catch. *A guard
+        that passes when it cannot see is not a guard.* The SQL function fails
+        closed on the same condition independently.
 
-        Returns the session so call sites can write
-        `laboratory.list_batches(caller.bind(session), ...)` and cannot
-        forget the check by forgetting a statement.
+        Returns a NEW principal marked `verified`, because
+        `app/agents/boundary.py::require` refuses one that is not. A conductor
+        that forgets this line cannot silently fall back to the claimed set —
+        it raises.
+
+        ⚠️ ONE EXTRA ROUND TRIP PER AGENT-TIER ENTRY, on the connection the
+        caller already holds. That is the price of the gate and the rows
+        answering for the same person, and it is worth it.
         """
         row = session.execute(
             text(
-                "SELECT current_setting('app.current_org', true) AS org, "
-                "       current_setting('app.current_user_id', true) AS usr"
+                "SELECT current_setting('app.current_org', true)     AS org, "
+                "       current_setting('app.current_user_id', true) AS usr, "
+                "       core.permissions_for_current_session()       AS perms"
             )
         ).one()
-        return self._verify(session, org=row.org, usr=row.usr)
+        self._check_identity(org=row.org, usr=row.usr)
 
-    def _verify(self, session: Session, *, org: Any, usr: Any) -> Session:
+        return AgentPrincipal(
+            organization_id=self.organization_id,
+            user_id=self.user_id,
+            roles=self.roles,
+            # 🔴 THE DATABASE'S ANSWER, NOT THE CALLER'S. `row.perms` is a
+            # TEXT[] and psycopg returns it as a list; `None` would mean the
+            # function returned NULL, which its COALESCE prevents — treated as
+            # empty rather than trusted, because a permission set that is
+            # "unknown" must grant nothing.
+            permissions=frozenset(row.perms or ()),
+            verified=True,
+            _guard=_mint(),
+        )
+
+    def _check_identity(self, *, org: Any, usr: Any) -> None:
         if not org or not usr:
             raise SessionIdentityError(
                 "the agent tier was handed a session with no RLS context "
@@ -267,4 +313,3 @@ class AgentPrincipal:
                 "substitution I104 describes — asking on behalf of somebody "
                 "whose authorization was never checked"
             )
-        return session
