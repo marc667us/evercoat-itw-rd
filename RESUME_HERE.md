@@ -1,6 +1,75 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-## ▶▶ SESSION CLOSE 2026-08-25 (part 5) — START HERE
+## ▶▶ SESSION 2026-08-26 — I104 CLOSED, INTELLIGENCE SHIPPED, I105 RAISED
+
+Closed today: **I104** (the orchestrator trusted its arguments),
+**MSD's orchestration layer** (three of four doors went around the governed
+one), and **`analytics.view` / `analytics.portfolio`** — held by nine and two
+of ten seeded roles and read by **no line of code** until now.
+
+**Intelligence has a browser surface**: `/analytics` and `/reports`.
+`GET /api/analysis/reports/test-results` shipped on 08-25 with **no browser
+caller at all** — the twenty-fourth orphaned route, one day after
+twenty-three were closed.
+
+### ▶▶ EXACT NEXT ACTION — I105
+
+🔴 **`bind()` VALIDATES IDENTITY AND NOT PERMISSIONS.**
+`AgentPrincipal.bind()` asks PostgreSQL whether `app.current_org` /
+`app.current_user_id` match the caller. It does **not** validate
+`caller.permissions`. A forged principal carrying the real session identity
+therefore passes `bind()` while claiming arbitrary authorization, and the
+conductor gate consults the forged set. **Codex named this exactly and it is
+the half of I104 that is not closed.**
+
+The fix is to derive the effective permission set from the GUC-bound user at
+the bound-session boundary and gate on that. 🔴 **It is a design task, not a
+patch:** it needs a `SECURITY DEFINER` returning permissions for a user id,
+which is the shape **ADR-029 rejected on measured evidence** for I82 — an
+atomic bind inside a definer re-opened I83. **Do I105 and I82 together, with
+the I83 precedent in front of you.**
+
+### 🔴 What the AgentPrincipal type is worth — measured, not assumed
+
+Codex enumerated four forgeries. All four were **reproduced against the real
+code**; three are closed (exact type check; the guard is a nonce consumed on
+use, so `dataclasses.replace` can no longer replay it; no long-lived sentinel
+to import). **`object.__new__` remains open, cannot be closed in Python, and
+has a test asserting it stays open** — so that closing it quietly cannot
+re-inflate the docstring's claim.
+
+The module now says plainly that it is a **misuse barrier, not an in-process
+security boundary**. The first version said "you cannot construct one from
+loose values" and you could, which is this repository's most-repeated defect
+sitting on top of its authorization boundary.
+
+### 🔴 Lessons from today
+
+> **A SET COMPARISON CANNOT COUNT.** My test read
+> `_route_permissions("msd.py") == {"msd.use"}` and stayed GREEN with one of
+> four routes ungated — the other three contributed the same element. The
+> ungated route was invisible to the test written to find it.
+
+> **A TEST A COMMENT CAN REDDEN IS A TEST NOBODY TRUSTS** — mine failed on
+> its own explanation. The inverse, a comment SATISFYING an assertion, is the
+> same failure and the more dangerous direction.
+
+> **AN UNCAST `:x IS NULL` BIND FAILS ONLY ON THE UNFILTERED CALL** — which
+> is the call a browser makes by default. Caught by
+> `tests/test_no_untyped_null_binds.py` on the day the query was written,
+> because that rule is instrumented rather than restated.
+
+> **`.get()` RETURNING A DEFAULT IS HOW A WRONG NUMBER SURVIVES REVIEW.** Two
+> analytics counts were over fields the rows do not carry; both would have
+> read `{"unknown": n}` — correct-looking, plausible, meaningless.
+
+> **A SCREEN THAT INVENTS ITS TRUNCATION LIMIT IS WORSE THAN ONE THAT HIDES
+> IT.** `capped at {"200"}` was a literal matching the default request;
+> `?limit=10` would have been reported under a cap of 200. Raised by Codex.
+
+---
+
+## SESSION CLOSE 2026-08-25 (part 5)
 
 Tip **`e9e471e`**, pushed, **CI 6/6 green**.
 Closed today: **I100**, **I83**, **I81**, **I102** — and §0.2's conductor tier

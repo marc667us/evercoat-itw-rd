@@ -1,5 +1,177 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-26 — the orchestrator stopped trusting its arguments, and Intelligence got a screen
+
+No migration. API suite **736 passed / 0 failed / 11 skipped**; web **148
+passed / 0 failed**; ruff, ruff format, mypy (96 files), `tsc` and `next lint`
+green.
+
+Four departments existed and one door was ajar in three different ways.
+
+### 🔴 I104 — every entry point took `permissions` as an ordinary argument
+
+`root_orchestrator` took `organization_id`, `user_id`, `role_codes` and
+`permissions` as keyword arguments, and a docstring asking callers to pass
+real ones:
+
+> EVERY ARGUMENT HERE COMES FROM A VERIFIED PRINCIPAL, NOT FROM THE REQUEST BODY.
+
+That was a **comment asserting a rule the code did not have** — this
+repository's most-repeated defect, sitting on top of its authorization
+boundary. An in-process caller could pass
+`permissions=frozenset({"test.confirm"})` and be believed, or substitute a
+colleague's `user_id` and read what was waiting for them. The conductor gate
+would then consult the forged set and open. Raised by Codex on 08-25.
+
+`app/agents/principal.py` replaces the four arguments with one
+`AgentPrincipal`, and adds the mechanism that is not in Python at all:
+
+```
+bind(session) → SELECT current_setting('app.current_org',      true),
+                       current_setting('app.current_user_id',  true)
+```
+
+Those are the two GUCs `app/core/db.py::set_context` sets and **every RLS
+policy reads**. If they disagree with the principal, the rows the session can
+see are not the rows the principal may see — which is precisely the state in
+which a gate answers for one person while the query answers for another.
+Substituting a colleague now means disagreeing with the database, not passing
+a different argument.
+
+It also converts three docstrings that *claimed* "the session must be the
+caller's own RLS-scoped session" into something checked. `bind` returns the
+session, so the check cannot be skipped by forgetting a line.
+
+Falsified in four directions before anything was built on it: an unscoped
+session, another tenant's, a colleague's, and the caller's own.
+
+### 🔴 AND THE TYPE CLAIMED MORE THAN IT ENFORCED — CODEX FOUND FOUR BYPASSES
+
+All four were **reproduced against the real code** before anything changed:
+
+| Bypass | Status |
+|---|---|
+| `of(SimpleNamespace(...))` — duck-typed, so any object could claim anything | **closed** — exact `type(...) is Principal` check |
+| `dataclasses.replace(real, permissions=forged)` — replayed the guard out of a legitimate principal | **closed** — the guard is a nonce, minted per construction and consumed on use |
+| importing the private `_FACTORY_GUARD` | **closed** — there is no long-lived sentinel any more |
+| `object.__new__` + `object.__setattr__` | **OPEN, and asserted open by a test** |
+
+The last cannot be closed in Python. Code that can do it could equally call
+`session.execute` and skip the tier entirely. What changed is the *claim*: the
+module said "you cannot construct one from loose values" when you could, and
+now says plainly that it is a **misuse barrier, not an in-process security
+boundary**. A test asserts the open bypass stays open, so that closing it
+quietly cannot re-inflate the docstring.
+
+⚠️ **I105 is the half that is NOT closed**, and Codex named it exactly:
+`bind()` validates identity and **not permissions**. A forged principal
+carrying the real session identity passes it while claiming arbitrary
+authorization. The fix — derive the permission set from the GUC-bound user —
+needs a `SECURITY DEFINER` returning permissions for a user id, which is the
+shape **ADR-029 rejected on measured evidence** for I82. Raised, not
+improvised.
+
+### MSD's orchestration layer — three of four doors went around the governed one
+
+§0.2 names this department by name: *"MSD is reached through the
+orchestrator."* Only `POST /threads/{id}/ask` did. `GET /threads`,
+`POST /threads` and `GET /threads/{id}/turns` imported
+`app.domains.msd.service` and called it.
+
+`test_agent_topology.py` could not catch it — a domain service is neither a
+conductor nor a tool, so importing one breaks no import rule. What it broke
+was the sentence §0.2 actually wrote down.
+
+The two reads now go through the orchestrator; the two writes stay direct,
+per §4. MSD is also on `boundary.require` at last — it was the one department
+still doing its checks inline, which `boundary.py`'s own docstring had cited
+as the pattern it was generalising, and which failed on 08-25 when
+`explain_result` called the testing tool with no check at all.
+
+🔴 **And reading a conversation now requires `msd.use`, like asking does.**
+The permission is *what an administrator revokes when MSD must be switched off
+for somebody*, and it gated asking alone — so a revoked user could still
+re-open every answer MSD had ever given them. **Measured before changing it:**
+the only seeded roles without `msd.use` are `executive_viewer` and
+`administrator`, and `POST /ask` has refused both since it shipped. Neither
+can own a thread. Nobody loses a conversation they could have had.
+
+### `analytics.view` and `analytics.portfolio` enforced nothing
+
+Measured against `002_seed_roles_permissions.sql`:
+
+| Permission | Roles holding it | Lines of code reading it |
+|---|---|---|
+| `analytics.view` | 9 of 10 | **0** |
+| `analytics.portfolio` | 2 of 10 | **0** |
+
+`report.generate` was the third of that set and got a home on 08-25; these two
+did not. *Ask of every permission which production path enforces it, not only
+of every role.*
+
+`app/domains/analytics/service.py` + `GET /api/analysis/analytics` give both a
+first enforcement point, as **two distinct gates** — the catalogue reserved two
+and described the difference itself (*"in scope"* against *"organization-wide
+portfolio"*). Collapsing them onto one would have left the other decorative,
+which is the defect being fixed, re-committed.
+
+🔴 **The portfolio section is withheld BEFORE it is computed, not filtered
+after.** §7 filters before, never after — and here that is also the bill:
+`portfolio_by_project` runs one report per project, each costing a detail read
+per test. "Compute then hide" would perform the entire privileged aggregation
+for somebody not entitled to its result. `by_project` is `null`, never `[]`:
+an empty list claims the organization has no projects.
+
+⚠️ **Nothing in it derives a status.** Every disposition comes from
+`test_results_report` → `get_test` → `derive_disposition`, the single caller of
+§10's ordered algorithm. The laboratory half groups a *stored* batch lifecycle
+column, which is why a `GROUP BY` is legitimate there and never for a test.
+
+### Intelligence now exists in a browser
+
+`/analytics` and `/reports` are real screens. **`GET /api/analysis/reports/test-results`
+shipped on 08-25 with no browser caller at all** — Reports sat at slice 20 in
+`navigation.ts` and rendered inert, so the endpoint existed, was tested, and no
+person could press anything that called it. The twenty-fourth orphaned route,
+one day after twenty-three were closed.
+
+Both are `LiveOnly` with **no demonstration fixture, deliberately**: a
+fabricated "9 tests GREEN" is a safety claim about physical measurements that
+were never made. Both show colour **and** icon **and** word (§11), and both
+show the automatic evaluation beside the final disposition, never merged
+(§10).
+
+### Three defects the suite and the reviewers caught in this work
+
+1. **An uncast `:project IS NULL` bind.** `tests/test_no_untyped_null_binds.py`
+   read the new query and failed it. It would have 500'd on the *unfiltered*
+   call — which is the call a browser makes by default — exactly as
+   `/api/materials`, `/api/formulations` and `/api/suppliers` did on 08-22
+   under a green suite. The eleventh instance of a pattern, caught on the day
+   it was written because the rule is instrumented rather than restated.
+2. **Two analytics counts over fields the rows do not carry.** The first draft
+   counted `review_state` and `validity_status`; `test_results_report` returns
+   neither, so both would have come back `{"unknown": n}` — correct-looking,
+   plausible, meaningless. `_count` now raises for a key absent from every row.
+3. **The screen invented its own truncation limit** — `capped at {"200"}`, a
+   literal that merely matched the frontend's default request. `?limit=10`
+   would have been reported under a cap of 200. Raised by Codex. The service
+   returns the cap it applied, per project too.
+
+### And two of my own new tests could not detect what they named
+
+Found by breaking the code on purpose, which is the only thing that would have
+shown either:
+
+* **A set comparison cannot count.** `_route_permissions("msd.py") == {"msd.use"}`
+  stayed green with one of four routes ungated — the other three still
+  contributed the same single element. The ungated route was invisible to the
+  test written to find it.
+* **A test a comment can redden is a test nobody trusts.** The truncation test
+  searched the page source for `capped at {"200"}` and found it *in the comment
+  explaining the fix*. Comments are stripped before the search now; the
+  inverse — a comment satisfying an assertion — is the same failure and the
+  more dangerous direction.
 ## 2026-08-24 — twenty-three routes had no caller, and one of them was hiding a float
 
 No migration. API suite **671 passed / 0 failed / 11 skipped**; web **137
