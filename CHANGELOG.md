@@ -2,7 +2,9 @@
 
 ## 2026-08-26 — the orchestrator stopped trusting its arguments, and Intelligence got a screen
 
-No migration. **Live suite on the deployed demo: 784 passed / 0 failed / 0
+No migration. **Pushed at `e8cd7fd`; CI 6/6 green** (run 32982603290 — Auth,
+API image, Security scan, E2E, Web lint/type/test, API lint/type/test).
+**Live suite on the deployed demo: 784 passed / 0 failed / 0
 skipped** (`api-live` 747, e2e `shell` 37), one complete run, over a preflight
 that reported all four capabilities CONFIGURED. Local API suite **736 passed /
 0 failed / 11 skipped**; web **148 passed / 0 failed**; ruff, ruff format,
