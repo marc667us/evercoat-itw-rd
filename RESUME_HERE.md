@@ -2,6 +2,12 @@
 
 ## ▶▶ SESSION 2026-08-26 — I104 CLOSED, INTELLIGENCE SHIPPED, I105 RAISED
 
+Tip **`2d343c3`** on `master`, pushed, tree clean, 0 ahead / 0 behind,
+**CI 6/6 green** (run 32982603290 on `e8cd7fd`) — Auth, API image, Security
+scan, E2E, Web lint/type/test, API lint/type/test. Semgrep, which is CI-only
+and has blocked a locally-green commit before, passed on the new raw SQL in
+`app/domains/analytics/service.py`.
+
 Closed today: **I104** (the orchestrator trusted its arguments),
 **MSD's orchestration layer** (three of four doors went around the governed
 one), and **`analytics.view` / `analytics.portfolio`** — held by nine and two
