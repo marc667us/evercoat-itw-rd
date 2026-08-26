@@ -768,29 +768,46 @@ def test_the_portfolio_section_is_withheld_before_it_is_computed() -> None:
 
 
 def test_absent_is_not_empty_for_the_portfolio_section() -> None:
-    """`by_project` must be `None`, never `[]`, when the gate is closed.
+    """`by_project` must be `None`, never `[]`, when the section is withheld.
 
     An empty list says "this organization has no projects". That is a
     different claim, usually a false one, and it is the failure mode this
     project shipped once already when a failed `/api/me` became demonstration
-    data. Read from the AST rather than by string search, so a comment
-    mentioning `None` cannot satisfy it.
+    data.
+
+    ⚠️ READ FROM THE AST, NEVER BY STRING SEARCH. A comment mentioning `None`
+    would satisfy a substring test, and this file has already been bitten by
+    the mirror image of that — a test its own explanatory comment reddened.
+
+    ⚠️ AND IT ACCEPTS BOTH SHAPES ON PURPOSE. The withholding was a
+    conditional expression and became an `if/else` when the portfolio grew a
+    truncation flag; the previous version of this test hard-coded `IfExp` and
+    reported itself STALE rather than passing quietly, which is the right
+    failure. What matters is that SOME branch assigns `None`, not which syntax
+    expresses it.
     """
     fn = _analytics_fn()
-    withheld = [
-        node.orelse
-        for node in ast.walk(fn)
-        if isinstance(node, ast.IfExp) and "portfolio_by_project" in ast.dump(node.body)
-    ]
-    assert withheld, "the portfolio section is no longer conditional; this test is stale"
-    for orelse in withheld:
-        assert isinstance(orelse, ast.Constant), (
-            "the withheld portfolio section is not a literal; it must be None"
-        )
-        assert orelse.value is None, (
-            "the withheld portfolio section is not None -- an empty list would "
-            "claim this organization has no projects"
-        )
+
+    assigns_none = False
+    assigns_empty_list = False
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Assign | ast.IfExp):
+            continue
+        values = [node.orelse] if isinstance(node, ast.IfExp) else [node.value]
+        for value in values:
+            if isinstance(value, ast.Constant) and value.value is None:
+                assigns_none = True
+            if isinstance(value, ast.List) and not value.elts:
+                assigns_empty_list = True
+
+    assert assigns_none, (
+        "nothing in analysis_conductor.analytics assigns None -- the withheld "
+        "portfolio section must be absent, not empty"
+    )
+    assert not assigns_empty_list, (
+        "analysis_conductor.analytics assigns an empty list, which would claim "
+        "this organization has no projects"
+    )
 
 
 def test_msd_is_on_the_shared_department_gate() -> None:

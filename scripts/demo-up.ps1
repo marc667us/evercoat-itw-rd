@@ -272,7 +272,8 @@ $webCmd = @"
 `$env:NEXT_PUBLIC_KEYCLOAK_URL='$PublicUrl/auth';
 `$env:NEXT_PUBLIC_KEYCLOAK_REALM='evercoat';
 `$env:NEXT_PUBLIC_KEYCLOAK_CLIENT_ID='evercoat-web';
-# 🔴 ITS OWN BUILD DIRECTORY. `next build` regenerates `.next/standalone/`,
+# 🔴 ITS OWN BUILD DIRECTORY, AND NO BACKTICKS IN THIS COMMENT -- SEE BELOW.
+# 'next build' regenerates '.next/standalone/',
 # which is what this server SERVES -- so a Playwright local run, which builds
 # before starting its own web server, silently replaced the demo's bundle with
 # one built without NEXT_PUBLIC_*. Twice. The site returned 200 everywhere and
@@ -286,6 +287,29 @@ if (Test-Path 'public') { Copy-Item -Recurse -Force 'public' '.next-demo\standal
 `$env:PORT='3000'; `$env:HOSTNAME='0.0.0.0';
 node '.next-demo\standalone\server.js'
 "@
+# 🔴 NO BACKTICKS INSIDE $webCmd, INCLUDING IN ITS COMMENTS. 2026-08-26.
+#
+# `@"..."@` is a DOUBLE-QUOTED here-string, so PowerShell processes escape
+# sequences inside it -- and the backtick is the escape character. The comment
+# above used to markdown-quote `next build`, which made PowerShell read the
+# backtick-n as a NEWLINE. The comment split in two and its remainder became a
+# command:
+#
+#     ext : The term 'ext' is not recognized ...
+#     At line:7 char:1
+#     + ext build regenerates .next/standalone/,
+#
+# The build then ran without `NEXT_DIST_DIR`, wrote to `.next/` instead of
+# `.next-demo/`, and `node .next-demo\standalone\server.js` happily served
+# YESTERDAY's bundle: every page 200, the two new ones 404, and the previous
+# tunnel hostname still inlined in NEXT_PUBLIC_*. A green build serving a
+# stale site.
+#
+# ⚠️ THE IRONY IS THE POINT. The broken comment was the one explaining why the
+# build directory must be isolated, and the escape silently disabled exactly
+# the protection it described. Keep this block free of backticks, or switch to
+# a single-quoted here-string (@'...'@) if interpolation is ever not needed.
+
 Start-Process powershell -ArgumentList @("-NoProfile", "-Command", $webCmd) `
     -RedirectStandardOutput (Join-Path $logDir "web.log") `
     -RedirectStandardError  (Join-Path $logDir "web.err.log") -WindowStyle Hidden

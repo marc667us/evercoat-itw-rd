@@ -102,6 +102,35 @@ export default function ReportsPage(): ReactNode {
       notInvented="test results and their dispositions"
     >
       <div className="space-y-6 px-6 py-6">
+        {/*
+          🔴 ONE OF THIRTEEN, AND THE SCREEN SAYS SO.
+
+          `IMPLEMENTATION_PLAN.md` §I slice 20 and master §41 name THIRTEEN
+          controlled reports: Product Development Status · Formula Development
+          History · Formula Comparison · Lab Batch · Test · Failure
+          Investigation · DOE · Validation · Stability · Pilot · Qualification
+          Dossier · Product Release · Portfolio.
+
+          This screen delivers the Test report. A Reports destination that
+          listed one report and said nothing would imply twelve others had
+          been considered and found empty — which is a different claim, and a
+          false one. An absence that is NAMED is a gap; an absence papered
+          over is a defect, and that rule is why `_NOT_YET` exists in the
+          dashboards service.
+        */}
+        <p
+          data-testid="reports-scope"
+          className="rounded border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700"
+        >
+          <span aria-hidden className="mr-1 font-bold">
+            i
+          </span>
+          This is the <strong>Test</strong> report — one of the thirteen controlled reports the
+          product defines. The other twelve (Product Development Status, Formula Development
+          History, Formula Comparison, Lab Batch, Failure Investigation, DOE, Validation,
+          Stability, Pilot, Qualification Dossier, Product Release, Portfolio) are not built yet.
+        </p>
+
         {error ? <DataSourceError error={error} /> : null}
 
         {isLoading ? (

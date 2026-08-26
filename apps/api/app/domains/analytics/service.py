@@ -49,6 +49,27 @@ to "is this test GREEN", and the first time the two disagreed nobody could
 say which was right. `app/calculations/testing.py` says exactly that. This
 module counts what testing concluded; it never concludes.
 
+---------------------------------------------------------------------------
+⚠️ THE PLAN SAYS MATERIALIZED VIEWS. THIS IS DELIBERATELY NOT THAT — YET.
+---------------------------------------------------------------------------
+
+`IMPLEMENTATION_PLAN.md` §F20 specifies the analytics surface as views and
+materialized views under an `analytics.*` schema, and states the hazard in the
+same breath: *"Materialized views do not inherit source-table RLS"* — so each
+would have to materialize `organization_id` and the resource-scope dimensions,
+carry its own policy, refresh under `evercoat_worker`, and have an explicit
+cross-tenant aggregate test.
+
+That is a performance design and it is the right end state at volume. It is
+also a design in which a single omitted policy publishes one tenant's
+aggregates to another, permanently, in a table nothing else guards. This
+module computes live on the CALLER'S OWN RLS-SCOPED SESSION instead, so there
+is no second copy of the data to secure and no refresh job to get wrong.
+
+The trade is real and it is cost, not safety: see the note below. When the
+corpus justifies materialization, the §F20 checklist is the specification —
+and the cross-tenant aggregate test it names is not optional.
+
 ⚠️ THE COST IS INHERITED AND SO IS THE CAP. `test_results_report` costs one
 `get_test` per row and bounds itself at `MAX_ROWS`. Counting over it inherits
 both. The response repeats the report's `truncated` flag rather than hiding
@@ -67,7 +88,26 @@ from sqlalchemy.orm import Session
 
 from app.domains.reporting.service import MAX_ROWS, test_results_report
 
-__all__ = ["MAX_ROWS", "activity_analytics", "portfolio_by_project"]
+__all__ = ["MAX_PROJECTS", "MAX_ROWS", "activity_analytics", "portfolio_by_project"]
+
+# 🔴 THE PORTFOLIO IS BOUNDED IN *BOTH* DIMENSIONS. Raised by the Supervisor.
+#
+# `portfolio_by_project` runs one `test_results_report` per project, and each
+# of those runs one `get_test` per test up to `MAX_ROWS`. Nothing bounded the
+# number of projects, so an organization with N of them cost up to N x 201
+# queries in ONE request, on top of the ~201 `activity_analytics` had already
+# issued. A Director opening `/analytics` on a twenty-project organization
+# would have held a database connection for minutes and then timed out.
+#
+# The per-row cap was visible and the per-project one was not, which is the
+# more dangerous shape: the docstring acknowledged an O(n) cost and no number
+# anywhere said what n could reach.
+#
+# ⚠️ AND THE CAP IS REPORTED, NOT SILENT. `portfolio_truncated` says when
+# projects were left out. *No silent caps* -- a truncated portfolio that did
+# not say so would read as "this organization has 25 projects" when it has
+# more, which is the same class of untruth as an invented figure.
+MAX_PROJECTS = 25
 
 
 def activity_analytics(
@@ -93,6 +133,34 @@ def activity_analytics(
     # 🔴 READ, DO NOT RE-DERIVE. `by_colour` and `by_rule` are the report's,
     # which are testing's, which are `derive_disposition`'s. Recomputing them
     # from `rows` with a different tie-break would be the second answer.
+    #
+    # 🔴 AND THE ROWS ARE COUNTED HERE, NEVER RETURNED. Raised by the
+    # Supervisor, and it was a real authorization bypass — introduced by me in
+    # the change whose whole subject is authorization bypasses.
+    #
+    # The first version returned `report["rows"]` verbatim "for drill-down".
+    # Those rows ARE the payload of `GET /api/analysis/reports/test-results`,
+    # which the conductor gates on `report.generate`. This route gates on
+    # `analytics.view`. Measured against the seed, FOUR roles hold
+    # `analytics.view` WITHOUT `report.generate`:
+    #
+    #     procurement_specialist  production_engineer
+    #     executive_viewer        administrator
+    #
+    # So each of them was refused at the report route with a 403 and then
+    # handed every `test_id`, `test_number` and disposition through this one.
+    # `test_the_report_needs_report_generate_not_merely_view` pins that gate,
+    # and I built a second door past it in the same commit — *two boundaries
+    # answering the same question differently*, again.
+    #
+    # ⚠️ AND NOTHING CONSUMED THEM. `apps/web/app/analytics/page.tsx` never
+    # read `rows`; it renders counts. A leak with no caller is still a leak,
+    # and the absence of a consumer is what made it invisible in review.
+    #
+    # Counts stay: an aggregate is a different disclosure from a per-record
+    # identifier, and every dashboard in this product already shows one.
+    # Drill-down to source records is the REPORT's job, behind the REPORT's
+    # permission — which is the distinction the two permissions exist for.
     rows: list[dict[str, Any]] = report["rows"]
 
     return {
@@ -142,10 +210,6 @@ def activity_analytics(
         "laboratory": _laboratory_activity(
             session, organization_id=organization_id, project_id=project_id
         ),
-        # Every count above is traceable: the report's rows carry `test_id`
-        # and `test_number`, so a figure here drills down to real records
-        # rather than being an aggregate nobody can open (§2).
-        "rows": rows,
     }
 
 
@@ -168,7 +232,15 @@ def _count(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
             f"analytics tried to count {key!r}, which no report row carries — "
             "that would have counted every row as 'unknown' and looked right"
         )
-    counts = Counter(str(r.get(key) or "unknown") for r in rows)
+    # 🔴 `is None`, NOT `or`. Raised by the Supervisor.
+    #
+    # `str(r.get(key) or "unknown")` maps `""`, `0` and `False` into the
+    # `unknown` bucket alongside NULL — so an empty-string `authority_level`
+    # would have been counted as "not derived", which is a different fact.
+    # The docstring above stated the contract as "NULL on this row" and the
+    # code did not implement it: a comment asserting a rule the code lacks,
+    # in the function written to prevent a meaningless count.
+    counts = Counter("unknown" if (value := r.get(key)) is None else str(value) for r in rows)
     return dict(sorted(counts.items()))
 
 
@@ -216,9 +288,17 @@ def _laboratory_activity(
 
 
 def portfolio_by_project(
-    session: Session, *, organization_id: uuid.UUID, limit: int = MAX_ROWS
-) -> list[dict[str, Any]]:
-    """Organization-wide activity, broken down by project.
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    limit: int = MAX_ROWS,
+    max_projects: int = MAX_PROJECTS,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Organization-wide activity by project, and whether projects were cut.
+
+    Returns `(rows, truncated)`. The flag is returned rather than inferred
+    from `len(rows) == max_projects`, which would be wrong for an organization
+    holding exactly the cap.
 
     🔴 THIS IS THE `analytics.portfolio` HALF AND THE CONDUCTOR GATES IT
     SEPARATELY. It deliberately ignores any project filter: a portfolio view
@@ -237,13 +317,18 @@ def portfolio_by_project(
             FROM projects.projects
             WHERE organization_id = :org
             ORDER BY project_code
+            LIMIT :lim
             """
         ),
-        {"org": organization_id},
+        # One more than the cap, so "were there more?" is answered by the
+        # query rather than guessed from the row count.
+        {"org": organization_id, "lim": max_projects + 1},
     ).mappings()
 
+    rows = list(projects)
+    truncated = len(rows) > max_projects
     out: list[dict[str, Any]] = []
-    for p in projects:
+    for p in rows[:max_projects]:
         # One report per project, and that is the O(n) cost this inherits
         # from reading the derivation instead of copying it. `limit` bounds
         # each, and `truncated` is carried out rather than swallowed.
@@ -263,4 +348,4 @@ def portfolio_by_project(
                 "by_colour": report["by_colour"],
             }
         )
-    return out
+    return out, truncated

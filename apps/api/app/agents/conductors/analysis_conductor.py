@@ -238,11 +238,37 @@ def analytics(
         limit=limit,
     )
 
-    held = caller.has(PORTFOLIO)
+    # 🔴 THE PORTFOLIO IS OMITTED WHEN A PROJECT FILTER IS SET. Raised by the
+    # Supervisor, and it was a real inconsistency: `testing` and `laboratory`
+    # honour `project_id` while `portfolio_by_project` deliberately ignores it,
+    # so `analytics(project_id=X)` returned three sections scoped to X and one
+    # scoped to everything, all under a single `scope: "project"` field, with
+    # the screen rendering the table as though it were narrowed.
+    #
+    # Latent — no browser caller passes the filter today — and that is exactly
+    # the kind of thing that stops being latent quietly. Omitting it is right
+    # rather than passing the filter through: *a portfolio scoped to one
+    # project is not a portfolio view*, which is why the function refuses the
+    # parameter in the first place.
+    scoped = project_id is not None
+    held = caller.has(PORTFOLIO) and not scoped
     result["portfolio_included"] = held
-    result["by_project"] = (
-        portfolio_by_project(bound, organization_id=caller.organization_id, limit=limit)
-        if held
+    result["portfolio_omitted_reason"] = (
+        "a portfolio view is organization-wide; it is not shown beside a project filter"
+        if scoped and caller.has(PORTFOLIO)
         else None
     )
+
+    if held:
+        by_project, portfolio_truncated = portfolio_by_project(
+            bound, organization_id=caller.organization_id, limit=limit
+        )
+        result["by_project"] = by_project
+        result["portfolio_truncated"] = portfolio_truncated
+    else:
+        # ⚠️ ABSENT, NOT EMPTY. `[]` would claim this organization has no
+        # projects, which is a different statement and usually a false one.
+        result["by_project"] = None
+        result["portfolio_truncated"] = False
+
     return result

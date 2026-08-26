@@ -133,10 +133,32 @@ function Dispositions({ counts }: { counts: Record<string, number> }): ReactNode
 function Portfolio({
   included,
   projects,
+  truncated,
+  omittedReason,
 }: {
   included: boolean;
   projects: readonly PortfolioProject[] | null;
+  truncated: boolean;
+  omittedReason: string | null;
 }): ReactNode {
+  if (omittedReason !== null) {
+    // The caller HOLDS analytics.portfolio; the section is absent because a
+    // portfolio view is organization-wide and the rest of this response is
+    // scoped to one project. Saying which is the difference between a gap and
+    // a screen that looks broken.
+    return (
+      <p
+        data-testid="portfolio-omitted"
+        className="rounded border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700"
+      >
+        <span aria-hidden className="mr-1 font-bold">
+          –
+        </span>
+        {omittedReason}.
+      </p>
+    );
+  }
+
   if (!included || projects === null) {
     // 🔴 ABSENT, NOT EMPTY — and the page SAYS WHICH.
     //
@@ -166,7 +188,23 @@ function Portfolio({
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="space-y-2">
+      {truncated ? (
+        // 🔴 NO SILENT CAPS. The server bounds the portfolio at 25 projects
+        // because each one costs a full test report. A table that stopped
+        // there in silence would state a project count that is not true.
+        <p
+          data-testid="portfolio-truncated"
+          className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900"
+        >
+          <span aria-hidden className="mr-1">
+            !
+          </span>
+          Showing the first {projects.length} projects. This organization has more — the
+          breakdown is capped because each project costs a full test report.
+        </p>
+      ) : null}
+      <div className="overflow-x-auto">
       <table className="w-full min-w-[42rem] border-collapse text-sm">
         <caption className="sr-only">Testing activity by project</caption>
         <thead>
@@ -221,6 +259,7 @@ function Portfolio({
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -305,7 +344,12 @@ export default function AnalyticsPage(): ReactNode {
               <h2 id="portfolio-heading" className="text-lg font-semibold text-slate-900">
                 Portfolio — by project
               </h2>
-              <Portfolio included={data.portfolio_included} projects={data.by_project} />
+              <Portfolio
+                included={data.portfolio_included}
+                projects={data.by_project}
+                truncated={data.portfolio_truncated}
+                omittedReason={data.portfolio_omitted_reason}
+              />
             </section>
           </>
         )}

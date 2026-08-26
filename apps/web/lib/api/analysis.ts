@@ -178,9 +178,42 @@ export const analyticsSchema = z
       .passthrough(),
     portfolio_included: z.boolean(),
     by_project: z.array(portfolioProjectSchema).nullable(),
-    rows: z.array(analysisRowSchema),
+    /**
+     * True when projects were left out of `by_project` by the server's cap.
+     *
+     * 🔴 NO SILENT CAPS. `portfolio_by_project` runs one report per project
+     * and each of those costs a detail read per test, so the server bounds
+     * the number of projects at 25. A portfolio table that stopped at 25 and
+     * did not say so would read as "this organization has 25 projects".
+     */
+    portfolio_truncated: z.boolean(),
+    /**
+     * Why the portfolio is absent despite the caller holding the permission.
+     *
+     * A portfolio view is organization-wide, so it is omitted rather than
+     * mixed in when a `project_id` filter narrows the rest of the response —
+     * one response must not carry two different scopes under one `scope`.
+     */
+    portfolio_omitted_reason: z.string().nullable(),
   })
   .passthrough();
+
+/**
+ * 🔴 THERE IS NO `rows` FIELD HERE, AND THAT IS AN AUTHORIZATION BOUNDARY.
+ *
+ * The first version of the endpoint returned `test_results_report`'s rows
+ * verbatim — every `test_id`, `test_number` and disposition. Those rows are
+ * the payload of `GET /api/analysis/reports/test-results`, which is gated on
+ * `report.generate`; this endpoint is gated on `analytics.view`. Measured
+ * against the seed, FOUR roles hold `analytics.view` without
+ * `report.generate` (procurement_specialist, production_engineer,
+ * executive_viewer, administrator), so each was refused at the report route
+ * and handed the same data here. Raised by the Supervisor.
+ *
+ * Drill-down to source records is the REPORT's job, behind the REPORT's
+ * permission. Analytics shows counts. If a future screen needs the rows,
+ * call the report endpoint — and be refused when it should be.
+ */
 
 export type Analytics = z.infer<typeof analyticsSchema>;
 
