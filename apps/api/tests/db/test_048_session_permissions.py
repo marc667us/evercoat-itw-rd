@@ -18,12 +18,25 @@ that reason.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from dataclasses import dataclass
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 pytestmark = [pytest.mark.db]
+
+
+@dataclass(frozen=True)
+class _Membership:
+    """One purpose-built member, and what the database should say about them."""
+
+    org: uuid.UUID
+    user: uuid.UUID
+    member_id: uuid.UUID
+    role_code: str
+    permissions: set[str]
 
 
 def _authorization(
@@ -217,150 +230,181 @@ def test_an_unscoped_session_is_granted_nothing(app_session: Session) -> None:
     assert _perms(app_session, org=None, user=None) == set()
 
 
-def test_a_scoped_session_gets_exactly_its_own_grants(
-    app_session: Session, owner_session: Session
-) -> None:
-    """The other direction — otherwise the function could be `SELECT '{}'`.
+@pytest.fixture
+def membership(owner_session: Session) -> Iterator[_Membership]:
+    """One organization, one user, one active membership, one real role.
 
-    Compared against the authoritative join computed as the owner, so this
-    fails if the function silently narrows as well as if it widens.
+    🔴 IT BUILDS ITS OWN DATA, AND CI IS WHY.
+
+    The first version of these tests read a SEEDED membership and called
+    `pytest.skip` when it found none. That is right on a laptop and wrong
+    everywhere else: CI builds the database from migrations, so there is no
+    seeded organization, all four tests skipped — and the CI step after the
+    suite is
+
+        pytest tests/db -q ... | tee /tmp/db.txt
+        if grep -q "skipped" /tmp/db.txt; then exit 1; fi
+
+    which exists precisely because *"a misconfigured service container would
+    turn the entire tenancy suite into skips and the job would still be
+    green"*. It fired. The guard was right and the tests were wrong: a test
+    whose subject is authorization must not be optional in the one
+    environment that builds the schema from scratch.
+
+    So the rows are created here and deleted afterwards. That also makes the
+    assertions EXACT rather than comparative — the role attached is known, so
+    "these codes and no others" is checkable, which a seeded row of unknown
+    shape could never support.
+
+    ⚠️ COMMITS, because `evercoat_owner` and `evercoat_app` are separate
+    connections and the app session must SEE these rows. Deleted in dependency
+    order in `finally` — a fixture that leaks `core.users` rows is I101, 595
+    orphans of 782.
     """
-    member = owner_session.execute(
+    org = owner_session.execute(
         text(
             """
-            SELECT om.user_id, om.organization_id
-            FROM core.organization_members om
-            JOIN core.users u             ON u.id = om.user_id
-            JOIN core.member_roles mr     ON mr.member_id = om.id
-            WHERE om.status = 'active' AND u.status = 'active'
-            LIMIT 1
+            INSERT INTO core.organizations (code, name)
+            VALUES (:code, 'I105 probe org') RETURNING id
             """
-        )
-    ).one_or_none()
-    if member is None:
-        pytest.skip("no seeded active membership with a role to measure")
+        ),
+        {"code": f"I105-{uuid.uuid4().hex[:8]}"},
+    ).scalar_one()
 
-    expected = {
+    # A REAL role from the seeded catalogue (migration 002), so the codes this
+    # asserts are the codes production uses.
+    role = owner_session.execute(
+        text("SELECT id, code FROM core.roles ORDER BY code LIMIT 1")
+    ).one()
+    permissions = {
         r[0]
         for r in owner_session.execute(
             text(
                 """
-                SELECT DISTINCT p.code
-                FROM core.organization_members om
-                JOIN core.member_roles mr     ON mr.member_id = om.id
-                JOIN core.roles r             ON r.id = mr.role_id
-                JOIN core.role_permissions rp ON rp.role_id = r.id
-                JOIN core.permissions p       ON p.id = rp.permission_id
-                WHERE om.user_id = :u AND om.organization_id = :o
-                  AND om.status = 'active'
+                SELECT p.code FROM core.role_permissions rp
+                JOIN core.permissions p ON p.id = rp.permission_id
+                WHERE rp.role_id = :r
                 """
             ),
-            {"u": member.user_id, "o": member.organization_id},
+            {"r": role.id},
         ).all()
     }
 
-    got = _perms(app_session, org=member.organization_id, user=member.user_id)
-    assert got, "a member with a role was granted nothing at all"
-    assert got == expected, f"derived {sorted(got)}, authoritative join says {sorted(expected)}"
-
-
-def test_a_user_gets_nothing_in_an_organization_they_do_not_belong_to(
-    app_session: Session, owner_session: Session
-) -> None:
-    """Membership is per organization, and so is the answer.
-
-    This is the cross-tenant case: the same real person, the same real
-    organization, and no membership joining them. A function keyed on the user
-    alone would hand over their permissions from elsewhere.
-    """
-    pair = owner_session.execute(
+    sub = f"i105-{uuid.uuid4()}"
+    user_id = owner_session.execute(
         text(
             """
-            SELECT om.user_id AS uid, o.id AS other_org
-            FROM core.organization_members om
-            CROSS JOIN core.organizations o
-            WHERE om.status = 'active'
-              AND o.id <> om.organization_id
-              AND NOT EXISTS (
-                  SELECT 1 FROM core.organization_members x
-                  WHERE x.user_id = om.user_id AND x.organization_id = o.id
-              )
-            LIMIT 1
+            INSERT INTO core.users (keycloak_sub, email, display_name)
+            VALUES (:sub, :email, 'I105 probe') RETURNING id
             """
-        )
-    ).one_or_none()
-    if pair is None:
-        pytest.skip("needs two organizations with a user in only one of them")
+        ),
+        {"sub": sub, "email": f"{sub}@example.test"},
+    ).scalar_one()
+    member_id = owner_session.execute(
+        text(
+            """
+            INSERT INTO core.organization_members (organization_id, user_id, status)
+            VALUES (:org, :uid, 'active') RETURNING id
+            """
+        ),
+        {"org": org, "uid": user_id},
+    ).scalar_one()
+    owner_session.execute(
+        text("INSERT INTO core.member_roles (member_id, role_id) VALUES (:m, :r)"),
+        {"m": member_id, "r": role.id},
+    )
+    owner_session.commit()
 
-    assert _perms(app_session, org=pair.other_org, user=pair.uid) == set()
-
-
-def _looks_like_a_uuid(value: str) -> bool:
     try:
-        uuid.UUID(value)
-    except ValueError:
-        return False
-    return True
+        yield _Membership(
+            org=org,
+            user=user_id,
+            member_id=member_id,
+            role_code=role.code,
+            permissions=permissions,
+        )
+    finally:
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.member_roles WHERE member_id = :m"), {"m": member_id}
+        )
+        owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE id = :i"), {"i": member_id}
+        )
+        owner_session.execute(text("DELETE FROM core.users WHERE id = :u"), {"u": user_id})
+        owner_session.execute(text("DELETE FROM core.organizations WHERE id = :o"), {"o": org})
+        owner_session.commit()
 
 
-def test_the_roles_half_matches_the_authoritative_join(
-    app_session: Session, owner_session: Session
+def test_a_scoped_session_gets_exactly_its_own_grants(
+    app_session: Session, membership: _Membership
+) -> None:
+    """The other direction — otherwise the function could be `SELECT '{}'`.
+
+    EXACT, not merely non-empty: the fixture attached one known role, so the
+    permission set is knowable in advance. A function that widened to another
+    member's grants would also be non-empty.
+    """
+    roles, perms = _authorization(app_session, org=membership.org, user=membership.user)
+    assert roles == {membership.role_code}, f"expected one role code, got {sorted(roles)}"
+    assert perms == membership.permissions, (
+        f"derived {sorted(perms)}, the role actually grants {sorted(membership.permissions)}"
+    )
+
+
+def test_the_roles_half_returns_codes_not_identifiers(
+    app_session: Session, membership: _Membership
 ) -> None:
     """🔴 THE HALF THE CODEX ROUND ADDED AND NOTHING MEASURED IN SQL.
 
     Raised by the Supervisor. `authorize()` derives roles because
     `app/domains/tasks/service.py` matches unclaimed work with
-    `t.assigned_role = ANY(:roles)` -- so the CODES must be right, not merely
-    present. A `role_id` where a `code` belongs, or a dropped
-    `LEFT JOIN core.roles`, would leave every other test green and make the
-    assistant match on values `workflow.tasks.assigned_role` never holds.
+    `t.assigned_role = ANY(:roles)` — so the CODES must be right, not merely
+    present. Aggregating `mr.role_id` instead of `r.code`, or dropping the
+    `LEFT JOIN core.roles`, would leave every other test green while the
+    assistant matched on values `workflow.tasks.assigned_role` never holds.
     """
-    member = owner_session.execute(
+    roles, _ = _authorization(app_session, org=membership.org, user=membership.user)
+    assert roles == {membership.role_code}
+    for code in roles:
+        try:
+            uuid.UUID(code)
+        except ValueError:
+            continue
+        raise AssertionError(f"the roles half returned an identifier, not a code: {code}")
+
+
+def test_a_user_gets_nothing_in_an_organization_they_do_not_belong_to(
+    app_session: Session, owner_session: Session, membership: _Membership
+) -> None:
+    """Membership is per organization, and so is the answer.
+
+    The same real person and a real organization they are not a member of. A
+    function keyed on the user alone would hand over their grants anyway.
+    """
+    other = owner_session.execute(
         text(
             """
-            SELECT om.user_id, om.organization_id
-            FROM core.organization_members om
-            JOIN core.users u         ON u.id = om.user_id
-            JOIN core.member_roles mr ON mr.member_id = om.id
-            WHERE om.status = 'active' AND u.status = 'active'
-            LIMIT 1
+            INSERT INTO core.organizations (code, name)
+            VALUES (:code, 'I105 other org') RETURNING id
             """
-        )
-    ).one_or_none()
-    if member is None:
-        pytest.skip("no seeded active membership with a role to measure")
-
-    expected = {
-        r[0]
-        for r in owner_session.execute(
-            text(
-                """
-                SELECT DISTINCT r.code
-                FROM core.organization_members om
-                JOIN core.member_roles mr ON mr.member_id = om.id
-                JOIN core.roles r         ON r.id = mr.role_id
-                WHERE om.user_id = :u AND om.organization_id = :o
-                  AND om.status = 'active'
-                """
-            ),
-            {"u": member.user_id, "o": member.organization_id},
-        ).all()
-    }
-
-    roles, _ = _authorization(app_session, org=member.organization_id, user=member.user_id)
-    assert roles, "a member with a role was given no role codes at all"
-    assert roles == expected, f"derived roles {sorted(roles)}, join says {sorted(expected)}"
-
-    # 🔴 CODES, NOT IDS. The cheapest way to break this silently is to
-    # aggregate `mr.role_id` instead of `r.code` -- both are non-empty sets of
-    # strings, and only one of them matches `workflow.tasks.assigned_role`.
-    assert all(not _looks_like_a_uuid(code) for code in roles), (
-        f"the roles half returned identifiers rather than codes: {sorted(roles)}"
-    )
+        ),
+        {"code": f"I105X-{uuid.uuid4().hex[:8]}"},
+    ).scalar_one()
+    owner_session.commit()
+    try:
+        roles, perms = _authorization(app_session, org=other, user=membership.user)
+        assert roles == set(), f"granted roles in a foreign organization: {sorted(roles)}"
+        assert perms == set(), f"granted permissions in a foreign organization: {sorted(perms)}"
+    finally:
+        app_session.rollback()
+        owner_session.rollback()
+        owner_session.execute(text("DELETE FROM core.organizations WHERE id = :o"), {"o": other})
+        owner_session.commit()
 
 
 def test_a_deactivated_membership_stops_granting(
-    app_session: Session, owner_session: Session
+    app_session: Session, owner_session: Session, membership: _Membership
 ) -> None:
     """🔴 REVOCATION TAKES EFFECT, WHICH IS WHY THE SET IS DERIVED.
 
@@ -371,84 +415,24 @@ def test_a_deactivated_membership_stops_granting(
     agent-tier call instead of being read as a mismatch and reported as an
     attack.
 
-    WARNING: IT BUILDS ITS OWN MEMBERSHIP AND DELETES IT. The first version
-    flipped a REAL seeded membership to `inactive` and restored it with a
-    second COMMIT in `finally` -- against `conftest.py`'s stated contract that
-    *"every fixture rolls back; these tests must be runnable against a
-    developer's local database repeatedly without leaving residue"*. Raised by
-    the Supervisor, and the failure mode is specific: interrupt the run
-    between the two commits and the demo organization's membership stays
-    inactive, so sign-in breaks afterwards with no failing test pointing at
-    the cause. On this host the local API and an e2e run read that table
-    concurrently.
-
-    WARNING: `inactive`, not `suspended` -- `organization_members_status_check`
+    ⚠️ `inactive`, not `suspended` — `organization_members_status_check`
     admits exactly `active` and `inactive`, and an earlier draft invented a
     third value and was refused by the constraint. Read the vocabulary from
     the database.
     """
-    org = owner_session.execute(
-        text("SELECT id FROM core.organizations LIMIT 1")
-    ).scalar_one_or_none()
-    role_id = owner_session.execute(text("SELECT id FROM core.roles LIMIT 1")).scalar_one_or_none()
-    if org is None or role_id is None:
-        pytest.skip("needs at least one organization and one role")
+    before_roles, _ = _authorization(app_session, org=membership.org, user=membership.user)
+    assert before_roles, "the fixture granted no roles; nothing to revoke"
 
-    sub = f"i105-revocation-{uuid.uuid4()}"
-    user_id = owner_session.execute(
-        text(
-            """
-            INSERT INTO core.users (keycloak_sub, email, display_name)
-            VALUES (:sub, :email, 'I105 revocation probe')
-            RETURNING id
-            """
-        ),
-        {"sub": sub, "email": f"{sub}@example.test"},
-    ).scalar_one()
-    member_id = owner_session.execute(
-        text(
-            """
-            INSERT INTO core.organization_members (organization_id, user_id, status)
-            VALUES (:org, :uid, 'active')
-            RETURNING id
-            """
-        ),
-        {"org": org, "uid": user_id},
-    ).scalar_one()
     owner_session.execute(
-        text("INSERT INTO core.member_roles (member_id, role_id) VALUES (:m, :r)"),
-        {"m": member_id, "r": role_id},
+        text("UPDATE core.organization_members SET status = 'inactive' WHERE id = :i"),
+        {"i": membership.member_id},
     )
-    # Committed because `evercoat_owner` and `evercoat_app` are separate
-    # connections and the app session must SEE these rows. Deleted in
-    # `finally` -- see the docstring, and I101 on leaked `core.users` rows.
     owner_session.commit()
+    app_session.rollback()
 
-    try:
-        before_roles, _ = _authorization(app_session, org=org, user=user_id)
-        assert before_roles, "the purpose-built membership granted no roles; nothing to prove"
-
-        owner_session.execute(
-            text("UPDATE core.organization_members SET status = 'inactive' WHERE id = :i"),
-            {"i": member_id},
-        )
-        owner_session.commit()
-        app_session.rollback()
-
-        after_roles, after_perms = _authorization(app_session, org=org, user=user_id)
-        assert after_roles == set(), f"an inactive membership still granted roles {after_roles}"
-        assert after_perms == set(), f"an inactive membership still granted {after_perms}"
-    finally:
-        app_session.rollback()
-        owner_session.rollback()
-        owner_session.execute(
-            text("DELETE FROM core.member_roles WHERE member_id = :m"), {"m": member_id}
-        )
-        owner_session.execute(
-            text("DELETE FROM core.organization_members WHERE id = :i"), {"i": member_id}
-        )
-        owner_session.execute(text("DELETE FROM core.users WHERE id = :u"), {"u": user_id})
-        owner_session.commit()
+    after_roles, after_perms = _authorization(app_session, org=membership.org, user=membership.user)
+    assert after_roles == set(), f"an inactive membership still granted roles {after_roles}"
+    assert after_perms == set(), f"an inactive membership still granted {after_perms}"
 
 
 # ---------------------------------------------------------------------------
