@@ -78,6 +78,41 @@
 -- in two tenants may legitimately appear under two addresses; before this,
 -- whichever tenant onboarded them first decided what the other one saw.
 --
+-- ---------------------------------------------------------------------
+-- 🔴 WHAT THIS DOES *NOT* CLOSE, MEASURED AND FILED AS I109
+-- ---------------------------------------------------------------------
+--
+-- Raised by Codex reviewing this migration, and measured before it was
+-- accepted. `core.memberships_for_subject(TEXT)` and
+-- `core.principal_for_subject(TEXT, UUID)` are SECURITY DEFINER, take a
+-- subject as an ARGUMENT, and are granted EXECUTE to `evercoat_app`.
+-- Neither can bind that argument to its caller, because both exist to
+-- answer BEFORE a session has an organization -- there is nothing yet to
+-- compare against. As an ordinary member of organization A, holding
+-- nothing:
+--
+--     direct read of B's memberships          : 0 rows
+--     core.memberships_for_subject(<B's sub>) : org='...B'  code='...'
+--                                               email='secret.person@competitor.example'
+--                                               name='Confidential B Person'
+--
+-- ⚠️ AND IT DISCLOSES MORE THAN THE ADDRESS: the NAME and CODE of every
+-- organization that subject belongs to, which is a larger fact than the
+-- email this migration is about.
+--
+-- **This migration did not introduce it** -- those functions date from
+-- 024, 033 and 045, and before today they read `core.users` directly. But
+-- the claim above must not be read as wider than it is: the revoke closes
+-- the TABLE, not every path to the value. The bound is 047's: no runtime
+-- role can read `keycloak_sub`, so an `evercoat_app` session cannot
+-- enumerate subjects from the database and must already know an opaque
+-- Keycloak uuid. **A bound is not a closure.** The fix is a separate
+-- database role holding EXECUTE on those two functions and used only by
+-- the authentication path -- a change to `app/core/db.py` with its own
+-- measurement. Filed as I109, and
+-- `test_the_sign_in_definers_still_answer_for_any_subject` pins it OPEN so
+-- it cannot be quietly forgotten.
+--
 -- ⚠️ WHY THE COLUMNS ARE NOT DROPPED. `keycloak_sub` was revoked rather
 -- than dropped by 047 for the same reason: the sign-in definers need the
 -- mirror, and an identity with no membership anywhere still has to have

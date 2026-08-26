@@ -636,3 +636,40 @@ holds INSERT on `core.users`, and no query in `app/` uses it. It is not a
 disclosure channel — creating an identity tells the caller nothing about anyone
 else — but it is the same shape I108 was, and removing it needs its own
 measurement of what breaks.
+
+🔴 **AND IT DOES NOT CLOSE EVERY PATH TO THE VALUE — I109, RAISED BY CODEX
+REVIEWING THIS MIGRATION AND MEASURED BEFORE IT WAS ACCEPTED.**
+`core.memberships_for_subject(TEXT)` and `core.principal_for_subject(TEXT, UUID)`
+are SECURITY DEFINER, take a subject as an **argument**, and are granted EXECUTE
+to `evercoat_app`. Neither can bind that argument to its caller, because both
+exist to answer *before* a session has an organization — there is nothing yet to
+compare against. As an ordinary member of organization A, holding nothing:
+
+```
+direct read of B's memberships          : 0 rows
+core.memberships_for_subject(<B's sub>) : org='...B'  code='...'
+                                          email='secret.person@competitor.example'
+                                          name='Confidential B Person'
+```
+
+⚠️ **It discloses more than the address** — the name and code of every
+organization that subject belongs to.
+
+This ADR did not introduce it (024, 033 and 045 did, reading `core.users`
+directly), but the decision above must not be read as wider than it is: **the
+revoke closes the TABLE, not every path to the value.** The bound is ADR-029's —
+no runtime role can read `keycloak_sub`, so an `evercoat_app` session cannot
+enumerate subjects from the database and must already know an opaque Keycloak
+uuid. **A bound is not a closure.** The fix is a separate database role holding
+EXECUTE on those two functions, used only by the authentication path — a change
+to `app/core/db.py` with its own measurement. `test_052`'s
+`test_the_sign_in_definers_still_answer_for_any_subject` pins the channel OPEN
+so it cannot be quietly forgotten, and must go red when I109 closes.
+
+⚠️ **A second Codex finding, fixed rather than filed:** the view-leak regression
+test guessed a view's source table from whether its NAME contained "user".
+`CREATE VIEW core.identity_directory AS SELECT email, display_name FROM
+core.users` defeats it in one line, and `SELECT email AS contact` defeats it
+again. It now asks `pg_depend` for the view's actual column-level dependency on
+`core.users`, and was falsified against exactly that counterexample. **A test
+that infers a data source from a name is a test that can be renamed around.**

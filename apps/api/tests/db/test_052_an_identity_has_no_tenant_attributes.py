@@ -32,6 +32,16 @@ runtime roles at all -- `test_the_global_attributes_are_not_readable` is the
 test that goes red if 052 is reverted, and every behavioural test here rides
 on it rather than restating it.
 
+🔴 AND THAT CLOSES THE TABLE, NOT EVERY PATH TO THE VALUE. Codex, reviewing
+052, produced one that survives: `core.memberships_for_subject(TEXT)` and
+`core.principal_for_subject(TEXT, UUID)` are definers granted to
+`evercoat_app` that take a subject as an ARGUMENT and cannot bind it to their
+caller. Measured, and it discloses the person's organizations by name as well
+as their address. It is filed as I109 and pinned open by
+`test_the_sign_in_definers_still_answer_for_any_subject`, because a file whose
+title says an identity has no readable attributes must say where that is
+false.
+
 Everything runs as `evercoat_app`, the non-superuser runtime role. A privilege
 test performed as a superuser proves nothing; the `app_session` fixture
 asserts `rolsuper = false` before yielding.
@@ -600,43 +610,122 @@ def test_no_view_hands_the_attributes_back(owner_session: Session) -> None:
     The same future-object risk 047 recorded for `keycloak_sub`, which now
     applies to two more columns: `ALTER DEFAULT PRIVILEGES` in 001 grants the
     runtime roles SELECT on tables and views `evercoat_owner` creates in
-    `core`, so a view projecting `core.users.email` would be readable the
-    moment it exists and would hand back exactly what 052 took away -- with no
-    migration appearing to change any grant.
+    `core`, and a view runs against its OWNER's privileges. So a view
+    projecting `core.users.email` would be readable the moment it exists and
+    would hand back exactly what 052 took away -- with no migration appearing
+    to change any grant.
+
+    🔴 IT ASKS `pg_depend` WHAT THE VIEW READS, NOT WHAT ITS COLUMNS ARE CALLED.
+
+    The first version listed views with a column named `email` or
+    `display_name` and then guessed the source table from whether the VIEW's
+    name contained "user". Raised by Codex with a counterexample that defeats
+    it in one line::
+
+        CREATE VIEW core.identity_directory AS
+            SELECT email, display_name FROM core.users;
+
+    Neither "user" nor "member" appears in `identity_directory`, so the guess
+    excluded it and the test passed over a view handing back the whole
+    channel. It could also be beaten by `SELECT email AS contact`. **A test
+    that infers a data source from a NAME is a test that can be renamed
+    around.** `pg_depend` records the actual column-level dependency a view's
+    rewrite rule has on its base tables, so this asks the catalogue the
+    question instead of pattern-matching an identifier.
 
     Nothing exposes them today. This is the test that notices when something
-    does, which is the only mechanism available: default privileges cannot be
-    made column-aware.
+    does: default privileges cannot be made column-aware.
     """
     leaks = owner_session.execute(
         text(
             """
-                SELECT c.relname, a.attname
-                  FROM pg_class c
-                  JOIN pg_namespace n ON n.oid = c.relnamespace
-                  JOIN pg_attribute a ON a.attrelid = c.oid
-                 WHERE n.nspname = 'core'
-                   AND c.relkind IN ('v', 'm')
-                   AND a.attname IN ('email', 'display_name')
-                   AND a.attnum > 0
-                   AND NOT a.attisdropped
-                   AND has_column_privilege('evercoat_app', c.oid, a.attnum, 'SELECT')
-                """
+            SELECT DISTINCT vn.nspname AS view_schema,
+                            v.relname   AS view_name,
+                            a.attname   AS source_column
+              FROM pg_depend d
+              JOIN pg_rewrite rw   ON rw.oid = d.objid
+              JOIN pg_class v      ON v.oid = rw.ev_class
+              JOIN pg_namespace vn ON vn.oid = v.relnamespace
+              JOIN pg_class src    ON src.oid = d.refobjid
+              JOIN pg_namespace sn ON sn.oid = src.relnamespace
+              JOIN pg_attribute a  ON a.attrelid = src.oid
+                                  AND a.attnum   = d.refobjsubid
+             WHERE d.classid    = 'pg_rewrite'::regclass
+               AND d.refclassid = 'pg_class'::regclass
+               AND sn.nspname = 'core'
+               AND src.relname = 'users'
+               AND a.attname IN ('email', 'display_name')
+               AND v.relkind IN ('v', 'm')
+               AND has_table_privilege('evercoat_app', v.oid, 'SELECT')
+            """
         )
     ).all()
-    # ⚠️ A view over `core.organization_members` is fine -- those columns ARE
-    # the tenant's own. Only a projection of the GLOBAL identity reopens the
-    # channel, so the check is on what the view reads, not on the column name.
-    from_users = [
-        (relname, attname)
-        for relname, attname in leaks
-        if "user" in relname and "member" not in relname
-    ]
-    assert from_users == [], (
-        f"these core views appear to project the global identity's attributes "
-        f"and evercoat_app may read them: {from_users}. That returns what "
-        "migration 052 revoked on the base table."
+    assert leaks == [], (
+        "these views read core.users.email or core.users.display_name and "
+        f"evercoat_app may SELECT them: {leaks}. A view runs with its owner's "
+        "privileges, so this returns exactly what migration 052 revoked on the "
+        "base table -- without any migration appearing to change a grant."
     )
+
+
+def test_the_sign_in_definers_still_answer_for_any_subject(
+    app_session: Session, tenants: _Tenants
+) -> None:
+    """🔴 A CHANNEL THAT IS STILL OPEN, PINNED OPEN ON PURPOSE. FILED AS I109.
+
+    Raised by Codex reviewing 052 and MEASURED before it was accepted, as an
+    ordinary member of organization A holding nothing::
+
+        direct read of B's memberships          : 0 rows
+        core.memberships_for_subject(<B's sub>) : org='...B' code='...'
+                                                  email='secret.person@competitor.example'
+                                                  name='Confidential B Person'
+
+    Both sign-in lookups are SECURITY DEFINER, take a subject as an ARGUMENT,
+    and are granted EXECUTE to `evercoat_app`. Neither can bind that argument
+    to the caller, because both exist precisely to answer BEFORE a session has
+    an organization -- there is nothing yet to compare against. So the runtime
+    role can ask about any subject it can name.
+
+    ⚠️ AND IT DISCLOSES MORE THAN THE ADDRESS. `memberships_for_subject`
+    returns the NAME and CODE of every organization that subject belongs to,
+    which is a larger fact than the email 052 is about.
+
+    **This is not something 052 introduced** -- the functions date from 024,
+    033 and 045, and before 052 they read `core.users` directly. What 052 does
+    is make the claim above it false if it goes unstated: this file asserts
+    the global attributes are unreadable, and that is true of the TABLE and not
+    of every path. A test that pins a known-open channel open is the only
+    honest way to hold both.
+
+    The bound is real and it comes from 047: `keycloak_sub` is not readable by
+    any runtime role, so an `evercoat_app` session cannot enumerate subjects
+    from the database at all and must already know an opaque Keycloak uuid.
+    **A bound is not a closure.** The fix is a separate database role holding
+    EXECUTE on these two functions and used only by the authentication path,
+    which is a change to `app/core/db.py` with its own measurement -- I109.
+
+    THIS TEST MUST GO RED WHEN I109 IS CLOSED. That is what it is for.
+    """
+    _scope(app_session, org=tenants.a, user=tenants.admin)
+    rows = app_session.execute(
+        text(
+            "SELECT organization_id, organization_name, email, display_name"
+            " FROM core.memberships_for_subject(:s)"
+        ),
+        {"s": tenants.foreign_sub},
+    ).all()
+    assert [r.organization_id for r in rows] == [tenants.b], (
+        f"memberships_for_subject returned {[r.organization_id for r in rows]} "
+        "for a subject belonging only to organization B. If it returned "
+        "NOTHING, I109 has been closed and this test should be deleted along "
+        "with the note in ADR-031; if it returned MORE, something else changed."
+    )
+    assert rows[0].email == tenants.foreign_email, (
+        "the definer no longer discloses the foreign address. If that is "
+        "deliberate, I109 is closed -- delete this test."
+    )
+    app_session.rollback()
 
 
 def test_the_bind_is_still_the_only_thing_that_creates_identities(
