@@ -1,5 +1,74 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION 2026-08-26 (part 3) — I106, I107 and I108 CLOSED; I109 FILED
+
+Tip **`de99d56`**, pushed, **CI 6/6 GREEN** (`headSha` checked against the tip,
+not read off the top row). Migration **052 (`k1000`)**, **ADR-031**. API suite
+**791 / 0 / 11**; ruff, format, mypy clean. Downgrade round-trip
+`k1000 → j1000 → k1000` exercised.
+
+**I106 was a rolled-back bind reading another tenant's stored address and
+name.** Measured first::
+
+    submitted  : 'whatever@attacker.example'        / 'Whatever I Typed'
+    read back  : 'secret.person@competitor.example' / 'Confidential B Person'
+    memberships left behind after ROLLBACK : 0
+
+🔴 **AND MEASURING IT FOUND A WIDER ONE — I108.** `evercoat_app` held
+table-level INSERT on `core.organization_members`, `org_member_isolation`
+constrains only `organization_id`, and `user_id` is a plain FK to a global
+table. An **ordinary member** — no `admin.users`, no EXECUTE on the bind, no
+`keycloak_sub` — manufactured a membership naming a foreign identity, read it,
+and rolled back. So the defect is not "the bind leaks": **any membership row
+turns a global identity into a readable one**, and the bind was one of two ways
+to make one.
+
+🔴 **WHICH MEANS THE TENANT-SCOPED COLUMNS ARE NOT THE CLOSURE.** They are what
+keeps the application working once the closure lands. The closure is that
+`core.users.email` and `core.users.display_name` stop being readable by the
+runtime roles. 046's two advisory-lock trigger guards collapse into ONE partial
+unique index `(organization_id, email) WHERE status = 'active'` — possible only
+now the address lives on the membership, and **not `users_email_key` returning
+because the key LEADS WITH the tenant**.
+
+**I107** closed with seven end-to-end tests over real HTTP
+(`tests/auth/test_admin_member_routes.py`). One reproduces the shipped
+403-as-500 defect when `_standing_refusal` is broken on purpose.
+
+🔴 **I109 FILED — the closure covers the TABLE, not every path.** Raised by
+Codex and measured: `core.memberships_for_subject(TEXT)` and
+`core.principal_for_subject(TEXT, UUID)` are SECURITY DEFINER, take a subject as
+an ARGUMENT, and are granted to `evercoat_app`. An ordinary member of A read a
+foreign identity's address **and the name and code of every organization that
+subject belongs to**. Pre-existing (024/033/045). Bounded by 047 — no runtime
+role can read `keycloak_sub` — and **a bound is not a closure**. Pinned open by
+`test_the_sign_in_definers_still_answer_for_any_subject`, which MUST go red when
+it closes.
+
+### ▶ LIVE SUITE AFTER 052 — 839 / 0 / 0
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **802** | 0 | 0 |
+| e2e `shell` | **37** | 0 | 0 |
+| **TOTAL** | **839** | **0** | **0** |
+
+Preflight reported all four capabilities **CONFIGURED** — no `--allow-partial`.
+Both `sign-in.spec.ts` tests are recorded in `tmp/live-suite/e2e.json` as
+`['passed']`, i.e. they RAN rather than merely not being skipped (I100).
+
+⚠️ **THE DEMO API HAD TO BE RESTARTED FIRST, AND THAT IS THE HAZARD TO
+REMEMBER.** Migration 052 was applied to `evercoat-postgres`, which is the
+database the RUNNING demo uses — so for the length of this session the deployed
+demo was old code against a new schema, reading columns it no longer had
+privileges on. `/health/ready` answered `200 {"database":"ok"}` throughout,
+because a health check does not read those columns. **Only the :18000 listener
+was restarted**: restarting `cloudflared` would mint a new quick-tunnel hostname
+and repoint everything, and the web bundle needed no rebuild because the change
+was API-only.
+
+---
+
 ## ▶▶ SESSION 2026-08-26 (part 2) — I105 CLOSED
 
 Tip **`fd62969`**, pushed, **CI 6/6 GREEN** (run 32991114903 — `headSha`
