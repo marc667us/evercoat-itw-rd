@@ -673,3 +673,105 @@ core.users` defeats it in one line, and `SELECT email AS contact` defeats it
 again. It now asks `pg_depend` for the view's actual column-level dependency on
 `core.users`, and was falsified against exactly that counterexample. **A test
 that infers a data source from a name is a test that can be renamed around.**
+
+---
+
+### ADR-032 — signing in is not something the runtime role may do · Accepted 2026-08-26
+
+**Closes I109.** Implemented by migration 053 (`l1000`).
+
+ADR-031 claimed a foreign identity's attributes were no longer readable. That
+was true of the **table** and not of every path. Raised by Codex reviewing it,
+and measured as an ordinary member of organization A holding no permission at
+all:
+
+```
+direct read of B's memberships          : 0 rows
+core.memberships_for_subject(<B's sub>) : org  ='...B'
+                                          code ='...'
+                                          email='secret.person@competitor.example'
+                                          name ='Confidential B Person'
+```
+
+⚠️ **It discloses more than the address** — the NAME and CODE of every
+organization a named subject belongs to. `core.principal_for_subject` answers
+the same way for any `(subject, organization)` pair the caller can name.
+
+🔴 **NEITHER FUNCTION CAN CHECK ITS CALLER, SO THE FIX COULD NOT BE A CHECK.**
+
+Both take a subject as an **argument**, and both exist to answer *before* a
+session has an organization — there is nothing yet to compare against. That is
+not an oversight in 024/033/045; it is the reason they are definers. Two
+candidate fixes were rejected as decoration:
+
+| candidate | why it is not a boundary |
+|---|---|
+| a GUC naming the verified subject | `evercoat_app` can `SET` any GUC, so an injected statement sets it too |
+| `SET ROLE` for the lookup | anything able to run SQL as `evercoat_app` can assume the role |
+
+Both are **misuse barriers**, which this repository already distinguishes from
+security boundaries in its note on `AgentPrincipal`. **Privilege has to follow
+the CONNECTION.**
+
+**Decision.** A `evercoat_auth` role holding EXECUTE on exactly those two
+functions and **nothing else** — no table privilege in any schema, because both
+are SECURITY DEFINER owned by `evercoat_owner` and run as that owner. The API
+reaches it on a separate pool (`auth_session_scope()`), used by `get_principal`
+and `/api/me` and by nothing else. `evercoat_app` loses EXECUTE. An injected
+statement on the runtime connection cannot reach these functions at all.
+
+🔴 **IT FAILS CLOSED, AND READINESS SAYS SO.** There is deliberately no state in
+which the fix reads as applied and the old privilege quietly still works: an
+environment that applies 053 without configuring the auth connection cannot
+authenticate anybody. `/health/ready` reports the sign-in connection so that
+surfaces as "not ready" rather than as 403 for every user — measured across five
+states, including `AUTH_DATABASE_URL` pointed at the runtime role and at
+`evercoat_owner`.
+
+**The emptiness of the role is load-bearing, and is asserted rather than
+argued.** That connection never sets a tenant GUC, so a role that could also
+read tables would read every tenant's rows unscoped — a bigger hole than the one
+being closed. The migration probes every relation in every schema; a standing
+test repeats it, because a migration's probe runs once and a grant can be added
+afterwards.
+
+#### What Codex's review of this migration changed
+
+Seven findings. One was measured **wrong**, six were fixed:
+
+- 🔴 *"The probe sits after `COMMIT`, so a failure leaves partial state."* Not
+  for the path anything uses: `_sql.py` strips bare `BEGIN;`/`COMMIT;` and runs
+  the rest inside alembic's transaction. Forced a probe failure — alembic stayed
+  at `k1000` and `proacl` was unchanged. True of a standalone `psql -f` run,
+  which every probe in this directory shares; the header now says so.
+- The role's **attributes** are normalised, not assumed. `CREATE ROLE IF NOT
+  EXISTS` is idempotent about existence and silent about capability.
+  **`NOINHERIT`** is the load-bearing one.
+- The emptiness probe walks **every** schema; a core-only check passed a role in
+  a group with SELECT on `projects`.
+- Readiness checks **both** functions — checking one left `/api/me` broken while
+  green — and refuses an **over-privileged** connection.
+- `demo-up.ps1` **preflights** the sign-in connection and refuses with the exact
+  `ALTER ROLE` to run, instead of starting a demo that authenticates nobody.
+
+⚠️ **And the downgrade finding turned up a better lesson than the fix it
+implied.** The docstring claimed the role is left "inert". Revoking CONNECT does
+not achieve that, because **PUBLIC holds CONNECT on the database**:
+
+```
+datacl : {=Tc/postgres, postgres=CTc, evercoat_owner=c, evercoat_app=c, …}
+has_database_privilege('evercoat_report', …, 'CONNECT') : TRUE
+```
+
+`evercoat_report` was never granted it. 🔴 **A role-level REVOKE against a
+PUBLIC grant does nothing** — ADR-029's column-versus-table lesson, one level
+up. The claim was corrected to what is true rather than the statement being
+dressed up.
+
+**The Supervisor pass then found one more:** `auth_database_url` was added
+without the `_reject_superuser` validator `database_url` has carried since
+ADR-017. The sign-in pool is *more* exposed to that mistake, never having a
+tenant to be scoped to. Both fields are validated now.
+
+**ADR-031's pinned-open test was INVERTED, not deleted.** It said it must go red
+when I109 closed, and it did.

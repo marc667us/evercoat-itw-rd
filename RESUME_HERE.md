@@ -1,5 +1,51 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION 2026-08-26 (part 4) — I109 CLOSED
+
+Tip **`3a8af36`**, migration **053 (`l1000`)**, **ADR-032**. API suite
+**805 / 0 / 11**; ruff, format, mypy clean. Round-trip `l1000 → k1000 → l1000`
+exercised.
+
+`core.memberships_for_subject(TEXT)` and `core.principal_for_subject(TEXT, UUID)`
+take a subject as an **argument** and cannot check their caller, because both
+answer BEFORE a session has an organization. Granted to `evercoat_app`, an
+ordinary member read a foreign subject's address **and the name and code of
+every organization it belongs to**.
+
+🔴 **SO THE FIX COULD NOT BE A CHECK.** A GUC naming the verified subject is
+settable by `evercoat_app`; so is `SET ROLE`. Both are misuse barriers, not
+boundaries. **Privilege had to follow the CONNECTION** — `evercoat_auth` holds
+EXECUTE on those two functions, `NOINHERIT`, and **no table privilege in any
+schema**, on a pool used by `get_principal` and `/api/me` and nothing else.
+
+⚠️ **IT FAILS CLOSED AND NEEDS `AUTH_DATABASE_URL` EVERYWHERE.** An environment
+that applies 053 without it cannot authenticate anybody — by design, so there is
+no state where the fix reads as applied and the old privilege still works.
+`/health/ready` now reports `sign_in`, measured across five states including the
+URL pointed at the runtime role and at `evercoat_owner`. **Migration 053 creates
+the role NOLOGIN**; each environment must `ALTER ROLE evercoat_auth LOGIN
+PASSWORD …` after migrating (CI does; `demo-up.ps1` preflights and refuses with
+the exact command; D1's deploy steps carry it).
+
+**Codex's review of the fix: seven findings — one measured WRONG, six fixed.**
+The "probe after COMMIT is not atomic" claim does not hold for the alembic path,
+because `_sql.py` strips `BEGIN;`/`COMMIT;` — forced a probe failure and neither
+the GRANT nor the REVOKE survived. The Supervisor then found a seventh:
+`auth_database_url` lacked the superuser guard `database_url` has had since
+ADR-017.
+
+🔴 **A ROLE-LEVEL REVOKE AGAINST A `PUBLIC` GRANT DOES NOTHING** — ADR-029's
+column-versus-table lesson, one level up. Found while correcting a downgrade
+docstring that claimed the role was left "inert": PUBLIC holds CONNECT on the
+database, and `evercoat_report`, never granted it, returns TRUE.
+
+⚠️ **The live suite has NOT been re-run since 053's hardening commits.** It ran
+841/0/0 on `ac7c5ae` with both sign-in tests `['passed']`; `f56ef5a` and
+`3a8af36` changed readiness, the migration probe and config validation, and CI
+was not yet observed on them at the time of writing.
+
+---
+
 ## ▶▶ SESSION 2026-08-26 (part 3) — I106, I107 and I108 CLOSED; I109 FILED
 
 Tip **`de99d56`**, pushed, **CI 6/6 GREEN** (`headSha` checked against the tip,

@@ -4,7 +4,7 @@
 
 ✅ **Closed 2026-08-26 (second session): I106, I108 and I107.** Migration 052 (`k1000`, ADR-031) moves a tenant's view of a member ONTO the membership and makes the GLOBAL identity's `email` and `display_name` unreadable by the runtime roles. 🔴 **The membership columns are not the closure — the revoke is**, because measuring I106 found **I108**: `evercoat_app` held table-level INSERT on `core.organization_members`, so an ORDINARY member (no `admin.users`, no EXECUTE on the bind, no `keycloak_sub`) could manufacture a membership naming any identity, read it, and roll back. **Any membership row turned a global identity into a readable one**; the bind was one of two ways to make one. 046's two trigger guards collapse into ONE partial unique index. **I107** closed with seven end-to-end tests over real HTTP, one of which reproduces the 403-as-500 defect when `_standing_refusal` is broken on purpose.
 
-🔴 **NEW: I109 — the sign-in definers still answer for ANY subject.** Raised by Codex reviewing 052 and measured: `core.memberships_for_subject(TEXT)` and `core.principal_for_subject(TEXT, UUID)` are SECURITY DEFINER, take a subject as an ARGUMENT, and are granted EXECUTE to `evercoat_app`; neither can bind it to the caller because both must answer before a session has an organization. An ordinary member of A read B's member's address **and the name and code of every organization that subject belongs to**. Not introduced by 052 (024/033/045 did), but 052's claim would be too broad if it went unstated. Bounded by 047 — no runtime role can read `keycloak_sub` — and **a bound is not a closure**. Pinned open by `test_the_sign_in_definers_still_answer_for_any_subject`, which MUST go red when it closes. Fix: a separate database role holding EXECUTE on those two functions, used only by the authentication path (`app/core/db.py`).
+✅ **Closed 2026-08-26 (third pass): I109 — the sign-in definers answered for ANY subject.** `core.memberships_for_subject(TEXT)` and `core.principal_for_subject(TEXT, UUID)` take a subject as an ARGUMENT and cannot check their caller, because both answer BEFORE a session has an organization. 🔴 **So the fix could not be a check** — a GUC is settable by `evercoat_app` and so is `SET ROLE`; both are misuse barriers. **Privilege had to follow the CONNECTION.** Migration 053 (`l1000`, ADR-032) gives EXECUTE to a new `evercoat_auth` role that holds NO table privilege in any schema and is `NOINHERIT`, reached on a separate pool used by `get_principal` and `/api/me` only. It **fails closed**, and `/health/ready` reports the sign-in connection so a misconfigured deploy is not-ready rather than 403 for every user. ADR-031's pinned-open test was **inverted, not deleted**.
 
 ✅ **Closed 2026-08-26: I82** (three migrations — 049 the atomic bind, 050 the standing check, 051 the returned identifier). 🔴 **Each fix introduced the next defect**: 049 granted a cross-tenant WRITE while removing a cross-tenant read; 050 removed `identity_created` and left the same answer inside `user_id`; both left the database's own refusal escaping as a **500**. All three found by review, all three MEASURED before being believed, none found by CI — which was green on every one of them. **Left open on purpose: I106** (the attribute channel) and **I107** (the route has no end-to-end test).
 
@@ -28,14 +28,15 @@
 
 | # | Task | Why now |
 |---|---|---|
-| 1 | 🔴 **I109** — the sign-in definers answer for ANY subject | `core.memberships_for_subject(TEXT)` and `core.principal_for_subject(TEXT, UUID)` are SECURITY DEFINER, take a subject as an ARGUMENT, and are granted EXECUTE to `evercoat_app`. Neither can bind that argument to the caller, because both exist to answer BEFORE a session has an organization. Measured: an ordinary member of A read a foreign identity's address **and the name and code of every organization that subject belongs to**. Pre-existing (024/033/045), surfaced by Codex reviewing 052. Bounded by 047 — no runtime role can read `keycloak_sub` — and **a bound is not a closure**. Fix: a separate database role holding EXECUTE on those two functions, used only by the authentication path (`app/core/db.py`). 🔴 Pinned open by `test_the_sign_in_definers_still_answer_for_any_subject`, which MUST go red when this closes. |
-| 2 | **I106 / I107 / I108** | ✅ **CLOSED 2026-08-26** — migration 052 (`k1000`), ADR-031, and `tests/auth/test_admin_member_routes.py`. Kept as a pointer: the closure is the REVOKE on `core.users`, not the membership columns, and the reframing came from measuring the first defect rather than from fixing it. |
-| 3 | **I82** | ✅ **CLOSED 2026-08-26** — 049/050/051. Kept here only as a pointer: the closure took THREE migrations because each fix introduced the next defect (cross-tenant write → oracle moved into `user_id` → refusal escaping as a 500). `user_id_for_subject` hands out a uuid for an arbitrary subject — **the oracle shape ADR-030 deliberately avoided** by taking zero arguments. 🔴 Its original fix is REJECTED on evidence (ADR-029). ⚠️ **But re-measure the rejection before designing around it:** ADR-029's mechanism was a definer's WRITE firing ADR-028's guards as owner, and 047 then made BOTH guards scope-explicit. That may have removed the reason. Measure it; do not assume either way. |
-| 4 | **I76 / I77** | MSD relevance still lexical — a neural embedder is the real fix. |
-| 5 | 🔴 **I56 / I58** — FORCE RLS cutover | `core.users` and `core.user_id_for_subject` are in its scope, and **046/047 add two SECURITY INVOKER trigger functions** — under FORCE they must still see their own tenant's rows or the address guards silently stop guarding. 🔴 **AND IT NOW CARRIES AN OWED MEASUREMENT:** ADR-030's `core.authorization_for_current_session()` reads six `core` tables as `evercoat_owner` and its behaviour under FORCE is **UNMEASURED** — the test was written and withdrawn because `ALTER TABLE ... FORCE` needs ACCESS EXCLUSIVE and hangs against a live pool. Measure it during the cutover, when those tables are being altered anyway. |
-| 6 | **I78** — the knowledge document list truncates at 100, silently | `list_documents(limit=100)` and no caller passes it. |
-| 7 | **I101** — 595 orphaned test users in the development database | `test_023_messaging`'s fixture leaked one identity per run for months (fixed 2026-08-25, but the debris remains). 621 `msg-%` rows against 782 users total, so **any measurement over `core.users` is mostly measuring test garbage** — including the population arguments used to reason about I83 and I79. Deleting them is a judgement call, not a defect fix. |
-| 8 | **`TODO.md` D1** — deploy API + Keycloak | **On/after 2026-09-01**, when Render frees the one free-tier database slot. |
+| 1 | **I76 / I77** | MSD relevance still lexical — a neural embedder is the real fix. |
+| 2 | 🔴 **I56 / I58** — FORCE RLS cutover | `core.users` and `core.user_id_for_subject` are in its scope, and **046/047 add two SECURITY INVOKER trigger functions** — under FORCE they must still see their own tenant's rows or the address guards silently stop guarding. 🔴 **AND IT NOW CARRIES AN OWED MEASUREMENT:** ADR-030's `core.authorization_for_current_session()` reads six `core` tables as `evercoat_owner` and its behaviour under FORCE is **UNMEASURED** — the test was written and withdrawn because `ALTER TABLE ... FORCE` needs ACCESS EXCLUSIVE and hangs against a live pool. Measure it during the cutover, when those tables are being altered anyway. |
+| 3 | **I78** — the knowledge document list truncates at 100, silently | `list_documents(limit=100)` and no caller passes it. |
+| 4 | **I101** — 595 orphaned test users in the development database | `test_023_messaging`'s fixture leaked one identity per run for months (fixed 2026-08-25, but the debris remains). 621 `msg-%` rows against 782 users total, so **any measurement over `core.users` is mostly measuring test garbage** — including the population arguments used to reason about I83 and I79. Deleting them is a judgement call, not a defect fix. |
+| 5 | **`TODO.md` D1** — deploy API + Keycloak | **On/after 2026-09-01**, when Render frees the one free-tier database slot. |
+| — | *— below this line: closed today, kept for the lesson —* | Each of these cost more than its title suggests, and the reasons generalise. |
+| 6 | **I109** | ✅ **CLOSED 2026-08-26** — migration 053 (`l1000`), ADR-032. Kept as a pointer for the lesson: two candidate fixes were rejected as decoration because anything able to run SQL as `evercoat_app` can set a GUC or assume a role, so the boundary had to be the CONNECTION. Codex's review of the fix produced seven findings — one measured WRONG, six fixed — and the Supervisor found a seventh. |
+| 7 | **I106 / I107 / I108** | ✅ **CLOSED 2026-08-26** — migration 052 (`k1000`), ADR-031, and `tests/auth/test_admin_member_routes.py`. Kept as a pointer: the closure is the REVOKE on `core.users`, not the membership columns, and the reframing came from measuring the first defect rather than from fixing it. |
+| 8 | **I82** | ✅ **CLOSED 2026-08-26** — 049/050/051. Kept here only as a pointer: the closure took THREE migrations because each fix introduced the next defect (cross-tenant write → oracle moved into `user_id` → refusal escaping as a 500). `user_id_for_subject` hands out a uuid for an arbitrary subject — **the oracle shape ADR-030 deliberately avoided** by taking zero arguments. 🔴 Its original fix is REJECTED on evidence (ADR-029). ⚠️ **But re-measure the rejection before designing around it:** ADR-029's mechanism was a definer's WRITE firing ADR-028's guards as owner, and 047 then made BOTH guards scope-explicit. That may have removed the reason. Measure it; do not assume either way. |
 
 **Standing obligation each session:** run the full live suite after any deploy and report **passed / failed / skipped as three numbers**. 🔴 **The script now enforces this itself** — it refuses to run without the environment its coverage depends on, and the sign-in round trip is no longer something to remember: a skip there is counted as a FAILURE. See `CLAUDE.md` §13 for the incantation.
 
@@ -79,8 +80,26 @@ NOT**, and the retirement is flagged BLOCKED. It expires on its own in days.
    creating a service, which is pointless before the database exists). If it
    400s again, the database from step 1 is harmless and costs nothing; stop and
    report rather than reaching for a paid plan.
-3. Set `DATABASE_URL` (the new database's internal URL) and `KEYCLOAK_ISSUER`
-   on the service, then deploy it.
+3. Set `DATABASE_URL` (the new database's internal URL), **`AUTH_DATABASE_URL`**
+   and `KEYCLOAK_ISSUER` on the service, then deploy it.
+
+   🔴 **`AUTH_DATABASE_URL` IS NEW AND THE DEPLOY AUTHENTICATES NOBODY WITHOUT
+   IT** (I109, migration 053). `evercoat_app` no longer holds EXECUTE on
+   `core.principal_for_subject` or `core.memberships_for_subject`; the
+   `evercoat_auth` role does, and migration 053 creates it **NOLOGIN**, because
+   a migration must not carry a password. So step 4 is not finished until:
+
+   ```sql
+   ALTER ROLE evercoat_app  LOGIN PASSWORD '<app password>';
+   ALTER ROLE evercoat_auth LOGIN PASSWORD '<auth password>';
+   ```
+
+   ⚠️ **Do not point it at the same role as `DATABASE_URL`** — the whole
+   mechanism is that privilege follows the connection. `/health/ready` refuses
+   that, and refuses a superuser, and `app/core/config.py` refuses a superuser
+   at startup. Confirm `/health/ready` reports `"sign_in":"ok"` BEFORE running
+   the live suite: a 503 there means the suite would measure an API nobody can
+   log in to.
 4. Run migrations against the new database — `alembic upgrade head`, currently
    head `e7000`.
 5. **Run the live suite with the `full` profile**, not `web`:
