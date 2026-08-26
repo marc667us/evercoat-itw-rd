@@ -63,15 +63,22 @@ which inside a definer run as the table owner and reopen I83's oracle. This
 one is `STABLE` and takes ZERO ARGUMENTS, so it has neither the write that
 starts that chain nor the parameter that makes a lookup an oracle.
 
-**2. PostgreSQL is asked whether the session really is this caller's.**
-`bind(session)` reads `app.current_org` and `app.current_user_id` — the two
-GUCs `app/core/db.py::set_context` sets and every RLS policy consults — and
-refuses if they disagree with the principal. 🔴 THIS IS THE ONE MECHANISM A
-PYTHON CALLER CANNOT TALK ITS WAY PAST. Substituting a colleague's user id
-now means disagreeing with the database's own view of the transaction, not
-merely passing a different argument. It also converts three docstrings that
+**2. PostgreSQL is asked who this is, and told to say what they may do.**
+`authorize(session)` reads `app.current_org` and `app.current_user_id` — the
+two GUCs `app/core/db.py::set_context` sets and every RLS policy consults —
+refuses if they disagree with the principal, and then REPLACES `roles` and
+`permissions` with what `core.authorization_for_current_session()` returns for
+those same GUCs. 🔴 THIS IS THE ONE MECHANISM A PYTHON CALLER CANNOT TALK ITS
+WAY PAST. Substituting a colleague now means disagreeing with the database's
+own view of the transaction, and claiming a permission means nothing at all
+because the claim is discarded. It also converts three docstrings that
 *claimed* "the session must be the caller's own RLS-scoped session" into a
 statement something actually checks.
+
+⚠️ The method was called `bind()` when it only checked identity (I104). It was
+renamed when it started deriving authorization (I105), because a name that
+says "attach" for something that also decides what you may do is the kind of
+understatement this file exists to avoid.
 
 **3. The remaining path is loud.** Forging now means constructing a real
 `Principal` — which has a public constructor at `app/core/security.py` — or
@@ -168,7 +175,7 @@ class AgentPrincipal:
     # False from `of()`: those permissions came from the request's own
     # `Principal`, which is true for a legitimate caller and is still only
     # Python. True from `authorize()`, which replaces the set with one read
-    # from `core.permissions_for_current_session()`.
+    # from `core.authorization_for_current_session()`.
     #
     # `app/agents/boundary.py::require` REFUSES an unverified principal. That
     # is what stops a conductor written next month from gating on a claimed
@@ -254,7 +261,7 @@ class AgentPrincipal:
         while claiming arbitrary authorization"* — and the conductor gate then
         consulted the forged set. So this no longer VALIDATES the set it was
         given; it REPLACES it with one read from
-        `core.permissions_for_current_session()`, keyed on the same GUC.
+        `core.authorization_for_current_session()`, keyed on the same GUC.
 
         ⚠️ DERIVE, NOT COMPARE. Comparing the claimed set against the database
         would also refuse a forgery, and it would additionally refuse a

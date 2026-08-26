@@ -26,8 +26,26 @@ from sqlalchemy.orm import Session
 pytestmark = [pytest.mark.db]
 
 
-def _perms(session: Session, *, org: uuid.UUID | None, user: uuid.UUID | None) -> set[str]:
-    """Scope the session to (org, user) and ask what it may do."""
+def _authorization(
+    session: Session, *, org: uuid.UUID | None, user: uuid.UUID | None
+) -> tuple[set[str], set[str]]:
+    """Scope the session to (org, user) and ask what it may BE and DO.
+
+    🔴 RETURNS BOTH HALVES, AND THE FIRST VERSION READ ONLY PERMISSIONS.
+
+    Raised by the Supervisor, and it is the sharper version of the defect
+    Codex found. The Codex round added `roles` to the SQL *because* MSD feeds
+    them into `t.assigned_role = ANY(:roles)` — and then every database test
+    kept selecting `a.permissions` alone. The only roles assertion lived in
+    `tests/test_conductor_boundary.py` against a Python stub, so it measured
+    `authorize()` and never the function.
+
+    Concretely: changing the migration's first aggregate to
+    `array_agg(DISTINCT mr.role_id::text)`, or dropping the
+    `LEFT JOIN core.roles`, left the whole suite green while the assistant
+    matched work on the wrong codes. A fix with no coverage over the half it
+    added.
+    """
     if org is not None:
         session.execute(text("SELECT set_config('app.current_org', :v, true)"), {"v": str(org)})
     if user is not None:
@@ -35,9 +53,13 @@ def _perms(session: Session, *, org: uuid.UUID | None, user: uuid.UUID | None) -
             text("SELECT set_config('app.current_user_id', :v, true)"), {"v": str(user)}
         )
     row = session.execute(
-        text("SELECT a.permissions FROM core.authorization_for_current_session() a")
-    ).scalar_one()
-    return set(row or ())
+        text("SELECT a.roles, a.permissions FROM core.authorization_for_current_session() a")
+    ).one()
+    return set(row.roles or ()), set(row.permissions or ())
+
+
+def _perms(session: Session, *, org: uuid.UUID | None, user: uuid.UUID | None) -> set[str]:
+    return _authorization(session, org=org, user=user)[1]
 
 
 def test_the_function_is_a_definer_owned_by_a_non_superuser(owner_session: Session) -> None:
@@ -273,53 +295,159 @@ def test_a_user_gets_nothing_in_an_organization_they_do_not_belong_to(
     assert _perms(app_session, org=pair.other_org, user=pair.uid) == set()
 
 
-def test_a_deactivated_membership_stops_granting(
+def _looks_like_a_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+def test_the_roles_half_matches_the_authoritative_join(
     app_session: Session, owner_session: Session
 ) -> None:
-    """🔴 REVOCATION TAKES EFFECT, WHICH IS WHY THE SET IS DERIVED NOT COMPARED.
+    """🔴 THE HALF THE CODEX ROUND ADDED AND NOTHING MEASURED IN SQL.
 
-    `get_principal` already says a JWT "is not a current statement about
-    authorization". The same is true of a permission set computed at the start
-    of a request. Because `authorize()` re-reads rather than compares, a
-    membership deactivated mid-request stops granting on the next agent-tier
-    call instead of being read as a mismatch and reported as an attack.
-
-    ⚠️ `inactive`, not `suspended` — `organization_members_status_check`
-    admits exactly `active` and `inactive`, and the first draft of this test
-    invented a third value and was refused by the constraint. Read the
-    vocabulary from the database.
+    Raised by the Supervisor. `authorize()` derives roles because
+    `app/domains/tasks/service.py` matches unclaimed work with
+    `t.assigned_role = ANY(:roles)` -- so the CODES must be right, not merely
+    present. A `role_id` where a `code` belongs, or a dropped
+    `LEFT JOIN core.roles`, would leave every other test green and make the
+    assistant match on values `workflow.tasks.assigned_role` never holds.
     """
     member = owner_session.execute(
         text(
             """
-            SELECT om.id, om.user_id, om.organization_id
+            SELECT om.user_id, om.organization_id
             FROM core.organization_members om
+            JOIN core.users u         ON u.id = om.user_id
             JOIN core.member_roles mr ON mr.member_id = om.id
-            WHERE om.status = 'active'
+            WHERE om.status = 'active' AND u.status = 'active'
             LIMIT 1
             """
         )
     ).one_or_none()
     if member is None:
-        pytest.skip("no seeded active membership with a role to suspend")
+        pytest.skip("no seeded active membership with a role to measure")
 
-    before = _perms(app_session, org=member.organization_id, user=member.user_id)
-    assert before, "the membership granted nothing to begin with; nothing to prove"
+    expected = {
+        r[0]
+        for r in owner_session.execute(
+            text(
+                """
+                SELECT DISTINCT r.code
+                FROM core.organization_members om
+                JOIN core.member_roles mr ON mr.member_id = om.id
+                JOIN core.roles r         ON r.id = mr.role_id
+                WHERE om.user_id = :u AND om.organization_id = :o
+                  AND om.status = 'active'
+                """
+            ),
+            {"u": member.user_id, "o": member.organization_id},
+        ).all()
+    }
 
-    owner_session.execute(
-        text("UPDATE core.organization_members SET status = 'inactive' WHERE id = :i"),
-        {"i": member.id},
+    roles, _ = _authorization(app_session, org=member.organization_id, user=member.user_id)
+    assert roles, "a member with a role was given no role codes at all"
+    assert roles == expected, f"derived roles {sorted(roles)}, join says {sorted(expected)}"
+
+    # 🔴 CODES, NOT IDS. The cheapest way to break this silently is to
+    # aggregate `mr.role_id` instead of `r.code` -- both are non-empty sets of
+    # strings, and only one of them matches `workflow.tasks.assigned_role`.
+    assert all(not _looks_like_a_uuid(code) for code in roles), (
+        f"the roles half returned identifiers rather than codes: {sorted(roles)}"
     )
+
+
+def test_a_deactivated_membership_stops_granting(
+    app_session: Session, owner_session: Session
+) -> None:
+    """🔴 REVOCATION TAKES EFFECT, WHICH IS WHY THE SET IS DERIVED.
+
+    `get_principal` already says a JWT "is not a current statement about
+    authorization". The same is true of a role or permission set computed at
+    the start of a request. Because `authorize()` re-reads rather than
+    compares, a membership deactivated mid-request stops granting on the next
+    agent-tier call instead of being read as a mismatch and reported as an
+    attack.
+
+    WARNING: IT BUILDS ITS OWN MEMBERSHIP AND DELETES IT. The first version
+    flipped a REAL seeded membership to `inactive` and restored it with a
+    second COMMIT in `finally` -- against `conftest.py`'s stated contract that
+    *"every fixture rolls back; these tests must be runnable against a
+    developer's local database repeatedly without leaving residue"*. Raised by
+    the Supervisor, and the failure mode is specific: interrupt the run
+    between the two commits and the demo organization's membership stays
+    inactive, so sign-in breaks afterwards with no failing test pointing at
+    the cause. On this host the local API and an e2e run read that table
+    concurrently.
+
+    WARNING: `inactive`, not `suspended` -- `organization_members_status_check`
+    admits exactly `active` and `inactive`, and an earlier draft invented a
+    third value and was refused by the constraint. Read the vocabulary from
+    the database.
+    """
+    org = owner_session.execute(
+        text("SELECT id FROM core.organizations LIMIT 1")
+    ).scalar_one_or_none()
+    role_id = owner_session.execute(text("SELECT id FROM core.roles LIMIT 1")).scalar_one_or_none()
+    if org is None or role_id is None:
+        pytest.skip("needs at least one organization and one role")
+
+    sub = f"i105-revocation-{uuid.uuid4()}"
+    user_id = owner_session.execute(
+        text(
+            """
+            INSERT INTO core.users (keycloak_sub, email, display_name)
+            VALUES (:sub, :email, 'I105 revocation probe')
+            RETURNING id
+            """
+        ),
+        {"sub": sub, "email": f"{sub}@example.test"},
+    ).scalar_one()
+    member_id = owner_session.execute(
+        text(
+            """
+            INSERT INTO core.organization_members (organization_id, user_id, status)
+            VALUES (:org, :uid, 'active')
+            RETURNING id
+            """
+        ),
+        {"org": org, "uid": user_id},
+    ).scalar_one()
+    owner_session.execute(
+        text("INSERT INTO core.member_roles (member_id, role_id) VALUES (:m, :r)"),
+        {"m": member_id, "r": role_id},
+    )
+    # Committed because `evercoat_owner` and `evercoat_app` are separate
+    # connections and the app session must SEE these rows. Deleted in
+    # `finally` -- see the docstring, and I101 on leaked `core.users` rows.
     owner_session.commit()
+
     try:
-        # A fresh statement on the app session; the GUCs are still set.
-        after = _perms(app_session, org=member.organization_id, user=member.user_id)
-        assert after == set(), f"an inactive membership still granted {sorted(after)}"
-    finally:
+        before_roles, _ = _authorization(app_session, org=org, user=user_id)
+        assert before_roles, "the purpose-built membership granted no roles; nothing to prove"
+
         owner_session.execute(
-            text("UPDATE core.organization_members SET status = 'active' WHERE id = :i"),
-            {"i": member.id},
+            text("UPDATE core.organization_members SET status = 'inactive' WHERE id = :i"),
+            {"i": member_id},
         )
+        owner_session.commit()
+        app_session.rollback()
+
+        after_roles, after_perms = _authorization(app_session, org=org, user=user_id)
+        assert after_roles == set(), f"an inactive membership still granted roles {after_roles}"
+        assert after_perms == set(), f"an inactive membership still granted {after_perms}"
+    finally:
+        app_session.rollback()
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.member_roles WHERE member_id = :m"), {"m": member_id}
+        )
+        owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE id = :i"), {"i": member_id}
+        )
+        owner_session.execute(text("DELETE FROM core.users WHERE id = :u"), {"u": user_id})
         owner_session.commit()
 
 
@@ -358,3 +486,48 @@ def test_a_deactivated_membership_stops_granting(
 # the policies read, which is why the expectation is that it degrades to "what
 # the caller can see" rather than to nothing. An expectation is not a
 # measurement and is not recorded as one.
+
+
+def test_public_cannot_execute_it(owner_session: Session) -> None:
+    """🔴 ASSERT THE PRIVILEGE, NOT THE SQL. Raised by the Supervisor.
+
+    A new function is granted EXECUTE to PUBLIC by default, so
+    `REVOKE ALL ... FROM PUBLIC` in migration 048 is load-bearing rather than
+    tidy. Nothing measured it: every other test here calls the function as
+    `evercoat_app`, which proves the GRANT and says nothing about the REVOKE.
+
+    That is I81's own lesson from 2026-08-25 — *a column-level REVOKE against
+    a table-level GRANT does nothing, so assert the PRIVILEGE, not the SQL* —
+    applied one object type over. A later `CREATE OR REPLACE` that reset the
+    ACL would be invisible to the suite otherwise.
+
+    Read from `proacl`, which is what PostgreSQL actually enforces.
+    """
+    acl = owner_session.execute(
+        text(
+            """
+            SELECT COALESCE(p.proacl::text[], ARRAY[]::text[])
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'core'
+              AND p.proname = 'authorization_for_current_session'
+            """
+        )
+    ).scalar_one()
+
+    assert acl, (
+        "proacl is empty, which in PostgreSQL means the DEFAULT applies — and "
+        "the default for a function is EXECUTE to PUBLIC. The REVOKE did not "
+        "take, or a later CREATE OR REPLACE reset it."
+    )
+    # An entry whose grantee is empty ("=X/owner") IS the PUBLIC grant.
+    public_grants = [entry for entry in acl if entry.startswith("=")]
+    assert not public_grants, (
+        f"PUBLIC can execute core.authorization_for_current_session(): {public_grants}. "
+        "Any database role could then read the authorization catalogue for "
+        "whatever session it can scope."
+    )
+    assert any(entry.startswith("evercoat_app=X") for entry in acl), (
+        f"evercoat_app cannot execute it: {acl}. The runtime role needs it on "
+        "every agent-tier call."
+    )

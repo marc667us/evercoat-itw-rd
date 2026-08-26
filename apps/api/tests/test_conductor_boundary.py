@@ -12,11 +12,19 @@ with no route — the root orchestrator, on behalf of MSD or any later agent —
 is the one where this is the check, and it is exactly the path §7 is about:
 *MSD operates under exactly the calling user's authorization boundary.*
 
-These tests need no database and no network: the gate must fire BEFORE any
-service call, so a session that would explode if touched is the strongest
-available statement of that. If a conductor ever starts querying first and
-filtering after, `_ExplodingSession` turns it into a failure rather than a
-subtle §7 violation.
+These tests need no database and no network. `_ProbeSession` answers
+`authorize()`'s one query — whose session this is, and what that person may do
+— and explodes on everything after it. So refusing before the explosion proves
+the gate closed without any DOMAIN read, and reaching the explosion proves the
+gate opened and the service was called.
+
+🔴 THERE USED TO BE A SECOND STUB HERE AND IT WAS DEAD. `_ExplodingSession`
+failed on first touch, which was right while the gate ran before any query.
+I105 moved `authorize()` in front of it, every call site moved to
+`_ProbeSession`, and the class survived with no references while this
+docstring still named it as the enforcing mechanism. Raised by the
+Supervisor — *the next reader will believe a guard is in place that isn't*,
+which is this file's own subject turned on the file itself.
 """
 
 from __future__ import annotations
@@ -42,22 +50,6 @@ from app.agents.principal import AgentPrincipal, SessionIdentityError
 from app.core.security import Principal
 from app.domains.dashboards.service import ROLE_DASHBOARDS
 
-
-class _ExplodingSession:
-    """A session that fails loudly if anything touches the database.
-
-    Used only where NOTHING should reach the database at all — the
-    `authorize()` identity checks below, which must refuse before querying.
-    """
-
-    def __getattr__(self, name: str) -> object:  # pragma: no cover - defensive
-        raise AssertionError(
-            f"the conductor reached the database (session.{name}) before its "
-            "permission gate refused. §7 requires filtering BEFORE anything "
-            "reads, never after."
-        )
-
-
 ORG = uuid.uuid4()
 USER = uuid.uuid4()
 THING = uuid.uuid4()
@@ -68,7 +60,7 @@ def principal(*permissions: str, user_id: uuid.UUID = USER, org: uuid.UUID = ORG
 
     🔴 SINCE I105 THE CLAIM IS NOT WHAT THE GATE CONSULTS, AND THAT IS THE
     WHOLE POINT. `authorize()` replaces this set with the one
-    `core.permissions_for_current_session()` returns for the session's own
+    `core.authorization_for_current_session()` returns for the session's own
     GUC. So in every conductor test below, what this helper claims and what
     `_ProbeSession` reports are supplied SEPARATELY — and
     `test_the_gate_ignores_a_claimed_permission_the_database_denies` sets them
@@ -1212,8 +1204,24 @@ def test_a_conductor_that_forgets_to_authorize_fails_loudly() -> None:
     require(verified, department="laboratory", permission="batch.view")
 
 
+def _own_body(fn: ast.FunctionDef) -> list[ast.AST]:
+    """Every node in `fn`, excluding anything inside a NESTED function.
+
+    A `require()` in a closure belongs to the closure, not to the entry point,
+    and counting it would let a real gate-before-authorize violation in the
+    outer body pass unnoticed.
+    """
+    out: list[ast.AST] = []
+    for stmt in fn.body:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+                continue
+            out.append(node)
+    return out
+
+
 def _call_positions(fn: ast.FunctionDef) -> tuple[int | None, int | None]:
-    """Line numbers of the real `caller.authorize(...)` and `require(...)` CALLS.
+    """EARLIEST line of a real `caller.authorize(...)` and of `require(...)`.
 
     🔴 AST NODES, NOT TEXT — AND THE FIRST VERSION OF THIS TEST USED TEXT.
 
@@ -1223,21 +1231,28 @@ def _call_positions(fn: ast.FunctionDef) -> tuple[int | None, int | None]:
     a function could delete the actual call, or move it after the gate, and
     still satisfy the test through its own documentation. Raised by Codex.
 
-    That is the mirror of the defect found earlier the same day, when a
-    comment REDDENED a test. A comment that GREENS one is the more dangerous
-    direction, and this file now contains one example of each.
+    🔴 AND THE FIX HAD ITS OWN VERSION OF THE SAME LOOSENESS. Raised by the
+    Supervisor: it took the FIRST call `ast.walk` yielded, and `ast.walk` is
+    breadth-first, not source order. A conductor with two `require()` calls
+    could bind `require_at` to the later one and hide a violation on the
+    earlier line. It also descended into nested `def`s. Both are closed by
+    taking the MINIMUM line number over the function's own body.
+
+    That is three passes over one twenty-line test, each closing a way it
+    could pass while the thing it names is broken. The pattern is the point:
+    an ordering assertion is only as good as its definition of "first".
     """
-    authorize_at: int | None = None
-    require_at: int | None = None
-    for node in ast.walk(fn):
+    authorize_at: list[int] = []
+    require_at: list[int] = []
+    for node in _own_body(fn):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Attribute) and func.attr == "authorize" and authorize_at is None:
-            authorize_at = node.lineno
-        if isinstance(func, ast.Name) and func.id == "require" and require_at is None:
-            require_at = node.lineno
-    return authorize_at, require_at
+        if isinstance(func, ast.Attribute) and func.attr == "authorize":
+            authorize_at.append(node.lineno)
+        if isinstance(func, ast.Name) and func.id == "require":
+            require_at.append(node.lineno)
+    return (min(authorize_at) if authorize_at else None), (min(require_at) if require_at else None)
 
 
 def test_every_conductor_entry_point_authorizes_before_it_gates() -> None:

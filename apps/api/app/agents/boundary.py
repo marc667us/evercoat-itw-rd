@@ -62,7 +62,7 @@ class UnverifiedPrincipalError(PermissionError):
     `AgentPrincipal.of(principal)` carries the permissions the request
     resolved — true for a legitimate caller, and still only Python.
     `authorize(session)` replaces them with the set
-    `core.permissions_for_current_session()` returns for the session's own
+    `core.authorization_for_current_session()` returns for the session's own
     GUC. Only the second is `verified`.
 
     Without this error, a conductor written next month that forgot
