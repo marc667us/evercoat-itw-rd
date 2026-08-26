@@ -1,5 +1,47 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-26 (part 4) — I82 closed, across three migrations
+
+**Migrations 049 (`h1000`), 050 (`i1000`), 051 (`j1000`).** API suite **771
+passed / 0 failed / 11 skipped**; `tests/db` **382 / 0 / 0**; ruff, ruff
+format, mypy clean; the `j1000 → i1000 → j1000` downgrade round-trip
+exercised. CI **6/6 green on `accda56`**; `87ceffa` pushed at close and **not
+yet observed**. ⚠️ **The live suite has NOT been run since these three
+migrations.**
+
+🔴 **THREE MIGRATIONS FOR ONE ISSUE, BECAUSE EACH FIX INTRODUCED THE NEXT
+DEFECT — AND CI WAS GREEN ON EVERY ONE OF THEM.**
+
+| | fixed | broke |
+|---|---|---|
+| 049 | removed `user_id_for_subject`'s cross-tenant read | granted a cross-tenant **WRITE** (definer INSERT keyed on a caller-settable GUC) |
+| 050 | proved the caller's standing, removed `identity_created` | left the same existence answer in **`user_id`**; refusal escaped as a **500** |
+| 051 | returns only `member_id`; refusal is a **403** | I106 + I107 left open, filed |
+
+**The returned identifier WAS the existence answer.** Two rolled-back binds:
+the same uuid for a subject that exists in another tenant, different uuids for
+one that does not, nothing left behind. I83 was closed by *dropping* its
+oracle; 050 *renamed* this one. 051 returns only the membership it minted, and
+the route resolves the user through it under 044's policy.
+
+**A database refusal is not an `IntegrityError`.** SQLSTATE 42501 arrives as
+`ProgrammingError` — a sibling, not a subclass — so the standing check answered
+a revoked administrator with a driver message and a 500. An unrecognised
+constraint also returned 409, telling a client to change a request that was
+never at fault; now 500.
+
+Three of the tests were weak, two written the same day: a postcondition that
+counted through the very session whose reads RLS was hiding, a sign-in guard
+that never asserted *which* principal came back, and a mechanical rewrite that
+left a duplicate and dropped an identity check. The new guards were falsified
+by reverting the **database** to 050 and watching them redden.
+
+**Left open on purpose:** **I106** — a pre-existing foreign identity's stored
+email and display name are still readable through the membership before a
+rollback; closing it needs tenant-scoped attributes on
+`core.organization_members`. **I107** — nothing posts to
+`POST /api/admin/members`, which is how the 500 survived.
+
 ## 2026-08-26 (part 2) — I105: the gate now consults the database, not the caller
 
 **Migration 048 (`g1000`), ADR-030.** **Live suite on the deployed demo: 798
