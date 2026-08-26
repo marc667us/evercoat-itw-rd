@@ -278,6 +278,17 @@ def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: S
             "keycloak_sub and sign-in is dead."
         )
         assert principal.organization_id == org_id
+        # 🔴 AND IT MUST BE *THIS* SUBJECT'S IDENTITY, NOT SOME MEMBER OF THE
+        # ORGANIZATION. The fixture created `user_id` and then never asserted
+        # that either function returns it, so a resolver that answered with
+        # any other member of the requested organization -- or with whoever
+        # happened to be first -- passed. Sign-in would hand one person's
+        # session to another and this test would stay green. Raised by Codex,
+        # on the very guard the previous pass had just restored.
+        assert principal.user_id == user_id, (
+            "core.principal_for_subject resolved a DIFFERENT user for this "
+            "subject. Sign-in would authenticate the wrong person."
+        )
 
         memberships = app_session.execute(
             text("SELECT * FROM core.memberships_for_subject(:s)"), {"s": subject}
@@ -286,6 +297,14 @@ def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: S
             "core.memberships_for_subject resolved nothing, so a freshly "
             "signed-in browser has no tenant to ask for and every subsequent "
             "request 400s for want of a header nothing supplies."
+        )
+        # The fixture is isolated -- one organization, one member -- so the
+        # EXACT result set is assertable, and asserting it is what rules out a
+        # resolver that returns every membership on the platform. `memberships`
+        # being nonempty would survive that; this does not.
+        assert [(m.organization_id, m.user_id) for m in memberships] == [(org_id, user_id)], (
+            "core.memberships_for_subject returned something other than this "
+            f"subject's single membership: {memberships}"
         )
         app_session.rollback()
     finally:

@@ -165,7 +165,7 @@ def _bind(session: Session, *, subject: str, email: str, name: str):
     return session.execute(
         text(
             """
-            SELECT user_id, member_id
+            SELECT *
             FROM core.bind_subject_to_organization(:s, :e, :n)
             """
         ),
@@ -210,14 +210,32 @@ def test_a_new_subject_is_created_and_bound_in_one_call(
     sub = f"i82-new-{tenants.suffix}"
     row = _bind(app_session, subject=sub, email=f"{sub}@example.test", name="Newcomer")
 
-    assert row.user_id is not None
     assert row.member_id is not None
 
-    org = app_session.execute(
-        text("SELECT organization_id FROM core.organization_members WHERE id = :m"),
+    # 🔴 AND THE MEMBERSHIP MUST POINT AT AN IDENTITY THIS CALL CREATED.
+    #
+    # This test asserted `row.user_id is not None` until 051 stopped returning
+    # it, and my rewrite replaced that line with a copy of the one below it --
+    # leaving the test saying nothing at all about the identity, so a function
+    # that bound a membership to a PRE-EXISTING or simply wrong `core.users`
+    # row would pass. Raised by the Supervisor. The identity is resolved
+    # through the membership, which is exactly what the route now does.
+    org, bound_user = app_session.execute(
+        text("SELECT organization_id, user_id FROM core.organization_members WHERE id = :m"),
         {"m": row.member_id},
-    ).scalar_one()
+    ).one()
     assert org == tenants.a, "the membership was created in the wrong organization"
+    # ⚠️ NOT `keycloak_sub` -- 047 REVOKED THAT COLUMN FROM `evercoat_app`,
+    # and writing this assertion the obvious way proved it: "permission denied
+    # for table users". The identity is checked on the attributes the ROUTE can
+    # read, which is the same read `invite_member` performs.
+    email, display_name = app_session.execute(
+        text("SELECT email::text, display_name FROM core.users WHERE id = :u"),
+        {"u": bound_user},
+    ).one()
+    assert (email, display_name) == (f"{sub}@example.test", "Newcomer"), (
+        f"the membership was bound to a different identity: {email!r}, {display_name!r}"
+    )
 
 
 def test_no_identifier_is_returned_when_the_bind_fails(
@@ -244,7 +262,7 @@ def test_no_identifier_is_returned_when_the_bind_fails(
     sub = f"i82-twice-{tenants.suffix}"
 
     first = _bind(app_session, subject=sub, email=f"{sub}@example.test", name="Twice")
-    assert first.user_id is not None, "the first bind produced no identity"
+    assert first.member_id is not None, "the first bind produced no membership"
 
     with pytest.raises(DatabaseError) as caught, app_session.begin_nested():
         _bind(app_session, subject=sub, email=f"{sub}@example.test", name="Twice")
@@ -404,12 +422,12 @@ def test_a_definer_write_does_not_widen_the_address_guards(
             f"Driver said: {str(exc.orig).splitlines()[0]}"
         )
 
-    assert row.user_id is not None, "the bind produced no identity"
+    assert row.member_id is not None, "the bind produced no membership"
     app_session.rollback()
 
 
 def test_a_forged_organization_guc_cannot_drive_a_cross_tenant_write(
-    app_session: Session, tenants: _Tenants
+    app_session: Session, owner_session: Session, tenants: _Tenants
 ) -> None:
     """🔴 049 GRANTED A CROSS-TENANT WRITE. THIS IS THE REGRESSION TEST IT LACKED.
 
@@ -453,13 +471,28 @@ def test_a_forged_organization_guc_cannot_drive_a_cross_tenant_write(
         "test would keep passing after the check was removed."
     )
 
-    # And nothing was written into the other tenant.
-    leaked = app_session.execute(
+    # 🔴 AND THE POSTCONDITION IS ASKED OF `owner_session`, NOT `app_session`.
+    #
+    # This counted through the SAME session the attack ran in -- scoped to
+    # organization B with an actor who is not a member of B. `org_member_isolation`
+    # returns nothing to that session whether or not the row exists, so the
+    # count was zero by construction: a check that passes because it cannot
+    # see. Raised by Codex, and it is the fifth instance of that shape.
+    #
+    # `owner_session` is not subject to the policy, so a leaked row would be
+    # counted. The identity is checked too: the exception must have rolled the
+    # whole statement back, not merely the membership half of it.
+    leaked = owner_session.execute(
         text("SELECT count(*) FROM core.organization_members WHERE organization_id = :o"),
         {"o": tenants.b},
     ).scalar_one()
+    stranded = owner_session.execute(
+        text("SELECT count(*) FROM core.users WHERE keycloak_sub = :s"),
+        {"s": f"i82-cross-{tenants.suffix}"},
+    ).scalar_one()
     app_session.rollback()
     assert leaked == 0, f"{leaked} membership(s) exist in the foreign organization"
+    assert stranded == 0, "the refused bind left an identity behind"
 
 
 def test_the_standing_check_needs_admin_users_not_merely_membership(
@@ -508,3 +541,190 @@ def test_the_standing_check_needs_admin_users_not_merely_membership(
         )
     app_session.rollback()
     assert "not permitted" in str(caught.value).lower()
+
+
+def test_admin_users_in_one_organization_does_not_carry_into_another(
+    app_session: Session, owner_session: Session, tenants: _Tenants
+) -> None:
+    """🔴 THE SHARPEST CASE, AND THE ONE A WEAKER CHECK WOULD PASS.
+
+    A person who is an active member of BOTH organizations, holding
+    `admin.users` in A and an ordinary role in B, must NOT be able to bind
+    members into B.
+
+    A check that confirmed *membership* would admit them: they really are a
+    member of B. A check that asked "does this user hold admin.users
+    anywhere" would admit them too. Only a check that asks what they hold **in
+    the session's organization** refuses — which is what
+    `core.authorization_for_current_session()` answers, because it joins
+    through `core.organization_members` on the GUC's organization.
+
+    Neither of the other two standing tests covers this: one uses a
+    non-member, the other a member with no role at all. Both would keep
+    passing against a weaker check. This one would not.
+    """
+    admin_role = owner_session.execute(
+        text(
+            """
+            SELECT r.id FROM core.roles r
+            JOIN core.role_permissions rp ON rp.role_id = r.id
+            JOIN core.permissions p       ON p.id = rp.permission_id
+            WHERE p.code = 'admin.users' LIMIT 1
+            """
+        )
+    ).scalar_one()
+    plain_role = owner_session.execute(
+        text(
+            """
+            SELECT r.id FROM core.roles r
+            WHERE r.id <> :admin
+              AND NOT EXISTS (
+                  SELECT 1 FROM core.role_permissions rp
+                  JOIN core.permissions p ON p.id = rp.permission_id
+                  WHERE rp.role_id = r.id AND p.code = 'admin.users'
+              )
+            LIMIT 1
+            """
+        ),
+        {"admin": admin_role},
+    ).scalar_one()
+
+    dual = owner_session.execute(
+        text(
+            """
+            INSERT INTO core.users (keycloak_sub, email, display_name)
+            VALUES (:s, :e, 'member of both') RETURNING id
+            """
+        ),
+        {"s": f"i82-dual-{tenants.suffix}", "e": f"i82-dual-{tenants.suffix}@example.test"},
+    ).scalar_one()
+    for org, role in ((tenants.a, admin_role), (tenants.b, plain_role)):
+        member = owner_session.execute(
+            text(
+                """
+                INSERT INTO core.organization_members (organization_id, user_id)
+                VALUES (:o, :u) RETURNING id
+                """
+            ),
+            {"o": org, "u": dual},
+        ).scalar_one()
+        owner_session.execute(
+            text("INSERT INTO core.member_roles (member_id, role_id) VALUES (:m, :r)"),
+            {"m": member, "r": role},
+        )
+    owner_session.commit()
+
+    # Acting in B, where they are a member and NOT an administrator.
+    _scope(app_session, org=tenants.b, user=dual)
+    with pytest.raises(DatabaseError) as caught:
+        _bind(
+            app_session,
+            subject=f"i82-carry-{tenants.suffix}",
+            email=f"i82-carry-{tenants.suffix}@example.test",
+            name="should not be bindable by them",
+        )
+    app_session.rollback()
+    assert "not permitted" in str(caught.value).lower()
+
+    # ...and the same person IS accepted in A, so the refusal above is about
+    # the organization and not about them. Without this half the test would
+    # pass against a gate that refuses everyone.
+    _scope(app_session, org=tenants.a, user=dual)
+    row = _bind(
+        app_session,
+        subject=f"i82-ok-{tenants.suffix}",
+        email=f"i82-ok-{tenants.suffix}@example.test",
+        name="bound where they administer",
+    )
+    assert row.member_id is not None
+    app_session.rollback()
+
+
+def test_no_returned_value_repeats_across_rolled_back_binds(
+    app_session: Session, owner_session: Session, tenants: _Tenants
+) -> None:
+    """🔴 THE IDENTIFIER *WAS* THE EXISTENCE ANSWER (051).
+
+    050 removed `identity_created` because it told a caller, for free, whether
+    a Keycloak subject already existed somewhere on this platform. Codex,
+    reviewing 050, pointed out that removing the flag did not remove the
+    answer -- `user_id` carries it. Measured before it was believed:
+
+        BEGIN; SELECT user_id FROM core.bind_subject_to_organization(S,...);
+        ROLLBACK;                                                    -- twice
+
+        subject that exists in another tenant : e55fea29  e55fea29   SAME
+        subject that exists nowhere           : 6e0e24e8  22231d7c   DIFFER
+
+    An existing identity is SELECTed, so its uuid repeats; a new one is minted
+    per attempt, so it does not. Nothing is left behind either way. That is
+    I83's oracle with a different column name, inside the migration that
+    claimed to have removed it.
+
+    ⚠️ THIS TESTS THE PROPERTY, NOT THE SHAPE. `test_044...returns_only_ids`
+    names the permitted column and would catch `user_id` coming back under its
+    own name. It would not catch a differently named column carrying the same
+    bit, nor a `member_id` made deterministic from the subject. The property
+    is what actually matters: **no value this function returns may repeat
+    across rolled-back attempts**, because any value that does is the answer.
+    """
+
+    def bind_twice(subject: str) -> list[dict[str, object]]:
+        seen = []
+        for _ in range(2):
+            _scope(app_session, org=tenants.a, user=tenants.admin)
+            row = _bind(
+                app_session,
+                subject=subject,
+                email=f"{uuid.uuid4().hex[:8]}@example.test",
+                name="probe",
+            )
+            seen.append(dict(row._mapping))
+            app_session.rollback()
+        return seen
+
+    # A subject that exists ONLY in the other tenant. Nothing about it is this
+    # administrator's business -- not even whether it exists.
+    foreign_sub = f"i82-foreign-{tenants.suffix}"
+    foreign_user = owner_session.execute(
+        text(
+            "INSERT INTO core.users (keycloak_sub, email, display_name)"
+            " VALUES (:s, :e, 'exists only in B') RETURNING id"
+        ),
+        {"s": foreign_sub, "e": f"{foreign_sub}@example.test"},
+    ).scalar_one()
+    owner_session.execute(
+        text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o, :u)"),
+        {"o": tenants.b, "u": foreign_user},
+    )
+    owner_session.commit()
+
+    existing = bind_twice(foreign_sub)
+    absent = bind_twice(f"i82-nobody-{tenants.suffix}")
+
+    for column in existing[0]:
+        assert existing[0][column] != existing[1][column], (
+            f"core.bind_subject_to_organization returned the same {column!r} "
+            "from two rolled-back binds of a subject that exists in ANOTHER "
+            "tenant. A value that repeats is the answer to 'does this subject "
+            "already exist', it costs nothing, and it leaves no trace -- which "
+            "is the oracle I83 was closed by DROPPING rather than renaming."
+        )
+    # The control half. Without it a function that returned a constant, or
+    # nothing at all, would satisfy the loop above while being useless.
+    for column in absent[0]:
+        assert absent[0][column] != absent[1][column], (
+            f"two binds of a brand-new subject returned the same {column!r}"
+        )
+    assert set(existing[0]) == {"member_id"}, (
+        f"the bind returned {sorted(existing[0])}; only the membership it created may come back"
+    )
+
+    # And nothing survived the probing -- the reason the oracle was free.
+    assert (
+        owner_session.execute(
+            text("SELECT count(*) FROM core.users WHERE keycloak_sub = :s"),
+            {"s": f"i82-nobody-{tenants.suffix}"},
+        ).scalar_one()
+        == 0
+    )

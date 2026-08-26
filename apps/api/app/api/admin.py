@@ -23,7 +23,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
@@ -179,6 +179,37 @@ def list_members(
     return [MemberRead(**r) for r in rows]
 
 
+def _standing_refusal(exc: DBAPIError) -> HTTPException | None:
+    """A 403 for the database's own refusal, which is not an IntegrityError.
+
+    🔴 MIGRATION 050's STANDING CHECK ESCAPED AS A 500.
+
+    It raises `insufficient_privilege` (SQLSTATE 42501), which psycopg surfaces
+    as `ProgrammingError` -- a sibling of `IntegrityError`, not a subclass. The
+    route caught only `IntegrityError` and no exception handler is registered
+    on the app, so the refusal left as a 500 carrying a driver message. Raised
+    by the Supervisor; measured before it was believed.
+
+    ⚠️ THE PATH IS NARROW AND REAL. `require_permission("admin.users")` already
+    guards this route, so reaching the database check means the two disagree:
+    the caller's membership or role was revoked between `get_principal` and
+    this write. That immediate-revocation window is the reason 048's function
+    exists, so answering it with a 500 defeats the point of checking twice.
+
+    Returns None for anything else, so an unrelated database fault keeps its
+    own handling rather than being relabelled a permission problem.
+    """
+    if getattr(exc.orig, "sqlstate", None) != "42501":
+        return None
+    # Deliberately does not repeat the database's message: it says "not
+    # permitted to bind members in this organization", and which of membership
+    # or permission is missing is not the caller's business (050).
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="not permitted to add members to this organization",
+    )
+
+
 def _bind_conflict(exc: IntegrityError) -> HTTPException:
     """Translate an integrity failure from the bind into an honest 409.
 
@@ -210,11 +241,18 @@ def _bind_conflict(exc: IntegrityError) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail="another active member of this organization already uses that email address",
         )
-    # Unknown. Generic on purpose: the driver message names tables and
-    # columns, and asserting a specific outcome here would be a report of
-    # something nobody checked.
+    # 🔴 UNKNOWN MEANS UNKNOWN, AND 409 IS NOT "UNKNOWN".
+    #
+    # This returned a 409 for anything it could not name -- a NOT NULL, CHECK
+    # or FK violation raised inside the definer, or a second
+    # `users_keycloak_sub_key` on the retry. A 409 tells the client the request
+    # conflicts with existing state and that changing it will help. None of
+    # those are that: they are server-side faults or contention, and the client
+    # can do nothing about them. Raised by the Supervisor, against this
+    # function's own docstring rule -- report the RESULT, not a guess -- which
+    # I applied to the message and not to the status code.
     return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="the membership could not be created",
     )
 
@@ -270,7 +308,7 @@ def invite_member(
             bound = session.execute(
                 text(
                     """
-                    SELECT user_id, member_id
+                    SELECT member_id
                     FROM core.bind_subject_to_organization(:sub, :email, :name)
                     """
                 ),
@@ -280,7 +318,18 @@ def invite_member(
                     "name": payload.display_name,
                 },
             ).one()
-    except IntegrityError as exc:
+    except DBAPIError as exc:
+        # 🔴 THE DATABASE'S OWN REFUSAL IS NOT AN INTEGRITY ERROR.
+        # 050's standing check raises SQLSTATE 42501, which arrives as
+        # `ProgrammingError` -- a sibling of `IntegrityError`, not a
+        # subclass -- so this handler never saw it and it left as a 500.
+        refusal = _standing_refusal(exc)
+        if refusal is not None:
+            raise refusal from exc
+        if not isinstance(exc, IntegrityError):
+            # Anything else is a genuine database fault. Re-raise rather
+            # than describe it: the handling below is about constraints.
+            raise
         # 🔴 THREE DIFFERENT REFUSALS ARRIVE HERE, AND TWO OF THEM WOULD BE
         # DESCRIBED WRONGLY BY THE THIRD'S MESSAGE.
         #
@@ -318,7 +367,7 @@ def invite_member(
                     bound = session.execute(
                         text(
                             """
-                            SELECT user_id, member_id
+                            SELECT member_id
                             FROM core.bind_subject_to_organization(:sub, :email, :name)
                             """
                         ),
@@ -328,7 +377,14 @@ def invite_member(
                             "name": payload.display_name,
                         },
                     ).one()
-            except IntegrityError as retry_exc:
+            except DBAPIError as retry_exc:
+                # The standing check can refuse HERE too -- a revocation
+                # that lands between the first attempt and the retry.
+                refusal = _standing_refusal(retry_exc)
+                if refusal is not None:
+                    raise refusal from retry_exc
+                if not isinstance(retry_exc, IntegrityError):
+                    raise
                 raise _bind_conflict(retry_exc) from retry_exc
         else:
             # ONE classifier, here and on the retry. The address-collision case
@@ -337,8 +393,26 @@ def invite_member(
             # history is a list of what happens when they drift.
             raise _bind_conflict(exc) from exc
 
-    user_id = bound.user_id
     member_id = bound.member_id
+
+    # 🔴 THE USER IS RESOLVED THROUGH THE MEMBERSHIP, NOT HANDED BACK BY THE
+    # DEFINER — BECAUSE THE IDENTIFIER *WAS* THE EXISTENCE ANSWER (051).
+    #
+    # 050 removed `identity_created` for answering "does this subject already
+    # exist somewhere on this platform" at no cost. Codex showed the answer had
+    # simply moved into `user_id`, and it measures: two rolled-back binds
+    # return the SAME uuid when the subject exists in another tenant and
+    # DIFFERENT uuids when it does not.
+    #
+    # `member_id` is minted by this call, so it is fresh in both branches. This
+    # read is governed by 044's policy rather than by a definer: the membership
+    # was created in THIS transaction and in THIS organization, so the policy
+    # matches — and if a later change breaks that, this raises instead of
+    # quietly falling back, which is the failure the block below describes.
+    user_id = session.execute(
+        text("SELECT user_id FROM core.organization_members WHERE id = :mid"),
+        {"mid": member_id},
+    ).scalar_one()
     # ⚠️ `identity_created` IS NO LONGER SELECTED. Migration 050 removed it:
     # it was a cross-tenant existence bit that nothing here read, and the
     # "cost" said to excuse it -- a membership row and an audit record -- can

@@ -113,3 +113,20 @@ def downgrade() -> None:
             " TO evercoat_app"
         )
     )
+    # ⚠️ `DROP FUNCTION` DISCARDS THE COMMENT. `h1000` describes a schema in
+    # which this function carries 049's, so restoring the body without it
+    # leaves the description false in a way nothing would notice. Raised by the
+    # Supervisor, which also pointed out this diff had just made the same
+    # argument about `RESET search_path` and stopped one step short.
+    op.execute(
+        text(
+            "COMMENT ON FUNCTION core.bind_subject_to_organization(TEXT, TEXT, TEXT) IS "
+            "'Resolve a Keycloak subject and bind it to the CURRENT SESSION''s "
+            "organization, atomically, returning the identifiers only after the "
+            "membership exists (I82). ⚠️ THIS REVISION''s VERSION PROVES NOTHING "
+            "ABOUT THE CALLER: a forged app.current_org drives an RLS-free "
+            "membership write into another tenant, and identity_created answers "
+            "a cross-tenant existence question for free. Both measured -- see "
+            "i1000, which is why you should not be here.'"
+        )
+    )

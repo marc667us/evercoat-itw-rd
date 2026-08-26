@@ -583,15 +583,23 @@ def test_the_feature_survives_the_oracle_being_removed(app_engine, two_orgs_two_
         row = conn.execute(
             text(
                 """
-                SELECT user_id, member_id
+                SELECT member_id
                   FROM core.bind_subject_to_organization(:s, :e, :n)
                 """
             ),
             {"s": f["sub_b"], "e": "rebind-b@example.test", "n": "B, invited into A"},
         ).one()
+        # 051: the function no longer hands back the identity -- the uuid it
+        # used to return WAS the "does this subject already exist" answer. The
+        # membership is what it returns, and the identity is resolved through
+        # it, which is exactly what the route now does.
+        bound_user = conn.execute(
+            text("SELECT user_id FROM core.organization_members WHERE id = :m"),
+            {"m": row.member_id},
+        ).scalar_one()
         conn.rollback()
 
-    assert row.user_id == f["user_b"], (
+    assert bound_user == f["user_b"], (
         "an administrator in organization A could not bind a human who already "
         "has an identity in organization B. 044 has closed a disclosure by "
         "deleting a feature, which is exactly what this test exists to prevent."
@@ -631,6 +639,20 @@ def test_the_replacement_returns_an_identifier_and_never_a_record(owner_session)
         f"core.bind_subject_to_organization returns {result!r}. It is SECURITY "
         "DEFINER and therefore outside RLS; it may return identifiers and a "
         "flag, never a record. Anything wider is a cross-tenant read channel."
+    )
+    # 🔴 AND THE TYPE WAS NEVER THE POINT — THE COLUMN WAS (051).
+    #
+    # `{"uuid"}` was satisfied by `user_id`, and `user_id` is the existence
+    # oracle: the same uuid comes back from repeated ROLLED-BACK binds when the
+    # subject already exists elsewhere, a different one each time when it does
+    # not. Measured. A test that only bounds the TYPE cannot say which
+    # question the value answers, so this names the column.
+    columns = [c.strip().split()[0] for c in normalised.split(",")]
+    assert columns == ["member_id"], (
+        f"core.bind_subject_to_organization returns {result!r}. It may return "
+        "the membership it created and nothing else. `user_id` in particular "
+        "is a free, traceless cross-tenant existence answer -- 050 removed "
+        "`identity_created` for exactly that and left the uuid carrying it."
     )
 
 
