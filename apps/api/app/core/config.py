@@ -147,22 +147,36 @@ class Settings(BaseSettings):
     # --- Security -------------------------------------------------------
     cors_allowed_origins: list[str] = Field(default_factory=list)
 
-    @field_validator("database_url")
+    @field_validator("database_url", "auth_database_url")
     @classmethod
-    def _reject_superuser(cls, v: str) -> str:
+    def _reject_superuser(cls, v: str | None) -> str | None:
         """Refuse to start as a database superuser.
 
         Superuser bypasses Row Level Security. Running the application as
         one hides exactly the defects RLS exists to catch, and they would
         only surface in production (ADR-017). This is a cheap guard
         against a mistake that is expensive and silent.
+
+        🔴 IT COVERS THE SIGN-IN URL TOO, AND THAT ONE MATTERS MORE.
+
+        `auth_database_url` was added for I109 without this validator -- a
+        deviation from an established guard in the same class, found in review.
+        The sign-in pool NEVER sets a tenant GUC, because it answers before an
+        organization is chosen, so a superuser there is not merely exempt from
+        RLS: it is exempt from RLS on a connection that has no tenant to be
+        scoped to in the first place. `/health/ready` reports such a
+        connection as not ready, but reporting is not refusing, and the
+        cheaper guard is not to start.
         """
+        if v is None:
+            return v
         lowered = v.lower()
         for forbidden in ("://postgres:", "://postgres@", "user=postgres"):
             if forbidden in lowered:
                 raise ValueError(
                     "the application must not connect as a database superuser; "
-                    "use the evercoat_app role, which is subject to FORCE RLS"
+                    "use the evercoat_app role for DATABASE_URL and the "
+                    "evercoat_auth role for AUTH_DATABASE_URL"
                 )
         return v
 
