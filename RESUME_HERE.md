@@ -1,5 +1,45 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION 2026-08-26 (part 2) — I105 CLOSED
+
+Migration **048 (`g1000`)**, **ADR-030**. API suite **750 / 0 / 11**; ruff,
+format, mypy clean.
+
+**I105 is closed.** `core.authorization_for_current_session()` derives the
+caller's roles AND permissions from the same two GUCs RLS reads, and
+`AgentPrincipal.authorize()` replaces both sets with its answer. The gate and
+the rows can no longer disagree about who is asking.
+
+🔴 **It is not the design ADR-029 rejected**: that rejection was about a
+definer that WRITES (the write fires ADR-028's guards as owner and reopens
+I83). This one is `STABLE` with a single-SELECT body and takes **zero
+arguments** — no write to start the chain, no parameter to aim it with.
+
+### ⚠️ WHAT IS STILL OWED
+
+**The I56/I58 FORCE cutover's effect on this function is UNMEASURED.** The
+test was written and withdrawn — `ALTER TABLE ... FORCE` needs ACCESS
+EXCLUSIVE on six shared `core` tables and hangs against a live API pool
+(`lock_timeout` and fixture rollback both insufficient; killed at 120s;
+reproduced independently). Measure it **during** the cutover, when those
+tables are being altered anyway.
+
+### ▶▶ NEXT — I82
+
+`core.user_id_for_subject(TEXT)` hands out a uuid for an arbitrary subject —
+**the oracle shape ADR-030 deliberately avoided by taking no arguments.**
+🔴 Its original fix is REJECTED on evidence (ADR-029). ⚠️ **But re-measure
+that rejection before designing around it:** ADR-029's mechanism was a
+definer's WRITE firing ADR-028's guards as owner, and **047 then made both
+guards scope-explicit**, which may have removed the reason. Measure it; do not
+assume in either direction.
+
+Then: I76/I77 · I56/I58 (with the owed measurement above) · I78 · I101 ·
+**D1 on/after 2026-09-01** — do NOT delete `autoworkshop-postgres` early.
+
+---
+
+
 ## ▶▶ SESSION 2026-08-26 — I104 CLOSED, INTELLIGENCE SHIPPED, I105 RAISED
 
 Tip **`2d343c3`** on `master`, pushed, tree clean, 0 ahead / 0 behind,

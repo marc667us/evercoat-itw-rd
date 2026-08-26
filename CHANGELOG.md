@@ -1,5 +1,77 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-26 (part 2) — I105: the gate now consults the database, not the caller
+
+**Migration 048 (`g1000`), ADR-030.** API suite **750 passed / 0 failed / 11
+skipped**; ruff, ruff format, mypy clean.
+
+I104 made the agent tier's IDENTITY checkable. Codex named the half it left:
+
+> `bind()` validates only organization and user; it never validates roles or
+> permissions. A forged principal using the real session identity therefore
+> passes `bind()` while claiming arbitrary authorization.
+
+`core.authorization_for_current_session()` returns the caller's role codes and
+permission codes from `core.current_user_id()` / `core.current_org_id()` — the
+same two GUCs every RLS policy reads — and `authorize()` **replaces** both
+sets with its answer. The gate and the rows are derived from one source and
+can no longer disagree about who is asking.
+
+### 🔴 Not the design ADR-029 rejected, and the difference is the write
+
+ADR-029 rejected a definer for I82 because a definer that WRITES fires
+ADR-028's address guards, which inside a definer run as the table owner and
+reopen I83's oracle. Every step of that chain begins with a write. This
+function is `STABLE` with a single-SELECT body, so no trigger can fire, and it
+takes **zero arguments** — which is what separates a lookup from an oracle.
+Both facts are read from `pg_proc` by tests, not asserted in comments. Codex
+confirmed it independently: *"the rejected chain required a write and trigger
+execution; this function has neither."*
+
+### 🔴 I fixed half of the sentence I quoted
+
+The first draft derived permissions and copied `roles` straight through — half
+of *"never validates roles or permissions"*, which I had quoted in the
+migration header. Roles are not decorative:
+`app/domains/tasks/service.py` matches unclaimed work with
+`t.assigned_role = ANY(:roles)` and MSD feeds the caller's codes into it, so a
+forged principal with the real identity and an invented role would have
+surfaced tasks addressed to a role that person does not hold. Raised by Codex.
+
+### The two reviewers found nine things between them, and neither found the other's
+
+**Codex:** the roles half; a test that checked only `provolatile='s'` (which
+PostgreSQL *trusts*, and is not transitive); an ordering test that searched
+`ast.dump()` — **which includes docstrings**, and every conductor now discusses
+`authorize()` in prose, so a conductor could delete the call and still pass;
+a `search_path` assertion that would have accepted `public`; and `verified`
+described as stronger than a boolean can be.
+
+**Supervisor:** the `roles` half had **no database coverage at all** —
+`_perms()` read only `a.permissions`, so changing the aggregate to
+`mr.role_id::text` left everything green while MSD matched on values
+`assigned_role` never holds; a test that **committed to shared seeded data**
+against conftest's no-residue contract; four live references to a function
+name `pg_proc` has never held; a module docstring still explaining a deleted
+method; a **dead** `_ExplodingSession` the file docstring still credited as
+its enforcing mechanism; `_call_positions` taking the first `ast.walk` match
+(**breadth-first, not source order**) and descending into nested defs; and
+`REVOKE ALL … FROM PUBLIC` asserted by nothing, while PUBLIC EXECUTE is the
+default — I81's *"assert the privilege, not the SQL"*, one object type over.
+
+### ⚠️ One thing attempted and withdrawn
+
+Codex asked that the I56/I58 cutover be pre-empted with a real FORCE-RLS
+measurement rather than a warning. It was written and it **hangs**:
+`ALTER TABLE ... FORCE` takes ACCESS EXCLUSIVE on six shared `core` tables and
+a live API pool holds them — `lock_timeout` and fixture rollback were both
+insufficient, and the run had to be killed at 120s. The Supervisor reproduced
+it with pids and added that a hard kill would leave FORCE on. **A suite-hanging
+test is worse than a documented gap**, so it is withdrawn with the attempt and
+the reason written into the test file. The measurement is still owed, and its
+home is the cutover itself.
+
+
 ## 2026-08-26 — the orchestrator stopped trusting its arguments, and Intelligence got a screen
 
 No migration. **Pushed at `e8cd7fd`; CI 6/6 green** (run 32982603290 — Auth,

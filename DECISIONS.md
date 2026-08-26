@@ -366,6 +366,71 @@ false, because a comment claiming INVOKER proves nothing.
 
 ---
 
+### ADR-030 — the agent tier's authorization is derived from the session, not carried into it · Accepted 2026-08-26
+
+**Closes I105.** Implemented by migration 048 (`g1000`).
+
+**Context.** I104 replaced the orchestrator's loose `permissions` / `user_id`
+arguments with an `AgentPrincipal` and made `bind()` check the session's RLS
+GUCs. Codex named what that left open, exactly:
+
+> `bind()` validates only organization and user; it never validates roles or
+> permissions. A forged principal using the real session identity therefore
+> passes `bind()` while claiming arbitrary authorization.
+
+**Decision.** `core.authorization_for_current_session()` returns the role codes
+and permission codes for `core.current_user_id()` / `core.current_org_id()` —
+the same two GUCs every RLS policy reads — and `AgentPrincipal.authorize()`
+**replaces** both sets with its answer. The gate and the rows are now derived
+from one source and cannot disagree about who is asking.
+
+🔴 **THIS IS NOT THE DESIGN ADR-029 REJECTED, AND THE DIFFERENCE IS THE WRITE.**
+ADR-029 rejected a definer for I82 because a definer that WRITES fires
+ADR-028's address guards, which inside a definer run as the table owner —
+bypassing RLS while FORCE is off, so the guard refuses on another tenant's row
+and the refusal discloses that the address exists. Every step of that chain
+begins with a write. This function is `STABLE` and its body is one SELECT, so
+no trigger can fire; and it takes **zero arguments**, which is what separates a
+lookup from an oracle — there is no parameter with which to aim it at a
+victim. `core.user_id_for_subject(TEXT)` has one, and that is still I82.
+Codex confirmed the reasoning independently: *"the rejected chain required a
+write and trigger execution; this function has neither."*
+
+**DERIVE, NOT COMPARE.** Comparing the claimed set against the database would
+also refuse a forgery — and would additionally refuse a legitimate caller
+whose membership changed mid-request, reading revocation as an attack.
+`get_principal` already says a JWT *"is not a current statement about
+authorization"*; the same is true of a set computed milliseconds earlier. A
+test deactivates a purpose-built membership and proves it stops granting.
+
+🔴 **ROLES, NOT ONLY PERMISSIONS — the first draft fixed half the sentence.**
+It derived permissions and copied `roles` through. Roles are not decorative:
+`app/domains/tasks/service.py` matches unclaimed work with
+`t.assigned_role = ANY(:roles)` and MSD feeds the caller's codes into it, so a
+forged principal with the real identity and an invented role would have
+surfaced tasks addressed to a role that person does not hold. Raised by Codex
+against the very sentence quoted above.
+
+⚠️ **`verified` IS A MISUSE DETECTOR, NOT AN UNFORGEABLE PROPERTY.**
+`require()` refuses an unverified principal so that a conductor which forgets
+`authorize()` fails loudly rather than silently gating on a claim — necessary,
+because for a legitimate caller the two sets are identical and such a
+conductor would pass every ordinary test. But it is an ordinary boolean and
+`object.__setattr__` can set it. The real boundary is that every conductor
+calls `authorize()` unconditionally, read from the call graph by a test.
+
+⚠️ **WHAT IS STILL OWED.** The I56/I58 FORCE cutover's effect on this function
+is **not measured**. The test was written and withdrawn: `ALTER TABLE ... FORCE`
+needs ACCESS EXCLUSIVE on six shared `core` tables, and against a live API pool
+it hung past 120s with `lock_timeout` and fixture rollback both insufficient —
+independently reproduced by the Supervisor, which added that a hard kill in the
+window after the commit would leave FORCE on. A suite-hanging test is worse
+than a documented gap. The expectation — that it degrades to "what the caller
+can see" because it reads the same GUCs the policies do — is an expectation,
+and is not recorded as anything more.
+
+---
+
 ### ADR-029 — an authentication identifier is not a readable column, and a guard's tenant scope must be its own predicate · Accepted 2026-08-25
 
 **Closes I81.** Hardens ADR-028's rename guard. Implemented by migration 047 (`f2000`).
