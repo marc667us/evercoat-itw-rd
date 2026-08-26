@@ -92,14 +92,36 @@ def tenants(owner_session: Session, app_session: Session) -> Iterator[_Tenants]:
         ),
         {"s": f"i82-admin-{sfx}", "e": f"i82-admin-{sfx}@example.test"},
     ).scalar_one()
-    owner_session.execute(
+    member_id = owner_session.execute(
         text(
             """
             INSERT INTO core.organization_members (organization_id, user_id)
-            VALUES (:o, :u)
+            VALUES (:o, :u) RETURNING id
             """
         ),
         {"o": orgs[0], "u": admin_id},
+    ).scalar_one()
+    # 🔴 A REAL ROLE CARRYING `admin.users`, BECAUSE 050 NOW DEMANDS IT.
+    #
+    # `bind_subject_to_organization` asks
+    # `core.authorization_for_current_session()` whether this session's user
+    # may administer this session's organization -- the check that closed the
+    # forged-GUC cross-tenant write. A fixture whose actor holds nothing would
+    # make every test here fail at that gate, which is the correct behaviour
+    # and would prove nothing about the rest of the function.
+    role_id = owner_session.execute(
+        text(
+            """
+            SELECT r.id FROM core.roles r
+            JOIN core.role_permissions rp ON rp.role_id = r.id
+            JOIN core.permissions p       ON p.id = rp.permission_id
+            WHERE p.code = 'admin.users' LIMIT 1
+            """
+        )
+    ).scalar_one()
+    owner_session.execute(
+        text("INSERT INTO core.member_roles (member_id, role_id) VALUES (:m, :r)"),
+        {"m": member_id, "r": role_id},
     )
     owner_session.commit()
 
@@ -143,7 +165,7 @@ def _bind(session: Session, *, subject: str, email: str, name: str):
     return session.execute(
         text(
             """
-            SELECT user_id, member_id, identity_created
+            SELECT user_id, member_id
             FROM core.bind_subject_to_organization(:s, :e, :n)
             """
         ),
@@ -188,7 +210,6 @@ def test_a_new_subject_is_created_and_bound_in_one_call(
     sub = f"i82-new-{tenants.suffix}"
     row = _bind(app_session, subject=sub, email=f"{sub}@example.test", name="Newcomer")
 
-    assert row.identity_created is True
     assert row.user_id is not None
     assert row.member_id is not None
 
@@ -274,7 +295,7 @@ def test_it_is_a_definer_owned_by_a_non_superuser(owner_session: Session) -> Non
         text(
             """
             SELECT pg_get_userbyid(p.proowner) AS owner, p.prosecdef, p.proconfig,
-                   r.rolsuper
+                   r.rolsuper, r.rolbypassrls
             FROM pg_proc p
             JOIN pg_namespace n ON n.oid = p.pronamespace
             JOIN pg_roles r     ON r.oid = p.proowner
@@ -284,6 +305,12 @@ def test_it_is_a_definer_owned_by_a_non_superuser(owner_session: Session) -> Non
     ).one()
     assert row.owner == "evercoat_owner", f"owner is {row.owner!r}"
     assert row.rolsuper is False, f"the owner {row.owner!r} is a SUPERUSER"
+    # BOTH halves: `rolbypassrls` is not implied by `NOT rolsuper`, and a grep
+    # across the test tree found ZERO assertions on it after 049's rewrite.
+    assert row.rolbypassrls is False, (
+        f"the owner {row.owner!r} has BYPASSRLS -- outside RLS permanently, "
+        "including after the I56/I58 cutover"
+    )
     assert row.prosecdef is True, "not SECURITY DEFINER"
     assert "search_path=core, pg_temp" in (row.proconfig or []), (
         f"search_path is {row.proconfig!r}, not the pinned 'core, pg_temp'"
@@ -379,3 +406,105 @@ def test_a_definer_write_does_not_widen_the_address_guards(
 
     assert row.user_id is not None, "the bind produced no identity"
     app_session.rollback()
+
+
+def test_a_forged_organization_guc_cannot_drive_a_cross_tenant_write(
+    app_session: Session, tenants: _Tenants
+) -> None:
+    """🔴 049 GRANTED A CROSS-TENANT WRITE. THIS IS THE REGRESSION TEST IT LACKED.
+
+    The bind is SECURITY DEFINER, so its INSERT runs as `evercoat_owner` and
+    RLS does not apply. 049 took the organization from `app.current_org` and
+    stopped there — and a GUC is caller-settable by `evercoat_app`. Measured
+    before 050: an actor who is an active member of organization A ONLY, with
+    the GUC pointed at organization B, **successfully created a membership in
+    B**. Before 049 the route did that INSERT itself, where
+    `org_member_isolation` refused it. So 049 moved a write out from under RLS.
+
+    Raised by Codex. *A cross-tenant WRITE, granted by accident, inside the
+    change that removes a cross-tenant READ* — which 049's own header quotes
+    from ADR-029 and then reproduced.
+
+    050 makes the function PROVE the caller's standing:
+    `core.authorization_for_current_session()` returns nothing for a user who
+    is not an active member of the session's organization, so the forgery
+    fails on itself.
+
+    ⚠️ AND IT HAD NO TEST UNTIL NOW. The fix was verified by a throwaway probe
+    and the suite would not have noticed it being reverted — which is the
+    shape this file is otherwise full of warnings about.
+    """
+    # The fixture's actor administers organization A. Point the GUC at B,
+    # where they are not a member at all.
+    _scope(app_session, org=tenants.b, user=tenants.admin)
+
+    with pytest.raises(DatabaseError) as caught:
+        _bind(
+            app_session,
+            subject=f"i82-cross-{tenants.suffix}",
+            email=f"i82-cross-{tenants.suffix}@example.test",
+            name="cross-tenant attempt",
+        )
+    app_session.rollback()
+
+    assert "not permitted" in str(caught.value).lower(), (
+        f"the bind refused for the wrong reason: {caught.value}. It must be "
+        "the standing check, not an incidental constraint — otherwise this "
+        "test would keep passing after the check was removed."
+    )
+
+    # And nothing was written into the other tenant.
+    leaked = app_session.execute(
+        text("SELECT count(*) FROM core.organization_members WHERE organization_id = :o"),
+        {"o": tenants.b},
+    ).scalar_one()
+    app_session.rollback()
+    assert leaked == 0, f"{leaked} membership(s) exist in the foreign organization"
+
+
+def test_the_standing_check_needs_admin_users_not_merely_membership(
+    app_session: Session, owner_session: Session, tenants: _Tenants
+) -> None:
+    """Membership alone is not authority.
+
+    A user who genuinely belongs to the organization but holds no
+    `admin.users` must still be refused — otherwise the check would be
+    "are you here", which every member passes, rather than "may you do this".
+
+    That distinction is the whole reason 050 asks
+    `core.authorization_for_current_session()` for the PERMISSION rather than
+    just confirming a membership row exists.
+    """
+    plain = owner_session.execute(
+        text(
+            """
+            INSERT INTO core.users (keycloak_sub, email, display_name)
+            VALUES (:s, :e, 'ordinary member') RETURNING id
+            """
+        ),
+        {
+            "s": f"i82-plain-{tenants.suffix}",
+            "e": f"i82-plain-{tenants.suffix}@example.test",
+        },
+    ).scalar_one()
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO core.organization_members (organization_id, user_id)
+            VALUES (:o, :u)
+            """
+        ),
+        {"o": tenants.a, "u": plain},
+    )
+    owner_session.commit()
+
+    _scope(app_session, org=tenants.a, user=plain)
+    with pytest.raises(DatabaseError) as caught:
+        _bind(
+            app_session,
+            subject=f"i82-byplain-{tenants.suffix}",
+            email=f"i82-byplain-{tenants.suffix}@example.test",
+            name="invited by a non-admin",
+        )
+    app_session.rollback()
+    assert "not permitted" in str(caught.value).lower()

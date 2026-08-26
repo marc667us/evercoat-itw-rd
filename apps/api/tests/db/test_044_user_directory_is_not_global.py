@@ -549,10 +549,41 @@ def test_the_feature_survives_the_oracle_being_removed(app_engine, two_orgs_two_
             text("SELECT set_config('app.current_user_id', :u, false)"),
             {"u": str(f["user_a"])},
         )
+        # 🔴 THE ACTOR MUST ACTUALLY ADMINISTER ORGANIZATION A (050).
+        #
+        # The bind proves the caller's standing via
+        # `core.authorization_for_current_session()` -- the check that closed
+        # the forged-GUC cross-tenant write. So this grants `user_a` a real
+        # role carrying `admin.users` inside the same transaction it then
+        # rolls back, rather than weakening the function to suit the test.
+        member_a = conn.execute(
+            text(
+                """
+                SELECT id FROM core.organization_members
+                 WHERE organization_id = :o AND user_id = :u
+                """
+            ),
+            {"o": f["org_a"], "u": f["user_a"]},
+        ).scalar_one()
+        role_admin = conn.execute(
+            text(
+                """
+                SELECT r.id FROM core.roles r
+                JOIN core.role_permissions rp ON rp.role_id = r.id
+                JOIN core.permissions p       ON p.id = rp.permission_id
+                WHERE p.code = 'admin.users' LIMIT 1
+                """
+            )
+        ).scalar_one()
+        conn.execute(
+            text("INSERT INTO core.member_roles (member_id, role_id) VALUES (:m, :r)"),
+            {"m": member_a, "r": role_admin},
+        )
+
         row = conn.execute(
             text(
                 """
-                SELECT user_id, member_id, identity_created
+                SELECT user_id, member_id
                   FROM core.bind_subject_to_organization(:s, :e, :n)
                 """
             ),
@@ -565,11 +596,13 @@ def test_the_feature_survives_the_oracle_being_removed(app_engine, two_orgs_two_
         "has an identity in organization B. 044 has closed a disclosure by "
         "deleting a feature, which is exactly what this test exists to prevent."
     )
-    assert row.identity_created is False, (
-        "a DUPLICATE identity was created for a subject that already exists. "
-        "`keycloak_sub` is globally unique and one human is one row; this is "
-        "the failure multi-organization membership is designed around."
-    )
+    # 🔴 THE NO-DUPLICATE PROPERTY IS ASSERTED ON THE UUID, NOT ON A FLAG.
+    #
+    # This used to read `identity_created is False`. Migration 050 removed
+    # that column: it was a cross-tenant existence bit with no consumer, and
+    # the "cost" said to excuse it could be rolled back. `row.user_id ==
+    # f["user_b"]` above already proves the stronger thing -- the EXISTING
+    # identity was reused rather than a second one minted for the same human.
     assert row.member_id is not None, "resolved an identity without binding it"
 
 
@@ -616,29 +649,63 @@ def test_the_replacement_runs_as_a_non_superuser_and_only_for_the_app(owner_sess
     passes while `evercoat_worker` or `evercoat_report` can. Assert the WHOLE
     access list.
     """
-    owner, secdef, config, acl = owner_session.execute(
+    row = owner_session.execute(
         text(
             """
-            SELECT pg_get_userbyid(p.proowner), p.prosecdef,
-                   COALESCE(array_to_string(p.proconfig, ','), ''),
-                   COALESCE(p.proacl::text[], ARRAY[]::text[])
-              FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            SELECT pg_get_userbyid(p.proowner) AS owner,
+                   p.prosecdef                 AS secdef,
+                   COALESCE(array_to_string(p.proconfig, ','), '') AS config,
+                   r.rolsuper                  AS is_super,
+                   r.rolbypassrls              AS bypasses_rls
+              FROM pg_proc p
+              JOIN pg_namespace n ON n.oid = p.pronamespace
+              JOIN pg_roles r     ON r.oid = p.proowner
              WHERE n.nspname = 'core' AND p.proname = 'bind_subject_to_organization'
             """
         )
     ).one()
 
-    assert owner == "evercoat_owner", f"owned by {owner!r}, not evercoat_owner"
-    assert secdef is True, "not SECURITY DEFINER; it cannot resolve across tenants"
-    assert "search_path=core, pg_temp" in config, f"search_path is {config!r}"
+    assert row.owner == "evercoat_owner", f"owned by {row.owner!r}, not evercoat_owner"
+    assert row.secdef is True, "not SECURITY DEFINER; it cannot resolve across tenants"
+    assert "search_path=core, pg_temp" in row.config, f"search_path is {row.config!r}"
 
-    grantees = {e.split("=")[0] for e in acl if "=" in e}
-    assert grantees <= {"evercoat_owner", "evercoat_app"}, (
-        f"EXECUTE is held by {sorted(grantees)}. Only the runtime role needs "
-        "it; `evercoat_worker` and `evercoat_report` binding memberships is "
-        "not a capability anything asked for."
+    # 🔴 BOTH HALVES. `rolbypassrls` IS NOT IMPLIED BY `NOT rolsuper`, and my
+    # first version of this test asserted only the superuser half -- so
+    # `ALTER ROLE evercoat_owner BYPASSRLS` would have put every SECURITY
+    # DEFINER in this database permanently outside RLS with the whole suite
+    # still green. Raised by the Supervisor: a grep for `rolbypassrls` across
+    # the test tree returned ZERO assertions after that rewrite. I56's shape,
+    # with the tripwire removed by the person redirecting the test.
+    assert row.is_super is False, f"the owner {row.owner!r} is a SUPERUSER"
+    assert row.bypasses_rls is False, (
+        f"the owner {row.owner!r} has BYPASSRLS, so this definer is outside "
+        "RLS permanently -- including after the I56/I58 FORCE cutover"
     )
-    assert not [e for e in acl if e.startswith("=")], f"PUBLIC can execute it: {acl}"
+
+    # 🔴 `has_function_privilege`, NOT `proacl` -- BECAUSE proacl LIES WHEN IT
+    # IS NULL.
+    #
+    # A NULL `proacl` means THE DEFAULT APPLIES, and the default for a
+    # function is EXECUTE to PUBLIC. My rewrite did
+    # `COALESCE(proacl, ARRAY[]::text[])`, so that exact state became `[]` and
+    # every assertion over it passed vacuously: a later migration recreating
+    # this function without the REVOKE/GRANT pair would leave PUBLIC able to
+    # execute a definer that writes memberships, and the test would be green.
+    #
+    # *A guard that passes when it cannot see is not a guard* -- mine, quoted
+    # back at me by the Supervisor. `has_function_privilege` answers correctly
+    # for a NULL ACL and follows role inheritance too.
+    fn = "core.bind_subject_to_organization(text,text,text)"
+    can = {
+        role: owner_session.execute(
+            text("SELECT has_function_privilege(:r, :f, 'EXECUTE')"), {"r": role, "f": fn}
+        ).scalar_one()
+        for role in ("public", "evercoat_app", "evercoat_worker", "evercoat_report")
+    }
+    assert can["public"] is False, "PUBLIC can execute a definer that writes memberships"
+    assert can["evercoat_app"] is True, "the runtime role cannot execute it; invites are dead"
+    assert can["evercoat_worker"] is False, "the worker can bind memberships"
+    assert can["evercoat_report"] is False, "the reporting role can bind memberships"
 
 
 def test_sign_in_still_works(app_engine, owner_session) -> None:

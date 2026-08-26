@@ -82,6 +82,16 @@ def downgrade() -> None:
             """
         )
     )
+    # ⚠️ AND REVERT 049's TWO `ALTER FUNCTION ... SET search_path` PINS.
+    # Raised by the Supervisor: without this, a database downgraded to g1000
+    # keeps 049's pins and comments, so the schema no longer matches what
+    # g1000 describes -- which is the argument this docstring already makes
+    # about the function itself, not honoured for these two objects. The pin
+    # is strictly safer, and that is not a reason for a downgrade to lie.
+    op.execute(
+        text("ALTER FUNCTION core.deny_duplicate_address_in_organization() RESET search_path")
+    )
+    op.execute(text("ALTER FUNCTION core.deny_address_collision_on_rename() RESET search_path"))
     op.execute(text("ALTER FUNCTION core.user_id_for_subject(TEXT) OWNER TO evercoat_owner"))
     op.execute(text("REVOKE ALL ON FUNCTION core.user_id_for_subject(TEXT) FROM PUBLIC"))
     op.execute(text("GRANT EXECUTE ON FUNCTION core.user_id_for_subject(TEXT) TO evercoat_app"))

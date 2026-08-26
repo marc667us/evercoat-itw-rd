@@ -179,6 +179,46 @@ def list_members(
     return [MemberRead(**r) for r in rows]
 
 
+def _bind_conflict(exc: IntegrityError) -> HTTPException:
+    """Translate an integrity failure from the bind into an honest 409.
+
+    🔴 AN UNKNOWN CONSTRAINT MUST NOT BE REPORTED AS A MEMBERSHIP.
+
+    This used to answer "user is already a member of this organization" for
+    ANYTHING whose constraint was not one of the two it named -- a NULL
+    constraint name, a NOT NULL or CHECK violation raised inside the definer,
+    the primary key, or whatever a later migration adds. An administrator
+    would be told a membership exists that does not. Raised by both
+    reviewers, and it is the same rule the audit record follows: report the
+    RESULT, not a guess at it.
+
+    The two named constraints are safe to name because both facts are already
+    visible to this caller -- `list_members` returns every member of their own
+    organization with their address -- so neither discloses anything across a
+    tenant boundary. That is the whole difference between these messages and
+    the GLOBAL constraint I83 removed.
+    """
+    constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+
+    if constraint == "organization_members_unique":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="user is already a member of this organization",
+        )
+    if constraint == "organization_members_one_address_per_organization":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="another active member of this organization already uses that email address",
+        )
+    # Unknown. Generic on purpose: the driver message names tables and
+    # columns, and asserting a specific outcome here would be a report of
+    # something nobody checked.
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="the membership could not be created",
+    )
+
+
 @router.post(
     "/members",
     response_model=MemberRead,
@@ -230,7 +270,7 @@ def invite_member(
             bound = session.execute(
                 text(
                     """
-                    SELECT user_id, member_id, identity_created
+                    SELECT user_id, member_id
                     FROM core.bind_subject_to_organization(:sub, :email, :name)
                     """
                 ),
@@ -255,44 +295,55 @@ def invite_member(
         # messages and the GLOBAL constraint I83 removed.
         constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
 
+        # 🔴 THE RETRY GETS ITS OWN HANDLER, BECAUSE IT CAN FAIL TOO.
+        #
+        # Raised by both reviewers, with the same concrete scenario: two
+        # administrators IN THE SAME ORGANIZATION invite the same brand-new
+        # subject. A wins. B hits `users_keycloak_sub_key`, retries, now
+        # resolves A's identity -- and the membership INSERT hits
+        # `organization_members_unique`. That exception is raised INSIDE this
+        # `except` block, so this `try` cannot catch it and it leaves the route
+        # as a 500. The code deleted from here handled it, because its
+        # membership INSERT had its own `try`.
+        #
+        # One bounded retry, and every outcome goes through the SAME
+        # classifier below.
         if constraint == "users_keycloak_sub_key":
             # The other administrator's transaction has COMMITTED by the time
             # this handler runs -- PostgreSQL raises a unique violation only
             # then; while it is in flight the INSERT blocks. So the identity
             # now exists and one retry through the same function binds it.
-            with guarded_write(session):
-                bound = session.execute(
-                    text(
-                        """
-                        SELECT user_id, member_id, identity_created
-                        FROM core.bind_subject_to_organization(:sub, :email, :name)
-                        """
-                    ),
-                    {
-                        "sub": payload.keycloak_sub,
-                        "email": payload.email,
-                        "name": payload.display_name,
-                    },
-                ).one()
-        elif constraint == "organization_members_one_address_per_organization":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "another active member of this organization already uses that email address"
-                ),
-            ) from exc
+            try:
+                with guarded_write(session):
+                    bound = session.execute(
+                        text(
+                            """
+                            SELECT user_id, member_id
+                            FROM core.bind_subject_to_organization(:sub, :email, :name)
+                            """
+                        ),
+                        {
+                            "sub": payload.keycloak_sub,
+                            "email": payload.email,
+                            "name": payload.display_name,
+                        },
+                    ).one()
+            except IntegrityError as retry_exc:
+                raise _bind_conflict(retry_exc) from retry_exc
         else:
-            # `organization_members_unique`, and anything a later migration
-            # adds. DEFENSIVE, not dead: an unexpected integrity failure must
-            # answer something rather than 500, and the detail stays generic
-            # because the driver message names tables and columns.
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="user is already a member of this organization",
-            ) from exc
+            # ONE classifier, here and on the retry. The address-collision case
+            # used to be spelled out again at this level; two copies of a
+            # message is two things to keep in agreement, and this file's own
+            # history is a list of what happens when they drift.
+            raise _bind_conflict(exc) from exc
 
     user_id = bound.user_id
     member_id = bound.member_id
+    # ⚠️ `identity_created` IS NO LONGER SELECTED. Migration 050 removed it:
+    # it was a cross-tenant existence bit that nothing here read, and the
+    # "cost" said to excuse it -- a membership row and an audit record -- can
+    # be rolled back, so it was never a cost. Both reviewers found it; the
+    # rollback was then measured.
 
     for role_code in payload.roles:
         _grant_role(session, member_id, role_code)

@@ -230,40 +230,74 @@ def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: S
     """
     suffix = uuid.uuid4().hex[:8]
     subject = f"i81-signin-{suffix}"
-    owner_session.execute(
+    org_id = owner_session.execute(
+        text(
+            "INSERT INTO core.organizations (code, name)"
+            " VALUES (:c, 'I81 sign-in probe org') RETURNING id"
+        ),
+        {"c": f"I81S-{suffix}"},
+    ).scalar_one()
+    user_id = owner_session.execute(
         text(
             "INSERT INTO core.users (keycloak_sub, email, display_name)"
-            " VALUES (:s, :e, 'I81 sign-in probe')"
+            " VALUES (:s, :e, 'I81 sign-in probe') RETURNING id"
         ),
         {"s": subject, "e": f"signin-{suffix}@example.test"},
+    ).scalar_one()
+    # An ACTIVE membership, so both functions have something to find. Without
+    # it the assertions below could only ever be negative — see the comment
+    # where they are made.
+    owner_session.execute(
+        text(
+            "INSERT INTO core.organization_members (organization_id, user_id, status)"
+            " VALUES (:o, :u, 'active')"
+        ),
+        {"o": org_id, "u": user_id},
     )
     owner_session.commit()
     try:
-        # The function `get_principal` actually calls. It needs an organization
-        # too, and this probe subject has no membership — so `one_or_none()`
-        # returning nothing is the CORRECT answer here, and what is being
-        # measured is that it ANSWERS rather than raising `permission denied`
-        # on `keycloak_sub`.
-        app_session.execute(
-            text("SELECT * FROM core.principal_for_subject(:s, :o)"),
-            {"s": subject, "o": uuid.uuid4()},
-        ).all()
+        # 🔴 A POSITIVE RESOLUTION, AND THE FIRST REWRITE HAD NONE.
+        #
+        # My version called both functions and asserted only that
+        # `memberships_for_subject` returned `[]` — a NEGATIVE, over a subject
+        # the fixture deliberately gave no membership. Redefining either
+        # function as `WHERE keycloak_sub = p_subject AND false` would have
+        # left it green while nobody could sign in, which is precisely the
+        # scenario this test's own docstring says the catalogue tests cannot
+        # catch. Raised by the Supervisor.
+        #
+        # So the probe subject is given a real membership and both functions
+        # must FIND it.
+        principal = app_session.execute(
+            text("SELECT user_id, organization_id FROM core.principal_for_subject(:s, :o)"),
+            {"s": subject, "o": org_id},
+        ).one_or_none()
+        assert principal is not None, (
+            "core.principal_for_subject resolved nothing for a subject that "
+            "exists and is an active member. The definer can no longer read "
+            "keycloak_sub and sign-in is dead."
+        )
+        assert principal.organization_id == org_id
 
-        # The function `/api/me` calls, which resolves before a tenant is
-        # chosen and therefore reads `keycloak_sub` with no GUC set at all.
         memberships = app_session.execute(
             text("SELECT * FROM core.memberships_for_subject(:s)"), {"s": subject}
         ).all()
-        assert memberships == [], (
-            "a subject with no membership resolved to something; the fixture "
-            "or the function has changed shape"
+        assert memberships, (
+            "core.memberships_for_subject resolved nothing, so a freshly "
+            "signed-in browser has no tenant to ask for and every subsequent "
+            "request 400s for want of a header nothing supplies."
         )
         app_session.rollback()
     finally:
         owner_session.rollback()
         owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE organization_id = :o"),
+            {"o": org_id},
+        )
+        owner_session.execute(
             text("DELETE FROM core.users WHERE keycloak_sub = :s"), {"s": subject}
         )
+        owner_session.execute(text("DELETE FROM core.organizations WHERE id = :o"), {"o": org_id})
         owner_session.commit()
 
 

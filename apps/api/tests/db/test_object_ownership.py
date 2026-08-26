@@ -129,9 +129,15 @@ DEFINER_OWNED_BY_DESIGN = {
     # is the reason `core.users` has no `organization_id`, would break.
     #
     # Same limit as the three above: `evercoat_owner` is exempt only while RLS
-    # is ENABLED and not FORCED, and
-    # `tests/db/test_044_user_directory_is_not_global.py` asserts the owner is
-    # not a superuser and fails the moment that changes.
+    # is ENABLED and not FORCED.
+    #
+    # ⚠️ WHERE THAT IS ASSERTED MOVED, AND THIS COMMENT ONCE POINTED AT
+    # NOTHING. It said `test_044_user_directory_is_not_global.py` asserts the
+    # owner is not a superuser -- true of the function 049 dropped, and the
+    # redirected test then lost the `rolbypassrls` half entirely. Raised by the
+    # Supervisor. Both halves now live in
+    # `test_044_...::test_the_replacement_runs_as_a_non_superuser_and_only_for_the_app`
+    # and in `test_049_atomic_bind.py`.
     # Migration 049 DROPPED `core.user_id_for_subject` -- it was I82's oracle,
     # answering for an exact subject in any organization with a uuid and an
     # existence, on a SELECT that left no row behind. A capability nothing
