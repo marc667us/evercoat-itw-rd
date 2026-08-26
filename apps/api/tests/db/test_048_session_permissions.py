@@ -321,3 +321,40 @@ def test_a_deactivated_membership_stops_granting(
             {"i": member.id},
         )
         owner_session.commit()
+
+
+# ---------------------------------------------------------------------------
+# 🔴 THE I56/I58 MEASUREMENT IS STILL OWED, AND I TRIED AND WITHDREW IT
+# ---------------------------------------------------------------------------
+#
+# Codex asked, reasonably, that the FORCE RLS cutover be PRE-EMPTED here
+# rather than warned about: force RLS on precisely the tables this function
+# reads, call it as `evercoat_app` with valid GUCs, and compare the answer.
+# Four previous SECURITY DEFINER functions shipped with a note saying their
+# behaviour would change at the cutover and nothing that would fail.
+#
+# I wrote it. It HANGS, and it is withdrawn rather than left in.
+#
+#   `ALTER TABLE ... FORCE ROW LEVEL SECURITY` takes an ACCESS EXCLUSIVE lock
+#   on all six of `core.users`, `organization_members`, `member_roles`,
+#   `roles`, `role_permissions` and `permissions`. Any other connection
+#   holding those tables blocks it -- and on a development host the demo API
+#   is running with a live pool, measured `1 idle in transaction`. Rolling
+#   back the fixtures first and setting `lock_timeout` were BOTH insufficient:
+#   the run still had to be killed at 120s.
+#
+# A test that can hang the suite is worse than a documented gap, and this
+# project has a recorded lesson about exactly that shape -- "a fixture that
+# deadlocks the suite: a failing test never reaches its rollback and its locks
+# block cleanup forever". The `finally` restore did work (FORCE was `f` on all
+# six afterwards, checked), so the withdrawal is about the hang, not damage.
+#
+# ⚠️ SO THIS REMAINS UNMEASURED, AND SAYING SO IS THE POINT. The honest place
+# for it is the I56/I58 cutover itself, where those tables are being altered
+# anyway and the suite is expected to be the only thing talking to the
+# database. `tests/db/test_object_ownership.py` names what must be checked.
+#
+# What is NOT guesswork: this function reads its scope from the same two GUCs
+# the policies read, which is why the expectation is that it degrades to "what
+# the caller can see" rather than to nothing. An expectation is not a
+# measurement and is not recorded as one.
