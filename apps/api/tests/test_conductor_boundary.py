@@ -903,3 +903,188 @@ def test_reading_an_msd_conversation_requires_the_same_permission_as_asking() ->
         f"these MSD routes are not gated on msd.use: {ungated}. Reading the "
         "answers is using the assistant, and half a switch is not a switch."
     )
+
+
+# ---------------------------------------------------------------------------
+# What the AgentPrincipal type does and does not prevent — MEASURED
+# ---------------------------------------------------------------------------
+#
+# 🔴 CODEX ENUMERATED FOUR BYPASSES AND ALL FOUR WORKED.
+#
+# The first version of `principal.py` claimed "you cannot construct one from
+# loose values". You could, four ways, and each was reproduced against the
+# real code before anything was changed. Three are closed below. The fourth
+# cannot be closed in Python and is asserted OPEN on purpose.
+#
+# ⚠️ A TEST FILE THAT ONLY DEMONSTRATED THE SUCCESSES WOULD REBUILD THE
+# OVERCLAIM IT IS HERE TO PREVENT. The last test states the limit as an
+# executable fact, so the next reader learns what this type is worth from the
+# suite rather than from a docstring that drifted.
+
+
+def test_of_refuses_an_object_that_merely_looks_like_a_principal() -> None:
+    """🔴 `of()` DUCK-TYPED ITS ARGUMENT, SO ANY OBJECT COULD CLAIM ANYTHING.
+
+    Reproduced before the fix: `of(SimpleNamespace(permissions={...}))`
+    returned a fully valid `AgentPrincipal` carrying `test.confirm` and
+    `analytics.portfolio`. Nothing downstream could have told it apart from a
+    real one — the conductor gate would have consulted the forged set and
+    opened.
+    """
+    with pytest.raises(TypeError) as caught:
+        AgentPrincipal.of(
+            SimpleNamespace(
+                organization_id=ORG,
+                user_id=USER,
+                roles=frozenset({"administrator"}),
+                permissions=frozenset({"test.confirm", "analytics.portfolio"}),
+            )
+        )
+    assert "verified Principal" in str(caught.value)
+
+
+def test_of_refuses_a_principal_subclass() -> None:
+    """`type(...) is not Principal`, not `isinstance` — and here is the difference.
+
+    A subclass is where "behaves like a Principal" stops being good enough: it
+    passes `isinstance`, and it is the natural place to smuggle in an
+    overridden `permissions`. Python happens to block the property form on a
+    frozen slots dataclass (`property 'permissions' has no setter`), but that
+    is an accident of the base class's shape, not a rule anybody stated — and
+    a base class that stopped being `slots=True` would silently reopen it.
+
+    So the exact-type check is what this asserts, on a plain subclass that
+    constructs perfectly well and that `isinstance` would have waved through.
+    """
+
+    class _Subclass(Principal):
+        pass
+
+    impostor = _Subclass(
+        user_id=USER,
+        organization_id=ORG,
+        keycloak_sub="s",
+        email="e@example.test",
+        display_name="d",
+        permissions=frozenset({"test.confirm"}),
+    )
+    assert isinstance(impostor, Principal), "the premise of this test has gone"
+
+    with pytest.raises(TypeError) as caught:
+        AgentPrincipal.of(impostor)
+    assert "verified Principal" in str(caught.value)
+
+
+def test_dataclasses_replace_cannot_widen_a_real_principal() -> None:
+    """🔴 THE BYPASS I HAD NOT CONSIDERED, AND THE REASON THE GUARD IS A NONCE.
+
+    `dataclasses.replace` re-invokes `__init__` with the EXISTING field
+    values, so the old module-level sentinel was copied straight into the
+    forgery: `replace(real_caller, permissions={"test.confirm"})` produced a
+    valid object with escalated rights, from a legitimately obtained one.
+
+    A long-lived sentinel is a replayable credential. The guard is minted per
+    construction and consumed on use, so a replayed one no longer verifies.
+    """
+    real = principal("batch.view")
+    with pytest.raises(TypeError):
+        dataclasses.replace(real, permissions=frozenset({"test.confirm"}))
+    # And the original is untouched — a failed forgery must not spend or
+    # corrupt the identity it was derived from.
+    assert real.permissions == frozenset({"batch.view"})
+
+
+def test_the_factory_token_is_valid_exactly_once() -> None:
+    """The nonce is consumed, so it cannot be captured and reused.
+
+    This is what closes the imported-sentinel bypass too: there is no longer a
+    long-lived object to import. Anything a caller manages to get hold of has
+    already been spent by the construction that minted it.
+    """
+    from app.agents import principal as module
+
+    token = module._mint()
+    AgentPrincipal(ORG, USER, frozenset(), frozenset({"batch.view"}), token)
+    with pytest.raises(TypeError):
+        AgentPrincipal(ORG, USER, frozenset(), frozenset({"test.confirm"}), token)
+
+
+def test_object_new_still_bypasses_the_guard_and_that_is_documented() -> None:
+    """🔴 ASSERTED OPEN, DELIBERATELY. THIS IS NOT A TODO.
+
+    `object.__new__` plus `object.__setattr__` builds any object at all, and
+    no Python type can prevent it. Code that can do this could equally call
+    `session.execute` and skip the agent tier entirely, so closing it would
+    not change what an in-process attacker can reach.
+
+    The test exists so that the module's claim stays honest. `principal.py`
+    says this type is a MISUSE BARRIER and not an in-process security
+    boundary; if somebody later "fixes" this and upgrades the docstring's
+    claim to match, this test fails and makes them say so explicitly.
+
+    🔴 THE REAL REMAINING GAP IS NOT THIS ONE — IT IS I105: `bind()` validates
+    identity against PostgreSQL and does NOT validate `permissions`. A forged
+    principal using the real session identity passes `bind()` while claiming
+    arbitrary authorization. The fix is to derive the permission set from the
+    GUC-bound user, and it needs a design (ADR-029 rejected the obvious
+    SECURITY DEFINER shape for I82 on measured evidence), not a patch.
+    """
+    forged = object.__new__(AgentPrincipal)
+    object.__setattr__(forged, "organization_id", ORG)
+    object.__setattr__(forged, "user_id", USER)
+    object.__setattr__(forged, "roles", frozenset())
+    object.__setattr__(forged, "permissions", frozenset({"test.confirm"}))
+    object.__setattr__(forged, "_guard", None)
+
+    assert forged.has("test.confirm"), (
+        "object.__new__ no longer bypasses the guard. If that is deliberate, "
+        "update app/agents/principal.py -- its docstring currently states "
+        "plainly that this bypass is open and unclosable, and an unstated "
+        "improvement is how the next overclaim starts."
+    )
+    # And it still cannot get past the DATABASE check, which is the half that
+    # does not live in Python.
+    with pytest.raises(SessionIdentityError):
+        forged.bind(_IdentitySession(user=uuid.uuid4()))
+
+
+def test_the_analytics_response_reports_the_cap_it_applied() -> None:
+    """🔴 THE SCREEN INVENTED THE TRUNCATION LIMIT. Raised by Codex.
+
+    `activity_analytics` omitted `limit` from its response and
+    `app/analytics/page.tsx` rendered `capped at {"200"}` — a literal that
+    merely happened to match the frontend's own default request. A caller
+    asking for `?limit=10` would have received `truncated: true` under a
+    notice claiming the cap was 200.
+
+    An invented number is worst precisely here: the truncation notice is the
+    one element whose entire job is to say the count is incomplete.
+    """
+    source = (
+        Path(__file__).resolve().parents[1] / "app" / "domains" / "analytics" / "service.py"
+    ).read_text(encoding="utf-8")
+    assert '"limit": report["limit"]' in source, (
+        "analytics no longer reports the cap it applied, so the screen has "
+        "nothing truthful to render beside its truncation warning"
+    )
+
+    # 🔴 COMMENTS STRIPPED FIRST — A TEST A COMMENT CAN REDDEN IS A TEST
+    # NOBODY TRUSTS, and this one failed on its own explanation.
+    #
+    # The page carries a comment quoting the defect it fixed: *"This read
+    # `capped at {"200"}`"*. A naive substring search found that and reported
+    # the bug as still present. The inverse — a comment SATISFYING an
+    # assertion — is the same failure and is the more dangerous direction,
+    # which is why the rule is to read code and not prose.
+    page_path = (
+        Path(__file__).resolve().parents[3] / "apps" / "web" / "app" / "analytics" / "page.tsx"
+    )
+    code = "\n".join(
+        line
+        for line in page_path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith(("//", "*", "/*"))
+    )
+    assert 'capped at {"200"}' not in code, "the analytics page hardcodes a truncation limit again"
+    assert "capped at {data.testing.limit}" in code, (
+        "the analytics page does not render the server's own cap"
+    )

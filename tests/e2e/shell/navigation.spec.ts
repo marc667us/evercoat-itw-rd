@@ -407,3 +407,68 @@ test.describe("routes that exist are reachable", () => {
     ).toBe(404);
   });
 });
+
+test.describe("the Intelligence group is reachable, not merely declared", () => {
+  // 🔴 THE THING THIS CATCHES IS A ROUTE WITH NO CALLER.
+  //
+  // `GET /api/analysis/reports/test-results` shipped on 2026-08-25 and gave
+  // `report.generate` its first enforcement point anywhere. Nothing in the
+  // browser reached it: Reports sat at slice 20 in `navigation.ts` and
+  // rendered inert, so the endpoint existed, was tested, and no person could
+  // press anything that called it. This project found 23 endpoints in that
+  // condition on 08-24; this was the twenty-fourth, one day old.
+  //
+  // `analytics.view` and `analytics.portfolio` were the same defect turned on
+  // the permission catalogue: held by nine and two of the ten seeded roles,
+  // read by no line of application code.
+  //
+  // ⚠️ THE GENERIC CRAWL ABOVE IS NOT ENOUGH ON ITS OWN. "every enabled
+  // sidebar link reaches a real page" asserts a 200, which an empty shell
+  // also returns. These assert the screens actually rendered themselves.
+
+  for (const [id, path, heading] of [
+    ["analytics", "/analytics", "Analytics"],
+    ["reports", "/reports", "Reports"],
+  ] as const) {
+    test(`${heading} is an enabled link and the page renders`, async ({ page }) => {
+      const item = NAVIGATION.flatMap((g) => g.items).find((i) => i.id === id);
+      expect(item, `the ${id} navigation item has gone`).toBeDefined();
+      expect(
+        isAvailable(item!),
+        `${heading} is still gated as unbuilt, so its API has no browser caller`,
+      ).toBe(true);
+
+      const response = await page.goto(path);
+      expect(response?.status(), `${path} is a dead link`).toBe(200);
+      await expect(page.getByRole("heading", { name: heading, level: 1 })).toBeVisible();
+      await expect(page.getByRole("main")).toBeVisible();
+    });
+  }
+
+  test("neither Intelligence screen invents a figure when it has no data", async ({ page }) => {
+    // 🔴 THE 2026-08-19 INCIDENT, ASSERTED RATHER THAN REMEMBERED: a failed
+    // `/api/me` became DEMONSTRATION DATA on a screen that looked fine.
+    //
+    // Both of these are `LiveOnly` — real numbers or an honest statement of
+    // their absence — and neither has a demonstration fixture, deliberately.
+    // A fabricated "9 tests GREEN" is a safety claim about physical
+    // measurements that were never made, which is materially worse than a
+    // fabricated supplier row.
+    //
+    // Without a session the shell renders the "no data source" notice. What
+    // must NOT appear is a number presented as a count of real test outcomes.
+    for (const path of ["/analytics", "/reports"]) {
+      await page.goto(path);
+      const main = page.getByRole("main");
+      await expect(main).toBeVisible();
+
+      const notice = page.getByTestId("no-data-source");
+      const banner = page.getByRole("note", { name: "Data source notice" });
+      const explained = (await notice.count()) > 0 || (await banner.count()) > 0;
+      expect(
+        explained,
+        `${path} rendered without saying where its figures came from`,
+      ).toBe(true);
+    }
+  });
+});

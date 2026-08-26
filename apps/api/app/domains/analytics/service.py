@@ -101,6 +101,18 @@ def activity_analytics(
         "testing": {
             "counted": report["counted"],
             "truncated": report["truncated"],
+            # 🔴 THE CAP THE SERVER ACTUALLY APPLIED, NOT THE ONE ASKED FOR.
+            #
+            # This was omitted and the screen hardcoded "200" beside its
+            # truncation warning. That happened to match the frontend's own
+            # default request, so it looked right — and `?limit=10` would have
+            # returned `truncated: true` under a notice claiming a cap of 200.
+            # An invented number wearing a server's authority is worse than no
+            # number, and this module's own docstring says a total that
+            # silently stopped means something other than what it says.
+            # Raised by Codex. `report["limit"]` is post-clamp, so it is the
+            # cap that was enforced rather than the one requested.
+            "limit": report["limit"],
             "by_colour": report["by_colour"],
             "by_rule": report["by_rule"],
             # 🔴 COUNTED FROM WHAT THE ROWS ACTUALLY CARRY.
@@ -247,6 +259,7 @@ def portfolio_by_project(
                 "status": p["status"],
                 "tests": report["counted"],
                 "truncated": report["truncated"],
+                "limit": report["limit"],
                 "by_colour": report["by_colour"],
             }
         )

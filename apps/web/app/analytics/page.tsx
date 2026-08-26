@@ -206,7 +206,9 @@ function Portfolio({
               <td className="py-2 pr-4 text-right font-mono tabular-nums text-slate-900">
                 {p.tests}
                 {/* The cap is stated per project, not hidden. */}
-                {p.truncated ? <span className="ml-1 text-xs text-slate-500">(capped)</span> : null}
+                {p.truncated ? (
+                  <span className="ml-1 text-xs text-slate-500">(capped at {p.limit})</span>
+                ) : null}
               </td>
               <td className="py-2 pr-4">
                 <span className="font-mono text-xs text-slate-700">
@@ -248,11 +250,16 @@ export default function AnalyticsPage(): ReactNode {
                 <p className="text-xs text-slate-600">
                   {data.testing.counted} test{data.testing.counted === 1 ? "" : "s"} counted
                   {data.testing.truncated ? (
-                    // 🔴 A TOTAL THAT SILENTLY STOPPED AT 200 MEANS SOMETHING
-                    // OTHER THAN WHAT IT SAYS. The server bounds the report and
-                    // reports the cap; hiding it here would undo that.
+                    // 🔴 THE SERVER'S CAP, NOT A NUMBER THIS FILE KNOWS.
+                    //
+                    // This read `capped at {"200"}` — a literal that merely
+                    // happened to match the default request. A caller asking
+                    // for `?limit=10` would have been told the cap was 200.
+                    // The endpoint reports what it enforced; rendering
+                    // anything else invents a fact in the one place whose job
+                    // is to say the count is incomplete. Raised by Codex.
                     <span className="ml-1 font-semibold text-amber-800">
-                      — capped at {"200"}, more exist
+                      — capped at {data.testing.limit}, more exist
                     </span>
                   ) : null}
                 </p>

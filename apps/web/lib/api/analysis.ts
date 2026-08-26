@@ -132,6 +132,7 @@ export const portfolioProjectSchema = z
     status: z.string(),
     tests: z.number(),
     truncated: z.boolean(),
+    limit: z.number(),
     by_colour: counts,
   })
   .passthrough();
@@ -160,6 +161,8 @@ export const analyticsSchema = z
       .object({
         counted: z.number(),
         truncated: z.boolean(),
+        /** The cap the SERVER applied. Never assumed by the client — see below. */
+        limit: z.number(),
         by_colour: counts,
         by_rule: counts,
         by_calculated_result: counts,

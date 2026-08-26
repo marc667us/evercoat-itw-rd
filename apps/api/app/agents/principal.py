@@ -24,12 +24,41 @@ This module removes the ability to hand them over at all.
 THREE MECHANISMS, AND ONLY THE FIRST IS TYPE-LEVEL
 ---------------------------------------------------------------------------
 
-**1. You cannot construct one from loose values.** `AgentPrincipal` refuses
-direct construction. `AgentPrincipal.of(principal)` is the only factory and it
-demands a `Principal`, whose fields come from a signature-verified token plus
-`core.principal_for_subject`. There is no signature anywhere in the tier that
-accepts a bare `permissions` set any more, so claiming one is not something a
-caller can do by accident or by reading the wrong example.
+**1. No signature in the tier accepts a permission set.** `AgentPrincipal`
+refuses direct construction, refuses `dataclasses.replace`, and
+`AgentPrincipal.of(principal)` — the only factory — demands the exact
+`Principal` type, whose fields come from a signature-verified token plus
+`core.principal_for_subject`. Claiming a permission set is therefore not
+something a caller can do by accident, by convenience, or by copying the
+wrong example.
+
+🔴 AND HERE IS WHAT IT IS *NOT*, STATED PLAINLY, BECAUSE THE FIRST VERSION OF
+THIS PARAGRAPH OVERCLAIMED AND CODEX CALLED IT.
+
+It said "you cannot construct one from loose values". You could: four
+bypasses were enumerated and all four reproduced against this code —
+duck-typed `of()`, `dataclasses.replace` replaying the guard, `object.__new__`
+with `object.__setattr__`, and importing the private sentinel. Three are
+closed. **`object.__new__` cannot be closed in Python and is not claimed to
+be.**
+
+So this is a MISUSE BARRIER, not an in-process security boundary. Code running
+inside this process that wants to forge authorization can do so — it could
+equally call `session.execute` and skip the agent tier entirely, which no type
+in Python prevents either. What the type buys is that forging is now a
+deliberate, greppable, unmistakable act rather than the path of least
+resistance that a four-argument signature made it.
+
+⚠️ **THE PERMISSION SET IS STILL NOT DATABASE-DERIVED, AND THAT IS THE REAL
+REMAINING GAP (I105).** `bind()` below validates identity against PostgreSQL;
+it does not validate `permissions`. Codex's recommended fix is to derive them
+from the GUC-bound user at the bound-session boundary and gate on that. That
+is the right end state and it is NOT done here, deliberately: it needs a
+`SECURITY DEFINER` function handing out a permission set for a user id, which
+is the shape ADR-029 **rejected on measured evidence** for I82 — an atomic
+bind inside a definer re-opened I83. Doing it correctly is a design task with
+a migration, not a footnote to this change. It is raised as I105 rather than
+improvised.
 
 **2. PostgreSQL is asked whether the session really is this caller's.**
 `bind(session)` reads `app.current_org` and `app.current_user_id` — the two
@@ -41,17 +70,15 @@ merely passing a different argument. It also converts three docstrings that
 *claimed* "the session must be the caller's own RLS-scoped session" into a
 statement something actually checks.
 
-**3. Forging a `Principal` is greppable and tested.**
-`tests/test_agent_topology.py` fails the build if any module outside
-`app/core/security.py` constructs one. So the remaining path — build a fake
-`Principal`, wrap it — cannot be taken quietly.
+**3. The remaining path is loud.** Forging now means constructing a real
+`Principal` — which has a public constructor at `app/core/security.py` — or
+reaching for `object.__new__`. Both are unmistakable in a diff and in a grep,
+which is the whole of what mechanism 1 claims.
 
-⚠️ WHAT THIS IS NOT. It is not authentication, and it does not re-derive
-permissions from the database. `get_principal` already did that query, and
-repeating it per orchestrator call would double the cost of every request to
-re-answer a question the request already answered correctly. What it removes
-is the *casual* forgery the old signature invited — and mechanism 2 means the
-identity half is checked against something outside Python regardless.
+`tests/test_conductor_boundary.py` pins the closed bypasses AND records the
+open one, so the limits of this type are measured rather than assumed. A test
+suite that only demonstrated the successes would leave the next reader with
+exactly the overclaim this docstring had.
 """
 
 from __future__ import annotations
@@ -80,11 +107,38 @@ class SessionIdentityError(PermissionError):
     """
 
 
-# The guard that makes `of()` the only door. A module-private object, so
-# passing it requires importing a name that starts with an underscore from
-# another module — visible in review and in a grep, rather than a keyword
-# somebody could plausibly have typed by accident.
-_FACTORY_GUARD: Final = object()
+# 🔴 A ONE-SHOT NONCE, NOT A LONG-LIVED SENTINEL — AND CODEX IS WHY.
+#
+# The first version held a module-level `_FACTORY_GUARD = object()` and
+# checked identity against it. Codex enumerated four bypasses and ALL FOUR
+# were reproduced against the real code before this was changed:
+#
+#   1. `AgentPrincipal.of(SimpleNamespace(permissions={"test.confirm"}, ...))`
+#      — `of()` duck-typed its argument and never checked it was a Principal.
+#   2. `dataclasses.replace(real_caller, permissions=forged)` — `replace`
+#      re-invokes `__init__` with the EXISTING field values, so it carried the
+#      valid guard straight into the forgery. This one I had not considered.
+#   3. `object.__new__` + `object.__setattr__` — skips `__init__` entirely.
+#   4. `from app.agents.principal import _FACTORY_GUARD` — an underscore is a
+#      convention, not an access control, which the old comment admitted.
+#
+# A nonce that is CONSUMED on use closes 1, 2 and 4: each mint is unique and
+# valid exactly once, so a replayed guard — which is what `replace` does, and
+# what an imported sentinel would be — no longer verifies. `of()` now also
+# demands the exact `Principal` type.
+#
+# ⚠️ 3 REMAINS OPEN AND CANNOT BE CLOSED IN PYTHON. Anything that can call
+# `object.__setattr__` can build any object it likes; it could equally call
+# `session.execute` directly and skip this tier altogether. See the module
+# docstring for what this type therefore does and does not claim.
+_MINTED: Final[set[int]] = set()
+
+
+def _mint() -> object:
+    """A token valid for exactly one construction."""
+    token = object()
+    _MINTED.add(id(token))
+    return token
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,12 +167,17 @@ class AgentPrincipal:
     _guard: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self._guard is not _FACTORY_GUARD:
+        # `discard` after a membership test, so the token is spent whether or
+        # not it was valid. A guard that could be replayed is not a guard —
+        # which is exactly what `dataclasses.replace` was doing with the old
+        # long-lived sentinel.
+        if id(self._guard) not in _MINTED:
             raise TypeError(
-                "AgentPrincipal cannot be constructed directly — use "
-                "AgentPrincipal.of(principal). I104: the agent tier does not "
-                "accept an identity assembled from loose values."
+                "AgentPrincipal cannot be constructed directly, replaced, or "
+                "copied — use AgentPrincipal.of(principal). I104: the agent "
+                "tier does not accept an identity assembled from loose values."
             )
+        _MINTED.discard(id(self._guard))
 
     @classmethod
     def of(cls, principal: Principal) -> AgentPrincipal:
@@ -128,13 +187,31 @@ class AgentPrincipal:
         factory with four parameters would be the same hole with a longer
         name — the point is that the caller must already hold a verified
         identity, not that it must type more.
+
+        🔴 AND IT CHECKS THE EXACT TYPE, BECAUSE IT USED TO DUCK-TYPE.
+
+        This read `principal.permissions` and friends off whatever it was
+        given, so `of(SimpleNamespace(permissions={"test.confirm"}, ...))`
+        produced a fully valid `AgentPrincipal` claiming anything at all —
+        reproduced against this code, not theorised. Raised by Codex.
+
+        `type(...) is not Principal` rather than `isinstance`: a subclass
+        could override `permissions` as a property returning whatever it
+        liked, and this is the one place where "behaves like a Principal" is
+        not good enough.
         """
+        if type(principal) is not Principal:
+            raise TypeError(
+                f"AgentPrincipal.of requires a verified Principal, not "
+                f"{type(principal).__name__}. An object that merely has the "
+                "right attributes is an identity nobody checked."
+            )
         return cls(
             organization_id=principal.organization_id,
             user_id=principal.user_id,
             roles=frozenset(principal.roles),
             permissions=frozenset(principal.permissions),
-            _guard=_FACTORY_GUARD,
+            _guard=_mint(),
         )
 
     def has(self, permission: str) -> bool:
