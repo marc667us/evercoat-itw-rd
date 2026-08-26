@@ -287,6 +287,25 @@ if (Test-Path 'public') { Copy-Item -Recurse -Force 'public' '.next-demo\standal
 `$env:PORT='3000'; `$env:HOSTNAME='0.0.0.0';
 node '.next-demo\standalone\server.js'
 "@
+# 🔴 KILL THE RUNNING WEB SERVER BEFORE REBUILDING. 2026-08-26.
+#
+# `node .next-demo\standalone\server.js` holds an open handle on
+# `.next-demo`, so a rebuild into that directory does NOT fail loudly -- it
+# PRINTS THE NEXT.JS BANNER AND THEN STALLS, indefinitely, at near-zero CPU.
+# `Remove-Item -Recurse -Force .next-demo` also silently does nothing
+# (`Test-Path` still true afterwards) because `-ErrorAction SilentlyContinue`
+# swallows the sharing violation.
+#
+# Measured today: three consecutive rebuild attempts hung this way and read
+# like a slow machine. The tell is `Get-Process node` sitting at single-digit
+# CPU seconds while the log holds one line. `Get-CimInstance Win32_Process
+# -Filter "Name='node.exe'"` names the holder in its command line.
+#
+# ⚠️ THIS SCRIPT ALREADY STOPS THE PORT-3000 LISTENER at the top, which is why
+# it normally works. It matters when rebuilding BY HAND against a stack that
+# is already up -- stop the listener first, or the build will hang and nothing
+# will say why.
+
 # 🔴 NO BACKTICKS INSIDE $webCmd, INCLUDING IN ITS COMMENTS. 2026-08-26.
 #
 # `@"..."@` is a DOUBLE-QUOTED here-string, so PowerShell processes escape
