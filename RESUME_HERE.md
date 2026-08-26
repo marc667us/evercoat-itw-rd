@@ -17,6 +17,31 @@ definer that WRITES (the write fires ADR-028's guards as owner and reopens
 I83). This one is `STABLE` with a single-SELECT body and takes **zero
 arguments** — no write to start the chain, no parameter to aim it with.
 
+### ▶ LIVE SUITE AFTER I105 — 798 / 0 / 0
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **761** | 0 | 0 |
+| e2e `shell` | **37** | 0 | 0 |
+| **TOTAL** | **798** | **0** | **0** |
+
+Preflight reported all four capabilities **CONFIGURED**. `api-live` counted
+from pytest's own summary line (`761 passed ... in 133.87s`); the shell
+project re-run alone, exit code 0.
+
+🔴 **AND THE FIRST ATTEMPT'S "7 FAILED / 24 SKIPPED" WAS VOID, NOT RED.**
+The e2e phase was interrupted mid-run: 8 tests passed, failures began, and
+everything after was skipped — the signature of an aborted run, not of seven
+defects. Re-run alone it is 37/0/0, which is what *a crashed worker is a VOID
+measurement, not a red* means in practice. The harness printed 769/7/24 and
+that number was never reported as a result.
+
+⚠️ **THE API WAS RESTARTED FIRST.** The demo had been serving pre-I105 code
+against the post-048 schema. The two-gate boundary was then re-measured across
+five roles on the restarted API and is **identical** to before — correct, since
+I105 changed where the authorization comes from, not what it is for a
+legitimate caller.
+
 ### 🔴 GITHUB PUSH EVENTS RAN ~30 MINUTES LATE — AND ONE EVICTED THE OTHER
 
 **CORRECTED.** I first concluded that pushes were not triggering CI at all,

@@ -2,8 +2,15 @@
 
 ## 2026-08-26 (part 2) — I105: the gate now consults the database, not the caller
 
-**Migration 048 (`g1000`), ADR-030.** API suite **750 passed / 0 failed / 11
-skipped**; ruff, ruff format, mypy clean.
+**Migration 048 (`g1000`), ADR-030.** **Live suite on the deployed demo: 798
+passed / 0 failed / 0 skipped** (`api-live` 761, e2e `shell` 37). CI **6/6
+green** on `fd62969`. API suite **750 passed / 0 failed / 11 skipped**;
+`tests/db` **370 / 0 skipped**; ruff, ruff format, mypy clean.
+
+🔴 The live e2e's first attempt reported 7 failed / 24 skipped and that was
+VOID — the run was interrupted, 8 passed then everything after skipped, the
+signature of an abort. Re-run alone: 37/0/0. *A crashed worker is a void
+measurement, not a red.*
 
 I104 made the agent tier's IDENTITY checkable. Codex named the half it left:
 
