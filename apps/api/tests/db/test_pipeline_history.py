@@ -47,6 +47,23 @@ def pipeline_project(owner_session):
         {"s": f"pipe-{suffix}", "e": f"pipe-{suffix}@example.test"},
     ).scalar_one()
 
+    # 🔴 THE ACTOR IS A MEMBER, WHICH THIS FIXTURE USED TO SKIP.
+    #
+    # Somebody who transitions a stage necessarily belongs to the
+    # organization the project is in — a session cannot act otherwise. The
+    # fixture built an identity with no membership anywhere, and the history
+    # query still named them because it read `core.users` globally. Since 052
+    # attribution resolves through the membership, so an actor with none is a
+    # state production cannot reach and the fixture should not manufacture.
+    owner_session.execute(
+        text(
+            "INSERT INTO core.organization_members"
+            " (organization_id, user_id, email, display_name)"
+            " SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id = :u"
+        ),
+        {"o": org_id, "u": actor_id},
+    )
+
     for code, name, seq in [
         ("FORMULATION", "Formulation", 1),
         ("LABORATORY", "Laboratory", 2),
@@ -91,6 +108,8 @@ def pipeline_project(owner_session):
         "DELETE FROM workflow.project_stages WHERE organization_id = :o",
         "DELETE FROM workflow.stage_definitions WHERE organization_id = :o",
         "DELETE FROM projects.projects WHERE organization_id = :o",
+        # Before the organization, because the FK is RESTRICT by design.
+        "DELETE FROM core.organization_members WHERE organization_id = :o",
         "DELETE FROM core.organizations WHERE id = :o",
     ]:
         owner_session.execute(text(stmt), {"o": org_id})

@@ -135,8 +135,9 @@ def _people(session: Session, org: uuid.UUID, suffix: str) -> dict[str, uuid.UUI
         ).scalar_one()
         session.execute(
             text(
-                "INSERT INTO core.organization_members (organization_id, user_id, status) "
-                "VALUES (:o, :u, 'active')"
+                "INSERT INTO core.organization_members (organization_id, user_id, status,"
+                " email, display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM"
+                " core.users u WHERE u.id = :u"
             ),
             {"o": org, "u": uid},
         )

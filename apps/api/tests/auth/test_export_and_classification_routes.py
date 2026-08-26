@@ -141,8 +141,9 @@ def test_the_route_is_gated_on_export_not_merely_on_view(
     ).scalar_one()
     member = owner_session.execute(
         text(
-            "INSERT INTO core.organization_members (organization_id,user_id,status) "
-            "VALUES (:o,:u,'active') RETURNING id"
+            "INSERT INTO core.organization_members (organization_id, user_id, status, email,"
+            " display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM core.users u"
+            " WHERE u.id = :u RETURNING id"
         ),
         {"o": lead_ctx["org_id"], "u": user},
     ).scalar_one()

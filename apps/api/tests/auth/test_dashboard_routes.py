@@ -75,8 +75,9 @@ def technician_ctx(owner_session):
     ).scalar_one()
     member_id = owner_session.execute(
         text(
-            "INSERT INTO core.organization_members (organization_id,user_id) "
-            "VALUES (:o,:u) RETURNING id"
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u RETURNING id"
         ),
         {"o": org_id, "u": user_id},
     ).scalar_one()

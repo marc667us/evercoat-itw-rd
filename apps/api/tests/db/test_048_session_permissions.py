@@ -302,10 +302,9 @@ def membership(owner_session: Session) -> Iterator[_Membership]:
     ).scalar_one()
     member_id = owner_session.execute(
         text(
-            """
-            INSERT INTO core.organization_members (organization_id, user_id, status)
-            VALUES (:org, :uid, 'active') RETURNING id
-            """
+            "INSERT INTO core.organization_members (organization_id, user_id, status, email,"
+            " display_name) SELECT :org, :uid, 'active', u.email, u.display_name FROM core.users"
+            " u WHERE u.id = :uid RETURNING id"
         ),
         {"org": org, "uid": user_id},
     ).scalar_one()

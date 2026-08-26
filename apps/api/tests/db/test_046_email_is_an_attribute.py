@@ -20,6 +20,28 @@ against a schema where the oracle had been rebuilt some other way -- a
 trigger, a definer, a check. It is here so a failure names its cause in one
 line. `test_the_oracle_is_closed` is the security property.
 
+⚠️ MIGRATION 052 REPLACED THIS RULE'S MECHANISM, AND THESE TESTS MOVED WITH
+IT RATHER THAN BEING DELETED ALONGSIDE IT. 046 enforced "one active member per
+address per organization" with two SECURITY INVOKER trigger functions holding
+an advisory lock, because the address lived on the GLOBAL `core.users` while
+the rule is per-organization and no index spans two tables. 052 puts the
+address ON the membership row (I106), at which point the whole rule is one
+partial unique index on `(organization_id, email) WHERE status = 'active'` --
+insert, rename and reactivation alike.
+
+The properties are unchanged and every one of them is still asserted here:
+tenant-scoped, active-only, refuses inside one organization, accepts across
+two, holds under concurrency, and names itself the way `app/api/admin.py`
+classifies its 409. What changed is that the tenant scope is now the INDEX
+KEY rather than a predicate somebody has to keep writing correctly.
+
+⚠️ AND THEY RUN AS THE OWNER NOW. 052 revoked INSERT on
+`core.organization_members` from `evercoat_app` (I108), so the runtime role
+reaches membership creation only through `core.bind_subject_to_organization`.
+A unique index applies to every role identically, so the owner exercises the
+same mechanism; that the app role cannot take this path at all is asserted in
+`test_052_an_identity_has_no_tenant_attributes.py`.
+
 ⚠️ These tests COMMIT. `app_engine` is a separate connection from
 `owner_session`, and `evercoat_owner` holds no membership in `evercoat_app`
 so `SET ROLE` is refused. Two connections and an RLS-bearing role leave
@@ -86,7 +108,11 @@ def two_orgs_one_address(
         ).scalar_one()
         users.append(uid)
         owner_session.execute(
-            text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
+            text(
+                "INSERT INTO core.organization_members (organization_id, user_id, email,"
+                " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE"
+                " u.id = :u"
+            ),
             {"o": org, "u": uid},
         )
         return uid
@@ -183,52 +209,95 @@ def test_the_global_constraint_is_gone_and_identity_is_not(owner_session: Sessio
 def test_the_replacement_guard_is_not_a_security_definer(owner_session: Session) -> None:
     """🔴 A DEFINER HERE WOULD REBUILD THE ORACLE INSIDE A TRIGGER.
 
-    `core.deny_duplicate_address_in_organization` refuses a write based on
-    rows it can read. As SECURITY INVOKER it reads only what the writing
-    role may see, which within one organization is every member. As
-    SECURITY DEFINER it would read every tenant and refuse on what it found
-    there -- which is precisely the cross-tenant answer I83 removed, wearing
-    a different mechanism.
+    046 enforced this rule with two SECURITY INVOKER trigger functions, and
+    the choice was load-bearing: as DEFINERs they would have read every tenant
+    and refused on what they found there, which is the cross-tenant answer I83
+    removed, wearing a different mechanism.
 
-    The catalogue is asked because a comment claiming INVOKER proves
-    nothing; `pg_proc.prosecdef` is the fact.
+    ⚠️ MIGRATION 052 REPLACED BOTH WITH A PARTIAL UNIQUE INDEX, so the
+    question this test asks has to change with the mechanism rather than be
+    deleted with it. 046 could not use an index: the address lived on the
+    GLOBAL `core.users` while the rule is per-organization, and no index spans
+    two tables. 052 puts the address ON the membership row, at which point
+    `(organization_id, email) WHERE status = 'active'` says the whole rule in
+    one object -- INSERT, rename and reactivation alike, with no advisory lock
+    and no window where two writers both pass.
+
+    🔴 THE PROPERTY IS THE KEY, AND IT IS ASSERTED AS THE KEY. `users_email_key`
+    was `(email)` platform-wide, so its refusal answered "does this address
+    exist ANYWHERE". This index LEADS WITH `organization_id`, so a collision
+    necessarily involves a row in the organization the writer named -- a member
+    `list_members` already shows them. An index that lost that leading column,
+    or its `WHERE status = 'active'`, would be `users_email_key` again.
     """
-    row = owner_session.execute(
-        text(
-            """
-            SELECT p.prosecdef, r.rolname
+    trigger_functions = (
+        owner_session.execute(
+            text(
+                """
+            SELECT p.proname
               FROM pg_proc p
               JOIN pg_namespace n ON n.oid = p.pronamespace
-              JOIN pg_roles r     ON r.oid = p.proowner
              WHERE n.nspname = 'core'
                AND p.proname = ANY(:names)
             """
-        ),
-        {
-            "names": [
-                "deny_duplicate_address_in_organization",
-                "deny_address_collision_on_rename",
-            ]
-        },
-    ).all()
-    assert len(row) == 2, (
-        "046 installs TWO guards -- one on core.organization_members for the "
-        "INSERT path and one on core.users for the rename path -- and this "
-        f"database has {len(row)}. A rule enforced on INSERT and not on UPDATE "
-        "is bypassed by changing the address in place."
+            ),
+            {
+                "names": [
+                    "deny_duplicate_address_in_organization",
+                    "deny_address_collision_on_rename",
+                ]
+            },
+        )
+        .scalars()
+        .all()
     )
-    for prosecdef, owner in row:
-        assert prosecdef is False, (
-            "an address guard is SECURITY DEFINER. Both read core.users and "
-            "core.organization_members and refuse on what they find, so as "
-            "definers they answer questions about EVERY tenant -- rebuilding "
-            "I83's oracle inside a trigger."
+    assert trigger_functions == [], (
+        f"046's trigger guards are still installed: {trigger_functions}. 052 "
+        "replaced them with a unique index, and a rule enforced twice by two "
+        "mechanisms is a rule nobody can reason about -- the trigger reads "
+        "core.users, which no longer carries the address the index enforces."
+    )
+
+    index = owner_session.execute(
+        text(
+            """
+            SELECT i.indisunique,
+                   pg_get_expr(i.indpred, i.indrelid) AS predicate,
+                   (SELECT a.attname
+                      FROM pg_attribute a
+                     WHERE a.attrelid = i.indrelid
+                       AND a.attnum = i.indkey[0]) AS first_key
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              JOIN pg_index i     ON i.indexrelid = c.oid
+             WHERE n.nspname = 'core'
+               AND c.relname = 'organization_members_one_address_per_organization'
+            """
         )
-        assert owner == "evercoat_owner", (
-            f"a guard is owned by {owner!r}, not evercoat_owner. 046 states the "
-            "owner explicitly; an unstated owner is how a function ends up "
-            "owned by whoever ran the migration."
-        )
+    ).one_or_none()
+    assert index is not None, (
+        "there is no organization_members_one_address_per_organization index. "
+        "046's guards are gone (above) and nothing replaced them, so one "
+        "organization's member list can hold the same address twice -- and "
+        "app/api/admin.py classifies its 409 by that exact name."
+    )
+    assert index.indisunique is True, "the index is not UNIQUE, so it enforces nothing"
+    assert index.first_key == "organization_id", (
+        f"the index leads with {index.first_key!r}, not organization_id. A key "
+        "that does not lead with the tenant is users_email_key wearing a "
+        "partial index: its refusal answers whether an address exists in some "
+        "organization the writer cannot see, which is I83."
+    )
+    assert index.predicate is not None, (
+        "the index is not PARTIAL. Without a predicate it covers inactive "
+        "members too, so deactivating somebody permanently squats their "
+        "address inside the organization."
+    )
+    assert "active" in index.predicate, (
+        f"the index predicate is {index.predicate!r}, which does not mention "
+        "the active status, so their replacement can never be onboarded at "
+        "that address."
+    )
 
 
 def test_the_oracle_is_closed(app_session: Session, two_orgs_one_address: dict) -> None:
@@ -312,8 +381,44 @@ def test_identity_is_still_unique(app_session: Session, two_orgs_one_address: di
     app_session.rollback()
 
 
+def _add_member(
+    session: Session,
+    org: uuid.UUID,
+    user: uuid.UUID,
+    email: str,
+    name: str,
+    status: str = "active",
+) -> None:
+    """Create a membership carrying the address THIS organization uses.
+
+    🔴 AS THE OWNER, AND THAT IS THE POINT OF 052's OTHER HALF.
+
+    These tests used to insert memberships through `app_session`. Migration
+    052 revoked INSERT on `core.organization_members` from `evercoat_app`
+    (I108): a membership row makes any global identity readable under 044's
+    policy, so an ordinary member could manufacture one naming an arbitrary
+    `user_id`, read the identity and roll back. The runtime role now reaches
+    membership creation only through `core.bind_subject_to_organization`,
+    which takes the organization from the session and proves the caller
+    administers it -- covered by `test_049_atomic_bind.py`.
+
+    The rule under test here is a unique INDEX, which applies to every role
+    identically, so exercising it as the owner tests the same mechanism. That
+    `evercoat_app` cannot take this path at all is asserted in
+    `test_052_an_identity_has_no_tenant_attributes.py`.
+    """
+    session.execute(
+        text(
+            "INSERT INTO core.organization_members"
+            " (organization_id, user_id, status, email, display_name)"
+            " VALUES (:o, :u, :st, :e, :n)"
+        ),
+        {"o": org, "u": user, "st": status, "e": email, "n": name},
+    )
+
+
 def test_one_active_address_per_organization(
-    app_session: Session, two_orgs_one_address: dict
+    owner_session: Session, two_orgs_one_address: dict
 ) -> None:
     """The tenant-scoped rule that replaced the global one.
 
@@ -323,169 +428,169 @@ def test_one_active_address_per_organization(
     `list_members` already shows this caller.
     """
     fx = two_orgs_one_address
-    _scope(app_session, fx["org_a"], fx["admin_a"])
     suffix = fx["suffix"]
     shared = f"shared-{suffix}@example.test"
 
-    first = _new_identity(app_session, f"i83-one-{suffix}", shared, "One")
-    second = _new_identity(app_session, f"i83-two-{suffix}", shared, "Two")
+    first = _new_identity(owner_session, f"i83-one-{suffix}", shared, "One")
+    second = _new_identity(owner_session, f"i83-two-{suffix}", shared, "Two")
 
-    app_session.execute(
-        text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
-        {"o": fx["org_a"], "u": first},
-    )
+    _add_member(owner_session, fx["org_a"], first, shared, "One")
     with pytest.raises(IntegrityError) as caught:
-        app_session.execute(
-            text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
-            {"o": fx["org_a"], "u": second},
-        )
+        _add_member(owner_session, fx["org_a"], second, shared, "Two")
+
     # 🔴 ASSERT THE FIELD THE ROUTE ACTUALLY BRANCHES ON.
     #
     # `app/api/admin.py` distinguishes this refusal from the
     # `organization_members_unique` race by reading
     # `exc.orig.diag.constraint_name`, because the two mean different things
-    # to the caller and one message would describe the other wrongly. A
-    # trigger's `RAISE ... USING CONSTRAINT = ...` does NOT put the name into
-    # the exception's string form -- asserting on `str(exc)` passes for the
-    # wrong reason or fails for one, and either way says nothing about
-    # whether the route can tell them apart. Measured: `diag.constraint_name`
-    # is populated and `diag.table_name` is None, so this is the field.
+    # to the caller and one message would describe the other wrongly. It is
+    # also why 052 gave the INDEX the name 046's TRIGGER had: renaming it
+    # would silently turn a correct 409 into "the membership could not be
+    # created" -- a 500 -- and nothing else in the suite reads the name.
     diag = getattr(caught.value.orig, "diag", None)
     assert getattr(diag, "constraint_name", None) == (
         "organization_members_one_address_per_organization"
     ), (
-        "the 046 guard did not name itself in diag.constraint_name, so "
+        "the address guard did not name itself in diag.constraint_name, so "
         "app/api/admin.py cannot tell an address collision from an "
         "already-a-member race and will answer the wrong 409. Got: "
         f"{getattr(diag, 'constraint_name', None)!r} / {caught.value}"
     )
-    app_session.rollback()
+    owner_session.rollback()
 
 
 def test_the_guard_is_scoped_to_one_organization(
-    app_session: Session, two_orgs_one_address: dict
+    owner_session: Session, two_orgs_one_address: dict
 ) -> None:
-    """🔴 OTHERWISE IT IS users_email_key WEARING A TRIGGER.
+    """🔴 OTHERWISE IT IS users_email_key WEARING A PARTIAL INDEX.
 
     The same address in a DIFFERENT organization must be accepted. Without
-    this assertion the previous test passes just as well against a guard that
+    this assertion the previous test passes just as well against a rule that
     refuses globally -- which would leave I83 wide open while the suite went
-    green. Falsified by deleting `om.organization_id = NEW.organization_id`
-    from the function: this test fails and the other does not.
+    green. Falsified by dropping `organization_id` from the index key: this
+    test fails and the other does not.
     """
     fx = two_orgs_one_address
-    _scope(app_session, fx["org_a"], fx["admin_a"])
     suffix = fx["suffix"]
     shared = f"cross-{suffix}@example.test"
 
-    ids = [_new_identity(app_session, f"i83-x{n}-{suffix}", shared, f"Cross {n}") for n in (1, 2)]
+    ids = [_new_identity(owner_session, f"i83-x{n}-{suffix}", shared, f"Cross {n}") for n in (1, 2)]
 
-    app_session.execute(
-        text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
-        {"o": fx["org_a"], "u": ids[0]},
-    )
-    # The GUC still names organization A; the row names organization B. The
-    # INSERT policy on core.organization_members decides whether that is
-    # allowed at all -- what is under test here is that the 046 guard does not
-    # refuse it on ADDRESS grounds.
-    # `SET LOCAL app.current_org = :o` is a SYNTAX ERROR -- SET takes no bind
-    # parameter, which is why `app/core/db.py` uses set_config() and says so.
-    app_session.execute(
-        text("SELECT set_config('app.current_org', :o, true)"), {"o": str(fx["org_b"])}
-    )
-    app_session.execute(
-        text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
-        {"o": fx["org_b"], "u": ids[1]},
-    )
-    app_session.rollback()
+    _add_member(owner_session, fx["org_a"], ids[0], shared, "Cross 1")
+    _add_member(owner_session, fx["org_b"], ids[1], shared, "Cross 2")
+    owner_session.rollback()
 
 
 def test_an_inactive_member_does_not_block_the_address(
-    app_session: Session, two_orgs_one_address: dict
+    owner_session: Session, two_orgs_one_address: dict
 ) -> None:
     """Deactivating somebody must not lock their address out of the tenant.
 
     Otherwise offboarding a person and onboarding their replacement at the
-    same address becomes impossible, and the guard has turned a data-quality
-    rule into a permanent squat inside one organization.
+    same address becomes impossible, and the rule has turned a data-quality
+    guarantee into a permanent squat inside one organization. This is what
+    the index's `WHERE status = 'active'` predicate buys.
     """
     fx = two_orgs_one_address
-    _scope(app_session, fx["org_a"], fx["admin_a"])
     suffix = fx["suffix"]
     shared = f"leaver-{suffix}@example.test"
 
-    leaver = _new_identity(app_session, f"i83-leaver-{suffix}", shared, "Leaver")
-    joiner = _new_identity(app_session, f"i83-joiner-{suffix}", shared, "Joiner")
+    leaver = _new_identity(owner_session, f"i83-leaver-{suffix}", shared, "Leaver")
+    joiner = _new_identity(owner_session, f"i83-joiner-{suffix}", shared, "Joiner")
 
-    app_session.execute(
-        text(
-            "INSERT INTO core.organization_members (organization_id, user_id, status)"
-            " VALUES (:o,:u,'inactive')"
-        ),
-        {"o": fx["org_a"], "u": leaver},
-    )
-    app_session.execute(
-        text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
-        {"o": fx["org_a"], "u": joiner},
-    )
-    app_session.rollback()
+    _add_member(owner_session, fx["org_a"], leaver, shared, "Leaver", status="inactive")
+    _add_member(owner_session, fx["org_a"], joiner, shared, "Joiner")
+    owner_session.rollback()
 
 
 def test_an_address_cannot_be_taken_by_renaming(
-    app_session: Session, two_orgs_one_address: dict
+    owner_session: Session, two_orgs_one_address: dict
 ) -> None:
-    """🔴 THE MEMBERSHIP TRIGGER IS BYPASSED BY CHANGING THE ADDRESS IN PLACE.
+    """🔴 A RULE ENFORCED ON INSERT AND NOT ON UPDATE IS BYPASSED IN PLACE.
 
-    Raised by Codex and measured before the second trigger existed:
-    `evercoat_app` holds UPDATE on `core.users` and 044's UPDATE policy admits
-    a user who shares an organization with the writer, so
+    Raised by Codex against 046 and measured before its second trigger
+    existed: changing the address on the row directly moved no membership, so
+    the INSERT-side trigger never fired and two active members of one
+    organization ended up holding one address. 046 needed a SECOND trigger,
+    on a SECOND table, to cover it.
 
-        UPDATE core.users SET email = <a colleague's address> WHERE id = ...
-
-    was ACCEPTED and left two active members of one organization holding it.
-    No membership row moved, so the trigger on `core.organization_members`
-    never fired.
-
-    That path also made the schema WEAKER than before 046, because
-    `users_email_key` covered updates as well as inserts. A rule enforced on
-    INSERT and not on UPDATE is a shape this repository has shipped before.
+    052 needs neither. A unique index is consulted on every write to the
+    indexed columns, so the rename path is the same mechanism as the insert
+    path -- and there is no longer a second table to bypass it through, since
+    the address the rule is about now lives on the membership itself.
     """
     fx = two_orgs_one_address
-    _scope(app_session, fx["org_a"], fx["admin_a"])
     suffix = fx["suffix"]
     taken = f"taken-{suffix}@example.test"
 
-    holder = _new_identity(app_session, f"i83-holder-{suffix}", taken, "Holder")
+    holder = _new_identity(owner_session, f"i83-holder-{suffix}", taken, "Holder")
     renamer = _new_identity(
-        app_session, f"i83-renamer-{suffix}", f"renamer-{suffix}@example.test", "Renamer"
+        owner_session, f"i83-renamer-{suffix}", f"renamer-{suffix}@example.test", "Renamer"
     )
-    for uid in (holder, renamer):
-        app_session.execute(
-            text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
-            {"o": fx["org_a"], "u": uid},
-        )
+    _add_member(owner_session, fx["org_a"], holder, taken, "Holder")
+    _add_member(owner_session, fx["org_a"], renamer, f"renamer-{suffix}@example.test", "Renamer")
 
     with pytest.raises(IntegrityError) as caught:
-        app_session.execute(
-            text("UPDATE core.users SET email = :e WHERE id = :u"),
-            {"e": taken, "u": renamer},
+        owner_session.execute(
+            text(
+                """
+                UPDATE core.organization_members SET email = :e
+                 WHERE organization_id = :o AND user_id = :u
+                """
+            ),
+            {"e": taken, "o": fx["org_a"], "u": renamer},
         )
     diag = getattr(caught.value.orig, "diag", None)
     assert getattr(diag, "constraint_name", None) == (
-        "users_address_stays_unique_in_organization"
+        "organization_members_one_address_per_organization"
     ), (
         "renaming a member onto a colleague's address was refused by something "
-        f"other than the 046 rename guard: {getattr(diag, 'constraint_name', None)!r}"
+        f"other than the address index: {getattr(diag, 'constraint_name', None)!r}"
     )
-    app_session.rollback()
+    owner_session.rollback()
+
+
+def test_reactivating_onto_a_taken_address_is_refused(
+    owner_session: Session, two_orgs_one_address: dict
+) -> None:
+    """The third write path, which the INSERT and UPDATE tests do not cover.
+
+    An inactive member is allowed to hold an address somebody else now uses --
+    the test above depends on it. Flipping them back to `active` must then be
+    refused, or that exemption IS the bypass. 046's trigger reached this only
+    because somebody remembered a `WHEN (NEW.status = 'active')` clause on an
+    `UPDATE OF ... status` trigger; the index reaches it because `status` is
+    in its predicate, which is one fewer thing to remember.
+    """
+    fx = two_orgs_one_address
+    suffix = fx["suffix"]
+    shared = f"revive-{suffix}@example.test"
+
+    leaver = _new_identity(owner_session, f"i83-rev1-{suffix}", shared, "Leaver")
+    joiner = _new_identity(owner_session, f"i83-rev2-{suffix}", shared, "Joiner")
+    _add_member(owner_session, fx["org_a"], leaver, shared, "Leaver", status="inactive")
+    _add_member(owner_session, fx["org_a"], joiner, shared, "Joiner")
+
+    with pytest.raises(IntegrityError):
+        owner_session.execute(
+            text(
+                """
+                UPDATE core.organization_members SET status = 'active'
+                 WHERE organization_id = :o AND user_id = :u
+                """
+            ),
+            {"o": fx["org_a"], "u": leaver},
+        )
+    owner_session.rollback()
 
 
 def test_the_guard_holds_under_concurrency(
-    app_engine, owner_session: Session, two_orgs_one_address: dict
+    owner_engine, owner_session: Session, two_orgs_one_address: dict
 ) -> None:
-    """🔴 A TRIGGER THAT DECIDES BY SELECT IS NOT A UNIQUE INDEX.
+    """🔴 A CHECK THAT DECIDES BY SELECT IS NOT A UNIQUE INDEX.
 
-    Measured before the advisory lock existed, on two real connections:
+    Measured against 046's first draft, before its advisory lock existed, on
+    two real connections:
 
         session 1 inserted (uncommitted)
         session 2 inserted (uncommitted) -- the trigger did NOT see session 1
@@ -493,19 +598,23 @@ def test_the_guard_holds_under_concurrency(
         session 2 committed
         ACTIVE members of one organization holding the address: 2
 
-    Under READ COMMITTED neither transaction sees the other's uncommitted
-    row, so both `EXISTS` come back empty and both commit. The comments and
-    ADR-028 said the rule was "enforced"; that was true serially and false
-    under concurrency — a comment asserting a rule the code did not
-    implement.
+    Under READ COMMITTED neither transaction sees the other's uncommitted row,
+    so both `EXISTS` came back empty and both committed. ADR-028 said the rule
+    was "enforced"; that was true serially and false under concurrency -- a
+    comment asserting a rule the code did not implement.
 
-    `pg_advisory_xact_lock` on (organization, address) is the mechanism that
-    makes the claim true, the same one `audit.chain_row()` uses. This test
-    asserts BOTH halves: that the second writer is made to WAIT, and that it
-    is then REFUSED. Without the wait there is nothing to refuse.
+    046 fixed it with `pg_advisory_xact_lock`. 052 does not need one: this is
+    now a real unique index, and PostgreSQL blocks the second inserter on the
+    first's uncommitted key until that transaction ends. **The property is
+    unchanged and the mechanism is smaller**, which is why this test is kept
+    rather than deleted with the lock -- it asserts BOTH halves, that the
+    second writer is made to WAIT and that it is then REFUSED. Without the
+    wait there is nothing to refuse.
 
     Two fresh connections, because the two sessions must be in flight at the
-    same time — a single session cannot race itself.
+    same time -- a single session cannot race itself. As the OWNER since 052:
+    `evercoat_app` no longer holds INSERT on this table (I108). The index is
+    role-independent, so the race is the same race.
     """
     fx = two_orgs_one_address
     suffix = fx["suffix"]
@@ -523,26 +632,19 @@ def test_the_guard_holds_under_concurrency(
         )
     owner_session.commit()
 
-    maker = sessionmaker(bind=app_engine)
+    maker = sessionmaker(bind=owner_engine)
     s1, s2 = maker(), maker()
-    for s in (s1, s2):
-        s.execute(text("SELECT set_config('app.current_org', :v, true)"), {"v": str(fx["org_a"])})
-        s.execute(
-            text("SELECT set_config('app.current_user_id', :v, true)"),
-            {"v": str(fx["admin_a"])},
-        )
 
+    insert = text(
+        "INSERT INTO core.organization_members"
+        " (organization_id, user_id, email, display_name)"
+        " VALUES (:o, :u, :e, :n)"
+    )
     outcome: dict[str, str] = {}
 
     def second_writer() -> None:
         try:
-            s2.execute(
-                text(
-                    "INSERT INTO core.organization_members (organization_id, user_id)"
-                    " VALUES (:o,:u)"
-                ),
-                {"o": fx["org_a"], "u": second},
-            )
+            s2.execute(insert, {"o": fx["org_a"], "u": second, "e": shared, "n": "Racer r2"})
             s2.commit()
             outcome["result"] = "committed"
         except IntegrityError:
@@ -551,10 +653,7 @@ def test_the_guard_holds_under_concurrency(
             outcome["result"] = f"error: {exc}"
 
     try:
-        s1.execute(
-            text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
-            {"o": fx["org_a"], "u": first},
-        )
+        s1.execute(insert, {"o": fx["org_a"], "u": first, "e": shared, "n": "Racer r1"})
 
         worker = threading.Thread(target=second_writer, daemon=True)
         worker.start()
@@ -562,7 +661,7 @@ def test_the_guard_holds_under_concurrency(
         assert worker.is_alive(), (
             "the second writer finished while the first still held its transaction "
             f"open ({outcome.get('result')}). Nothing serialised the two, so the "
-            "guard is a best-effort check and not a constraint."
+            "rule is a best-effort check and not a constraint."
         )
 
         s1.commit()
@@ -575,8 +674,7 @@ def test_the_guard_holds_under_concurrency(
             text(
                 """
                 SELECT count(*) FROM core.organization_members m
-                JOIN core.users u ON u.id = m.user_id
-                WHERE m.organization_id = :o AND m.status = 'active' AND u.email = :e
+                WHERE m.organization_id = :o AND m.status = 'active' AND m.email = :e
                 """
             ),
             {"o": fx["org_a"], "e": shared},
@@ -605,76 +703,65 @@ def test_the_guard_holds_under_concurrency(
         owner_session.commit()
 
 
-def test_the_rename_guard_does_not_answer_for_another_tenant(
-    app_session: Session, owner_session: Session, two_orgs_one_address: dict
+def test_the_rule_does_not_answer_for_another_tenant(
+    owner_session: Session, two_orgs_one_address: dict
 ) -> None:
-    """🔴 A GUARD THAT REFUSES ON A ROW YOU CANNOT SEE IS AN ORACLE AGAIN.
+    """🔴 A RULE THAT REFUSES ON A ROW YOU CANNOT SEE IS AN ORACLE AGAIN.
 
-    The rename guard added after review refuses when the new address already
-    belongs to an active member of an organization the writer shares with the
-    user being renamed. If it were a SECURITY DEFINER — or if its join
-    reached past RLS — it would refuse on an address held only in a tenant the
-    caller cannot see, and that refusal would tell them the address exists
-    somewhere on the platform. That is exactly the channel migration 046
-    removed, rebuilt inside its own replacement.
+    046's rename guard refused when the new address already belonged to an
+    active member of an organization the writer shares with the person being
+    renamed. As a SECURITY DEFINER -- or with a join that reached past RLS --
+    it would have refused on an address held only in a tenant the caller
+    cannot see, and that refusal would tell them the address exists somewhere
+    on the platform. I83, rebuilt inside its own replacement, and 047 had to
+    make the guard scope itself by its own predicate to stop it.
 
-    So the shape that makes the question live is asserted directly: a user who
-    is an active member of BOTH organizations, renamed onto an address held
-    only in the one the caller is NOT scoped to. It must be ACCEPTED.
+    ⚠️ 052 MAKES THE QUESTION STRUCTURAL RATHER THAN BEHAVIOURAL, and the
+    test moves with it. The rule is a unique index keyed
+    `(organization_id, email)`. A key that leads with the tenant CANNOT
+    collide across tenants -- there is no predicate to get wrong, no security
+    context to get wrong, and nothing a later migration can quietly widen
+    except the key itself, which
+    `test_the_replacement_guard_is_not_a_security_definer` asserts directly.
 
-    ⚠️ Accepting it is a MISS, not a win — organization B now has two active
-    members at one address. That is the trade ADR-028 states plainly: missing
-    inside a tenant you can see beats answering about one you cannot.
+    The shape that made the question live is still exercised: a person who is
+    an active member of BOTH organizations, given in organization A an address
+    held only in organization B. It must be ACCEPTED.
 
-    Falsified by making `core.deny_address_collision_on_rename` SECURITY
-    DEFINER: the rename is then refused and this test fails.
+    ⚠️ Accepting it is a MISS, not a win -- organization B is unaffected but
+    the platform now has that address twice. That is the trade ADR-028 states
+    plainly: missing inside a tenant you can see beats answering about one you
+    cannot.
     """
     fx = two_orgs_one_address
     suffix = fx["suffix"]
     only_in_b = f"only-in-b-{suffix}@example.test"
 
-    both = uuid.uuid4()
-    b_member = uuid.uuid4()
-    owner_session.execute(
-        text("INSERT INTO core.users (id, keycloak_sub, email, display_name) VALUES (:i,:s,:e,:n)"),
-        {"i": both, "s": f"i83-both-{suffix}", "e": f"both-{suffix}@example.test", "n": "Both"},
-    )
-    owner_session.execute(
-        text("INSERT INTO core.users (id, keycloak_sub, email, display_name) VALUES (:i,:s,:e,:n)"),
-        {"i": b_member, "s": f"i83-bonly-{suffix}", "e": only_in_b, "n": "B only"},
-    )
-    for uid, org in ((both, fx["org_a"]), (both, fx["org_b"]), (b_member, fx["org_b"])):
-        owner_session.execute(
-            text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
-            {"o": org, "u": uid},
-        )
-    owner_session.commit()
+    both = _new_identity(owner_session, f"i83-both-{suffix}", f"both-{suffix}@example.test", "Both")
+    b_member = _new_identity(owner_session, f"i83-bonly-{suffix}", only_in_b, "B only")
+
+    _add_member(owner_session, fx["org_b"], b_member, only_in_b, "B only")
+    _add_member(owner_session, fx["org_b"], both, f"both-{suffix}@example.test", "Both")
+    _add_member(owner_session, fx["org_a"], both, f"both-{suffix}@example.test", "Both")
 
     try:
-        _scope(app_session, fx["org_a"], fx["admin_a"])
-        app_session.execute(
-            text("UPDATE core.users SET email = :e WHERE id = :u"),
-            {"e": only_in_b, "u": both},
+        owner_session.execute(
+            text(
+                """
+                UPDATE core.organization_members SET email = :e
+                 WHERE organization_id = :o AND user_id = :u
+                """
+            ),
+            {"e": only_in_b, "o": fx["org_a"], "u": both},
         )
-        app_session.rollback()
     except IntegrityError as exc:
-        app_session.rollback()
         constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-        pytest.fail(
-            "the rename was REFUSED because the address is held in an "
-            "organization the caller cannot see "
-            f"(constraint {constraint!r}). That refusal discloses the address "
-            "exists somewhere on the platform, which re-opens I83 inside the "
-            "guard that replaced it. The guard must be SECURITY INVOKER and "
-            "must not reach past RLS."
-        )
-    finally:
         owner_session.rollback()
-        owner_session.execute(
-            text("DELETE FROM core.organization_members WHERE user_id = ANY(:u)"),
-            {"u": [both, b_member]},
+        pytest.fail(
+            "giving a member of organization A an address held only in "
+            f"organization B was REFUSED (constraint {constraint!r}). That "
+            "refusal discloses the address exists somewhere on the platform, "
+            "which re-opens I83 inside the rule that replaced it. The index "
+            "key must lead with organization_id."
         )
-        owner_session.execute(
-            text("DELETE FROM core.users WHERE id = ANY(:u)"), {"u": [both, b_member]}
-        )
-        owner_session.commit()
+    owner_session.rollback()

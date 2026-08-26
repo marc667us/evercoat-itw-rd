@@ -262,14 +262,19 @@ def main() -> None:
             uid = cur.fetchone()[0]
             user_ids[role_code] = uid
 
+            # The membership carries this organization's own view of the
+            # person since migration 052 -- both columns are NOT NULL, and
+            # for a seed the values are the ones just written above rather
+            # than a second read of core.users.
             cur.execute(
                 """
-                INSERT INTO core.organization_members (organization_id, user_id)
-                VALUES (%s, %s)
+                INSERT INTO core.organization_members
+                    (organization_id, user_id, email, display_name)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (organization_id, user_id) DO NOTHING
                 RETURNING id
                 """,
-                (org_id, uid),
+                (org_id, uid, f"{username}@example.test", display),
             )
             row = cur.fetchone()
             if row is None:

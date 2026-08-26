@@ -163,8 +163,9 @@ def lead_ctx(owner_session):  # noqa: F811 - pytest fixture injection
     ).scalar_one()
     member_id = owner_session.execute(
         text(
-            "INSERT INTO core.organization_members (organization_id,user_id) "
-            "VALUES (:o,:u) RETURNING id"
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u RETURNING id"
         ),
         {"o": org_id, "u": user_id},
     ).scalar_one()
@@ -236,8 +237,9 @@ def lead_ctx(owner_session):  # noqa: F811 - pytest fixture injection
     ).scalar_one()
     colleague_member_id = owner_session.execute(
         text(
-            "INSERT INTO core.organization_members (organization_id,user_id) "
-            "VALUES (:o,:u) RETURNING id"
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u RETURNING id"
         ),
         {"o": org_id, "u": colleague_id},
     ).scalar_one()
@@ -258,8 +260,9 @@ def lead_ctx(owner_session):  # noqa: F811 - pytest fixture injection
     ).scalar_one()
     foreign_member_id = owner_session.execute(
         text(
-            "INSERT INTO core.organization_members (organization_id,user_id) "
-            "VALUES (:o,:u) RETURNING id"
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u RETURNING id"
         ),
         {"o": foreign_org_id, "u": foreign_user_id},
     ).scalar_one()
@@ -361,8 +364,9 @@ def seeded_org(owner_session):  # noqa: F811 - pytest fixture injection
 
     member_id = owner_session.execute(
         text(
-            "INSERT INTO core.organization_members (organization_id, user_id) "
-            "VALUES (:o,:u) RETURNING id"
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u RETURNING id"
         ),
         {"o": org_id, "u": user_id},
     ).scalar_one()

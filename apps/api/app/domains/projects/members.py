@@ -238,10 +238,20 @@ def list_members(
         text(
             """
             SELECT pm.id, pm.user_id, pm.project_role, pm.status, pm.created_at,
-                   u.display_name, u.email,
+                   u.display_name, u.email::text AS email,
                    (p.lead_user_id = pm.user_id) AS is_project_lead
             FROM projects.project_members pm
-            JOIN core.users u ON u.id = pm.user_id
+            -- 🔴 THE ORGANIZATION'S OWN VIEW OF THE PERSON (052).
+            --
+            -- This joined `core.users`, whose address and name belong to
+            -- whichever tenant first created the identity — so "who has ever
+            -- had access to this project" could name somebody by another
+            -- company's address. `evercoat_app` can no longer read those
+            -- columns at all (I106). The membership is not filtered by
+            -- status: a departed colleague is deactivated, never deleted, so
+            -- the row that answers the post-incident question is still here.
+            JOIN core.organization_members u
+              ON u.user_id = pm.user_id AND u.organization_id = :org
             JOIN projects.projects p
               ON p.id = pm.project_id AND p.organization_id = pm.organization_id
             WHERE pm.project_id = :pid AND pm.organization_id = :org

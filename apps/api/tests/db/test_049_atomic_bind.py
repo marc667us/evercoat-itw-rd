@@ -94,10 +94,9 @@ def tenants(owner_session: Session, app_session: Session) -> Iterator[_Tenants]:
     ).scalar_one()
     member_id = owner_session.execute(
         text(
-            """
-            INSERT INTO core.organization_members (organization_id, user_id)
-            VALUES (:o, :u) RETURNING id
-            """
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u RETURNING id"
         ),
         {"o": orgs[0], "u": admin_id},
     ).scalar_one()
@@ -198,7 +197,7 @@ def test_the_oracle_is_gone_not_merely_unused(owner_session: Session) -> None:
 
 
 def test_a_new_subject_is_created_and_bound_in_one_call(
-    app_session: Session, tenants: _Tenants
+    app_session: Session, owner_session: Session, tenants: _Tenants
 ) -> None:
     """The ordinary path, and the source of the property that closes I82.
 
@@ -218,24 +217,64 @@ def test_a_new_subject_is_created_and_bound_in_one_call(
     # it, and my rewrite replaced that line with a copy of the one below it --
     # leaving the test saying nothing at all about the identity, so a function
     # that bound a membership to a PRE-EXISTING or simply wrong `core.users`
-    # row would pass. Raised by the Supervisor. The identity is resolved
-    # through the membership, which is exactly what the route now does.
+    # row would pass. Raised by the Supervisor.
+    #
+    # ⚠️ IT ALMOST HAPPENED AGAIN, THE SAME WAY, IN 052. Rewriting the
+    # attribute read onto the membership left `bound_user` unused, and the
+    # test was once more silent about the identity -- caught by `ruff`
+    # reporting an unpacked variable nobody read, which is a lint rule doing a
+    # correctness job. **An identity assertion that stops naming the identity
+    # is not a smaller assertion; it is no assertion.**
     org, bound_user = app_session.execute(
         text("SELECT organization_id, user_id FROM core.organization_members WHERE id = :m"),
         {"m": row.member_id},
     ).one()
     assert org == tenants.a, "the membership was created in the wrong organization"
-    # ⚠️ NOT `keycloak_sub` -- 047 REVOKED THAT COLUMN FROM `evercoat_app`,
-    # and writing this assertion the obvious way proved it: "permission denied
-    # for table users". The identity is checked on the attributes the ROUTE can
-    # read, which is the same read `invite_member` performs.
-    email, display_name = app_session.execute(
-        text("SELECT email::text, display_name FROM core.users WHERE id = :u"),
+
+    # ⚠️ NOT `keycloak_sub`, AND SINCE 052 NOT `email` OR `display_name`
+    # EITHER -- 047 revoked the first from `evercoat_app` and 052 revoked the
+    # other two (I106), because a membership makes any global identity
+    # readable under 044's policy and a membership can be rolled away. Writing
+    # each assertion the obvious way proved it in turn, with the same message:
+    # "permission denied for table users".
+    #
+    # So the identity is checked THROUGH THE OWNER, which means committing.
+    # The membership's own attributes cannot stand in for it: they are what
+    # the CALLER submitted, so they would be identical whether the bind
+    # resolved the right subject, the wrong one, or invented one.
+    app_session.commit()
+    subject, email = owner_session.execute(
+        text("SELECT keycloak_sub, email::text FROM core.users WHERE id = :u"),
         {"u": bound_user},
     ).one()
-    assert (email, display_name) == (f"{sub}@example.test", "Newcomer"), (
-        f"the membership was bound to a different identity: {email!r}, {display_name!r}"
+    assert subject == sub, (
+        f"the membership was bound to identity {subject!r}, not to the subject "
+        f"{sub!r} that was asked for."
     )
+    assert email == f"{sub}@example.test", (
+        "the identity this call CREATED did not record the submitted address. "
+        f"Got {email!r} -- if that is another tenant's value the bind resolved "
+        "an existing subject instead of creating one."
+    )
+
+    # And the tenant's own copy is on the membership, which is what every
+    # read in the application now goes to.
+    #
+    # ⚠️ RE-SCOPED, BECAUSE THE COMMIT ABOVE ENDED THE TRANSACTION THE GUCs
+    # LIVED IN. `_scope` sets them with `set_config(..., true)` -- the third
+    # argument is `is_local`, so they are discarded at COMMIT and the next
+    # statement runs with no tenant at all. `org_member_isolation` then
+    # matches nothing and this read comes back empty, which reads exactly like
+    # the row having failed to persist.
+    _scope(app_session, org=tenants.a, user=tenants.admin)
+    stored = app_session.execute(
+        text("SELECT email::text, display_name FROM core.organization_members WHERE id = :m"),
+        {"m": row.member_id},
+    ).one()
+    assert tuple(stored) == (f"{sub}@example.test", "Newcomer"), (
+        f"the membership records {tuple(stored)!r}, not what was submitted"
+    )
+    app_session.rollback()
 
 
 def test_no_identifier_is_returned_when_the_bind_fails(
@@ -393,10 +432,9 @@ def test_a_definer_write_does_not_widen_the_address_guards(
     ).scalar_one()
     owner_session.execute(
         text(
-            """
-            INSERT INTO core.organization_members (organization_id, user_id)
-            VALUES (:o, :u)
-            """
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u"
         ),
         {"o": tenants.b, "u": b_user},
     )
@@ -522,10 +560,9 @@ def test_the_standing_check_needs_admin_users_not_merely_membership(
     ).scalar_one()
     owner_session.execute(
         text(
-            """
-            INSERT INTO core.organization_members (organization_id, user_id)
-            VALUES (:o, :u)
-            """
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u"
         ),
         {"o": tenants.a, "u": plain},
     )
@@ -601,10 +638,9 @@ def test_admin_users_in_one_organization_does_not_carry_into_another(
     for org, role in ((tenants.a, admin_role), (tenants.b, plain_role)):
         member = owner_session.execute(
             text(
-                """
-                INSERT INTO core.organization_members (organization_id, user_id)
-                VALUES (:o, :u) RETURNING id
-                """
+                "INSERT INTO core.organization_members (organization_id, user_id, email,"
+                " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE"
+                " u.id = :u RETURNING id"
             ),
             {"o": org, "u": dual},
         ).scalar_one()
@@ -694,7 +730,11 @@ def test_no_returned_value_repeats_across_rolled_back_binds(
         {"s": foreign_sub, "e": f"{foreign_sub}@example.test"},
     ).scalar_one()
     owner_session.execute(
-        text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o, :u)"),
+        text(
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u"
+        ),
         {"o": tenants.b, "u": foreign_user},
     )
     owner_session.commit()

@@ -529,3 +529,110 @@ changed this behaviour a third time.
 
 **I82 remains open**, and its proposed design is now recorded as rejected on
 evidence rather than left to be discovered by whoever builds it.
+
+---
+
+### ADR-031 — an identity has no tenant attributes; a membership does · Accepted 2026-08-26
+
+**Closes I106 and I108.** Implemented by migration 052 (`k1000`).
+
+Migration 051 stopped `core.bind_subject_to_organization` returning an identity
+identifier, and stated in its own header what it did not close: the same bind
+made the foreign identity's stored `email` and `display_name` readable through
+the membership it had just created. Measured before anything was designed, as a
+legitimate administrator of organization A against a subject existing only in B:
+
+```
+submitted  : 'whatever@attacker.example'        / 'Whatever I Typed'
+read back  : 'secret.person@competitor.example' / 'Confidential B Person'
+memberships left behind after ROLLBACK : 0
+```
+
+🔴 **AND MEASURING IT FOUND A WIDER ONE. THE BIND IS NOT NEEDED AT ALL.**
+
+`evercoat_app` held table-level INSERT on `core.organization_members`;
+`org_member_isolation` constrains only `organization_id`; `user_id` is a plain
+FK to a GLOBAL table. As an ORDINARY member of organization A — no
+`admin.users`, no EXECUTE on the bind, no `keycloak_sub`:
+
+```
+foreign identity visible BEFORE : 0 rows
+INSERT INTO core.organization_members (organization_id, user_id)
+  VALUES (<my org>, <a foreign user id>);
+read AFTER                      : ('secret...@competitor.example',
+                                   'Confidential B Person')
+ROLLBACK
+```
+
+That is **I108**, and it reframes I106. The defect is not "the bind leaks". It
+is that **any membership row turns a global identity into a readable one**, and
+the bind is one of two ways to make one. Nothing in `app/` inserts that table —
+the only writer is the definer, which runs as the owner — so the grant was a
+capability nothing called *and* a disclosure primitive.
+
+**Decision.**
+
+1. `core.organization_members` carries its own `email` and `display_name`, NOT
+   NULL, written by the bind from **what the caller submitted**.
+2. 🔴 `core.users.email` and `core.users.display_name` are **not readable** by
+   `evercoat_app`, `evercoat_report` or `evercoat_worker`. **This is the
+   closure.** (1) is what keeps the application working once they are gone.
+3. INSERT on `core.organization_members` is revoked from `evercoat_app`.
+4. UPDATE `(email, display_name)` on `core.users` is revoked too — see below.
+5. `core.principal_for_subject` and `core.memberships_for_subject` report the
+   MEMBERSHIP's attributes, so each organization describes a person as it knows
+   them rather than as whichever tenant onboarded them first did.
+
+**Why the columns are revoked rather than dropped.** Same reason ADR-029 gave
+for `keycloak_sub`: the owner-owned sign-in definers legitimately read the
+identity provider's mirror, and the bind must record what it was given when it
+creates a NEW identity — the only honest source for a first membership's
+attributes.
+
+🔴 **THE BIND MUST NOT WRITE THE GLOBAL ROW EITHER.** Recording the submitted
+attributes onto `core.users` would let organization A rename a person inside
+organization B — a cross-tenant WRITE introduced by the change that removes a
+cross-tenant READ, which is the reflex ADR-029 caught in its own first draft
+and migration 049 then shipped anyway. It is a test, not a comment.
+
+**ADR-028's two trigger guards are replaced by one partial unique index.**
+ADR-028 could not use an index: the rule is per-organization and the address
+lived on the GLOBAL `core.users`, so it needed a pair of SECURITY INVOKER
+functions holding `pg_advisory_xact_lock` — plus a second trigger on
+`core.users`, because the address could be changed in place without any
+membership row moving. With the address ON the membership,
+`(organization_id, email) WHERE status = 'active'` says the whole rule in one
+object: insert, rename and reactivation alike, no advisory lock, no window in
+which two writers both pass.
+
+🔴 **This is not `users_email_key` returning, and the difference is the KEY.**
+`users_email_key` was `(email)` platform-wide, so its refusal answered "does
+this address exist ANYWHERE" — enforced outside RLS, which is the whole of I83.
+This index **leads with `organization_id`**, so a collision necessarily involves
+a row in the organization the writer named, and after this migration the only
+writer is the definer, which takes the organization from
+`core.current_org_id()` after proving the caller administers it. Every refusal
+therefore describes a member `list_members` already shows that caller — exactly
+ADR-028's own stated criterion for where a uniqueness rule may be enforced. The
+tenant scope is now the index key rather than a predicate somebody has to keep
+writing correctly, which is what ADR-029 had to fix by hand.
+
+⚠️ **The index keeps the trigger's NAME on purpose.** `app/api/admin.py`
+classifies its 409 by `diag.constraint_name`; a rename would silently downgrade
+a correct "that address is taken" into a 500.
+
+⚠️ **AND THAT IS WHY UPDATE ON `core.users` HAD TO GO.** ADR-029 kept
+`UPDATE (email, display_name)` on the strength of ADR-024's assertion that an
+administrator may correct a colleague's record inside their own organization,
+policed by the rename guard. Dropping the guard while keeping the grant would
+have left one tenant able to rewrite a person's global address with nothing
+checking it — the same cross-tenant write ADR-029 refused, arrived at by
+omission instead of by a speculative grant. The capability moved to
+`core.organization_members`, where `org_member_isolation` scopes it and the
+index polices it.
+
+**Left open, deliberately and with a test that says so.** `evercoat_app` still
+holds INSERT on `core.users`, and no query in `app/` uses it. It is not a
+disclosure channel — creating an identity tells the caller nothing about anyone
+else — but it is the same shape I108 was, and removing it needs its own
+measurement of what breaks.

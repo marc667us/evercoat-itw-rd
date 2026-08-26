@@ -159,19 +159,25 @@ def list_members(
     admin name the organization would be a cross-tenant read waiting for
     one missing check.
     """
+    # 🔴 THE ATTRIBUTES COME FROM THE MEMBERSHIP, NOT FROM `core.users` (052).
+    #
+    # This used to join `core.users` for the address and the name. Those
+    # columns are the GLOBAL identity's, and for a person who also belongs to
+    # another tenant they are that tenant's values — which is I106, and which
+    # is why `evercoat_app` can no longer read them at all. `core.users` stays
+    # in the query only for `id`, which is not an attribute of anybody.
     rows = session.execute(
         text(
             """
-            SELECT om.id AS member_id, u.id AS user_id, u.email::text AS email,
-                   u.display_name, om.status,
+            SELECT om.id AS member_id, om.user_id, om.email::text AS email,
+                   om.display_name, om.status,
                    COALESCE(array_agg(r.code ORDER BY r.code)
                             FILTER (WHERE r.code IS NOT NULL), '{}') AS roles
             FROM core.organization_members om
-            JOIN core.users u            ON u.id = om.user_id
             LEFT JOIN core.member_roles mr ON mr.member_id = om.id
             LEFT JOIN core.roles r         ON r.id = mr.role_id
-            GROUP BY om.id, u.id, u.email, u.display_name, om.status
-            ORDER BY u.display_name
+            GROUP BY om.id, om.user_id, om.email, om.display_name, om.status
+            ORDER BY om.display_name
             """
         )
     ).mappings()
@@ -398,6 +404,12 @@ def invite_member(
     # 🔴 THE USER IS RESOLVED THROUGH THE MEMBERSHIP, NOT HANDED BACK BY THE
     # DEFINER — BECAUSE THE IDENTIFIER *WAS* THE EXISTENCE ANSWER (051).
     #
+    # ⚠️ AND THE ATTRIBUTES COME BACK IN THE SAME READ (052). They used to be
+    # a second SELECT against `core.users`, which for a subject that already
+    # existed in another tenant returned THAT tenant's address and name — I106,
+    # readable and then rolled away. `evercoat_app` cannot read those columns
+    # any more; the membership carries this organization's own values.
+    #
     # 050 removed `identity_created` for answering "does this subject already
     # exist somewhere on this platform" at no cost. Codex showed the answer had
     # simply moved into `user_id`, and it measures: two rolled-back binds
@@ -409,10 +421,15 @@ def invite_member(
     # was created in THIS transaction and in THIS organization, so the policy
     # matches — and if a later change breaks that, this raises instead of
     # quietly falling back, which is the failure the block below describes.
-    user_id = session.execute(
-        text("SELECT user_id FROM core.organization_members WHERE id = :mid"),
+    user_id, stored_email, stored_name = session.execute(
+        text(
+            """
+            SELECT user_id, email::text, display_name
+            FROM core.organization_members WHERE id = :mid
+            """
+        ),
         {"mid": member_id},
-    ).scalar_one()
+    ).one()
     # ⚠️ `identity_created` IS NO LONGER SELECTED. Migration 050 removed it:
     # it was a cross-tenant existence bit that nothing here read, and the
     # "cost" said to excuse it -- a membership row and an audit record -- can
@@ -422,26 +439,6 @@ def invite_member(
     for role_code in payload.roles:
         _grant_role(session, member_id, role_code)
 
-    # 🔴 READ THE STORED ATTRIBUTES *AFTER* THE MEMBERSHIP EXISTS, NOT BEFORE.
-    #
-    # This read used to sit in the `else` branch above, and the Supervisor
-    # showed it was DEAD CODE: 044's read policy admits a row only when the
-    # reader shares an organization with that user (or is that user), and both
-    # conditions imply a membership row -- which the check above would already
-    # have turned into a 409. So on every path that reached a 201, the lookup
-    # returned None and the response fell back to echoing the caller's own
-    # submission. The commit claimed it returned stored values; it could not.
-    #
-    # Moving it here makes it true rather than removing it. The membership
-    # INSERT above is visible to this transaction, so the policy's EXISTS now
-    # matches and the real row is readable. `one()`, not `one_or_none()`: after
-    # a successful bind there is no legitimate way for this to miss, and a
-    # silent fallback is what produced the false report in the first place.
-    stored_email, stored_name = session.execute(
-        text("SELECT email::text, display_name FROM core.users WHERE id = :uid"),
-        {"uid": user_id},
-    ).one()
-
     write_audit(
         session,
         AuditEvent(
@@ -450,21 +447,24 @@ def invite_member(
             entity_id=str(member_id),
             organization_id=principal.organization_id,
             user_id=principal.user_id,
-            # ⚠️ The STORED email, not the submitted one. This recorded
-            # `payload.email` -- for a pre-existing identity that address was
-            # never written anywhere, so the audit trail asserted a value the
-            # database does not hold. A forensic record that reports the
-            # request instead of the result is worse than no record.
+            # ⚠️ The STORED email, read back, not `payload.email`. Since 052
+            # the membership records exactly what was submitted, so the two
+            # now agree -- but the discipline is what matters: a forensic
+            # record must report the RESULT of the write, not the request
+            # that asked for it. Reading it back is what makes the record
+            # true if a trigger, a default or a later migration ever changes
+            # the value on the way in.
             new_state={"email": stored_email, "roles": payload.roles},
             reason="membership created via Administration",
         ),
     )
     log_audit("member_invited", member_id=str(member_id), roles=payload.roles)
 
-    # The STORED values, not the submitted ones. For an identity that already
-    # existed, the caller's email and display name were not written and
-    # echoing them would report a change that did not happen — the same
-    # class of defect as the upsert above, one layer up.
+    # The STORED values, read back from the membership. Before 052 this
+    # mattered because a pre-existing identity kept the FIRST tenant's
+    # address and the caller's submission was never written anywhere; now
+    # this organization's row holds what this organization submitted, and
+    # the read-back is what proves it rather than assumes it.
     return MemberRead(
         member_id=member_id,
         user_id=user_id,

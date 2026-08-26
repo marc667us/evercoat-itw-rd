@@ -61,8 +61,17 @@ def project_context(
                      WHERE s.organization_id = p.organization_id AND s.is_active)
                        AS total_stages
             FROM projects.projects p
-            LEFT JOIN core.users lead     ON lead.id = p.lead_user_id
-            LEFT JOIN core.users director ON director.id = p.director_user_id
+            -- Names come from the MEMBERSHIP (052): `core.users.display_name`
+            -- is the global identity's, owned by whichever tenant created it,
+            -- and the runtime role can no longer read it. Scoped explicitly
+            -- rather than by RLS, because the policy on this table has a
+            -- permissive branch when the org GUC is unset and an unscoped
+            -- join would fan out one row per organization.
+            LEFT JOIN core.organization_members lead
+                   ON lead.user_id = p.lead_user_id AND lead.organization_id = :org
+            LEFT JOIN core.organization_members director
+                   ON director.user_id = p.director_user_id
+                  AND director.organization_id = :org
             LEFT JOIN innovation.opportunities o
                    ON o.id = p.opportunity_id AND o.organization_id = p.organization_id
             LEFT JOIN workflow.stage_definitions sd
@@ -163,7 +172,10 @@ def project_dashboard(
             SELECT t.id, t.title, t.priority, t.status, t.due_date,
                    t.required_action, u.display_name AS assignee
             FROM workflow.tasks t
-            LEFT JOIN core.users u ON u.id = t.assigned_user_id
+            -- The assignee's name through the MEMBERSHIP (052) — see
+            -- `project_overview` above.
+            LEFT JOIN core.organization_members u
+                   ON u.user_id = t.assigned_user_id AND u.organization_id = :org
             WHERE t.project_id = :pid AND t.organization_id = :org
               AND t.status IN ('open','in_progress','blocked')
             ORDER BY
@@ -238,7 +250,10 @@ def project_dashboard(
             SELECT t.transitioned_at AS at, t.reason, u.display_name AS actor,
                    fsd.stage_code AS from_stage, tsd.stage_code AS to_stage
             FROM workflow.stage_transitions t
-            JOIN core.users u ON u.id = t.transitioned_by
+            -- The actor's name through the MEMBERSHIP (052) — see
+            -- `project_overview` above.
+            JOIN core.organization_members u
+              ON u.user_id = t.transitioned_by AND u.organization_id = :org
             LEFT JOIN workflow.project_stages fps
                    ON fps.id = t.from_stage_id
                   AND fps.organization_id = t.organization_id

@@ -73,10 +73,9 @@ def two_tenants(owner_session):
         ).scalar_one()
         owner_session.execute(
             text(
-                """
-                INSERT INTO core.organization_members (organization_id, user_id, status)
-                VALUES (:o, :u, 'active')
-                """
+                "INSERT INTO core.organization_members (organization_id, user_id, status,"
+                " email, display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM"
+                " core.users u WHERE u.id = :u"
             ),
             {"o": org, "u": user},
         )
@@ -282,10 +281,9 @@ def test_ownership_is_enforced_at_write_time_not_read_time(owner_session, two_te
     ).scalar_one()
     owner_session.execute(
         text(
-            """
-            INSERT INTO core.organization_members (organization_id, user_id, status)
-            VALUES (:o, :u, 'active')
-            """
+            "INSERT INTO core.organization_members (organization_id, user_id, status, email,"
+            " display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM core.users u"
+            " WHERE u.id = :u"
         ),
         {"o": two_tenants["org_a"], "u": other},
     )
@@ -337,10 +335,9 @@ def test_a_completed_task_cannot_be_reassigned(owner_session, two_tenants):
     ).scalar_one()
     owner_session.execute(
         text(
-            """
-            INSERT INTO core.organization_members (organization_id, user_id, status)
-            VALUES (:o, :u, 'active')
-            """
+            "INSERT INTO core.organization_members (organization_id, user_id, status, email,"
+            " display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM core.users u"
+            " WHERE u.id = :u"
         ),
         {"o": two_tenants["org_a"], "u": other},
     )

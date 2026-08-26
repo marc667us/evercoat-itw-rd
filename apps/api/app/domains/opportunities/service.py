@@ -554,7 +554,12 @@ def list_opportunities(
                    u.display_name AS created_by_name,
                    p.id AS project_id, p.project_code
             FROM innovation.opportunities o
-            JOIN core.users u ON u.id = o.created_by
+            -- Attribution through the MEMBERSHIP (052): the global identity's
+            -- name belongs to whichever tenant created it, and the runtime
+            -- role can no longer read it. Scoped explicitly rather than by
+            -- RLS, so an unset org GUC cannot fan this out.
+            JOIN core.organization_members u
+              ON u.user_id = o.created_by AND u.organization_id = :org
             LEFT JOIN projects.projects p
                    ON p.opportunity_id = o.id
                   AND p.organization_id = o.organization_id
@@ -590,8 +595,12 @@ def opportunity_detail(
                    d.display_name AS decided_by_name,
                    p.id AS project_id, p.project_code, p.name AS project_name
             FROM innovation.opportunities o
-            JOIN core.users u ON u.id = o.created_by
-            LEFT JOIN core.users d ON d.id = o.decided_by
+            -- Both actors resolve through the MEMBERSHIP (052). See
+            -- `list_opportunities` above for why the scope is explicit.
+            JOIN core.organization_members u
+              ON u.user_id = o.created_by AND u.organization_id = :org
+            LEFT JOIN core.organization_members d
+              ON d.user_id = o.decided_by AND d.organization_id = :org
             LEFT JOIN projects.projects p
                    ON p.opportunity_id = o.id
                   AND p.organization_id = o.organization_id

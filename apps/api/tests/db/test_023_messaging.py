@@ -70,10 +70,9 @@ def channel_fixture(owner_session: Session, app_session: Session) -> Iterator[di
         ).scalar_one()
         owner_session.execute(
             text(
-                """
-                INSERT INTO core.organization_members (organization_id, user_id, status)
-                VALUES (:o, :u, 'active')
-                """
+                "INSERT INTO core.organization_members (organization_id, user_id, status,"
+                " email, display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM"
+                " core.users u WHERE u.id = :u"
             ),
             {"o": org, "u": uid},
         )
@@ -208,8 +207,14 @@ def test_a_mention_does_not_notify_someone_outside_the_project(
     )
 
     outsider_handle = app_session.execute(
-        text("SELECT split_part(email, '@', 1) FROM core.users WHERE id = :u"),
-        {"u": fx["outsider"]},
+        # The handle is the local part of the address THIS organization
+        # knows the member by (052) -- `core.users.email` is the global
+        # identity's and is no longer readable by the runtime role.
+        text(
+            "SELECT split_part(email, '@', 1) FROM core.organization_members"
+            " WHERE user_id = :u AND organization_id = :o"
+        ),
+        {"u": fx["outsider"], "o": fx["org"]},
     ).scalar_one()
 
     result = post_message(
@@ -274,8 +279,14 @@ def test_a_mention_notifies_a_project_member(
         spec=ChannelInput(channel_type="project", name="Restricted", project_id=fx["project"]),
     )
     handle = app_session.execute(
-        text("SELECT split_part(email, '@', 1) FROM core.users WHERE id = :u"),
-        {"u": fx["outsider"]},
+        # The handle is the local part of the address THIS organization
+        # knows the member by (052) -- `core.users.email` is the global
+        # identity's and is no longer readable by the runtime role.
+        text(
+            "SELECT split_part(email, '@', 1) FROM core.organization_members"
+            " WHERE user_id = :u AND organization_id = :o"
+        ),
+        {"u": fx["outsider"], "o": fx["org"]},
     ).scalar_one()
 
     result = post_message(
@@ -677,8 +688,9 @@ def test_an_ambiguous_handle_resolves_to_nobody(
         twins.append(uid)
         owner_session.execute(
             text(
-                "INSERT INTO core.organization_members (organization_id, user_id, status)"
-                " VALUES (:o,:u,'active')"
+                "INSERT INTO core.organization_members (organization_id, user_id, status,"
+                " email, display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM"
+                " core.users u WHERE u.id = :u"
             ),
             {"o": fx["org"], "u": uid},
         )

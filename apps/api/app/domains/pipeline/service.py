@@ -344,7 +344,16 @@ def stage_history(session: Session, project_id: uuid.UUID) -> list[dict[str, Any
                    u.display_name AS actor,
                    fsd.stage_code AS from_stage, tsd.stage_code AS to_stage
             FROM workflow.stage_transitions t
-            JOIN core.users u ON u.id = t.transitioned_by
+            -- Attribution through the MEMBERSHIP (052). Scoped by the
+            -- TRANSITION's own organization rather than by the session GUC:
+            -- the name to show is the one the organization where this
+            -- happened knows the actor by, and taking it from the row makes
+            -- the join correct without depending on who is asking. An
+            -- unscoped join would fan out one row per organization the actor
+            -- belongs to.
+            JOIN core.organization_members u
+              ON u.user_id = t.transitioned_by
+             AND u.organization_id = t.organization_id
             LEFT JOIN workflow.project_stages fps ON fps.id = t.from_stage_id
             LEFT JOIN workflow.stage_definitions fsd ON fsd.id = fps.stage_definition_id
             JOIN workflow.project_stages tps ON tps.id = t.to_stage_id

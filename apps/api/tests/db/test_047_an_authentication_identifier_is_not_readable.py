@@ -18,6 +18,20 @@ only the NAME while the policy hands over the whole row.
 So only the last one is over-granted, and RLS -- being row-level -- cannot
 take it away. Column privileges can, and migration 047 does.
 
+⚠️ MIGRATION 052 THEN REVOKED THE OTHER TWO, AND THE MEASUREMENT ABOVE IS WHY
+IT COULD. Those readers were real, so 047 was right to keep the columns; 052
+did not overrule that finding, it moved the readers. `email` and
+`display_name` now live on `core.organization_members` and every one of the
+eleven joins, both `list_members` and the @mention lookup reads them there.
+
+The reason is I106: a membership row makes ANY global identity readable under
+044's policy, and a membership can be created and rolled away without a trace
+-- by an administrator through the bind, and, before 052, by any member at all
+through a plain INSERT (I108). So the attributes a tenant sees have to be the
+tenant's own, and the global mirror has to be unreadable. The tests below
+assert the new privilege in BOTH directions rather than dropping the
+assertions that no longer hold.
+
 The catalogue tests here name the cause in one line; the behavioural ones are
 the property. Both are present because `has_column_privilege` would keep
 answering correctly against a database where some later grant had quietly
@@ -63,9 +77,20 @@ def test_the_columns_the_application_does_read_are_untouched(owner_session: Sess
     """🔴 THE OTHER DIRECTION, WITHOUT WHICH THE TEST ABOVE IS SATISFIED BY
     REVOKING EVERYTHING.
 
-    `admin.list_members` and `projects.list_members` both return `email`, and
-    every actor-resolving join selects `display_name`. Narrowing that far
-    would break stated behaviour rather than protect anything.
+    ⚠️ MIGRATION 052 MOVED TWO OF THESE COLUMNS OUT OF THE LIST, ON PURPOSE.
+
+    047 kept `email` and `display_name` readable because `admin.list_members`,
+    `projects.list_members` and eleven actor-resolving joins all read them.
+    052 rewrote every one of those to read
+    `core.organization_members` instead: a membership row makes ANY global
+    identity readable under 044's policy, and a membership can be created and
+    rolled back without a trace (I106, and I108 for the path that needs no
+    bind at all). So the closure is that the global attributes stop being
+    readable, and the tenant's own copy lives on the membership.
+
+    What still has to be readable is `id` — every actor join resolves through
+    it and it is nobody's attribute — and `status`. Asserting them is what
+    stops the test above being satisfied by revoking the whole table.
 
     WARNING: THIS TEST CANNOT FAIL WHEN 047 IS REVERTED, AND THAT IS
     DELIBERATE. f1000's table-wide grant covers every column asserted here,
@@ -73,7 +98,7 @@ def test_the_columns_the_application_does_read_are_untouched(owner_session: Sess
     applied. `test_the_identifier_is_not_readable_by_any_runtime_role` is the
     half that goes red. Raised by Codex; recorded rather than dressed up.
     """
-    for column in ("id", "email", "display_name", "status"):
+    for column in ("id", "status"):
         readable = owner_session.execute(
             text("SELECT has_column_privilege('evercoat_app', 'core.users', :c, 'SELECT')"),
             {"c": column},
@@ -81,7 +106,20 @@ def test_the_columns_the_application_does_read_are_untouched(owner_session: Sess
         assert readable is True, (
             f"evercoat_app can no longer SELECT core.users.{column}. 047 was "
             "supposed to remove one authentication identifier, not the "
-            "directory."
+            "directory, and 052 moved the ATTRIBUTES rather than the join key."
+        )
+
+    # And the two 052 removed, asserted as removed rather than left unstated —
+    # otherwise this file would read as though they were still expected here.
+    for column in ("email", "display_name"):
+        readable = owner_session.execute(
+            text("SELECT has_column_privilege('evercoat_app', 'core.users', :c, 'SELECT')"),
+            {"c": column},
+        ).scalar_one()
+        assert readable is False, (
+            f"evercoat_app can still SELECT core.users.{column}. That is the "
+            "channel 052 closes: a rolled-back membership makes any global "
+            "identity readable, so the attributes must live on the membership."
         )
 
 
@@ -125,10 +163,15 @@ def test_status_is_not_updatable_because_that_row_is_global(
     cross-tenant WRITE granted by accident, inside the migration that
     narrows cross-tenant reads.
 
-    `email` and `display_name` stay: 044 asserts an administrator may correct
-    a colleague's name inside their own organization, and 046's rename guard
-    exists to police the address. Both are per-row facts the owning
-    organization can already see. `status` is a platform-wide switch.
+    ⚠️ 052 REVOKED `email` AND `display_name` TOO, AND FOR THIS TEST'S OWN
+    REASON. 047 kept them because 044 asserts an administrator may correct a
+    colleague's record inside their own organization, policed by 046's rename
+    guard. 052 removes that guard -- the rule now lives on the membership, as
+    a unique index -- so keeping the grant would leave one tenant able to
+    rewrite a person's GLOBAL address with nothing checking it: the same
+    cross-tenant write this test was written about, arrived at by omission
+    rather than by a speculative grant. That capability moved to
+    `core.organization_members`, where `org_member_isolation` scopes it.
     """
     assert (
         owner_session.execute(
@@ -145,11 +188,32 @@ def test_status_is_not_updatable_because_that_row_is_global(
                 text("SELECT has_column_privilege('evercoat_app','core.users',:c,'UPDATE')"),
                 {"c": column},
             ).scalar_one()
+            is False
+        ), (
+            f"evercoat_app can UPDATE core.users.{column}. Since 052 nothing "
+            "polices that column -- 046's rename guard is gone and the rule is "
+            "a unique index on the MEMBERSHIP -- so this grant lets one tenant "
+            "rewrite a person's global address unchecked."
+        )
+
+    # The control: the capability was MOVED, not removed. Without this the
+    # assertions above are satisfied by a schema in which no administrator can
+    # correct anybody's record anywhere, which is not what 052 did.
+    for column in ("email", "display_name"):
+        assert (
+            owner_session.execute(
+                text(
+                    "SELECT has_column_privilege("
+                    "'evercoat_app','core.organization_members',:c,'UPDATE')"
+                ),
+                {"c": column},
+            ).scalar_one()
             is True
         ), (
-            f"evercoat_app can no longer UPDATE {column}, so an administrator "
-            "cannot correct a colleague's record inside their own organization "
-            "(044) and 046's rename guard has nothing to police."
+            f"evercoat_app cannot UPDATE core.organization_members.{column}, so "
+            "an administrator cannot correct a colleague's record inside their "
+            "own organization at all (044) and 052 removed a capability it was "
+            "only supposed to re-scope."
         )
 
 
@@ -202,8 +266,16 @@ def test_the_application_role_is_actually_refused(app_session: Session) -> None:
     )
     app_session.rollback()
 
-    # And the query the application actually makes still runs.
-    app_session.execute(text("SELECT id, email, display_name FROM core.users LIMIT 1")).all()
+    # And the query the application actually makes still runs. Since 052 that
+    # is `id` from `core.users` joined to the MEMBERSHIP for the attributes --
+    # the global ones are no longer readable either (I106), so asserting them
+    # here would assert a schema this project deliberately left behind.
+    app_session.execute(
+        text(
+            "SELECT u.id, om.email, om.display_name FROM core.users u"
+            " JOIN core.organization_members om ON om.user_id = u.id LIMIT 1"
+        )
+    ).all()
     app_session.rollback()
 
 
@@ -249,8 +321,9 @@ def test_sign_in_still_resolves_a_subject(app_session: Session, owner_session: S
     # where they are made.
     owner_session.execute(
         text(
-            "INSERT INTO core.organization_members (organization_id, user_id, status)"
-            " VALUES (:o, :u, 'active')"
+            "INSERT INTO core.organization_members (organization_id, user_id, status, email,"
+            " display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM core.users u"
+            " WHERE u.id = :u"
         ),
         {"o": org_id, "u": user_id},
     )
@@ -348,7 +421,11 @@ def two_orgs_and_a_shared_member(owner_session: Session) -> Iterator[dict[str, o
         )
     for uid, org in ((both, orgs[0]), (both, orgs[1]), (b_member, orgs[1])):
         owner_session.execute(
-            text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o,:u)"),
+            text(
+                "INSERT INTO core.organization_members (organization_id, user_id, email,"
+                " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE"
+                " u.id = :u"
+            ),
             {"o": org, "u": uid},
         )
     owner_session.commit()

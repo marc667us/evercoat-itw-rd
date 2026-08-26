@@ -73,10 +73,9 @@ def two_orgs_two_users(owner_session) -> Iterator[dict[str, uuid.UUID | str]]:
         users.append(uid)
         owner_session.execute(
             text(
-                """
-                INSERT INTO core.organization_members (organization_id, user_id)
-                VALUES (:org, :uid)
-                """
+                "INSERT INTO core.organization_members (organization_id, user_id, email,"
+                " display_name) SELECT :org, :uid, u.email, u.display_name FROM core.users u"
+                " WHERE u.id = :uid"
             ),
             {"org": org, "uid": uid},
         )
@@ -236,6 +235,15 @@ def test_an_email_address_does_not_cross_the_boundary(app_engine, two_orgs_two_u
     The count test above would pass against a policy that hid the row from
     `SELECT id` while some other column path still leaked. This asks for the
     personal data directly.
+
+    ⚠️ SINCE 052 THE PERSONAL DATA IS NOT ON `core.users` ANY MORE, so this
+    asks in both places. The address and the name a tenant knows a member by
+    live on `core.organization_members` (I106); the global row keeps the
+    identity provider's mirror and the runtime roles cannot read it at all.
+    Asking only the old question would leave this test passing on a privilege
+    error while the row-level boundary it names went unexercised — the same
+    displacement 047 caused one layer up, recorded in
+    `test_the_rls_boundary_still_refuses_a_cross_tenant_update`.
     """
     f = two_orgs_two_users
     with app_engine.connect() as conn:
@@ -243,15 +251,41 @@ def test_an_email_address_does_not_cross_the_boundary(app_engine, two_orgs_two_u
             text("SELECT set_config('app.current_org', :o, false)"),
             {"o": str(f["org_a"])},
         )
+        # (a) Where the personal data lives now. This is a plain RLS question:
+        # the columns are readable, so only `org_member_isolation` can refuse.
         row = conn.execute(
-            text("SELECT email::text, display_name FROM core.users WHERE id = :u"),
+            text(
+                """
+                SELECT email::text, display_name FROM core.organization_members
+                 WHERE user_id = :u
+                """
+            ),
             {"u": f["user_b"]},
         ).one_or_none()
+        assert row is None, (
+            f"organization A read organization B's member record: {row}. That "
+            "is the cross-tenant PII disclosure I55 names, at the table 052 "
+            "moved it to."
+        )
 
-    assert row is None, (
-        f"organization A read organization B's user record: {row}. That is the "
-        "571-row cross-tenant PII disclosure I55 names."
-    )
+        # (b) And the global row refuses before RLS is reached. Named as a
+        # PRIVILEGE refusal rather than accepted as "an error", so a lost
+        # INSERT grant or a missing schema USAGE cannot satisfy it.
+        with pytest.raises(ProgrammingError) as caught:
+            conn.execute(
+                text("SELECT email::text, display_name FROM core.users WHERE id = :u"),
+                {"u": f["user_b"]},
+            )
+        refusal = str(caught.value).lower()
+        assert "permission denied" in refusal, (
+            f"reading the global identity failed for another reason: {caught.value}"
+        )
+        # ...and on THAT table. "permission denied" alone would accept a lost
+        # schema USAGE or any unrelated privilege failure, which says nothing
+        # about the column revoke this test is here for.
+        assert "users" in refusal, (
+            f"something other than core.users refused the read: {caught.value}"
+        )
 
 
 def test_a_deactivated_member_is_still_resolvable(app_engine, owner_session, two_orgs_two_users):
@@ -286,8 +320,16 @@ def test_a_deactivated_member_is_still_resolvable(app_engine, owner_session, two
             {"o": str(f["org_a"])},
         )
         name = conn.execute(
-            text("SELECT display_name FROM core.users WHERE id = :u"),
-            {"u": f["user_a"]},
+            # The membership's name since 052 -- `core.users.display_name` is
+            # no longer readable by this role, and the name a record renders
+            # is the one this organization knows the person by anyway.
+            text(
+                """
+                SELECT display_name FROM core.organization_members
+                 WHERE user_id = :u AND organization_id = :o
+                """
+            ),
+            {"u": f["user_a"], "o": f["org_a"]},
         ).scalar_one_or_none()
 
     assert name == "I55 member A", (
@@ -309,9 +351,8 @@ def test_a_deactivated_member_is_still_resolvable(app_engine, owner_session, two
         rows = conn.execute(
             text(
                 """
-                SELECT om.id, u.display_name
+                SELECT om.id, om.display_name
                   FROM core.organization_members om
-                  JOIN core.users u ON u.id = om.user_id
                  WHERE om.user_id = :u
                 """
             ),
@@ -440,10 +481,19 @@ def test_the_rls_boundary_still_refuses_a_cross_tenant_update(
     stopped exercising the row-level boundary while still passing — a test
     that no longer reaches the thing it names.
 
-    This drives the same boundary with a plain UPDATE of `display_name`,
-    which 047 leaves granted, so the ONLY thing that can stop it is the
-    policy. Measured: 0 rows cross-tenant, 1 row inside your own
-    organization, and organization B's stored name unchanged.
+    This drives the same boundary with a plain UPDATE of `display_name`, so
+    the ONLY thing that can stop it is the policy. Measured: 0 rows
+    cross-tenant, 1 row inside your own organization, and organization B's
+    stored name unchanged.
+
+    🔴 AND IT MOVED TABLES FOR THE SECOND TIME, FOR THE SAME REASON. 052
+    revoked UPDATE on `core.users.display_name` as well, so the statement this
+    test used would now be refused at the privilege layer too — passing while
+    exercising nothing, which is precisely the displacement the paragraph
+    above was written about. `core.organization_members.display_name` is
+    granted and governed by `org_member_isolation`, so the boundary is
+    reachable again. **When a privilege change makes a boundary test
+    unreachable, move the test to a statement that still reaches it.**
 
     ⚠️ IT REFUSES BY MATCHING NOTHING, NOT BY RAISING. PostgreSQL applies the
     SELECT policy to the rows an UPDATE reads through its WHERE, so a
@@ -458,21 +508,35 @@ def test_the_rls_boundary_still_refuses_a_cross_tenant_update(
             {"o": str(f["org_a"])},
         )
         affected = conn.execute(
-            text("UPDATE core.users SET display_name = 'PWNED BY ORG A' WHERE id = :u"),
+            text(
+                """
+                UPDATE core.organization_members SET display_name = 'PWNED BY ORG A'
+                 WHERE user_id = :u
+                """
+            ),
             {"u": f["user_b"]},
         ).rowcount
         conn.rollback()
 
     assert affected == 0, (
-        f"organization A updated {affected} row(s) belonging to organization B. "
-        "The read policy is what refuses this -- see migration 044's COMMENT -- "
-        "so a non-zero count means core.users is not org-scoped."
+        f"organization A updated {affected} membership row(s) belonging to "
+        "organization B. org_member_isolation is what refuses this, so a "
+        "non-zero count means the membership table is not org-scoped."
     )
+    # Read as the OWNER, so this observes the STORED row rather than a policy's
+    # view of it: a refusal that still wrote would otherwise look identical to
+    # one that did not.
     stored = owner_session.execute(
-        text("SELECT display_name FROM core.users WHERE id = :u"), {"u": f["user_b"]}
+        text(
+            """
+            SELECT display_name FROM core.organization_members
+             WHERE user_id = :u AND organization_id = :o
+            """
+        ),
+        {"u": f["user_b"], "o": f["org_b"]},
     ).scalar_one()
     assert stored == "I55 member B", (
-        f"organization B's user is now named {stored!r}. The update reported "
+        f"organization B's member is now named {stored!r}. The update reported "
         "zero rows and was applied anyway."
     )
 
@@ -498,22 +562,26 @@ def test_a_rename_inside_the_organization_still_works(app_engine, two_orgs_two_u
             {"o": str(f["org_a"])},
         )
         renamed = conn.execute(
+            # On the MEMBERSHIP since 052: correcting a colleague's record is
+            # a per-organization act, and doing it on the global row would
+            # rewrite what every other tenant sees.
             text(
                 """
-                UPDATE core.users SET display_name = 'I55 member A, corrected'
-                 WHERE id = :u
+                UPDATE core.organization_members
+                   SET display_name = 'I55 member A, corrected'
+                 WHERE user_id = :u AND organization_id = :o
                 RETURNING display_name
                 """
             ),
-            {"u": f["user_a"]},
+            {"u": f["user_a"], "o": f["org_a"]},
         ).scalar_one_or_none()
         conn.rollback()
 
     assert renamed == "I55 member A, corrected", (
         "an administrator could not rename a member of their OWN organization "
-        f"(got {renamed!r}). Migration 044 has made core.users read-only "
-        "rather than org-scoped, and every cross-tenant test in this file "
-        "passes vacuously against that."
+        f"(got {renamed!r}). The membership table is read-only rather than "
+        "org-scoped, and every cross-tenant test in this file passes "
+        "vacuously against that."
     )
 
 
@@ -766,7 +834,11 @@ def test_sign_in_still_works(app_engine, owner_session) -> None:
         {"s": sub, "e": f"i55-signin-{suffix}@example.test"},
     ).scalar_one()
     owner_session.execute(
-        text("INSERT INTO core.organization_members (organization_id, user_id) VALUES (:o, :u)"),
+        text(
+            "INSERT INTO core.organization_members (organization_id, user_id, email,"
+            " display_name) SELECT :o, :u, u.email, u.display_name FROM core.users u WHERE u.id"
+            " = :u"
+        ),
         {"o": org, "u": uid},
     )
     owner_session.commit()

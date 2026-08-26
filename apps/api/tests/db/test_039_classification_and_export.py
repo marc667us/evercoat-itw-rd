@@ -79,8 +79,9 @@ def test_a_row_cannot_carry_a_level_that_does_not_exist(owner_session, two_orgs)
     # author guard. Membership is a precondition of the test, not its subject.
     owner_session.execute(
         text(
-            "INSERT INTO core.organization_members (organization_id,user_id,status) "
-            "VALUES (:o,:u,'active')"
+            "INSERT INTO core.organization_members (organization_id, user_id, status, email,"
+            " display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM core.users u"
+            " WHERE u.id = :u"
         ),
         {"o": org, "u": user},
     )
@@ -169,8 +170,9 @@ def a_formula(owner_session, two_orgs):
     ).scalar_one()
     owner_session.execute(
         text(
-            "INSERT INTO core.organization_members (organization_id,user_id,status) "
-            "VALUES (:o,:u,'active')"
+            "INSERT INTO core.organization_members (organization_id, user_id, status, email,"
+            " display_name) SELECT :o, :u, 'active', u.email, u.display_name FROM core.users u"
+            " WHERE u.id = :u"
         ),
         {"o": org, "u": user},
     )

@@ -637,7 +637,12 @@ def project_tasks(
                    (t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE
                     AND t.status = ANY(:statuses)) AS is_overdue
             FROM workflow.tasks t
-            LEFT JOIN core.users u ON u.id = t.assigned_user_id
+            -- The assignee's name through the MEMBERSHIP (052): the global
+            -- identity's name belongs to whichever tenant created it, and
+            -- the runtime role can no longer read it. Scoped explicitly, not
+            -- by RLS, so an unset org GUC cannot fan this out.
+            LEFT JOIN core.organization_members u
+                   ON u.user_id = t.assigned_user_id AND u.organization_id = :org
             WHERE t.project_id = :pid AND t.organization_id = :org
             ORDER BY
                 CASE t.status WHEN 'blocked' THEN 1 WHEN 'in_progress' THEN 2

@@ -64,9 +64,10 @@ __all__ = [
 # failed lookup, and a message full of unresolved links reads as broken.
 _REFERENCE = re.compile(r"#([A-Z]{1,6}-[A-Za-z0-9-]{2,40})")
 
-# `@username`. Resolved against `core.users.email`'s local part, because
-# that is the only handle this schema has today; a display name is not
-# unique and cannot be a mention target.
+# `@username`. Resolved against the local part of the address THIS
+# organization knows the member by -- `core.organization_members.email`
+# since 052 -- because that is the only handle this schema has today; a
+# display name is not unique and cannot be a mention target.
 _MENTION = re.compile(r"@([a-zA-Z0-9._-]{2,60})")
 
 # Which code prefixes resolve against which table. Written out rather
@@ -532,12 +533,19 @@ def _resolve_mentions(
             session.execute(
                 text(
                     """
-                    SELECT u.id, u.display_name
-                    FROM core.users u
-                    JOIN core.organization_members m
-                      ON m.user_id = u.id AND m.organization_id = :org
-                     AND m.status = 'active'
-                    WHERE split_part(u.email, '@', 1) = :handle
+                    -- The handle is matched against the address THIS
+                    -- organization knows the member by (052). It used to be
+                    -- `core.users.email`, the global identity's -- so a
+                    -- colleague who also belonged to another tenant was
+                    -- @-mentionable under whichever address was registered
+                    -- first, and unreachable under the one this organization
+                    -- actually uses. The membership is the right scope for a
+                    -- rule that is already scoped to one organization.
+                    SELECT m.user_id AS id, m.display_name
+                    FROM core.organization_members m
+                    WHERE m.organization_id = :org
+                      AND m.status = 'active'
+                      AND split_part(m.email, '@', 1) = :handle
                     LIMIT 2
                     """
                 ),
@@ -706,7 +714,15 @@ def list_messages(
                 SELECT m.id, m.body, m.author_id, m.posted_at, m.edited_at,
                        m.is_deleted, m.reply_to_id, u.display_name AS author_name
                 FROM messaging.messages m
-                JOIN core.users u ON u.id = m.author_id
+                -- Attribution reads the MEMBERSHIP (052). `core.users` holds
+                -- the global identity, whose name belongs to whichever tenant
+                -- created it; `evercoat_app` can no longer read it at all.
+                -- The predicate is explicit rather than left to RLS: the
+                -- policy on this table has a permissive branch when the org
+                -- GUC is unset, and an unscoped join would fan out one row
+                -- per organization the author belongs to.
+                JOIN core.organization_members u
+                  ON u.user_id = m.author_id AND u.organization_id = :org
                 -- 🔴 THE JOIN TO `channels` IS THE ACCESS CONTROL, NOT DECORATION.
                 JOIN messaging.channels c
                   ON c.id = m.channel_id
