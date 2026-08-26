@@ -15,16 +15,24 @@ definer that WRITES (the write fires ADR-028's guards as owner and reopens
 I83). This one is `STABLE` with a single-SELECT body and takes **zero
 arguments** — no write to start the chain, no parameter to aim it with.
 
-### 🔴 A PUSH TO `master` DID NOT TRIGGER CI
+### 🔴 GITHUB PUSH EVENTS RAN ~30 MINUTES LATE — AND ONE EVICTED THE OTHER
 
-Actions enabled, commit on GitHub as head, triggers `branches: [master, main]`
-— and **no run in ~20 minutes**. `gh workflow run ci.yml --ref master` started
-one immediately, so the runner is fine and the push event missed.
+**CORRECTED.** I first concluded that pushes were not triggering CI at all,
+having seen no run twice. They were triggering: the push run for `da708d8`
+appeared at 16:45Z for a push made around 16:15Z. A **delay**, not a miss —
+and the wrong conclusion was reached by measuring twice within the delay
+window.
 
-⚠️ **CHECK THE RUN'S `headSha` AGAINST YOUR TIP.** `gh run list` puts the
-previous commit's green run at the top, which reads as success. That is the
-shape `ci.yml`'s own comment warns about: *a workflow that reports nothing
-while it happens.*
+⚠️ **THE DELAY BITES TWICE.** A manually dispatched run on the newer tip was
+then EVICTED by the late-arriving push run for the OLDER commit, because
+`concurrency: ci-${{ github.ref }}` is a one-slot replacement waiting room and
+not a queue — which `ci.yml`'s own comment says in as many words. CI then ran
+a commit that had already been superseded.
+
+**After pushing:** compare the top run's `headSha` to your tip, and be patient
+before dispatching.
+
+    gh run list --limit 3 --json databaseId,headSha,event,status,conclusion
 
 ### ⚠️ WHAT IS STILL OWED
 
