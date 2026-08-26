@@ -12,6 +12,49 @@ of ten seeded roles and read by **no line of code** until now.
 caller at all** — the twenty-fourth orphaned route, one day after
 twenty-three were closed.
 
+### ▶ LIVE SUITE ON THE DEPLOYED DEMO — three numbers, one complete run
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **747** | 0 | 0 |
+| e2e (Playwright `shell`) | **37** | 0 | 0 |
+| **TOTAL** | **784** | **0** | **0** |
+
+Preflight reported all four capabilities **CONFIGURED**, so these numbers
+cover the whole suite rather than a partial one — no `--allow-partial`.
+Counts read from each tool's own summary line (`747 passed ... in 180.16s`),
+not from the harness.
+
+🔴 **AND THE NEW SCREENS WERE DRIVEN IN A REAL BROWSER**, recorded
+`STATUS expected` in Playwright's own detail file — exercised, not merely
+un-skipped:
+
+    shell/navigation.spec.ts :: Analytics is an enabled link and the page renders
+    shell/navigation.spec.ts :: Reports is an enabled link and the page renders
+    shell/navigation.spec.ts :: neither Intelligence screen invents a figure when it has no data
+    shell/sign-in.spec.ts    :: a person can press Sign in, authenticate, and come back signed in
+
+e2e went 34 → 37: exactly the three tests added. `api-live` 720 → 747.
+
+**Demo URL:** `https://radios-mayor-reduces-overcome.trycloudflare.com`
+(users `lead.demo` … `exec.demo` / `EvercoatDemo-2026!`,
+org `c6031e4b-eff3-4aa6-a87b-697b6941c6e9`).
+
+🔴 **THE TWO ANALYTICS GATES, MEASURED ON THE DEPLOYED API, NOT ASSERTED:**
+
+| user | role | analytics | report | by_project |
+|---|---|---|---|---|
+| `chem.demo` | chemist | 200 | 200 | **null** |
+| `proc.demo` | procurement_specialist | 200 | **403** | null |
+| `dir.demo` | director | 200 | 200 | **1** |
+| `exec.demo` | executive_viewer | 200 | **403** | **1** |
+| `tech.demo` | laboratory_technician | **403** | 403 | — |
+
+`executive_viewer` is the proof the two permissions are independent gates: it
+gets the portfolio and is refused the report. `laboratory_technician` holds
+`project.view` and is still refused, so `analytics.view` is not `project.view`
+under another name.
+
 ### ▶▶ EXACT NEXT ACTION — I105
 
 🔴 **`bind()` VALIDATES IDENTITY AND NOT PERMISSIONS.**

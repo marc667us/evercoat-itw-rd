@@ -2,9 +2,32 @@
 
 ## 2026-08-26 — the orchestrator stopped trusting its arguments, and Intelligence got a screen
 
-No migration. API suite **736 passed / 0 failed / 11 skipped**; web **148
-passed / 0 failed**; ruff, ruff format, mypy (96 files), `tsc` and `next lint`
-green.
+No migration. **Live suite on the deployed demo: 784 passed / 0 failed / 0
+skipped** (`api-live` 747, e2e `shell` 37), one complete run, over a preflight
+that reported all four capabilities CONFIGURED. Local API suite **736 passed /
+0 failed / 11 skipped**; web **148 passed / 0 failed**; ruff, ruff format,
+mypy (96 files), `tsc` and `next lint` green.
+
+🔴 **The three new Intelligence tests ran in a real Chromium against the
+deployed site** and are recorded `STATUS expected` in Playwright's own detail
+file — exercised, not merely un-skipped. e2e went 34 → 37, exactly the three
+added; `api-live` 720 → 747.
+
+🔴 **And the two analytics gates were MEASURED on the deployed API, per role,
+rather than asserted:**
+
+| user | role | analytics | report | by_project |
+|---|---|---|---|---|
+| `chem.demo` | chemist | 200 | 200 | **null** |
+| `proc.demo` | procurement_specialist | 200 | **403** | null |
+| `dir.demo` | director | 200 | 200 | **1** |
+| `exec.demo` | executive_viewer | 200 | **403** | **1** |
+| `tech.demo` | laboratory_technician | **403** | 403 | — |
+
+`executive_viewer` gets the portfolio and is refused the report, which is the
+proof the two permissions are independent gates rather than one wearing two
+names. `laboratory_technician` holds `project.view` and is still refused, so
+`analytics.view` is genuinely a different question.
 
 Four departments existed and one door was ajar in three different ways.
 
