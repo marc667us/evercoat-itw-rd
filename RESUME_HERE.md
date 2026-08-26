@@ -15,6 +15,17 @@ definer that WRITES (the write fires ADR-028's guards as owner and reopens
 I83). This one is `STABLE` with a single-SELECT body and takes **zero
 arguments** — no write to start the chain, no parameter to aim it with.
 
+### 🔴 A PUSH TO `master` DID NOT TRIGGER CI
+
+Actions enabled, commit on GitHub as head, triggers `branches: [master, main]`
+— and **no run in ~20 minutes**. `gh workflow run ci.yml --ref master` started
+one immediately, so the runner is fine and the push event missed.
+
+⚠️ **CHECK THE RUN'S `headSha` AGAINST YOUR TIP.** `gh run list` puts the
+previous commit's green run at the top, which reads as success. That is the
+shape `ci.yml`'s own comment warns about: *a workflow that reports nothing
+while it happens.*
+
 ### ⚠️ WHAT IS STILL OWED
 
 **The I56/I58 FORCE cutover's effect on this function is UNMEASURED.** The
