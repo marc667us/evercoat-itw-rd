@@ -39,10 +39,21 @@ column-versus-table lesson, one level up. Found while correcting a downgrade
 docstring that claimed the role was left "inert": PUBLIC holds CONNECT on the
 database, and `evercoat_report`, never granted it, returns TRUE.
 
-⚠️ **The live suite has NOT been re-run since 053's hardening commits.** It ran
-841/0/0 on `ac7c5ae` with both sign-in tests `['passed']`; `f56ef5a` and
-`3a8af36` changed readiness, the migration probe and config validation, and CI
-was not yet observed on them at the time of writing.
+### ▶ LIVE SUITE AFTER 053 — 853 / 0 / 0
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **816** | 0 | 0 |
+| e2e `shell` | **37** | 0 | 0 |
+| **TOTAL** | **853** | **0** | **0** |
+
+Preflight all four capabilities CONFIGURED; both `sign-in.spec.ts` tests
+`['passed']`. **Sign-in survives being moved to another database role.**
+
+✅ **CI GREEN on `207f298`** — all six jobs, **805 passed / 11 skipped** in CI
+too, and the eleven skips are the pre-existing `tests/integration` ones that
+need a running Keycloak. **Zero sign-in skips**, which is the thing the previous
+run got wrong.
 
 ---
 
