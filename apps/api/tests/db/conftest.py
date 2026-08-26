@@ -36,6 +36,29 @@ def _url(user_env: str, pass_env: str, default_user: str) -> str:
 
 
 @pytest.fixture(scope="session")
+def db_urls() -> dict[str, str]:
+    """The three connection URLs, built from the SAME env the engines use.
+
+    🔴 A TEST THAT HARDCODES A HOST OR A PORT IS A TEST THAT ONLY RUNS HERE.
+
+    `test_053_readiness_reports_sign_in.py` hardcoded `localhost:55432` --
+    this developer host's port. CI runs PostgreSQL on 5432, so every case in
+    that file connected to a dead port and reported the readiness check as
+    `unavailable`, which is a truthful answer to the wrong question. Caught by
+    CI, which is exactly the direction the standing note about `TEST_DB_PORT`
+    warns in, mirrored.
+
+    Exposed as a fixture so anything needing a URL rather than an engine gets
+    the same values `_url` gives the engines, from the same variables.
+    """
+    return {
+        "owner": _url("TEST_OWNER_USER", "TEST_OWNER_PASSWORD", "evercoat_owner"),
+        "app": _url("APP_DB_USER", "APP_DB_PASSWORD", "evercoat_app"),
+        "auth": _url("AUTH_DB_USER", "AUTH_DB_PASSWORD", "evercoat_auth"),
+    }
+
+
+@pytest.fixture(scope="session")
 def owner_engine():
     engine = create_engine(
         _url("TEST_OWNER_USER", "TEST_OWNER_PASSWORD", "evercoat_owner"),

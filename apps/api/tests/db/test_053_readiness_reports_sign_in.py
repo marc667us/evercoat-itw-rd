@@ -38,22 +38,40 @@ from app.core import db as core_db
 
 pytestmark = [pytest.mark.db]
 
-HOST = "localhost:55432/evercoat_itw_rd"
-APP_URL = f"postgresql+psycopg://evercoat_app:ci-app@{HOST}"
-AUTH_URL = f"postgresql+psycopg://evercoat_auth:ci-auth@{HOST}"
-OWNER_URL = f"postgresql+psycopg://evercoat_owner:ci-owner@{HOST}"
+# 🔴 NO HARDCODED HOST, PORT, USER OR PASSWORD -- SEE `db_urls` IN conftest.
+#
+# The first version of this file pinned `localhost:55432`, this developer
+# host's port. CI runs PostgreSQL on 5432, so every case here connected to a
+# dead port, `_check_sign_in` truthfully answered "unavailable", and four tests
+# failed for a reason that had nothing to do with what they assert. The URLs
+# now come from the same environment the engine fixtures read.
 
 
 @pytest.fixture
-def auth_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[object]:
+def auth_url(
+    monkeypatch: pytest.MonkeyPatch, db_urls: dict[str, str], auth_engine
+) -> Iterator[object]:
     """Point the sign-in pool somewhere, and rebuild it for every case.
+
+    ⚠️ IT DEPENDS ON `auth_engine` ONLY TO INHERIT ITS SKIP. Nothing here uses
+    that engine -- these cases build their own -- but every other database test
+    SKIPS when no database is reachable, and without this dependency this file
+    alone would FAIL on a developer machine that has none. A suite where one
+    file reports differently from the rest to the same condition is a suite
+    people learn to read past.
 
     `get_auth_engine` memoises, which is right in production and wrong here:
     without resetting, the second case would silently reuse the first case's
     connection and every assertion after it would be about the wrong role.
     """
 
-    def _set(url: str | None) -> None:
+    def _set(role: str | None) -> None:
+        """Point the pool at one of the three roles by NAME, or at nothing.
+
+        Taking a role name rather than a URL is what keeps a host or a port
+        from being written down in this file a second time.
+        """
+        url = db_urls[role] if role is not None else None
         monkeypatch.setattr(core_db.settings, "auth_database_url", url, raising=False)
         if core_db._auth_engine is not None:
             core_db._auth_engine.dispose()
@@ -70,7 +88,7 @@ def auth_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[object]:
 
 def test_a_correctly_configured_sign_in_connection_is_ready(auth_url) -> None:
     """The control. Everything below is satisfied by a check that always fails."""
-    auth_url(AUTH_URL)
+    auth_url("auth")
     ok, detail = health._check_sign_in()
     assert ok is True, f"a correct configuration was reported as {detail!r}"
     assert detail == "ok"
@@ -93,7 +111,7 @@ def test_pointing_it_at_the_runtime_role_is_not_ready(auth_url) -> None:
     It connects perfectly, and then cannot sign anybody in. Without this the
     check would pass on exactly the misconfiguration it exists to catch.
     """
-    auth_url(APP_URL)
+    auth_url("app")
     ok, detail = health._check_sign_in()
     assert ok is False
     assert "cannot execute" in detail
@@ -112,7 +130,7 @@ def test_an_over_privileged_connection_is_not_ready(auth_url) -> None:
     disclosure 053 closed. The emptiness of the sign-in role is what makes a
     separate pool safe, so readiness asserts it.
     """
-    auth_url(OWNER_URL)
+    auth_url("owner")
     ok, detail = health._check_sign_in()
     assert ok is False, (
         "a connection as evercoat_owner was reported ready. It can execute the "
@@ -136,7 +154,7 @@ def test_half_the_capability_is_not_ready(auth_url, owner_session: Session) -> N
     thing under test is whether the check reads the database, and a mock would
     assert only that the code has an `if`.
     """
-    auth_url(AUTH_URL)
+    auth_url("auth")
     owner_session.execute(
         text("REVOKE EXECUTE ON FUNCTION core.memberships_for_subject(TEXT) FROM evercoat_auth")
     )

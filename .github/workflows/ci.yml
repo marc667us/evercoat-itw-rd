@@ -139,6 +139,13 @@ jobs:
           TEST_OWNER_PASSWORD: ci-owner
           APP_DB_USER: evercoat_app
           APP_DB_PASSWORD: ci-app
+          # 🔴 THE db FIXTURES BUILD THEIR URL FROM THESE, NOT FROM
+          # AUTH_DATABASE_URL. Without them `auth_engine` cannot connect and
+          # every sign-in test SKIPS -- which is a suite that ran nothing,
+          # reported as green. The job's own "were any tests skipped" guard
+          # catches it, and it caught this.
+          AUTH_DB_USER: evercoat_auth
+          AUTH_DB_PASSWORD: ci-auth
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:18080/realms/evercoat
@@ -158,6 +165,13 @@ jobs:
           TEST_OWNER_PASSWORD: ci-owner
           APP_DB_USER: evercoat_app
           APP_DB_PASSWORD: ci-app
+          # 🔴 THE db FIXTURES BUILD THEIR URL FROM THESE, NOT FROM
+          # AUTH_DATABASE_URL. Without them `auth_engine` cannot connect and
+          # every sign-in test SKIPS -- which is a suite that ran nothing,
+          # reported as green. The job's own "were any tests skipped" guard
+          # catches it, and it caught this.
+          AUTH_DB_USER: evercoat_auth
+          AUTH_DB_PASSWORD: ci-auth
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:18080/realms/evercoat
