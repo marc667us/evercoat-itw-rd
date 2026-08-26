@@ -54,16 +54,21 @@ def downgrade() -> None:
     A deployment will have given `evercoat_auth` LOGIN and a password and put
     it in a running process's configuration. Dropping it out from under that
     process turns a schema rollback into an outage in a component the rollback
-    was not about. Revoked to nothing and left in place, it is inert; the
-    application must be rolled back with it either way, exactly as 049 records
-    for its own downgrade.
+    was not about. Stripped of everything this migration gave it and left in
+    place, the application must be rolled back with it either way, exactly as
+    049 records for its own downgrade.
+
+    ⚠️ "INERT" WOULD BE TOO STRONG, AND THE FIRST VERSION OF THIS DOCSTRING
+    SAID IT. The role keeps LOGIN and its password -- a migration did not set
+    those and should not silently unset a deployment's credential -- and it
+    keeps CONNECT, because PUBLIC grants CONNECT on this database to every
+    role. What it loses is EXECUTE on the two lookups and USAGE on `core`,
+    which is the whole of what it was for.
     """
     op.execute(
         text("GRANT EXECUTE ON FUNCTION core.principal_for_subject(TEXT, UUID) TO evercoat_app")
     )
-    op.execute(
-        text("GRANT EXECUTE ON FUNCTION core.memberships_for_subject(TEXT) TO evercoat_app")
-    )
+    op.execute(text("GRANT EXECUTE ON FUNCTION core.memberships_for_subject(TEXT) TO evercoat_app"))
 
     # The role keeps nothing. `REVOKE` before any future `DROP ROLE`, because
     # PostgreSQL refuses to drop a role that still holds a privilege anywhere
@@ -76,6 +81,25 @@ def downgrade() -> None:
         text("REVOKE EXECUTE ON FUNCTION core.memberships_for_subject(TEXT) FROM evercoat_auth")
     )
     op.execute(text("REVOKE USAGE ON SCHEMA core FROM evercoat_auth"))
+
+    # ⚠️ AND THE DATABASE-LEVEL CONNECT, WHICH THE FIRST VERSION LEFT BEHIND.
+    #
+    # Raised by Codex against this function's own docstring: it said the role
+    # "keeps nothing" while the upgrade's `GRANT CONNECT` survived, so a
+    # downgraded database still admitted those credentials -- with PUBLIC and
+    # catalogue privileges -- rather than refusing them at the door. A comment
+    # asserting a property the code does not implement is this repository's
+    # most repeated defect, and here it was mine.
+    #
+    # Formatted from `current_database()` for the same reason the upgrade
+    # grants it that way: the database name differs per environment.
+    op.execute(
+        text(
+            "DO $$ BEGIN EXECUTE format("
+            "'REVOKE CONNECT ON DATABASE %I FROM evercoat_auth', current_database()"
+            "); END $$"
+        )
+    )
 
     # 🔴 ASSERT THE DOWNGRADE ACHIEVED ITS POINT, rather than assuming the
     # statements above did anything. A GRANT that silently failed to apply

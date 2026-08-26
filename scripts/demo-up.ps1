@@ -234,6 +234,37 @@ Write-Host "  keycloak client repointed ($kcChecked/$kcChecked values verified p
 # the augmentation exiting and the server starting.
 Write-Host "  keycloak recreated on $PublicUrl/auth (6-15 min to boot)"
 
+# ----------------------------------------------------------- api preflight
+# 🔴 THE SIGN-IN ROLE MUST BE ABLE TO LOG IN, AND THIS SCRIPT PROVISIONS
+#    NOTHING -- SO IT CHECKS INSTEAD OF ASSUMING.
+#
+# Migration 053 (I109) revoked EXECUTE on core.principal_for_subject and
+# core.memberships_for_subject from evercoat_app and gave them to
+# evercoat_auth, which 053 creates NOLOGIN because a migration must not carry
+# a password. On a database prepared before 053 that role therefore exists and
+# cannot connect -- and the symptom is the API starting cleanly, serving
+# /health/live, and refusing EVERY authenticated request.
+#
+# Raised by Codex: the script hardcodes these credentials and never installs
+# them. It still should not install them -- provisioning is the deployment's
+# job and this script has no superuser password -- but starting a demo that
+# cannot authenticate anybody is worse than refusing, and the refusal can name
+# the exact remedy. Same argument live-suite.sh's preflight makes.
+$authProbe = docker exec -e PGPASSWORD=ci-auth evercoat-postgres `
+    psql -U evercoat_auth -d evercoat_itw_rd -tAc "SELECT 1" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw (
+        "the sign-in role cannot connect, so nobody would be able to log in " +
+        "to this demo (I109, migration 053). psql said: $authProbe`n`n" +
+        "Fix it with:`n" +
+        "  docker exec evercoat-postgres psql -U postgres -d evercoat_itw_rd ``n" +
+        "    -c ""ALTER ROLE evercoat_auth LOGIN PASSWORD 'ci-auth';""`n`n" +
+        "If the role does not exist at all, the database predates migration " +
+        "053 -- run ``alembic upgrade head`` first."
+    )
+}
+Write-Host "  sign-in role can connect (I109 preflight)"
+
 # ----------------------------------------------------------------------- api
 $apiCmd = @"
 `$env:DATABASE_URL='postgresql+psycopg://evercoat_app:ci-app@localhost:55432/evercoat_itw_rd';

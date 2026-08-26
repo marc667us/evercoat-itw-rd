@@ -131,6 +131,18 @@ services:
       # Privilege follows the connection: an injected statement on the runtime
       # pool cannot reach the two subject-argument lookups, which is the whole
       # mechanism. Required -- /health/ready is not ready without it.
+      #
+      # ⚠️ THIS SUPPLIES THE CREDENTIAL; IT DOES NOT PROVISION THE ROLE.
+      # Migration 053 creates `evercoat_auth` NOLOGIN, exactly as 001 creates
+      # `evercoat_app`, because a migration must not carry a password. Both
+      # roles need LOGIN and a password set out of band after migrating:
+      #
+      #   ALTER ROLE evercoat_app  LOGIN PASSWORD '<APP_DB_PASSWORD>';
+      #   ALTER ROLE evercoat_auth LOGIN PASSWORD '<AUTH_DB_PASSWORD>';
+      #
+      # Raised by Codex against the auth role. It is the same gap the app role
+      # has always had, and naming it here is cheaper than a fresh stack that
+      # starts, looks healthy on /health/live, and authenticates nobody.
       AUTH_DATABASE_URL: postgresql+psycopg://${AUTH_DB_USER:-evercoat_auth}:${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-evercoat_itw_rd}
       VALKEY_URL: redis://valkey:6379/0
       KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://keycloak:8080/realms/evercoat}

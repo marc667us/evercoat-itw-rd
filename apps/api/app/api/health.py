@@ -101,20 +101,69 @@ def _check_sign_in() -> tuple[bool, str]:
     runtime role would connect happily and then be refused at the first
     sign-in; `has_function_privilege` for the connected role turns that into a
     startup-time answer instead of a user-facing one.
+
+    🔴 BOTH FUNCTIONS, NOT ONE. Raised by Codex: the first version checked
+    `principal_for_subject` alone, so revoking EXECUTE on
+    `memberships_for_subject` left readiness reporting `ok` while `/api/me`
+    -- the route that lists a person's organizations, and the first thing the
+    browser calls after sign-in -- returned a permission error. A readiness
+    check that covers one of the two capabilities a component uses reports on
+    a component that does not exist.
+
+    🔴 AND IT REFUSES AN OVER-PRIVILEGED CONNECTION. Also Codex: pointing
+    `AUTH_DATABASE_URL` at `evercoat_owner` satisfies "can execute" and hands
+    this pool -- which never sets a tenant GUC -- full table access. That is a
+    bigger hole than the one migration 053 closed, arrived at by a plausible
+    copy-paste. The emptiness of the sign-in role is the property that makes
+    the separate pool safe, so readiness asserts it rather than assuming the
+    deployment got it right.
     """
     try:
         with auth_session_scope() as session:
-            allowed = session.execute(
+            row = session.execute(
                 text(
-                    "SELECT has_function_privilege("
-                    "  current_user,"
-                    "  'core.principal_for_subject(TEXT, UUID)',"
-                    "  'EXECUTE')"
+                    """
+                    SELECT
+                      has_function_privilege(
+                        current_user,
+                        'core.principal_for_subject(TEXT, UUID)', 'EXECUTE'
+                      ) AS can_principal,
+                      has_function_privilege(
+                        current_user,
+                        'core.memberships_for_subject(TEXT)', 'EXECUTE'
+                      ) AS can_memberships,
+                      has_table_privilege(current_user, 'core.users', 'SELECT')
+                        AS reads_users,
+                      (SELECT rolsuper OR rolbypassrls
+                         FROM pg_roles WHERE rolname = current_user)
+                        AS too_powerful
+                    """
                 )
-            ).scalar_one()
-        if not allowed:
-            log.warning("health_sign_in_role_lacks_execute")
-            return False, "sign-in role cannot execute the principal lookup"
+            ).one()
+
+        if not (row.can_principal and row.can_memberships):
+            missing = [
+                name
+                for name, ok in (
+                    ("principal_for_subject", row.can_principal),
+                    ("memberships_for_subject", row.can_memberships),
+                )
+                if not ok
+            ]
+            log.warning("health_sign_in_role_lacks_execute", missing=missing)
+            return False, f"sign-in role cannot execute: {', '.join(missing)}"
+
+        if row.too_powerful or row.reads_users:
+            # Deliberately not named in the response: which role is
+            # misconfigured is operator information, and the body of a
+            # readiness probe is the wrong place to publish it.
+            log.warning(
+                "health_sign_in_role_overprivileged",
+                reads_users=bool(row.reads_users),
+                superuser_or_bypassrls=bool(row.too_powerful),
+            )
+            return False, "sign-in role has more than sign-in privileges"
+
         return True, "ok"
     except AuthConnectionNotConfiguredError:
         # Named separately from a connection failure: one is a missing

@@ -101,6 +101,19 @@ BEGIN
 END
 $$;
 
+-- 🔴 NORMALISE THE ATTRIBUTES, BECAUSE `IF NOT EXISTS` MEANS THE ROLE MAY
+--    ALREADY EXIST AND NOT BE WHAT THIS MIGRATION ASSUMES.
+--
+-- Raised by Codex. The block above is idempotent about EXISTENCE and said
+-- nothing about CAPABILITY, so a role somebody had already created -- or one
+-- left behind by an earlier downgrade -- kept whatever it had. This runs
+-- unconditionally, so the end state is the same whether the role was created
+-- here or found. `NOINHERIT` is the load-bearing one: without it a membership
+-- in some group grants this role that group's privileges automatically, on a
+-- connection that never sets a tenant GUC.
+ALTER ROLE evercoat_auth
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION NOINHERIT;
+
 COMMENT ON ROLE evercoat_auth IS
     'Sign-in only (I109, migration 053). Holds EXECUTE on '
     'core.principal_for_subject and core.memberships_for_subject and '
@@ -167,6 +180,27 @@ COMMIT;
 
 -- ---------------------------------------------------------------------
 -- PROVE IT. Privileges, both directions, plus the emptiness of the role.
+--
+-- ⚠️ THIS PROBE SITS AFTER `COMMIT`, AND WHAT THAT MEANS DEPENDS ON HOW THE
+-- FILE IS RUN. Raised by Codex as a partial-application risk, and MEASURED
+-- rather than argued:
+--
+--   Under alembic -- the only path any environment actually uses --
+--   `migrations_alembic/_sql.py` STRIPS every bare `BEGIN;`/`COMMIT;` line
+--   and runs what is left inside alembic's own per-migration transaction.
+--   So a probe failure rolls the whole migration back. Forced, by granting
+--   `evercoat_auth` to `evercoat_app` so the first assertion had to fail:
+--
+--       alembic_version                     : k1000   (not stamped)
+--       proacl on principal_for_subject     : {evercoat_owner=X, evercoat_app=X}
+--
+--   -- neither the GRANT to evercoat_auth nor the REVOKE from evercoat_app
+--   survived. Atomic.
+--
+--   Applied standalone with `psql -f`, the COMMIT is real and a probe failure
+--   would leave the privilege changes in place. That is true of every probe
+--   in this directory (046, 052) and is the price of files that can also be
+--   read and run by hand. **Apply migrations with alembic.**
 -- ---------------------------------------------------------------------
 DO $probe$
 DECLARE
@@ -229,24 +263,33 @@ BEGIN
     --     their owner. Granting any would quietly turn a sign-in role
     --     into one that reads tenant data on an unscoped connection,
     --     which is a bigger hole than the one being closed.
+    -- ⚠️ EVERY APPLICATION SCHEMA, NOT JUST `core`. The first version looked
+    -- only at `core`, and Codex pointed out the hole: a pre-existing
+    -- `evercoat_auth` that was a member of some group with SELECT on
+    -- `projects` or `materials` would pass a core-only check and still read
+    -- those tables on an unscoped connection. `NOINHERIT` above closes the
+    -- membership route; this closes the direct-grant one, and asserts rather
+    -- than trusting either.
     FOR v_tbl IN
-        SELECT c.relname
+        SELECT format('%I.%I', n.nspname, c.relname)
           FROM pg_class c
           JOIN pg_namespace n ON n.oid = c.relnamespace
-         WHERE n.nspname = 'core' AND c.relkind IN ('r', 'v', 'm', 'p')
+         WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND n.nspname NOT LIKE 'pg_toast%'
+           AND c.relkind IN ('r', 'v', 'm', 'p')
     LOOP
         FOREACH v_priv IN ARRAY ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']
         LOOP
-            IF has_table_privilege('evercoat_auth', format('core.%I', v_tbl), v_priv) THEN
+            IF has_table_privilege('evercoat_auth', v_tbl, v_priv) THEN
                 RAISE EXCEPTION
-                    '053 FAILED: evercoat_auth holds % on core.% -- it is a '
-                    'second application role on a connection that never sets '
-                    'a tenant GUC. It must hold EXECUTE on two functions and '
-                    'nothing else.', v_priv, v_tbl;
+                    '053 FAILED: evercoat_auth holds % on % -- it is a second '
+                    'application role on a connection that never sets a tenant '
+                    'GUC. It must hold EXECUTE on two functions and nothing '
+                    'else.', v_priv, v_tbl;
             END IF;
         END LOOP;
     END LOOP;
-    RAISE NOTICE '053: evercoat_auth holds no table privilege in core';
+    RAISE NOTICE '053: evercoat_auth holds no table privilege in any schema';
 
     -- (6) And it cannot log in until a deployment says so.
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'evercoat_auth' AND rolsuper) THEN
