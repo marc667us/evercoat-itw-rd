@@ -2,7 +2,9 @@
 
 ## ▶▶ SESSION 2026-08-26 (part 2) — I105 CLOSED
 
-Migration **048 (`g1000`)**, **ADR-030**. API suite **750 / 0 / 11**; ruff,
+Tip **`fd62969`**, pushed, **CI 6/6 GREEN** (run 32991114903 — `headSha`
+checked against the tip, not read off the top row). Migration **048 (`g1000`)**,
+**ADR-030**. API suite **750 / 0 / 11**; `tests/db` **370 / 0 skipped**; ruff,
 format, mypy clean.
 
 **I105 is closed.** `core.authorization_for_current_session()` derives the
