@@ -19,12 +19,19 @@ orchestrator path — MSD asking the laboratory a question, or any later agent
 place. See `app/agents/boundary.py` for why that is the conductor tier's job
 and why it is deliberately not described as the only boundary.
 
-⚠️ THE SESSION IS THE CALLER'S OWN, AND THAT IS LOAD-BEARING.
+🔴 THE SESSION IS THE CALLER'S OWN, AND SINCE I104 SOMETHING CHECKS IT.
 Every function here takes the RLS-scoped session the caller already holds. It
 must never open its own connection or borrow a privileged one: RLS is what
 makes "this organization's batches" true independently of the Python above
 it, and a conductor that reached around it would return another tenant's
 work to an agent that then reasoned over it.
+
+That used to be this paragraph and nothing else — a comment asserting a rule
+the code did not have. `caller.bind(session)` now asks PostgreSQL, through
+`app.current_org` and `app.current_user_id`, whether the session really is
+this principal's, and refuses if it is not. It returns the session, so the
+check cannot be skipped by forgetting a line: there is no other expression
+here that yields something to pass to the service.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agents.boundary import require
+from app.agents.principal import AgentPrincipal
 from app.domains.laboratory import service as laboratory
 
 __all__ = ["DEPARTMENT", "batch", "batches"]
@@ -50,17 +58,16 @@ VIEW = "batch.view"
 def batches(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
     project_id: uuid.UUID | None = None,
     status: str | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Lab batches this caller may see."""
-    require(permissions, department=DEPARTMENT, permission=VIEW)
+    require(caller, department=DEPARTMENT, permission=VIEW)
     return laboratory.list_batches(
-        session,
-        organization_id=organization_id,
+        caller.bind(session),
+        organization_id=caller.organization_id,
         project_id=project_id,
         status=status,
         limit=limit,
@@ -71,9 +78,10 @@ def batch(
     session: Session,
     *,
     batch_id: uuid.UUID,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
 ) -> dict[str, Any]:
     """One batch, with whatever the domain service considers its detail."""
-    require(permissions, department=DEPARTMENT, permission=VIEW)
-    return laboratory.get_batch(session, batch_id=batch_id, organization_id=organization_id)
+    require(caller, department=DEPARTMENT, permission=VIEW)
+    return laboratory.get_batch(
+        caller.bind(session), batch_id=batch_id, organization_id=caller.organization_id
+    )

@@ -63,6 +63,7 @@ from sqlalchemy.orm import Session
 # unauthenticated caller before any handler runs, and the conductor refuses on
 # the paths that have no route.
 from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
     testing_methods,
     testing_test,
     testing_tests,
@@ -225,8 +226,7 @@ def get_tests(
     """
     return testing_tests(
         session,
-        organization_id=principal.organization_id,
-        permissions=principal.permissions,
+        caller=AgentPrincipal.of(principal),
         project_id=project_id,
         review_state=review_state,
     )
@@ -249,8 +249,7 @@ def get_methods(
     """
     return testing_methods(
         session,
-        organization_id=principal.organization_id,
-        permissions=principal.permissions,
+        caller=AgentPrincipal.of(principal),
     )
 
 
@@ -293,8 +292,7 @@ def get_one_test(
         return testing_test(
             session,
             test_id=test_id,
-            organization_id=principal.organization_id,
-            permissions=principal.permissions,
+            caller=AgentPrincipal.of(principal),
         )
     except TestNotFoundError as exc:
         raise _missing(exc) from exc

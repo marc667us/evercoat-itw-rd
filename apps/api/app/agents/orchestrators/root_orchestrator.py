@@ -21,59 +21,79 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.agents.conductors import analysis_conductor, laboratory_conductor, testing_conductor
+from app.agents.conductors import (
+    analysis_conductor,
+    laboratory_conductor,
+    msd_conductor,
+    testing_conductor,
+)
 from app.agents.conductors.analysis_conductor import UnknownDashboardError
 from app.agents.conductors.msd_conductor import MsdAnswer
-from app.agents.conductors.msd_conductor import answer as msd_answer
 from app.agents.ports import LanguageModelPort
+from app.agents.principal import AgentPrincipal
 
 __all__ = [
+    "AgentPrincipal",
     "UnknownDashboardError",
+    "analysis_analytics",
     "analysis_dashboard",
     "analysis_report",
     "answer_question",
     "laboratory_batch",
     "laboratory_batches",
+    "msd_threads",
+    "msd_turns",
     "testing_methods",
     "testing_test",
     "testing_tests",
 ]
 
+# 🔴 RE-EXPORTED ON PURPOSE, AND IT IS NOT A CONVENIENCE.
+#
+# A route must build an `AgentPrincipal` to call anything here, and
+# `tests/test_agent_topology.py` forbids an API module importing anything
+# under `app.agents.conductors` or `app.agents.tools`. Without this
+# re-export the rule would push routes toward importing
+# `app.agents.principal` directly — a second agent-tier import path, which
+# is the shape §0.2 exists to prevent. One door means one import.
+
 
 def answer_question(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    user_id: uuid.UUID,
-    role_codes: frozenset[str],
+    caller: AgentPrincipal,
     question: str,
     project_id: uuid.UUID | None = None,
-    permissions: frozenset[str] = frozenset(),
     model: LanguageModelPort | None = None,
 ) -> MsdAnswer:
     """Answer a question as the given principal.
 
-    🔴 EVERY ARGUMENT HERE COMES FROM A VERIFIED PRINCIPAL, NOT FROM THE
-    REQUEST BODY.
+    🔴 THIS DOCSTRING USED TO BE THE ONLY THING ENFORCING I104.
 
-    `organization_id`, `user_id` and `role_codes` are read from the
-    `Principal` the route resolved — which was built from a
-    signature-verified token and a database lookup, not from anything the
-    caller typed. A body that could name its own `user_id` would let
-    somebody ask MSD what is waiting for a colleague.
+    It said, correctly and uselessly: *"EVERY ARGUMENT HERE COMES FROM A
+    VERIFIED PRINCIPAL, NOT FROM THE REQUEST BODY."* The signature was
+    `organization_id`, `user_id`, `role_codes` and `permissions` — four
+    ordinary keyword arguments — so the sentence was a request to the next
+    caller, not a property of the function. Codex raised it; it was true.
+    An in-process caller could name a colleague's `user_id` and ask MSD
+    what was waiting for them, or hand in a permission set the conductor
+    would then faithfully consult.
 
-    `session` must be the caller's own RLS-scoped session. That is the
-    mechanism §7 relies on: retrieval returns what this person can open,
-    so filtering happens BEFORE anything reasons over it, and never after.
+    There is now one argument, and it cannot be assembled from values:
+    `AgentPrincipal.of(principal)` is the only factory and it demands the
+    `Principal` the route resolved from a signature-verified token plus a
+    database lookup. See `app/agents/principal.py`.
+
+    `session` must be the caller's own RLS-scoped session — the mechanism §7
+    relies on, so retrieval returns what this person can open and filtering
+    happens BEFORE anything reasons over it. The conductor now proves that
+    against PostgreSQL's own GUCs rather than trusting it.
     """
-    return msd_answer(
+    return msd_conductor.answer(
         session,
-        organization_id=organization_id,
-        user_id=user_id,
-        role_codes=role_codes,
+        caller=caller,
         question=question,
         project_id=project_id,
-        permissions=permissions,
         model=model,
     )
 
@@ -108,8 +128,7 @@ def answer_question(
 def laboratory_batches(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
     project_id: uuid.UUID | None = None,
     status: str | None = None,
     limit: int = 200,
@@ -117,8 +136,7 @@ def laboratory_batches(
     """Lab batches, through the laboratory conductor."""
     return laboratory_conductor.batches(
         session,
-        organization_id=organization_id,
-        permissions=permissions,
+        caller=caller,
         project_id=project_id,
         status=status,
         limit=limit,
@@ -129,23 +147,20 @@ def laboratory_batch(
     session: Session,
     *,
     batch_id: uuid.UUID,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
 ) -> dict[str, Any]:
     """One lab batch, through the laboratory conductor."""
     return laboratory_conductor.batch(
         session,
         batch_id=batch_id,
-        organization_id=organization_id,
-        permissions=permissions,
+        caller=caller,
     )
 
 
 def testing_tests(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
     project_id: uuid.UUID | None = None,
     review_state: str | None = None,
     limit: int = 200,
@@ -153,8 +168,7 @@ def testing_tests(
     """The test queue, through the testing conductor."""
     return testing_conductor.tests(
         session,
-        organization_id=organization_id,
-        permissions=permissions,
+        caller=caller,
         project_id=project_id,
         review_state=review_state,
         limit=limit,
@@ -165,30 +179,26 @@ def testing_test(
     session: Session,
     *,
     test_id: uuid.UUID,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
 ) -> dict[str, Any]:
     """One test and its derived disposition, through the testing conductor."""
     return testing_conductor.test(
         session,
         test_id=test_id,
-        organization_id=organization_id,
-        permissions=permissions,
+        caller=caller,
     )
 
 
 def testing_methods(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Test methods, through the testing conductor."""
     return testing_conductor.methods(
         session,
-        organization_id=organization_id,
-        permissions=permissions,
+        caller=caller,
         limit=limit,
     )
 
@@ -197,33 +207,70 @@ def analysis_dashboard(
     session: Session,
     *,
     name: str,
-    user_id: uuid.UUID,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
 ) -> dict[str, Any]:
     """One dashboard, through the analysis conductor."""
-    return analysis_conductor.dashboard(
-        session,
-        name=name,
-        user_id=user_id,
-        organization_id=organization_id,
-        permissions=permissions,
-    )
+    return analysis_conductor.dashboard(session, name=name, caller=caller)
 
 
 def analysis_report(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
     project_id: uuid.UUID | None = None,
     limit: int = 200,
 ) -> dict[str, Any]:
     """The test-results report, through the analysis conductor."""
     return analysis_conductor.report(
         session,
-        organization_id=organization_id,
-        permissions=permissions,
+        caller=caller,
         project_id=project_id,
         limit=limit,
     )
+
+
+def analysis_analytics(
+    session: Session,
+    *,
+    caller: AgentPrincipal,
+    project_id: uuid.UUID | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Testing and laboratory activity, counted — through the analysis conductor.
+
+    Gated on `analytics.view`, with the organization-wide `by_project`
+    breakdown gated separately on `analytics.portfolio`. Those two
+    permissions are held by nine and two of the ten seeded roles and, until
+    this entry point, were read by no line of application code.
+    """
+    return analysis_conductor.analytics(session, caller=caller, project_id=project_id, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# MSD's conversation surface.
+#
+# 🔴 THE DEPARTMENT §0.2 NAMES BY NAME NOW HAS ONE DOOR INSTEAD OF FOUR.
+#
+# *"API routes never call specialists directly. MSD is reached through the
+# orchestrator."* Three of MSD's four endpoints imported
+# `app.domains.msd.service` and called it — governed asking, ungoverned
+# reading. See `msd_conductor`'s conversation section for what that meant in
+# practice and for the measurement of who the `msd.use` gate newly refuses.
+#
+# ⚠️ READS ONLY. `open_thread` and `record_exchange` stay on the route, like
+# every other write in this tier (§4).
+# ---------------------------------------------------------------------------
+
+
+def msd_threads(
+    session: Session, *, caller: AgentPrincipal, limit: int = 50
+) -> list[dict[str, Any]]:
+    """The caller's own MSD conversations, through the MSD conductor."""
+    return msd_conductor.threads(session, caller=caller, limit=limit)
+
+
+def msd_turns(
+    session: Session, *, caller: AgentPrincipal, thread_id: uuid.UUID, limit: int = 200
+) -> list[dict[str, Any]]:
+    """One conversation and its evidence, through the MSD conductor."""
+    return msd_conductor.turns(session, caller=caller, thread_id=thread_id, limit=limit)

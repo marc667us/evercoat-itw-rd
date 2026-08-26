@@ -29,7 +29,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.agents.orchestrators.root_orchestrator import UnknownDashboardError, analysis_dashboard
+from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
+    UnknownDashboardError,
+    analysis_dashboard,
+)
 from app.core.security import Principal, get_db, require_permission
 
 router = APIRouter()
@@ -78,16 +82,17 @@ def get_role_dashboard(
         return analysis_dashboard(
             session,
             name=role,
-            user_id=principal.user_id,
-            organization_id=principal.organization_id,
-            # THE CALLER'S PERMISSIONS, because §11's counts are of ACTIONABLE
-            # items and RLS cannot answer that question. RLS says what may be
-            # SEEN; a permission says what may be DONE. Without this the
-            # approvals panel offered steps the engine would refuse and the
-            # reviews panel counted work the caller cannot perform. Raised by
-            # Codex -- and dropping it silently is exactly what the analysis
-            # conductor's first draft did.
-            permissions=principal.permissions,
+            # 🔴 ONE ARGUMENT, AND IT CANNOT BE ASSEMBLED FROM VALUES (I104).
+            #
+            # This used to pass `user_id`, `organization_id` and `permissions`
+            # separately, with a comment explaining that the permissions were
+            # load-bearing: §11's counts are of ACTIONABLE items, RLS says
+            # what may be SEEN and a permission says what may be DONE, and
+            # dropping them left the approvals panel offering steps the engine
+            # would refuse. All three still reach the builders — they are
+            # carried by the principal now, so a caller cannot pass two of the
+            # three, and cannot pass a set nobody verified.
+            caller=AgentPrincipal.of(principal),
         )
     except UnknownDashboardError as exc:
         # 404 names the four rather than echoing the input back: a message

@@ -32,6 +32,11 @@ readable fact instead of a habit.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle only matters to the checker
+    from app.agents.principal import AgentPrincipal
+
 __all__ = ["DepartmentDeniedError", "require"]
 
 
@@ -49,8 +54,17 @@ class DepartmentDeniedError(PermissionError):
         super().__init__(f"the {department} department requires the {permission!r} permission")
 
 
-def require(permissions: frozenset[str], *, department: str, permission: str) -> None:
+def require(caller: AgentPrincipal, *, department: str, permission: str) -> None:
     """Refuse unless the caller holds `permission`.
+
+    🔴 IT TAKES A VERIFIED PRINCIPAL, NOT A SET OF STRINGS (I104).
+
+    It used to take `permissions: frozenset[str]`, which made this gate exactly
+    as true as whatever the caller chose to pass — and the orchestrator above
+    it accepted that set as an ordinary keyword argument. A gate consulting a
+    set the caller supplied is not a gate; it is a lookup. `AgentPrincipal`
+    cannot be built from loose values, so there is no longer a way to reach
+    this function with a permission set nobody verified.
 
     🔴 IT REFUSES, IT DOES NOT FILTER.
 
@@ -60,5 +74,5 @@ def require(permissions: frozenset[str], *, department: str, permission: str) ->
     A conductor that returned data and trusted its caller to discard it would
     be the "filter after generation" mistake with extra steps.
     """
-    if permission not in permissions:
+    if permission not in caller.permissions:
         raise DepartmentDeniedError(department, permission)

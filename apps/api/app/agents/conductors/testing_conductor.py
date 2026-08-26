@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agents.boundary import require
+from app.agents.principal import AgentPrincipal
 from app.domains.testing import service as testing
 
 __all__ = ["DEPARTMENT", "methods", "test", "tests"]
@@ -42,17 +43,16 @@ VIEW = "test.view"
 def tests(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
     project_id: uuid.UUID | None = None,
     review_state: str | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """The test queue this caller may see."""
-    require(permissions, department=DEPARTMENT, permission=VIEW)
+    require(caller, department=DEPARTMENT, permission=VIEW)
     return testing.list_tests(
-        session,
-        organization_id=organization_id,
+        caller.bind(session),
+        organization_id=caller.organization_id,
         project_id=project_id,
         review_state=review_state,
         limit=limit,
@@ -63,25 +63,27 @@ def test(
     session: Session,
     *,
     test_id: uuid.UUID,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
 ) -> dict[str, Any]:
     """One test, with the five stored axes and the derived disposition.
 
     Returned as the domain service computed them. See the module docstring:
     this conductor does not derive status and does not confirm one.
     """
-    require(permissions, department=DEPARTMENT, permission=VIEW)
-    return testing.get_test(session, test_id=test_id, organization_id=organization_id)
+    require(caller, department=DEPARTMENT, permission=VIEW)
+    return testing.get_test(
+        caller.bind(session), test_id=test_id, organization_id=caller.organization_id
+    )
 
 
 def methods(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Test methods, with the limits §10's derivation reads."""
-    require(permissions, department=DEPARTMENT, permission=VIEW)
-    return testing.list_methods(session, organization_id=organization_id, limit=limit)
+    require(caller, department=DEPARTMENT, permission=VIEW)
+    return testing.list_methods(
+        caller.bind(session), organization_id=caller.organization_id, limit=limit
+    )

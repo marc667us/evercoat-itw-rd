@@ -36,7 +36,9 @@ from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
+from app.agents.boundary import require
 from app.agents.ports import LanguageModelPort, NullLanguageModel
+from app.agents.principal import AgentPrincipal
 from app.agents.tools import (
     compare_formulas,
     explain_test,
@@ -50,7 +52,26 @@ from app.agents.tools import (
 )
 from app.domains.msd.retrieval import RetrievedRecord
 
-__all__ = ["DISCLAIMER", "MsdAnswer", "answer"]
+__all__ = ["DEPARTMENT", "DISCLAIMER", "USE", "MsdAnswer", "answer", "threads", "turns"]
+
+DEPARTMENT = "msd"
+
+#: 🔴 MSD WAS THE ONE DEPARTMENT NOT ON THE SHARED GATE.
+#:
+#: `app/agents/boundary.py` says so in its own docstring: *"`msd_conductor`
+#: already does this check inline and per capability (`"formula.view_cost" in
+#: permissions`, `"knowledge.view" in permissions`); this is the same rule,
+#: named once, so the next department does not have to remember it."* Three
+#: departments were then built on `require()` and MSD was left as the one
+#: that remembered — which it did not: on 2026-08-25 `explain_result` called
+#: the testing tool with no check at all, the THIRD instance of that shape in
+#: this file, with the precedent thirty lines below the bug.
+#:
+#: The per-capability checks below stay — they are what makes a cost figure
+#: or a knowledge passage conditional WITHIN an answer, which a department
+#: gate cannot express. What changes is that reaching the department at all
+#: now goes through the same door as the other three.
+USE = "msd.use"
 
 #: §7, verbatim. The database REFUSES an assistant turn without a
 #: disclaimer (`msd_turns_assistant_is_labelled`), so this is not a
@@ -233,20 +254,31 @@ def classify(question: str) -> Intent:
 def answer(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    user_id: uuid.UUID,
-    role_codes: frozenset[str],
+    caller: AgentPrincipal,
     question: str,
     project_id: uuid.UUID | None = None,
-    permissions: frozenset[str] = frozenset(),
     model: LanguageModelPort | None = None,
 ) -> MsdAnswer:
     """Answer one question, inside the caller's boundary.
 
-    `session` MUST be the caller's own RLS-scoped session — every tool
-    that touches records depends on that, and none of them re-checks
-    permissions in Python.
+    🔴 `session` MUST BE THE CALLER'S OWN RLS-SCOPED SESSION — and since I104
+    that sentence is checked rather than asserted. Every tool that touches
+    records depends on it and none of them re-checks permissions in Python,
+    so a session belonging to somebody else would have made every one of them
+    answer for the wrong person. `caller.bind(session)` asks PostgreSQL, not
+    the caller.
+
+    The four values the body reads are unpacked from the verified principal
+    rather than accepted as arguments (I104). They are the same names as
+    before on purpose: the change is where they come from, not what the
+    composition below does with them.
     """
+    require(caller, department=DEPARTMENT, permission=USE)
+    session = caller.bind(session)
+    organization_id = caller.organization_id
+    user_id = caller.user_id
+    role_codes = caller.roles
+    permissions = caller.permissions
     model = model or NullLanguageModel()
     intent = classify(question)
 
@@ -1099,3 +1131,97 @@ def _compose_comparison(left_label: str, right_label: str, diff: dict[str, Any])
     if previous.get("status") and new.get("status"):
         lines.append(f"Statuses: {previous['status']} -> {new['status']}.")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# The conversation surface — the three doors that bypassed the tier entirely
+# ---------------------------------------------------------------------------
+#
+# 🔴 THREE OF MSD'S FOUR ENDPOINTS REACHED THE DOMAIN SERVICE DIRECTLY.
+#
+# §0.2 is quoted at the top of `app/api/msd.py`: *"API routes never call
+# specialists directly. MSD is reached through the orchestrator."* Only
+# `POST /threads/{id}/ask` did. `GET /threads`, `POST /threads` and
+# `GET /threads/{id}/turns` imported `app.domains.msd.service` and called it,
+# so the department had one governed door and three ordinary ones.
+#
+# That is the same defect this project has now found seven times in another
+# shape — a layer with no caller, a route with no caller, a permission with no
+# enforcement point. Here it was the inverse: a governed entry point that
+# three of four callers walked around.
+#
+# ⚠️ AND THE TWO READS HAD NO PERMISSION CHECK OF ANY KIND. `get_threads` and
+# `get_turns` took `get_principal` alone. They were not INSECURE — migration
+# 022's `owner_scope` policy and 026's `thread_scope` make a thread visible to
+# its owner and nobody else, in the database, which is the barrier that
+# actually matters. But it meant `msd.use` governed asking and not reading,
+# so revoking it left a person able to re-open every answer MSD had ever
+# given them. The permission's own description is *what an administrator
+# revokes when MSD must be switched off for somebody*, and half a switch is
+# not a switch.
+#
+# 🔴 MEASURED BEFORE CHANGING IT — WHO THIS NEWLY REFUSES:
+#
+#   msd.use is granted to 8 of 10 seeded roles. The two without it are
+#   `executive_viewer` and `administrator` — and both are ALREADY refused by
+#   `POST /ask`, which has required `msd.use` since it shipped. Neither can
+#   have created a thread through the assistant, so both see an empty list
+#   today and an honest refusal now. Nobody loses access to a conversation
+#   they could have had.
+#
+# ⚠️ WRITES STAY ON THE ROUTE, AND THAT IS §4 RATHER THAN AN OVERSIGHT.
+# `open_thread` and `record_exchange` are not exposed here, for the same
+# reason `confirm_test` and `authorize_batch` are not exposed by the other
+# conductors: *"no write-side service function is reachable from here at
+# all"*. The read surface is what belongs behind the department gate.
+
+
+def threads(session: Session, *, caller: AgentPrincipal, limit: int = 50) -> list[dict[str, Any]]:
+    """The caller's own conversations.
+
+    ⚠️ "OWN" IS RLS's ANSWER, NOT THIS FUNCTION'S. `list_threads` filters on
+    `organization_id` alone and says so — *"RLS makes 'own' true, not the
+    query"*. `caller.bind()` is what now makes that sentence checkable: it
+    refuses a session whose `app.current_user_id` is not this principal's,
+    which is precisely the input that would have made the owner policy
+    answer for somebody else.
+    """
+    # 🔴 IMPORTED HERE, NOT AT MODULE SCOPE, AND THE CYCLE IS PRE-EXISTING.
+    #
+    # `app/domains/msd/service.py` imports `MsdAnswer` FROM this module --
+    # the domain service depends on the agent tier for a type, which is the
+    # wrong direction and predates this change. A module-scope import back
+    # the other way closes the loop and Python fails the whole package with
+    # `cannot import name 'MsdAnswer' from partially initialized module`.
+    #
+    # A deferred import is the honest local fix. Straightening the dependency
+    # properly means moving `MsdAnswer` somewhere both can import -- worth
+    # doing, and not worth doing silently inside a change about permissions.
+    from app.domains.msd import service as msd_records
+
+    require(caller, department=DEPARTMENT, permission=USE)
+    return msd_records.list_threads(
+        caller.bind(session), organization_id=caller.organization_id, limit=limit
+    )
+
+
+def turns(
+    session: Session, *, caller: AgentPrincipal, thread_id: uuid.UUID, limit: int = 200
+) -> list[dict[str, Any]]:
+    """One conversation, oldest first, with the evidence behind each answer.
+
+    ⚠️ AN EMPTY LIST IS TWO DIFFERENT FACTS AND THAT IS DELIBERATE. The
+    service returns `[]` both for a thread with no turns and for a thread
+    that is not this caller's, *"and both are an empty conversation from
+    here"* — refusing differently would make the response a probe for
+    whether a thread id exists.
+    """
+    from app.domains.msd import service as msd_records  # see `threads` above
+
+    require(caller, department=DEPARTMENT, permission=USE)
+    return msd_records.list_turns(
+        caller.bind(session),
+        organization_id=caller.organization_id,
+        thread_id=thread_id,
+        limit=limit,
+    )

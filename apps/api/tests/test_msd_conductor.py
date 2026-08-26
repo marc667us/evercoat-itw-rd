@@ -10,6 +10,7 @@ assistant's safety properties rot.
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -27,8 +28,55 @@ from app.agents.conductors.msd_conductor import (
     classify,
 )
 from app.agents.ports import NullLanguageModel
+from app.agents.principal import AgentPrincipal
 from app.agents.tools import explain_the_application
+from app.core.security import Principal
 from app.domains.msd.retrieval import RetrievedRecord
+
+# ---------------------------------------------------------------------------
+# I104 — MSD now takes a verified principal and proves the session is its own
+# ---------------------------------------------------------------------------
+#
+# 🔴 THESE TESTS USED TO PASS `session=None`, AND THAT IS NO LONGER HONEST.
+#
+# `answer()` took `organization_id`, `user_id`, `role_codes` and `permissions`
+# as four ordinary arguments, so a test could state an identity without
+# holding one -- which was the defect (I104), visible here as the convenience
+# of not needing a session at all when every tool was stubbed.
+#
+# It now takes an `AgentPrincipal` and calls `caller.bind(session)`, which
+# asks PostgreSQL whether `app.current_org` / `app.current_user_id` match.
+# So these tests supply a session that answers that probe truthfully. The
+# tools are still stubbed and no database is involved: the stub answers the
+# identity question and nothing else, which is the whole point -- the boundary
+# check is not something a test may opt out of, because the assistant is
+# exactly where §7 says it must hold.
+
+ORG = uuid.uuid4()
+USER = uuid.uuid4()
+
+
+def caller(*permissions: str) -> AgentPrincipal:
+    """A verified caller holding exactly these permissions."""
+    return AgentPrincipal.of(
+        Principal(
+            user_id=USER,
+            organization_id=ORG,
+            keycloak_sub=f"sub-{USER}",
+            email="caller@example.test",
+            display_name="Caller",
+            roles=frozenset(),
+            permissions=frozenset({"msd.use", *permissions}),
+        )
+    )
+
+
+class _ScopedSession:
+    """Answers the RLS identity probe as ORG/USER. Touches no database."""
+
+    def execute(self, _statement: object, *args: object, **kwargs: object) -> object:
+        row = SimpleNamespace(org=str(ORG), usr=str(USER))
+        return SimpleNamespace(one=lambda: row)
 
 
 class _ShoutyModel:
@@ -94,15 +142,12 @@ def test_an_unrouted_question_is_still_refused_when_the_search_finds_nothing(
     monkeypatch.setattr(conductor, "search_knowledge", lambda *a, **k: [])
 
     result = answer(
-        session=None,  # type: ignore[arg-type] - search_knowledge is stubbed
-        organization_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        role_codes=frozenset(),
+        session=_ScopedSession(),
         question="thoughts on the weather",
         # Held, so this test exercises the EMPTY SEARCH and not the permission
         # gate below it. Without it the refusal would arrive for the wrong
         # reason and the test would pass while proving nothing.
-        permissions=frozenset({"knowledge.view"}),
+        caller=caller("knowledge.view"),
     )
 
     assert result.intent == "unsupported"
@@ -139,12 +184,9 @@ def test_the_refusal_test_can_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     result = answer(
-        session=None,  # type: ignore[arg-type] - search_knowledge is stubbed
-        organization_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        role_codes=frozenset(),
+        session=_ScopedSession(),
         question="thoughts on the weather",
-        permissions=frozenset({"knowledge.view"}),
+        caller=caller("knowledge.view"),
     )
 
     assert result.intent == "knowledge_search"
@@ -188,12 +230,10 @@ def test_msd_will_not_search_knowledge_without_the_permission(
     monkeypatch.setattr(conductor, "search_knowledge", _should_not_run)
 
     result = answer(
-        session=None,  # type: ignore[arg-type] - the search must not be reached
-        organization_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        role_codes=frozenset(),
+        session=_ScopedSession(),
         question="thoughts on the weather",
-        permissions=frozenset(),  # no knowledge.view
+        # 🔴 NO knowledge.view -- this is the permission gate under test.
+        caller=caller(),
     )
 
     assert not called, (
@@ -342,10 +382,8 @@ def test_a_lying_model_cannot_corrupt_the_evidence(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(conductor, "find_records", lambda *a, **k: records)
 
     result = answer(
-        session=None,  # type: ignore[arg-type] - find_records is stubbed
-        organization_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        role_codes=frozenset(),
+        session=_ScopedSession(),
+        caller=caller(),
         question="show me filler formulas",
         model=_LyingModel(),
     )
@@ -363,10 +401,8 @@ def test_a_model_rewords_without_changing_which_tools_ran() -> None:
     assert entry is not None
 
     result = answer(
-        session=None,  # type: ignore[arg-type] - guidance touches no database
-        organization_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        role_codes=frozenset(),
+        session=_ScopedSession(),
+        caller=caller(),
         question="what does yellow mean",
         model=_ShoutyModel(),
     )

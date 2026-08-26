@@ -61,10 +61,22 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agents.boundary import require
+from app.agents.principal import AgentPrincipal
+from app.domains.analytics.service import activity_analytics, portfolio_by_project
 from app.domains.dashboards.service import ROLE_DASHBOARDS
 from app.domains.reporting.service import test_results_report
 
-__all__ = ["DEPARTMENT", "REPORT", "VIEW", "UnknownDashboardError", "dashboard", "report"]
+__all__ = [
+    "ANALYTICS",
+    "DEPARTMENT",
+    "PORTFOLIO",
+    "REPORT",
+    "VIEW",
+    "UnknownDashboardError",
+    "analytics",
+    "dashboard",
+    "report",
+]
 
 DEPARTMENT = "analysis"
 
@@ -89,6 +101,20 @@ VIEW = "project.view"
 # it rather than riding on VIEW.
 REPORT = "report.generate"
 
+# 🔴 THE OTHER TWO PERMISSIONS THE 08-25 SESSION LEFT ENFORCING NOTHING.
+#
+# `report.generate` got a home that day; these did not, and the session-close
+# record says so plainly: *"analytics.view / analytics.portfolio still enforce
+# nothing — held by 9 and 2 roles, read by no code."* `analytics()` below is
+# where that stops being true.
+#
+# Two, not one, because the catalogue reserved two and described the
+# difference itself: 'View analytics in scope' against 'View organization-wide
+# portfolio analytics'. Collapsing them onto a single gate would have made one
+# of the two permanently decorative — the defect being fixed, re-committed.
+ANALYTICS = "analytics.view"
+PORTFOLIO = "analytics.portfolio"
+
 
 class UnknownDashboardError(ValueError):
     """A dashboard name the service does not build."""
@@ -98,9 +124,7 @@ def dashboard(
     session: Session,
     *,
     name: str,
-    user_id: uuid.UUID,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
 ) -> dict[str, Any]:
     """One dashboard, by name, for the calling user.
 
@@ -108,25 +132,24 @@ def dashboard(
     somebody else's would be asking what is waiting for a colleague — the
     hole `root_orchestrator` already warns about.
     """
-    require(permissions, department=DEPARTMENT, permission=VIEW)
+    require(caller, department=DEPARTMENT, permission=VIEW)
     build = ROLE_DASHBOARDS.get(name)
     if build is None:
         raise UnknownDashboardError(
             f"no such dashboard; the roles with a dashboard are {sorted(ROLE_DASHBOARDS)}"
         )
     return build(
-        session,
-        user_id=user_id,
-        organization_id=organization_id,
-        held_permissions=permissions,
+        caller.bind(session),
+        user_id=caller.user_id,
+        organization_id=caller.organization_id,
+        held_permissions=caller.permissions,
     )
 
 
 def report(
     session: Session,
     *,
-    organization_id: uuid.UUID,
-    permissions: frozenset[str],
+    caller: AgentPrincipal,
     project_id: uuid.UUID | None = None,
     limit: int = 200,
 ) -> dict[str, Any]:
@@ -141,10 +164,85 @@ def report(
     re-implementing the fourteen ordered rules would be the second answer
     `app/calculations/testing.py` exists to prevent.
     """
-    require(permissions, department=DEPARTMENT, permission=REPORT)
+    require(caller, department=DEPARTMENT, permission=REPORT)
     return test_results_report(
-        session,
-        organization_id=organization_id,
+        caller.bind(session),
+        organization_id=caller.organization_id,
         project_id=project_id,
         limit=limit,
     )
+
+
+def analytics(
+    session: Session,
+    *,
+    caller: AgentPrincipal,
+    project_id: uuid.UUID | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Testing and laboratory activity, counted — the Intelligence surface.
+
+    🔴 `analytics.view` AND `analytics.portfolio`: THEIR FIRST ENFORCEMENT
+    POINT ANYWHERE.
+
+    Measured before this was written, and unchanged since `report.generate`
+    got a home on 2026-08-25: `analytics.view` is granted to NINE of the ten
+    seeded roles and `analytics.portfolio` to TWO, and not one line of
+    application code read either. They were catalogue entries — they granted
+    nothing and refused nothing, and no audit could have told the difference
+    between holding one and not.
+
+    🔴 THE GATE IS `analytics.view`, AND HERE THAT IS RIGHT — WHICH IS NOT
+    WHAT THE DASHBOARD ABOVE CONCLUDED, FOR A REASON.
+
+    `dashboard()` gates on `project.view` because `app/api/dashboards.py` has
+    always required it, and the shipped route is the contract. This function
+    has no such history: `apps/web/lib/navigation.ts` declares
+    `{ id: "analytics", href: "/analytics", permission: "analytics.view" }`,
+    and that entry IS the shipped contract for this screen. So the two
+    departments' functions gate differently because the two surfaces have
+    always been declared differently — not because nobody checked.
+
+    ⚠️ AND THE TWO COME APART, MEASURED, IN BOTH DIRECTIONS:
+
+        procurement_specialist   analytics.view YES   project.view NO
+        laboratory_technician    analytics.view NO    project.view YES
+
+    A procurement specialist may open Analytics and not a dashboard; a
+    laboratory technician the reverse. Both are the seeded intent — the
+    technician executes and does not analyse — and a gate that quietly
+    unified them would have granted or refused someone by accident.
+
+    🔴 THE PORTFOLIO SECTION IS A SECOND GATE, NOT A FILTER APPLIED AFTER.
+
+    §7 is explicit that retrieval is filtered BEFORE anything reads it, never
+    after. So a caller without `analytics.portfolio` does not have the
+    org-wide breakdown computed and then removed — `portfolio_by_project` is
+    never called for them. That distinction is not stylistic: the discarded
+    version runs one report per project in the organization, so filtering
+    after generation would mean doing the entire privileged computation on
+    behalf of someone not entitled to its result.
+
+    ⚠️ ABSENT IS NOT EMPTY. `by_project` is `None` and
+    `portfolio_included` is `false`, never `[]`. An empty list would say
+    "this organization has no projects", which is a different claim and
+    usually a false one.
+    """
+    require(caller, department=DEPARTMENT, permission=ANALYTICS)
+    bound = caller.bind(session)
+
+    result = activity_analytics(
+        bound,
+        organization_id=caller.organization_id,
+        project_id=project_id,
+        limit=limit,
+    )
+
+    held = caller.has(PORTFOLIO)
+    result["portfolio_included"] = held
+    result["by_project"] = (
+        portfolio_by_project(bound, organization_id=caller.organization_id, limit=limit)
+        if held
+        else None
+    )
+    return result

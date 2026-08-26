@@ -26,15 +26,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.agents.orchestrators.root_orchestrator import answer_question
-from app.core.security import Principal, get_db, get_principal, require_permission
-from app.domains.msd.service import (
-    MsdNotFoundError,
-    list_threads,
-    list_turns,
-    open_thread,
-    record_exchange,
+from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
+    answer_question,
+    msd_threads,
+    msd_turns,
 )
+from app.core.security import Principal, get_db, require_permission
+
+# ⚠️ WRITES ONLY. The two reads that used to be imported here -- `list_threads`
+# and `list_turns` -- now go through the orchestrator like `ask` always did.
+# `open_thread` and `record_exchange` stay direct because the agent tier is
+# read-only by §4, exactly as `confirm_test` and `authorize_batch` do on the
+# testing and laboratory routes.
+from app.domains.msd.service import MsdNotFoundError, open_thread, record_exchange
 
 router = APIRouter()
 
@@ -56,22 +61,38 @@ class AskCreate(BaseModel):
 
 @router.get("/threads", tags=["msd"])
 def get_threads(
-    principal: Principal = Depends(get_principal),
+    # 🔴 `msd.use` NOW, AND IT USED TO BE `get_principal` ALONE.
+    #
+    # The old comment here read: *"No permission dependency: a person's own
+    # MSD threads are theirs by definition, and `ai.msd_threads` is
+    # owner-scoped in the database, so this returns nobody else's regardless
+    # of what any check said."* Both halves are true — migration 022's
+    # `owner_scope` policy is the barrier that matters, and it still is.
+    #
+    # But it left `msd.use` governing asking and not reading, so revoking the
+    # permission left a person able to re-open every answer MSD had ever
+    # given them. The permission exists to switch MSD off for somebody, and
+    # half a switch is not a switch.
+    #
+    # ⚠️ MEASURED, NOT ASSUMED: the two seeded roles without `msd.use` are
+    # `executive_viewer` and `administrator`, and `POST /ask` has refused
+    # both since it shipped. Neither can own a thread, so neither loses a
+    # conversation — they lose an empty list and gain an honest refusal.
+    principal: Principal = Depends(require_permission("msd.use")),
     session: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    """The caller's own conversations.
-
-    No permission dependency: a person's own MSD threads are theirs by
-    definition, and `ai.msd_threads` is owner-scoped in the database, so
-    this returns nobody else's regardless of what any check said.
-    """
-    return list_threads(session, organization_id=principal.organization_id)
+    """The caller's own conversations, through the orchestrator."""
+    return msd_threads(session, caller=AgentPrincipal.of(principal))
 
 
 @router.post("/threads", status_code=status.HTTP_201_CREATED, tags=["msd"])
 def post_thread(
     payload: ThreadCreate,
-    principal: Principal = Depends(get_principal),
+    # ⚠️ A WRITE, SO IT STAYS OFF THE AGENT TIER (§4) -- but it is gated on
+    # the same permission as the rest of the department. Opening a thread you
+    # are then refused permission to ask in was the previous behaviour, and it
+    # is not a state worth being able to reach.
+    principal: Principal = Depends(require_permission("msd.use")),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     result = open_thread(
@@ -88,13 +109,16 @@ def post_thread(
 @router.get("/threads/{thread_id}/turns", tags=["msd"])
 def get_turns(
     thread_id: uuid.UUID,
-    principal: Principal = Depends(get_principal),
+    # Gated for the same reason as the thread list above: the turns ARE the
+    # answers, so reading them is using MSD.
+    principal: Principal = Depends(require_permission("msd.use")),
     session: Session = Depends(get_db),
     limit: int = Query(default=200, ge=1, le=500),
 ) -> list[dict[str, Any]]:
-    return list_turns(
+    """One conversation and its evidence, through the orchestrator."""
+    return msd_turns(
         session,
-        organization_id=principal.organization_id,
+        caller=AgentPrincipal.of(principal),
         thread_id=thread_id,
         limit=limit,
     )
@@ -123,14 +147,16 @@ def post_question(
     try:
         answer = answer_question(
             session,
-            organization_id=principal.organization_id,
-            user_id=principal.user_id,
-            role_codes=frozenset(principal.roles),
-            # From the resolved Principal, so asking MSD cannot
-            # bypass a permission that governs the screen -- cost
-            # is gated on `formula.view_cost` here exactly as it is
-            # on the formulations routes.
-            permissions=frozenset(principal.permissions),
+            # 🔴 ONE ARGUMENT, BUILT FROM THE RESOLVED PRINCIPAL (I104).
+            #
+            # This used to spell out `organization_id`, `user_id`,
+            # `role_codes` and `permissions`, with a comment saying they came
+            # from the Principal so that asking MSD could not bypass a
+            # permission governing the screen -- cost gated on
+            # `formula.view_cost` here exactly as on the formulations routes.
+            # That is still true and is now a property of the type rather
+            # than of this call site remembering to do it.
+            caller=AgentPrincipal.of(principal),
             question=payload.question,
             project_id=payload.project_id,
         )

@@ -96,6 +96,12 @@ import {
   type Material,
   type Supplier,
 } from "./materials";
+import {
+  fetchAnalytics,
+  fetchTestResultsReport,
+  type Analytics,
+  type TestResultsReport,
+} from "./analysis";
 import { fetchProjects, type Project } from "./projects";
 import { useSession } from "./session";
 import { fetchMyWork, type Task } from "./tasks";
@@ -1305,4 +1311,35 @@ export function useClassifyFormula(formulaId: string): {
     error: (mutation.error as Error | null) ?? null,
     done: mutation.isSuccess,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Intelligence — analytics and the test-results report
+// ---------------------------------------------------------------------------
+//
+// 🔴 LIVE OR NOTHING, AND THERE IS NO DEMONSTRATION FIXTURE.
+//
+// `useSourcedList` exists because some screens have a bundled demonstration
+// dataset for a build with no API. These two must not: every figure they show
+// is a COUNT OF TEST OUTCOMES, and a fabricated one is materially worse than a
+// fabricated supplier row. "Nine tests GREEN" invented by the frontend is a
+// safety claim about physical measurements that were never made — §3 keeps
+// Calculated, Predicted and Measured visually distinct precisely so this
+// cannot happen, and the 08-19 incident (a failed `/api/me` became
+// demonstration data) is what the rule is made of.
+//
+// So both are `LiveOnly`: real numbers, or a page that says why it has none.
+
+/** Testing and laboratory activity, counted. Live or nothing. */
+export function useAnalytics<TShown>(
+  project: (live: Analytics) => TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("analysis-analytics", project, fetchAnalytics);
+}
+
+/** Tests grouped by their server-derived disposition. Live or nothing. */
+export function useTestResultsReport<TShown>(
+  project: (live: TestResultsReport) => TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("analysis-report", project, fetchTestResultsReport);
 }

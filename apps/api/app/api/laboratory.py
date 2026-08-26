@@ -54,6 +54,7 @@ from sqlalchemy.orm import Session
 # unauthenticated caller before any handler runs, and the conductor refuses on
 # the paths that have no route.
 from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
     laboratory_batch,
     laboratory_batches,
 )
@@ -173,8 +174,7 @@ def get_batches(
     """
     return laboratory_batches(
         session,
-        organization_id=principal.organization_id,
-        permissions=principal.permissions,
+        caller=AgentPrincipal.of(principal),
         project_id=project_id,
         status=status_filter,
     )
@@ -227,8 +227,7 @@ def get_one_batch(
         return laboratory_batch(
             session,
             batch_id=batch_id,
-            organization_id=principal.organization_id,
-            permissions=principal.permissions,
+            caller=AgentPrincipal.of(principal),
         )
     except BatchNotFoundError as exc:
         raise _missing(exc) from exc

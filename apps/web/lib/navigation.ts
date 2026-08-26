@@ -224,7 +224,30 @@ export const ALL_NAV_PERMISSIONS: ReadonlySet<string> = new Set(
  * has no `page.tsx` behind it — that guard covers this set exactly as it
  * covers the ordinal, and a stale id left here after a rename fails too.
  */
-export const BUILT_AHEAD: ReadonlySet<string> = new Set(["knowledge"]);
+export const BUILT_AHEAD: ReadonlySet<string> = new Set([
+  "knowledge",
+  // Analytics (slice 7) and Reports (slice 20) jumped the queue together,
+  // and deliberately as a pair.
+  //
+  // 🔴 REPORTS IS THE REASON. `GET /api/analysis/reports/test-results` shipped
+  // on 2026-08-25 and gave `report.generate` its first enforcement point
+  // anywhere — and this entry kept it DISABLED, so the route existed, was
+  // tested, and no person could press anything that called it. *A route with
+  // no caller is the same defect as a table with no writer*, and this project
+  // had found 23 of those the day before. Leaving the endpoint orphaned for
+  // thirteen more slices would have been that defect chosen on purpose.
+  //
+  // Analytics comes with it because `analytics.view` and `analytics.portfolio`
+  // were in the same condition — nine roles and two roles holding permissions
+  // no code read — and the screen that fixes that is this one.
+  //
+  // ⚠️ Product Models (14) and Infographics (20) stay disabled. They have no
+  // page and no endpoint; adding them here would put a live link in front of
+  // a 404, which is the precise failure `isAvailable` exists to prevent.
+  // `navigation.test.ts` reads the filesystem and would fail the build for it.
+  "analytics",
+  "reports",
+]);
 
 export function isAvailable(item: NavItem): boolean {
   return BUILT_AHEAD.has(item.id) || (item.slice ?? 1) <= CURRENT_SLICE;
