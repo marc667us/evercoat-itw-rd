@@ -135,6 +135,11 @@ DEFINER_OWNED_BY_DESIGN = {
     "core.user_id_for_subject",
     # Migration 048. The FIFTH instance, and this test caught it as designed.
     #
+    # It returns BOTH role codes and permission codes. The first draft
+    # returned only permissions, leaving `roles` caller-supplied -- and
+    # unclaimed work is matched with `t.assigned_role = ANY(:roles)`, which
+    # MSD reaches. Raised by Codex.
+    #
     # Why it must be a definer: role and permission rows are tenant-scoped,
     # and the runtime role must not need SELECT on `core.member_roles`,
     # `core.roles`, `core.role_permissions` or `core.permissions` merely to
@@ -158,7 +163,7 @@ DEFINER_OWNED_BY_DESIGN = {
     # for this query may well still be the right answer. *May well* is not a
     # measurement. `tests/db/test_048_session_permissions.py` compares it
     # against the authoritative join and will say plainly which it is.
-    "core.permissions_for_current_session",
+    "core.authorization_for_current_session",
     # Migration 015. The trigger that freezes the composition of a
     # non-draft formula version looks that version up before deciding.
     # As SECURITY INVOKER, a session whose RLS view of

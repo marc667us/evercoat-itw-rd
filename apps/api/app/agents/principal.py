@@ -49,16 +49,19 @@ in Python prevents either. What the type buys is that forging is now a
 deliberate, greppable, unmistakable act rather than the path of least
 resistance that a four-argument signature made it.
 
-⚠️ **THE PERMISSION SET IS STILL NOT DATABASE-DERIVED, AND THAT IS THE REAL
-REMAINING GAP (I105).** `bind()` below validates identity against PostgreSQL;
-it does not validate `permissions`. Codex's recommended fix is to derive them
-from the GUC-bound user at the bound-session boundary and gate on that. That
-is the right end state and it is NOT done here, deliberately: it needs a
-`SECURITY DEFINER` function handing out a permission set for a user id, which
-is the shape ADR-029 **rejected on measured evidence** for I82 — an atomic
-bind inside a definer re-opened I83. Doing it correctly is a design task with
-a migration, not a footnote to this change. It is raised as I105 rather than
-improvised.
+✅ **I105 IS CLOSED, AND IT WAS THE REAL GAP.** `bind()` validated identity and
+not authorization, so a forged principal carrying the real session identity
+passed it while claiming anything. `authorize()` below now REPLACES both
+`roles` and `permissions` with what
+`core.authorization_for_current_session()` returns for the session's own GUC
+(migration 048). The gate and the rows are derived from the same two GUCs and
+can no longer disagree about who is asking.
+
+⚠️ That function is NOT the design ADR-029 rejected for I82. That rejection
+was about a definer that WRITES — the write fires ADR-028's address guards,
+which inside a definer run as the table owner and reopen I83's oracle. This
+one is `STABLE` and takes ZERO ARGUMENTS, so it has neither the write that
+starts that chain nor the parameter that makes a lookup an oracle.
 
 **2. PostgreSQL is asked whether the session really is this caller's.**
 `bind(session)` reads `app.current_org` and `app.current_user_id` — the two
@@ -171,6 +174,11 @@ class AgentPrincipal:
     # is what stops a conductor written next month from gating on a claimed
     # set by simply forgetting a line — the failure is loud instead of silent,
     # which is the difference between this and the docstring I104 replaced.
+    #
+    # ⚠️ A MISUSE DETECTOR, NOT AN UNFORGEABLE PROPERTY. It is an ordinary
+    # boolean, and `object.__setattr__` can set it exactly as it can set
+    # `permissions` — see the module docstring's open bypass. The boundary is
+    # that every conductor calls `authorize()`, asserted from the call graph.
     verified: bool = False
     # Not an identity field. It exists so that the generated `__init__`
     # cannot be called successfully without a value only this module holds.
@@ -276,7 +284,9 @@ class AgentPrincipal:
             text(
                 "SELECT current_setting('app.current_org', true)     AS org, "
                 "       current_setting('app.current_user_id', true) AS usr, "
-                "       core.permissions_for_current_session()       AS perms"
+                "       a.roles                                      AS roles, "
+                "       a.permissions                                AS perms "
+                "FROM core.authorization_for_current_session() a"
             )
         ).one()
         self._check_identity(org=row.org, usr=row.usr)
@@ -284,11 +294,20 @@ class AgentPrincipal:
         return AgentPrincipal(
             organization_id=self.organization_id,
             user_id=self.user_id,
-            roles=self.roles,
-            # 🔴 THE DATABASE'S ANSWER, NOT THE CALLER'S. `row.perms` is a
-            # TEXT[] and psycopg returns it as a list; `None` would mean the
-            # function returned NULL, which its COALESCE prevents — treated as
-            # empty rather than trusted, because a permission set that is
+            # 🔴 ROLES ARE DERIVED TOO, AND THE FIRST VERSION OF THIS COPIED
+            # `self.roles` STRAIGHT THROUGH. Raised by Codex, and it is not a
+            # tidiness point: `app/domains/tasks/service.py` matches unclaimed
+            # work with `t.assigned_role = ANY(:roles)`, and `msd_conductor`
+            # feeds the caller's role codes into it. A forged principal with
+            # the real session identity and invented roles would have made the
+            # assistant surface tasks addressed to roles that person does not
+            # hold — retrieval filtered by caller-supplied authorization state,
+            # which is exactly the §7 defect I105 is about.
+            roles=frozenset(row.roles or ()),
+            # 🔴 THE DATABASE'S ANSWER, NOT THE CALLER'S. Both are TEXT[] and
+            # psycopg returns them as lists; `None` would mean the function
+            # returned NULL, which its COALESCE prevents — treated as empty
+            # rather than trusted, because an authorization set that is
             # "unknown" must grant nothing.
             permissions=frozenset(row.perms or ()),
             verified=True,

@@ -6,7 +6,7 @@
     permissions. A forged principal using the real session identity therefore
     passes bind() while claiming arbitrary authorization.
 
-`core.permissions_for_current_session()` answers from the same two GUCs RLS
+`core.authorization_for_current_session()` answers from the same two GUCs RLS
 reads, so the gate and the rows can no longer disagree about who is asking.
 
 ⚠️ EVERYTHING HERE RUNS AS `evercoat_app`, the non-superuser runtime role, not
@@ -34,7 +34,9 @@ def _perms(session: Session, *, org: uuid.UUID | None, user: uuid.UUID | None) -
         session.execute(
             text("SELECT set_config('app.current_user_id', :v, true)"), {"v": str(user)}
         )
-    row = session.execute(text("SELECT core.permissions_for_current_session()")).scalar_one()
+    row = session.execute(
+        text("SELECT a.permissions FROM core.authorization_for_current_session() a")
+    ).scalar_one()
     return set(row or ())
 
 
@@ -62,44 +64,58 @@ def test_the_function_is_a_definer_owned_by_a_non_superuser(owner_session: Sessi
             JOIN pg_namespace n ON n.oid = p.pronamespace
             JOIN pg_roles r     ON r.oid = p.proowner
             WHERE n.nspname = 'core'
-              AND p.proname = 'permissions_for_current_session'
+              AND p.proname = 'authorization_for_current_session'
             """
         )
     ).one_or_none()
 
-    assert row is not None, "core.permissions_for_current_session() does not exist"
+    assert row is not None, "core.authorization_for_current_session() does not exist"
     assert row.owner == "evercoat_owner", f"owner is {row.owner!r}, not evercoat_owner"
     assert row.owner_is_super is False, (
         f"the function's owner {row.owner!r} is a SUPERUSER, so it runs outside "
         "RLS permanently — this is I56's shape, for the fifth time"
     )
     assert row.is_definer is True, "not SECURITY DEFINER, so it cannot read the tenant tables"
-    assert any("search_path" in c for c in (row.config or [])), (
-        "no fixed search_path: a SECURITY DEFINER without one can be redirected "
-        "by a caller-controlled search_path to shadowed objects"
+    # 🔴 THE EXACT SETTING, NOT MERELY THAT ONE EXISTS. Codex: a test that
+    # accepts any `search_path=` would pass on `search_path=public`, which is
+    # the shadowable configuration the pin exists to prevent.
+    assert "search_path=core, pg_temp" in (row.config or []), (
+        f"search_path is {row.config!r}, not the pinned 'core, pg_temp'. A "
+        "SECURITY DEFINER without an exact pin can be redirected by a "
+        "caller-controlled search_path to shadowed objects."
     )
 
 
-def test_it_writes_nothing_so_it_cannot_reopen_i83(owner_session: Session) -> None:
-    """🔴 THIS IS THE ANSWER TO ADR-029's REJECTION, AND IT IS MEASURED.
+def test_it_is_declared_stable_and_its_body_contains_no_write(
+    owner_session: Session,
+) -> None:
+    """🔴 THE ANSWER TO ADR-029's REJECTION — AND THIS TEST USED TO OVERCLAIM.
 
-    ADR-029 recorded a SECURITY DEFINER as rejected for I82, because a definer
-    that WRITES fires ADR-028's address guards, which inside a definer owned
-    by the table owner run as that owner — bypassing RLS while FORCE is off,
-    so the guard refuses on another tenant's row and the refusal discloses
-    that the address exists.
+    ADR-029 rejected a SECURITY DEFINER for I82 because a definer that WRITES
+    fires ADR-028's address guards, which inside a definer owned by the table
+    owner run as that owner — bypassing RLS while FORCE is off, so the guard
+    refuses on another tenant's row and the refusal discloses that the address
+    exists. Every step of that chain begins with a write.
 
-    Every step of that chain begins with a write. `STABLE` is PostgreSQL's own
-    statement that this function performs none, and it is enforced by the
-    server rather than promised by a comment: a write inside a STABLE function
-    raises at runtime.
+    ⚠️ THIS TEST WAS NAMED `test_it_writes_nothing` AND CHECKED ONLY
+    `provolatile = 's'`. Codex was right that this proves less than the name
+    claimed: PostgreSQL TRUSTS a volatility declaration, and while it refuses
+    a data-modifying statement written directly in a STABLE body, `STABLE` is
+    not transitive — a SELECT could call a VOLATILE function that writes.
+
+    So the test now asserts the two things it can actually establish: the
+    declared contract, AND that the body itself contains no write and calls
+    only the two schema-qualified GUC readers. That second half is what makes
+    the first half meaningful here, and it is read from `pg_get_functiondef`
+    rather than from the migration file, so editing the migration without
+    re-applying it cannot satisfy it.
     """
     volatility = owner_session.execute(
         text(
             """
             SELECT p.provolatile FROM pg_proc p
             JOIN pg_namespace n ON n.oid = p.pronamespace
-            WHERE n.nspname = 'core' AND p.proname = 'permissions_for_current_session'
+            WHERE n.nspname = 'core' AND p.proname = 'authorization_for_current_session'
             """
         )
     ).scalar_one()
@@ -108,6 +124,35 @@ def test_it_writes_nothing_so_it_cannot_reopen_i83(owner_session: Session) -> No
         "write, and a write fires ADR-028's guards inside the definer — which is "
         "precisely the chain ADR-029 measured and rejected."
     )
+
+    body = owner_session.execute(
+        text(
+            """
+            SELECT pg_get_functiondef(p.oid) FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'core' AND p.proname = 'authorization_for_current_session'
+            """
+        )
+    ).scalar_one()
+
+    # The executable half only — the migration's own prose discusses INSERT
+    # and UPDATE at length, and a test its documentation can redden (or
+    # satisfy) is worth nothing. This file has already been bitten by exactly
+    # that, in both directions.
+    code = " ".join(line for line in body.splitlines() if not line.strip().startswith("--"))
+    for verb in ("INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "COPY"):
+        assert verb not in code.upper(), (
+            f"the function body contains {verb}. STABLE is a declaration "
+            "PostgreSQL trusts, not a proof — the body must be a read."
+        )
+
+    # Only the two GUC readers are called, and both are schema-qualified, so
+    # nothing here is reachable through a caller-controlled search_path.
+    called = {
+        "core.current_user_id" in code,
+        "core.current_org_id" in code,
+    }
+    assert called == {True}, "the function no longer keys on the session's own GUCs"
 
 
 def test_it_takes_no_arguments_so_it_cannot_be_aimed_at_anybody(
@@ -129,7 +174,7 @@ def test_it_takes_no_arguments_so_it_cannot_be_aimed_at_anybody(
             """
             SELECT p.pronargs FROM pg_proc p
             JOIN pg_namespace n ON n.oid = p.pronamespace
-            WHERE n.nspname = 'core' AND p.proname = 'permissions_for_current_session'
+            WHERE n.nspname = 'core' AND p.proname = 'authorization_for_current_session'
             """
         )
     ).scalar_one()

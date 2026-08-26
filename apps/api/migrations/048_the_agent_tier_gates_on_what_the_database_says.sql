@@ -21,6 +21,13 @@
 -- consults `caller.permissions`, and until this migration that set arrived
 -- from Python and nothing outside Python had ever agreed to it.
 --
+-- 🔴 NOTE THE WORD "ROLES" IN THAT SENTENCE. The first draft of this migration
+-- derived only PERMISSIONS and left `roles` caller-supplied — and roles are
+-- not decorative: `app/domains/tasks/service.py` matches unclaimed work with
+-- `t.assigned_role = ANY(:roles)`, which MSD reaches through
+-- `msd_conductor`. Half a fix, on the half of the sentence that was quoted
+-- back. Both are derived here.
+--
 -- ============================================================================
 -- 🔴 WHY THIS IS NOT THE DESIGN ADR-029 REJECTED
 -- ============================================================================
@@ -76,8 +83,28 @@
 
 BEGIN;
 
-CREATE OR REPLACE FUNCTION core.permissions_for_current_session()
-    RETURNS TEXT[]
+CREATE OR REPLACE FUNCTION core.authorization_for_current_session()
+    -- 🔴 ROLES *AND* PERMISSIONS, IN ONE CALL — AND THE FIRST DRAFT RETURNED
+    -- ONLY PERMISSIONS.
+    --
+    -- Codex's original statement of I105 was that `bind()` "never validates
+    -- ROLES OR PERMISSIONS". The first version of this migration fixed the
+    -- second half of that sentence and left the first, which is not a
+    -- cosmetic omission: `app/domains/tasks/service.py` selects unclaimed
+    -- work with
+    --
+    --     t.assigned_user_id IS NULL AND t.assigned_role = ANY(:roles)
+    --
+    -- and `msd_conductor` passes the caller's role codes straight into it. A
+    -- forged principal carrying the real session identity and invented roles
+    -- would therefore have made the assistant surface tasks addressed to
+    -- roles that person does not hold — retrieval filtered by caller-supplied
+    -- authorization state, which is the §7 defect this whole issue is about.
+    --
+    -- One function returning both, rather than two: they are read together on
+    -- every call, and two functions is two round trips and two chances for a
+    -- later caller to take one and forget the other.
+    RETURNS TABLE (roles TEXT[], permissions TEXT[])
     LANGUAGE sql
     STABLE
     SECURITY DEFINER
@@ -86,6 +113,10 @@ CREATE OR REPLACE FUNCTION core.permissions_for_current_session()
     SET search_path = core, pg_temp
 AS $$
     SELECT COALESCE(
+               array_agg(DISTINCT r.code) FILTER (WHERE r.code IS NOT NULL),
+               '{}'
+           ),
+           COALESCE(
                array_agg(DISTINCT p.code) FILTER (WHERE p.code IS NOT NULL),
                '{}'
            )
@@ -93,9 +124,9 @@ AS $$
     JOIN core.organization_members om
       ON om.user_id = u.id
      -- Immediate revocation. `get_principal` says a JWT "is not a current
-     -- statement about authorization"; the same is true of a permission set
-     -- computed at the start of a request. A membership suspended mid-request
-     -- stops granting here on the next call.
+     -- statement about authorization"; the same is true of a role or
+     -- permission set computed at the start of a request. A membership made
+     -- inactive mid-request stops granting here on the next call.
      AND om.status = 'active'
     LEFT JOIN core.member_roles     mr ON mr.member_id = om.id
     LEFT JOIN core.roles            r  ON r.id = mr.role_id
@@ -104,31 +135,34 @@ AS $$
     -- 🔴 THE SUBJECT IS THE SESSION'S OWN GUC AND THERE IS NO PARAMETER.
     -- `core.current_user_id()` and `core.current_org_id()` return NULL rather
     -- than raising when the GUC is unset (001), and `u.id = NULL` is never
-    -- true — so an unscoped session gets `'{}'`, every gate refuses, and the
-    -- failure is closed rather than open. That is a SECOND independent
-    -- barrier: `AgentPrincipal.authorize()` already refuses an unscoped
-    -- session in Python before reaching this.
+    -- true. With no GROUP BY the aggregates still produce exactly one row, so
+    -- an unscoped session gets `('{}', '{}')` — every gate refuses and no
+    -- role-addressed work matches. Fail closed, and a SECOND independent
+    -- barrier: `AgentPrincipal.authorize()` refuses an unscoped session in
+    -- Python before reaching this.
     WHERE u.id = core.current_user_id()
       AND u.status = 'active'
       AND om.organization_id = core.current_org_id()
 $$;
 
 -- 🔴 PIN THE OWNER. See the header — unpinned means superuser here.
-ALTER FUNCTION core.permissions_for_current_session() OWNER TO evercoat_owner;
+ALTER FUNCTION core.authorization_for_current_session() OWNER TO evercoat_owner;
 
-REVOKE ALL ON FUNCTION core.permissions_for_current_session() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION core.permissions_for_current_session() TO evercoat_app;
+REVOKE ALL ON FUNCTION core.authorization_for_current_session() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION core.authorization_for_current_session() TO evercoat_app;
 
-COMMENT ON FUNCTION core.permissions_for_current_session() IS
-    'The permission codes held by the CURRENT SESSION''s user in the CURRENT '
-    'SESSION''s organization, read from app.current_user_id / app.current_org. '
+COMMENT ON FUNCTION core.authorization_for_current_session() IS
+    'The role codes and permission codes held by the CURRENT SESSION''s user '
+    'in the CURRENT SESSION''s organization, read from app.current_user_id '
+    'and app.current_org. '
     'SECURITY DEFINER because role and permission rows are tenant-scoped and '
     'the caller must not need SELECT on them. '
     'It takes NO ARGUMENTS deliberately: a lookup a caller can aim at somebody '
     'else is an oracle (see core.user_id_for_subject and I82), and this one '
     'can only answer about the session it is called on. '
-    'It is STABLE and writes nothing, so it fires no trigger and cannot '
-    'reopen I83 the way ADR-029 measured a WRITING definer would. '
-    'Returns an empty array on an unscoped session -- fail closed.';
+    'STABLE, so PostgreSQL refuses a data-modifying statement in its body and '
+    'no trigger fires -- which is why it is not the WRITING definer ADR-029 '
+    'measured and rejected for I82. '
+    'Returns two empty arrays on an unscoped session -- fail closed.';
 
 COMMIT;

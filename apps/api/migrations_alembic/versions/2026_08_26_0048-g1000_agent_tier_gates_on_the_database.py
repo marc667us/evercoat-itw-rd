@@ -12,9 +12,14 @@ half that left open: `bind()` validates organization and user and never
 validates permissions, so a forged principal carrying the real session
 identity passes it while claiming arbitrary authorization.
 
-`core.permissions_for_current_session()` derives the set from the same two
-GUCs that RLS reads, so the gate and the rows can no longer disagree about who
-is asking.
+`core.authorization_for_current_session()` derives BOTH the role codes and the
+permission codes from the same two GUCs that RLS reads, so the gate and the
+rows can no longer disagree about who is asking.
+
+⚠️ BOTH roles and permissions, because roles are not decorative: unclaimed
+work is matched with `t.assigned_role = ANY(:roles)` and MSD reaches that
+through `msd_conductor`. The first draft derived only permissions — half of
+the sentence Codex actually wrote.
 
 ⚠️ ADR-029 recorded a SECURITY DEFINER as REJECTED for I82. That rejection was
 about a definer that WRITES — the write fires ADR-028's address guards, which
@@ -55,4 +60,4 @@ def downgrade() -> None:
     function is dropped rather than replaced by a permissive stub returning
     every permission code.
     """
-    op.execute(text("DROP FUNCTION IF EXISTS core.permissions_for_current_session()"))
+    op.execute(text("DROP FUNCTION IF EXISTS core.authorization_for_current_session()"))

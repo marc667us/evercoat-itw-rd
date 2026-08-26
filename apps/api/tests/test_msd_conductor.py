@@ -44,13 +44,13 @@ from app.domains.msd.retrieval import RetrievedRecord
 # holding one -- which was the defect (I104), visible here as the convenience
 # of not needing a session at all when every tool was stubbed.
 #
-# It now takes an `AgentPrincipal` and calls `caller.bind(session)`, which
-# asks PostgreSQL whether `app.current_org` / `app.current_user_id` match.
-# So these tests supply a session that answers that probe truthfully. The
-# tools are still stubbed and no database is involved: the stub answers the
-# identity question and nothing else, which is the whole point -- the boundary
-# check is not something a test may opt out of, because the assistant is
-# exactly where §7 says it must hold.
+# It now takes an `AgentPrincipal` and calls `caller.authorize(session)`, which
+# asks PostgreSQL whether `app.current_org` / `app.current_user_id` match AND
+# takes the roles and permissions from there (I105). So these tests supply a
+# session that answers that probe truthfully, and state what the caller may do
+# ON THE SESSION. The tools are still stubbed and no database is involved --
+# the boundary check is not something a test may opt out of, because the
+# assistant is exactly where §7 says it must hold.
 
 ORG = uuid.uuid4()
 USER = uuid.uuid4()
@@ -77,18 +77,25 @@ class _ScopedSession:
     🔴 THE PERMISSIONS COME FROM HERE, NOT FROM THE PRINCIPAL (I105).
 
     `authorize()` replaces the claimed set with the one
-    `core.permissions_for_current_session()` returns for the session's GUC, so
+    `core.authorization_for_current_session()` returns for the session's GUC, so
     a test that granted `knowledge.view` on the principal alone would now be
     testing a refusal. What the assistant may do is stated on the SESSION.
 
     Touches no database: it answers that one query and nothing else.
     """
 
-    def __init__(self, *granted: str) -> None:
+    def __init__(self, *granted: str, roles: tuple[str, ...] = ()) -> None:
         self._granted = ["msd.use", *granted]
+        self._roles = list(roles)
 
     def execute(self, _statement: object, *args: object, **kwargs: object) -> object:
-        row = SimpleNamespace(org=str(ORG), usr=str(USER), perms=list(self._granted))
+        # 🔴 ROLES COME FROM HERE TOO SINCE THE CODEX ROUND. `authorize()`
+        # replaces `caller.roles` as well as `caller.permissions`, because
+        # unclaimed work is selected with `t.assigned_role = ANY(:roles)` and
+        # this conductor feeds those codes into it.
+        row = SimpleNamespace(
+            org=str(ORG), usr=str(USER), perms=list(self._granted), roles=list(self._roles)
+        )
         return SimpleNamespace(one=lambda: row)
 
 
@@ -155,12 +162,22 @@ def test_an_unrouted_question_is_still_refused_when_the_search_finds_nothing(
     monkeypatch.setattr(conductor, "search_knowledge", lambda *a, **k: [])
 
     result = answer(
-        session=_ScopedSession(),
+        # 🔴 HELD ON THE SESSION, AND THIS EXACT LINE WAS WRONG FOR A WHILE.
+        #
+        # The permission is here so that this test exercises the EMPTY SEARCH
+        # and not the permission gate below it — its own comment has always
+        # said that "without it the refusal would arrive for the wrong reason
+        # and the test would pass while proving nothing".
+        #
+        # Which is precisely what happened: after I105 made `authorize()`
+        # replace the claimed set with the database's, this site still granted
+        # `knowledge.view` on the CALLER. That claim is discarded, so the
+        # refusal started coming from the gate — the test stayed green and
+        # stopped proving its own subject. Caught by reading the wiring, not
+        # by any assertion.
+        session=_ScopedSession("knowledge.view"),
         question="thoughts on the weather",
-        # Held, so this test exercises the EMPTY SEARCH and not the permission
-        # gate below it. Without it the refusal would arrive for the wrong
-        # reason and the test would pass while proving nothing.
-        caller=caller("knowledge.view"),
+        caller=caller(),
     )
 
     assert result.intent == "unsupported"

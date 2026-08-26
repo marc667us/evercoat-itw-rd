@@ -114,10 +114,13 @@ class _ProbeSession:
     def __init__(
         self,
         *granted: str,
+        roles: tuple[str, ...] = (),
         org: uuid.UUID = ORG,
         user: uuid.UUID = USER,
     ) -> None:
-        self._row = SimpleNamespace(org=str(org), usr=str(user), perms=list(granted))
+        self._row = SimpleNamespace(
+            org=str(org), usr=str(user), perms=list(granted), roles=list(roles)
+        )
         self._probed = False
 
     def execute(self, _statement: object, *args: object, **kwargs: object) -> object:
@@ -1209,37 +1212,110 @@ def test_a_conductor_that_forgets_to_authorize_fails_loudly() -> None:
     require(verified, department="laboratory", permission="batch.view")
 
 
-def test_every_conductor_entry_point_authorizes_before_it_gates() -> None:
-    """The order is load-bearing, so it is read from the source.
+def _call_positions(fn: ast.FunctionDef) -> tuple[int | None, int | None]:
+    """Line numbers of the real `caller.authorize(...)` and `require(...)` CALLS.
 
-    `require()` on an unverified principal raises, so a conductor that gated
-    FIRST and authorized afterwards could not work at all — this would be
-    caught by the tests above. What this adds is the stronger property that
-    every public conductor function does it, including any added later, and
-    that the two calls are adjacent rather than separated by a domain read.
+    🔴 AST NODES, NOT TEXT — AND THE FIRST VERSION OF THIS TEST USED TEXT.
+
+    It searched `ast.dump(node)` for the string "authorize" and compared
+    `ast.unparse(node).index(...)` positions. Both include the DOCSTRING, and
+    every conductor now discusses `authorize()` prominently in its prose — so
+    a function could delete the actual call, or move it after the gate, and
+    still satisfy the test through its own documentation. Raised by Codex.
+
+    That is the mirror of the defect found earlier the same day, when a
+    comment REDDENED a test. A comment that GREENS one is the more dangerous
+    direction, and this file now contains one example of each.
     """
-    conductors = (Path(__file__).resolve().parents[1] / "app" / "agents" / "conductors").glob(
-        "*_conductor.py"
-    )
+    authorize_at: int | None = None
+    require_at: int | None = None
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "authorize" and authorize_at is None:
+            authorize_at = node.lineno
+        if isinstance(func, ast.Name) and func.id == "require" and require_at is None:
+            require_at = node.lineno
+    return authorize_at, require_at
 
+
+def test_every_conductor_entry_point_authorizes_before_it_gates() -> None:
+    """The order is load-bearing, and it is read from the call graph.
+
+    `require()` refuses an unverified principal, so a conductor that gated
+    first could not work at all — the tests above would catch it. What this
+    adds is that EVERY gated entry point does it, including any added later,
+    and that the authorize call is a real call rather than a mention.
+    """
+    conductors = sorted(
+        (Path(__file__).resolve().parents[1] / "app" / "agents" / "conductors").glob(
+            "*_conductor.py"
+        )
+    )
+    assert conductors, "no conductors found; this test is looking in the wrong place"
+
+    checked: list[str] = []
     missing: list[str] = []
     for path in conductors:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef) or node.name.startswith("_"):
                 continue
-            body = ast.dump(node)
-            if "require" not in body:
+            authorize_at, require_at = _call_positions(node)
+            if require_at is None:
                 continue  # not a gated entry point
-            if "authorize" not in body:
-                missing.append(f"{path.name}::{node.name}")
-                continue
-            # `authorize` must come before `require`, textually within the body.
-            src = ast.unparse(node)
-            if src.index("authorize") > src.index("require("):
-                missing.append(f"{path.name}::{node.name} (gates before authorizing)")
+            where = f"{path.name}::{node.name}"
+            checked.append(where)
+            if authorize_at is None:
+                missing.append(f"{where} never calls authorize()")
+            elif authorize_at > require_at:
+                missing.append(f"{where} gates on line {require_at} before authorizing")
 
+    assert checked, "no gated conductor entry points were found at all"
     assert not missing, (
-        "these conductor entry points gate on a permission set the database "
-        f"has not supplied: {missing}"
+        "these conductor entry points gate on an authorization set the "
+        f"database has not supplied: {missing}"
     )
+
+
+def test_roles_are_derived_from_the_database_too() -> None:
+    """🔴 THE HALF OF I105 THE FIRST FIX MISSED. Raised by Codex.
+
+    Codex's statement of I105 was that `bind()` "never validates ROLES OR
+    PERMISSIONS". The first version of migration 048 derived permissions and
+    copied `roles` straight through — half of the sentence that was quoted
+    back at me.
+
+    Roles are not decorative. `app/domains/tasks/service.py` selects unclaimed
+    work with
+
+        t.assigned_user_id IS NULL AND t.assigned_role = ANY(:roles)
+
+    and `msd_conductor` feeds `caller.roles` into it through
+    `app/agents/tools/work.py`. So a forged principal carrying the REAL
+    session identity and an invented role would have made the assistant
+    surface tasks addressed to a role that person does not hold — §7's
+    "retrieval filtered by caller-supplied authorization state", which is the
+    whole subject of this issue.
+
+    Claim and reality are set in opposition, as with permissions.
+    """
+    claimed = AgentPrincipal.of(
+        Principal(
+            user_id=USER,
+            organization_id=ORG,
+            keycloak_sub=f"sub-{USER}",
+            email="caller@example.test",
+            display_name="Caller",
+            roles=frozenset({"product_development_director", "qa_compliance_officer"}),
+            permissions=frozenset(),
+        )
+    )
+    verified = claimed.authorize(_ProbeSession(roles=("laboratory_technician",)))
+
+    assert verified.roles == frozenset({"laboratory_technician"}), (
+        f"authorize() produced roles {sorted(verified.roles)} — the caller's claim "
+        "survived, so role-addressed work is still selected by caller-supplied state"
+    )
+    assert "product_development_director" not in verified.roles

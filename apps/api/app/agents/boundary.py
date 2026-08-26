@@ -70,6 +70,18 @@ class UnverifiedPrincipalError(PermissionError):
     for a legitimate caller the two sets are identical. It would be wrong only
     for a forged principal — which is the one case no test naturally covers.
     A missing line must be LOUD, not silently equivalent.
+
+    ⚠️ THIS IS A MISUSE DETECTOR, NOT AN UNFORGEABLE PROPERTY, AND SAYING SO
+    IS THE POINT. Raised by Codex. `verified` is an ordinary boolean on a
+    frozen dataclass, and anything that can call `object.__setattr__` can set
+    it — the same bypass `principal.py` documents as open and untestable-away.
+    So this cannot independently guarantee the database supplied the set.
+
+    The actual boundary is that EVERY conductor entry point calls
+    `authorize()` unconditionally, which
+    `test_every_conductor_entry_point_authorizes_before_it_gates` reads from
+    the call graph rather than from prose. This error is what makes an
+    accidental omission fail immediately instead of silently.
     """
 
 
