@@ -124,7 +124,28 @@ export const NAVIGATION: readonly NavGroup[] = [
     id: "governance",
     label: "Governance",
     items: [
-      { id: "approvals", label: "Approvals", href: "/approvals", badge: "approvals", slice: 6 },
+      // 🔴 GATED ON `test.view`, WHICH IS WHAT THE ENDPOINT DECLARES.
+      //
+      // It carried NO permission until Slice 6's screen was built, so every
+      // authenticated member was offered it — including the procurement
+      // specialist and the production engineer, neither of whom holds
+      // `test.view` and neither of whom `GET /api/approvals/queue` will
+      // answer. An item with no permission is offered to everybody, and that
+      // is right for Dashboard and My Work and wrong here.
+      //
+      // ⚠️ `test.view` is a FLOOR and not the real gate. The engine re-checks
+      // each rung's own `permission_required` plus segregation of duties, so
+      // holding this shows the queue and decides nothing. Naming the floor is
+      // still better than naming nothing: the alternative offers a screen that
+      // 403s to two of ten roles.
+      {
+        id: "approvals",
+        label: "Approvals",
+        href: "/approvals",
+        permission: "test.view",
+        badge: "approvals",
+        slice: 6,
+      },
       // Administration is a thread across slices, not a single delivery
       // (ADR-021). Section 1 — users, roles, permissions, organization
       // settings — ships in Slice 1, so this is live from the start.
@@ -247,6 +268,19 @@ export const BUILT_AHEAD: ReadonlySet<string> = new Set([
   // `navigation.test.ts` reads the filesystem and would fail the build for it.
   "analytics",
   "reports",
+  // Slice 6, built 2026-08-27 — the module that the SYSTEM writes to and no
+  // person could read. §10 opens a failure investigation automatically on a RED
+  // confirmation result, and until now the eleven write endpoints behind it and
+  // the approval engine's queue had no browser caller at all.
+  //
+  // ⚠️ THESE TWO MOVE TOGETHER AND THAT IS NOT A CONVENIENCE. An investigation
+  // reached from a test needs the approval queue to explain why a technically
+  // passing retest is still YELLOW (rule 12: AWAITING <next approver>), and the
+  // approval queue is where a returned-for-correction step becomes visible.
+  // Shipping one without the other leaves each pointing at a destination that
+  // renders inert.
+  "failures",
+  "approvals",
 ]);
 
 export function isAvailable(item: NavItem): boolean {

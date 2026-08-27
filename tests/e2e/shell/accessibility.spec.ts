@@ -49,6 +49,13 @@ const PAGES = [
   // scanning precisely because it is the state the deployed site is in.
   { name: "laboratory", path: "/laboratory" },
   { name: "testing", path: "/testing" },
+  // Slice 6, built 2026-08-27. 🔴 THIS LIST IS HAND-MAINTAINED AND THAT IS ITS
+  // ONE WEAKNESS: a screen added without an entry here is never scanned, and
+  // nothing fails. Both new destinations are added in the same commit that
+  // makes them reachable, and `navigation.spec.ts`'s crawl is the backstop that
+  // at least proves they render.
+  { name: "failures", path: "/failures" },
+  { name: "approvals", path: "/approvals" },
 ];
 
 for (const target of PAGES) {

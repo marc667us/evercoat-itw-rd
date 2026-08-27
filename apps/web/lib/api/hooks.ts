@@ -25,6 +25,29 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  acceptRootCause,
+  closeFailure,
+  decideStep,
+  fetchApprovalQueue,
+  fetchApprovalRoute,
+  fetchFailure,
+  fetchFailures,
+  linkEvidence,
+  proposeHypothesis,
+  raiseAction,
+  recordEvidence,
+  rejectHypothesis,
+  type ActionRequest,
+  type ApprovalQueueItem,
+  type ApprovalRoute,
+  type EvidenceLinkRequest,
+  type EvidenceRequest,
+  type FailureDetail,
+  type FailureSummary,
+  type HypothesisRequest,
+  type StepDecisionRequest,
+} from "./failures";
+import {
   ApiNoSessionError,
   ApiNotConfiguredError,
   type ApiCredentials,
@@ -1342,4 +1365,243 @@ export function useTestResultsReport<TShown>(
   project: (live: TestResultsReport) => TShown,
 ): LiveOnly<TShown> {
   return useLiveOnlyList("analysis-report", project, fetchTestResultsReport);
+}
+
+// ---------------------------------------------------------------------------
+// Slice 6 — failure investigations and the approval queue
+//
+// 🔴 ELEVEN WRITE ENDPOINTS SHIPPED WITHOUT ONE OF THESE.
+//
+// Measured 2026-08-27: every route in `app/api/failures.py` existed, was
+// permission-gated and was tested, and not one had a browser caller. So a RED
+// confirmation result opened an investigation — §10 does that automatically —
+// that no person could then work. The digital thread's most consequential
+// link, written by the system and workable by nobody.
+// ---------------------------------------------------------------------------
+
+/** The investigation queue. */
+export function useFailures<TShown = FailureSummary[]>(
+  project: (live: FailureSummary[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("quality-failures", project, fetchFailures);
+}
+
+/** One investigation, with its hypotheses, evidence and actions. */
+export function useFailure(failureId: string): LiveOnly<FailureDetail> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "quality-failure",
+      failureId,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && failureId.length > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchFailure(resolved.credentials, failureId, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * The seven writes an investigation supports.
+ *
+ * One bundled hook rather than seven, matching `useTestActions` and
+ * `useBatchActions`: the screen needs a single `isPending` and a single
+ * `error`, because two mutations in flight against one record is a state no
+ * workspace here wants to render.
+ */
+export function useFailureActions(failureId: string): {
+  readonly propose: (request: HypothesisRequest) => void;
+  readonly addEvidence: (request: EvidenceRequest) => void;
+  readonly link: (hypothesisId: string, request: EvidenceLinkRequest) => void;
+  readonly accept: (hypothesisId: string, rationale: string) => void;
+  readonly reject: (hypothesisId: string, reason: string) => void;
+  readonly raiseAction: (request: ActionRequest) => void;
+  readonly close: (summary: string) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly reset: () => void;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["quality-failure", failureId] });
+    void queryClient.invalidateQueries({ queryKey: ["quality-failures"] });
+    // A corrective action is work assigned to somebody, so My Work and its
+    // badge are both stale after `raiseAction`. Listed because that query
+    // EXISTS — this project has shipped an invalidation that matched nothing,
+    // under a comment claiming it kept a queue current.
+    void queryClient.invalidateQueries({ queryKey: ["my-work"] });
+  };
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (job: { readonly label: string; readonly run: () => Promise<unknown> }) => {
+      await job.run();
+      return job.label;
+    },
+    onSuccess: refresh,
+  });
+
+  const run = (label: string, make: () => Promise<unknown>) =>
+    mutation.mutate({ label, run: make });
+
+  return {
+    propose: (request) =>
+      run("hypothesis", () => proposeHypothesis(credentials(), failureId, request)),
+    addEvidence: (request) =>
+      run("evidence", () => recordEvidence(credentials(), failureId, request)),
+    link: (hypothesisId, request) =>
+      run("evidence link", () => linkEvidence(credentials(), failureId, hypothesisId, request)),
+    accept: (hypothesisId, rationale) =>
+      run("root cause", () =>
+        acceptRootCause(credentials(), failureId, {
+          hypothesis_id: hypothesisId,
+          rationale,
+        }),
+      ),
+    reject: (hypothesisId, reason) =>
+      run("rejection", () => rejectHypothesis(credentials(), failureId, hypothesisId, reason)),
+    raiseAction: (request) => run("action", () => raiseAction(credentials(), failureId, request)),
+    close: (summary) => run("closure", () => closeFailure(credentials(), failureId, summary)),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+    reset: mutation.reset,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+/**
+ * The approval queue: steps this caller could decide RIGHT NOW.
+ *
+ * 🔴 THE SERVER OWNS "RIGHT NOW" AND THE SCREEN MUST NOT SECOND-GUESS IT.
+ * `pending_steps_for` excludes steps whose turn has not come — including,
+ * since Codex's finding on that query, groups still blocked by an earlier step
+ * that was returned for correction rather than approved. Filtering this
+ * further in the browser would hide work; widening it would offer a rung the
+ * engine will refuse.
+ */
+export function useApprovalQueue<TShown = ApprovalQueueItem[]>(
+  project: (live: ApprovalQueueItem[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("approval-queue", project, fetchApprovalQueue);
+}
+
+/** One route and its ladder. */
+export function useApprovalRoute(routeId: string): LiveOnly<ApprovalRoute> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      "approval-route",
+      routeId,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && routeId.length > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetchApprovalRoute(resolved.credentials, routeId, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/** Record a decision on one rung of one route. */
+export function useApprovalDecision(): {
+  readonly decide: (routeId: string, stepId: string, request: StepDecisionRequest) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly reset: () => void;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (job: {
+      readonly routeId: string;
+      readonly stepId: string;
+      readonly request: StepDecisionRequest;
+    }) => {
+      await decideStep(credentials(), job.routeId, job.stepId, job.request);
+      return job.request.decision;
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["approval-queue"] });
+      void queryClient.invalidateQueries({ queryKey: ["approval-route", job.routeId] });
+      // A decision can settle a route, and a settled route changes a test's
+      // disposition — §10 rule 12 is literally "YELLOW — AWAITING <next
+      // approver>". Both test queries exist, so both are invalidated.
+      void queryClient.invalidateQueries({ queryKey: ["testing-tests"] });
+      void queryClient.invalidateQueries({ queryKey: ["testing-test"] });
+    },
+  });
+
+  return {
+    decide: (routeId, stepId, request) => mutation.mutate({ routeId, stepId, request }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+    reset: mutation.reset,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
 }
