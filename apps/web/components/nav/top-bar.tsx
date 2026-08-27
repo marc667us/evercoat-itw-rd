@@ -19,6 +19,7 @@ import { useState } from "react";
 import { MsdPanel } from "@/components/msd/msd-panel";
 
 import { AccountMenu } from "@/components/nav/account-menu";
+import { UserMenu } from "@/components/nav/user-menu";
 import { ApiStatus } from "@/components/nav/api-status";
 
 export function TopBar() {
@@ -80,13 +81,14 @@ export function TopBar() {
           MSD
         </button>
         <TopBarButton label="Alerts" hint="Notifications" />
+        {/* 🔴 THE SIGNED-IN PERSON, BETWEEN ALERTS AND HELP. `/api/me` has
+            always returned `display_name`; the auth provider parsed only the
+            organizations and threw it away, which is why this spot held a grey
+            circle with a dash in it. Renders nothing when signed out —
+            `AccountMenu` at the other end of the bar owns that message, and two
+            components saying it differently is worse than one saying it. */}
+        <UserMenu />
         <TopBarButton label="Help" hint="Help" />
-        <div
-          aria-hidden
-          className="ml-1 grid h-8 w-8 place-items-center rounded-full bg-slate-200 text-xs font-semibold text-slate-600"
-        >
-          —
-        </div>
       </div>
 
       {/* Beside the shell, not over it: a chemist asks MSD ABOUT WHAT

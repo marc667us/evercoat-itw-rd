@@ -15,6 +15,7 @@
 import type { Metadata } from "next";
 
 import { AuthProvider } from "@/components/providers/auth-provider";
+import { ThemeProvider } from "@/components/providers/theme-provider";
 import { QueryProvider } from "@/components/providers/query-provider";
 import { AppSidebar } from "@/components/nav/app-sidebar";
 import { TopBar } from "@/components/nav/top-bar";
@@ -80,6 +81,12 @@ export default function RootLayout({
         {/* AuthProvider outside QueryProvider: a query fired before
             the session is known would run anonymously and cache the
             refusal. */}
+        {/* 🔴 OUTSIDE EVERYTHING, INCLUDING THE AUTH PROVIDER. The theme is a
+            property of the BROWSER, not of the session: a signed-out reader
+            looking at the sign-in screen has already chosen dark, and a theme
+            that only applied once somebody was authenticated would flash white
+            at exactly the moment they are least expecting it. */}
+        <ThemeProvider>
         <AuthProvider>
         <QueryProvider>
         <div className="flex h-screen overflow-hidden">
@@ -108,6 +115,7 @@ export default function RootLayout({
         </div>
         </QueryProvider>
         </AuthProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

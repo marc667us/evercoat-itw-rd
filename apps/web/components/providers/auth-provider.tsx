@@ -56,8 +56,30 @@ import {
 import { safeReturnTo, saveFlow } from "@/lib/auth/flow-state";
 import { authorizationUrl, createChallenge, refreshTokens } from "@/lib/auth/pkce";
 
+/**
+ * Who the signed-in person is, as `/api/me` reports them.
+ *
+ * 🔴 THE API HAS ALWAYS SENT THIS AND THE PROVIDER THREW IT AWAY.
+ * `GET /api/me` returns `user_id`, `email` and `display_name` at the top level
+ * beside `organizations`, and the parse below read only `organizations`. So the
+ * application knew the caller's name on every load and had nowhere to put it —
+ * which is why the top bar showed a grey circle with a dash in it.
+ *
+ * ⚠️ THIS IS THE ORGANIZATION'S VIEW OF THE PERSON, not a global identity.
+ * Migration 052 moved `email` and `display_name` onto the membership (I106);
+ * `/api/me` resolves them through the same path, so what arrives here is the
+ * name THIS tenant knows them by.
+ */
+export interface UserProfile {
+  readonly userId: string;
+  readonly email: string;
+  readonly displayName: string;
+}
+
 export interface AuthContextValue {
   readonly session: SessionState;
+  /** The signed-in person, or null when there is no session. */
+  readonly profile: UserProfile | null;
   /** True when this build has an identity provider to talk to. */
   readonly configured: boolean;
   /** Begin sign-in. A full-page redirect; this function does not return. */
@@ -151,6 +173,7 @@ export function chooseOrganization(
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const session = useSession();
   const [organizations, setOrganizations] = useState<readonly OrganizationChoice[]>([]);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const tokens = useRef<LiveTokens | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 🔴 clearTimeout CANNOT STOP A REFRESH THAT IS ALREADY IN FLIGHT.
@@ -228,6 +251,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const body = (await response.json()) as {
       user_id?: string;
+      email?: string;
+      display_name?: string;
       organizations?: {
         organization_id: string;
         name: string;
@@ -248,6 +273,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // cosmetic filter turns into a claim the server never made.
       permissions: org.permissions ?? [],
     }));
+
+    // 🔴 ONLY WHEN ALL THREE ARE PRESENT. A half-populated profile would put an
+    // empty string where a name goes, and "signed in as ''" is worse than no
+    // name at all — it looks like a rendering bug rather than an absent field.
+    setProfile(
+      body.user_id !== undefined &&
+        body.email !== undefined &&
+        body.display_name !== undefined
+        ? {
+            userId: body.user_id,
+            email: body.email,
+            displayName: body.display_name,
+          }
+        : null,
+    );
 
     const first = choices[0];
     if (first === undefined) {
@@ -522,10 +562,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       configured: isAuthConfigured,
       signIn,
       signOut,
+      profile,
       organizations,
       selectOrganization,
     }),
-    [session, signIn, signOut, organizations, selectOrganization],
+    [session, signIn, signOut, profile, organizations, selectOrganization],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -56,6 +56,16 @@ const PAGES = [
   // at least proves they render.
   { name: "failures", path: "/failures" },
   { name: "approvals", path: "/approvals" },
+  // The account screens, 2026-08-27. `/account/settings` is the one that
+  // matters most here: it renders five theme swatches, and a swatch is exactly
+  // the kind of decorative colour block that acquires a contrast failure the
+  // moment somebody gives it a label.
+  { name: "profile", path: "/account/profile" },
+  { name: "settings", path: "/account/settings" },
+  { name: "security", path: "/account/security" },
+  // Administration's new sections.
+  { name: "stage gates", path: "/admin/stage-gates" },
+  { name: "reference data", path: "/admin/reference-data" },
 ];
 
 for (const target of PAGES) {
