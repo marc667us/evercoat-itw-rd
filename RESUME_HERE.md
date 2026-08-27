@@ -1,6 +1,101 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-## ▶▶ SESSION 2026-08-27 — THE API'S WRITE PATHS FINALLY GOT BROWSERS
+## ▶▶ SESSION 2026-08-27 (LATE) — THE REVIEW FIXES, AND THE FIXES' OWN DEFECTS
+
+Tip **`91926ca`**. apps/api **846 / 0 / 11** (857 collected), apps/web **211**
+vitest, e2e **75** specs local.
+
+This session had one job: apply the 19 findings Codex and the Supervisor raised
+on `b84a300` / `ad55d99`. Measuring them found four more. Reviewing the repair
+found **eleven more**, one of which is the worst defect of the day.
+
+### 🔴 THE LIVE E2E SUITE DID NOT RUN AT ALL, AND THE TASK REPORTED SUCCESS
+
+Widening the accessibility sweep, I added
+`{ name: "project workspace", path: "/projects/workspace" }` beside an existing
+entry of the same name. Playwright refuses to run **any** test when two share a
+title:
+
+    Error: duplicate test title "project workspace has no WCAG 2.1 AA
+    violations", first declared in shell/accessibility.spec.ts:102
+
+Not one test executed. And the shell chain that ran it ended in `tail`, so the
+exit code reported belonged to `tail` — the notification said *completed, exit
+code 0*. **A SUITE THAT RAN NOTHING HAS NOT PASSED**, arriving by a route this
+project had not seen: not a skip, not an empty selection, a refused run.
+
+`lib/accessibility-coverage.test.ts` now asserts the names are unique, and says
+in its own message that this is a suite-wide outage rather than a failure.
+Falsified by introducing a duplicate.
+
+### 🔴 A BLANK NAME LOCKED PEOPLE OUT OF THEIR OWN ACCOUNT
+
+Fixing Codex's *"an empty `display_name` is accepted though the comment claims
+otherwise"*, I made `activeProfile` return `null` on a blank name. `UserMenu`
+renders nothing on a null profile, `top-bar.tsx` is its only mount, and
+`/account/settings`, `/account/security` and `/account/profile` are linked from
+nowhere else in the shell — so a signed-in person with no name on file **could
+not sign out**. Reachable, not theoretical: the parse maps an absent field to
+`""` for an API too old to send it.
+
+The account is never withheld now. `profileLabel` falls back to the address and
+then to "Your account"; `profileInitials` returns null rather than a "?".
+
+**A COSMETIC RULE MUST NOT BE ENFORCED BY REMOVING A CONTROL.** The Supervisor
+found it by asking who mounts the component — not by reading the change.
+
+### 🔴 THE PAPER THEME ERASED EVERY ALERT FILL
+
+`warmed()` mixed each accent `50` 55% into the paper surface. Both are
+near-white and the surface is the **darker** of the two, so every fill landed on
+the page's own luminance: red **1.007:1**, orange **1.004:1** — two in 255 in
+one channel. A red notice and an amber one became the same colour; only the
+border survived.
+
+Grounds now start at the hue's `200`. That cost the light status set its margin
+on them (pass fell to 4.08:1), so **Paper has its own status set** — the third
+surface to need one, and the third time measurement said so rather than
+reasoning that "the page is still light".
+
+Two new guards: every ground against its own page, and every status colour
+against the ground it is actually painted on — the pairing the badge test had
+never made.
+
+### What the 19 original findings came to
+
+| Finding | Fix |
+|---|---|
+| The theme covered 12 of 34 colour tokens | Seven accent ramps + `slate-950` themed; `tailwind.config.ts` now **imports** the palette instead of hand-copying 60 triples under a comment claiming a drift test existed |
+| `StatusBadge` unreadable on dark (1.65 / 2.53 / 1.61:1) | `theme.test.ts` reads the SOURCE for class strings pairing a background with a foreground. It immediately refused my first dark set at **3.62:1 on the fail badge** |
+| A light flash on every load | A pre-paint script in the document head, built from the same `paletteVariables` the provider uses. Verified in the exported HTML at byte 8779, before `<body>` at 9296 |
+| `profile` never cleared on sign-out; never refreshed on org switch; taken from `rows[0]` | `/api/me` no longer declares tenant attributes on the identity — each membership carries its own pair (052's own rule, re-broken one tier up). `activeProfile()` derives it |
+| The landing preference had no reader | `app/page.tsx` opens on the chosen screen, which is also what sign-in returns to |
+| `role="radiogroup"` with no arrow keys | `components/ui/radio-cards.tsx`: roving tabindex, arrows, Home/End, selection follows focus |
+| Two pages missing from the a11y sweep | Measuring the route list found **eight more**. `accessibility-coverage.test.ts` derives it from the filesystem |
+| Four Administration headers reporting "0" while unknown | `headerCount()` — and the Supervisor caught that I fixed "Permissions" and left "Domains" beside it |
+
+### Codex's P2 — the CSP, measured
+
+The pre-paint script is inline, and `SECURITY.md` §13 states *"a
+Content-Security-Policy without `unsafe-inline` scripts"*. **Measured: no CSP
+exists** — not in `infrastructure/compose/Caddyfile`, not in `next.config.mjs`,
+not on the live response. Both reviewers confirmed independently.
+
+So the finding is real about the future and the **document is what is wrong
+today**. Recorded as I110 rather than papered over. When the CSP lands, this
+script needs its `sha256-` hash in `script-src`, and that is a decision about
+deployment configuration, not a code change to make now.
+
+### Reviewer arithmetic
+
+**Codex: 1 finding. Supervisor: 10, none overlapping.** Twenty-first consecutive
+session in which neither reviewer alone was enough. The Supervisor's were
+sharper this round — it verified the whole mechanism with a real production
+build, including `NEXT_OUTPUT=export`, before reporting.
+
+---
+
+## ▶ SESSION 2026-08-27 (EARLIER) — THE API'S WRITE PATHS FINALLY GOT BROWSERS
 
 Tip **`ad55d99`**, 20 commits. apps/api **855 / 0 / 11**, apps/web **182**
 vitest, **64** e2e specs.

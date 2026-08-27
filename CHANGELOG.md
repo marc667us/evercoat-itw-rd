@@ -1,5 +1,46 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-27 (late) — the review fixes, and the eleven defects they carried
+
+**`722df3d`, `0ea7709`, `91926ca`.** apps/api **846 / 0 / 11** (857 collected);
+apps/web **211** vitest (was 182); `tsc`, ESLint, ruff, ruff format and mypy
+clean; `next build` and `NEXT_OUTPUT=export` both verified, and the pre-paint
+script confirmed in the exported `<head>`.
+
+Applied the 19 findings Codex and the Supervisor raised on `b84a300` /
+`ad55d99`. Measuring them found four more. **Reviewing the repair found eleven
+more — Codex 1, the Supervisor 10, none overlapping.**
+
+🔴 **THE LIVE E2E SUITE RAN NOTHING AND THE TASK REPORTED EXIT 0.** A duplicate
+entry name in `accessibility.spec.ts` makes Playwright refuse the **entire**
+run — not a failed test, a refused suite — and the shell chain that invoked it
+ended in `tail`, so the exit code reported belonged to `tail`. A new guard
+asserts the names are unique, because they are the test titles.
+
+🔴 **A BLANK `display_name` REMOVED THE ONLY ROUTE TO SIGN OUT.** Returning a
+null profile for a blank name removed `UserMenu`, whose single mount in
+`top-bar.tsx` is the only link in the shell to Settings, Profile and Sign out.
+Reachable: the parse maps an absent field to `""`. A cosmetic rule must not be
+enforced by removing a control.
+
+🔴 **THE PAPER THEME ERASED EVERY ALERT FILL** — 1.004:1 against its own page,
+two in 255 in one channel. Grounds now start at the hue's `200`, which cost the
+light status set its margin on them, so Paper has its own status set. The third
+surface to need one, and the third time measurement said so.
+
+| what | before | after |
+|---|---|---|
+| colour tokens the theme covers | 12 of 34 | **34 of 34** |
+| Tailwind fallbacks | 60 hand-copied triples under a comment claiming a drift test existed | `tailwind.config.ts` **imports** `PALETTES.light` |
+| theme applied | after hydration — a white flash on every load | a pre-paint script in `<head>` |
+| `/api/me` identity | `email` + `display_name` from `rows[0]`, ordered by organization NAME | on each **membership**, where migration 052 put them |
+| landing preference | written, validated, read by nothing | `app/page.tsx` opens on it |
+| pages in the accessibility sweep | 12 | **22**, derived from the filesystem |
+
+**I110 filed:** `SECURITY.md` §13 states a Content-Security-Policy that does not
+exist anywhere — measured independently by both reviewers. **I111 filed:**
+`next build` rewrites `apps/web/tsconfig.json`, committed three times now.
+
 ## 2026-08-26 (part 4) — I82 closed, across three migrations
 
 **Migrations 049 (`h1000`), 050 (`i1000`), 051 (`j1000`).** API suite **771
