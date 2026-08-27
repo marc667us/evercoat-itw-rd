@@ -54,11 +54,28 @@ wrong and six right; one Supervisor claim was wrong and five right.
 
 ### ⚠️ WHAT IS OWED
 
-🔴 **THE LAST LIVE RUN WAS VOID, NOT RED.** `api-live` reported **855 / 0 / 0**
-and the e2e phase was still running when the harness killed it at ten minutes.
-The suite grew 41 → 64 specs. **Re-run and report three numbers before quoting
-anything.** It also needs `KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD` now:
-five browser sign-ins per run, and one run went 881/1/0 on that contention.
+### ▶ LIVE SUITE ON THE DEPLOYED DEMO — 905 / 0 / 0
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` | **855** | 0 | 0 |
+| e2e `shell` | **50** | 0 | 0 |
+| **TOTAL** | **905** | **0** | **0** |
+
+⚠️ **RUN AS TWO PHASES, NOT ONE INVOCATION.** A full `live-suite.sh` run now
+exceeds ten minutes (api-live 3m46s + e2e 5m12s + waits) and was killed at the
+harness cap while e2e was running — `api-live` had already printed its own
+pytest summary line. The e2e half was then run separately against the SAME
+deployed build, with no commit between them that changed the bundle.
+
+⚠️ **50 IS THE CORRECT LIVE e2e COUNT, NOT 64.** `--list` reports 64 because it
+runs in LOCAL mode; in LIVE mode the config excludes `api-wiring.spec.ts` (14
+tests) deliberately — that seam is compiled OUT of production builds, so its
+failures were once a false red. 41 before today + 9 added = 50.
+
+⚠️ The suite also needs `KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD` now:
+five browser sign-ins per run, and one run went 881/1/0 on that contention
+alone.
 
 🔴 **`b84a300` AND `ad55d99` HAVE HAD NO CODEX OR SUPERVISOR REVIEW.** Every
 other slice today was reviewed by both and both found real defects in every one.
