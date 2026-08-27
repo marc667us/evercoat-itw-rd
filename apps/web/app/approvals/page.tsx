@@ -158,10 +158,16 @@ function LadderSoFar({ routeId }: { routeId: string }) {
 function QueueRow({
   item,
   pending,
+  error,
+  recorded,
   onDecide,
 }: {
   item: ApprovalQueueItem;
   pending: boolean;
+  /** This row's own refusal, or null. See the page for why it is per-row. */
+  error: Error | null;
+  /** What was recorded on THIS row, or null. */
+  recorded: string | null;
   onDecide: (routeId: string, stepId: string, request: StepDecisionRequest) => void;
 }) {
   const [decision, setDecision] = useState<StepDecisionRequest["decision"]>("approve");
@@ -306,7 +312,29 @@ function QueueRow({
             onClick={() =>
               onDecide(item.route_id, item.step_id, {
                 decision,
-                ...(condition.trim() === "" ? {} : { condition_text: condition.trim() }),
+                // 🔴 ONLY WHEN THE DECISION IS CONDITIONAL. Raised by the
+                // Supervisor. `condition` is state that survives a change of
+                // `decision` and `needsCondition` only HIDES the input — so an
+                // approver who typed a limitation, reconsidered and switched to
+                // Reject sent that limitation anyway.
+                //
+                // `decide_step` writes `condition_text` unconditionally and
+                // `approval_route_steps_condition_present` only REQUIRES one for
+                // `approve_with_condition`; it does not forbid one elsewhere. So
+                // the rejected rung would have been stored carrying a limitation
+                // nobody attached to it, and `LadderSoFar` — added in the same
+                // commit — would have shown it to the next approver as a
+                // condition governing their decision.
+                //
+                // Worse on a plain `approve`: the ladder would display a
+                // limitation while `route_outcome`, which filters on
+                // `decision = 'approve_with_condition'`, reports none. The screen
+                // and the disposition disagreeing about §9's preserved limitation
+                // is the defect §9 exists to prevent, introduced by the feature
+                // built to honour it.
+                ...(needsCondition && condition.trim() !== ""
+                  ? { condition_text: condition.trim() }
+                  : {}),
                 ...(rationale.trim() === "" ? {} : { rationale: rationale.trim() }),
               })
             }
@@ -317,6 +345,24 @@ function QueueRow({
             <p className="mt-1 text-xs text-slate-600">
               A decision of &ldquo;{words(decision)}&rdquo; must say why — the server
               and the database both refuse one that does not.
+            </p>
+          )}
+          {/* 🔴 BESIDE THE CONTROL, NOT AT THE FOOT OF THE PAGE. Raised by the
+              Supervisor: the queue holds up to a hundred rows, so an approver at
+              row 30 whose decision was refused on segregation-of-duties grounds
+              had the explanation render below row 100, off-screen. A refusal
+              nobody can see reads as a button that did nothing. */}
+          {error !== null && (
+            <p
+              role="alert"
+              className="mt-2 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
+            >
+              {serverMessage(error)}
+            </p>
+          )}
+          {error === null && recorded !== null && (
+            <p role="status" className="mt-2 text-sm text-slate-700">
+              Recorded: {words(recorded)}. This step has left your queue.
             </p>
           )}
         </div>
@@ -330,6 +376,13 @@ export default function ApprovalsPage() {
   const { data, isLoading, error, unavailable } = useApprovalQueue((live) => live);
   const decision = useApprovalDecision();
   const rows: ApprovalQueueItem[] = data ?? [];
+
+  // 🔴 WHICH ROW THE ONE SHARED MUTATION BELONGS TO. `useApprovalDecision` is a
+  // single mutation, which is right — two decisions in flight at once is not a
+  // state this queue wants — but it means `error` and `lastAction` are page-
+  // global, and the page can be a hundred rows long. Remembering the step id
+  // lets the feedback render where the reader is looking.
+  const [actedOn, setActedOn] = useState<string | null>(null);
 
   return (
     <LiveOnlyPage
@@ -364,26 +417,17 @@ export default function ApprovalsPage() {
                   key={item.step_id}
                   item={item}
                   pending={decision.isPending}
-                  onDecide={decision.decide}
+                  error={actedOn === item.step_id ? decision.error : null}
+                  recorded={actedOn === item.step_id ? decision.lastAction : null}
+                  onDecide={(routeId, stepId, request) => {
+                    setActedOn(stepId);
+                    decision.decide(routeId, stepId, request);
+                  }}
                 />
               ))}
             </ul>
           )}
 
-          {decision.error !== null && (
-            <p
-              role="alert"
-              className="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
-            >
-              {serverMessage(decision.error)}
-            </p>
-          )}
-          {decision.error === null && decision.lastAction !== null && (
-            <p role="status" className="mt-3 text-sm text-slate-700">
-              Recorded: {words(decision.lastAction)}. The queue above is re-read from
-              the server, so a step that settled its route has already gone.
-            </p>
-          )}
         </>
       )}
     </LiveOnlyPage>

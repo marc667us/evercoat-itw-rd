@@ -96,15 +96,46 @@ function OpenInvestigation() {
 
   const options = projects.data ?? [];
 
+  // 🔴 A FAILED PROJECT LIST IS AN OUTAGE, NOT AN EMPTY DROPDOWN. Raised by the
+  // Supervisor: `projects.error` was never read, so a 403 or a timeout on
+  // `GET /api/projects` collapsed into a select with nothing in it and an Open
+  // button permanently disabled — with nothing on the page saying why. Every
+  // other error path here routes through `serverMessage`; this one did not.
+  if (projects.error !== null) {
+    return (
+      <section className="mb-4 rounded border border-red-300 bg-red-50 p-4">
+        <h2 className="text-sm font-semibold text-red-900">
+          An investigation cannot be opened right now
+        </h2>
+        <p role="alert" className="mt-1 text-sm text-red-900">
+          The project list could not be loaded, and an investigation must name a
+          project: {serverMessage(projects.error)}
+        </p>
+      </section>
+    );
+  }
+
   if (!expanded) {
     return (
-      <button
-        type="button"
-        className="mb-4 rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
-        onClick={() => setExpanded(true)}
-      >
-        Open an investigation
-      </button>
+      <div className="mb-4">
+        <button
+          type="button"
+          className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
+          onClick={() => setExpanded(true)}
+        >
+          Open an investigation
+        </button>
+        {/* 🔴 SAY THAT IT WORKED. Raised by the Supervisor: nothing
+            acknowledged a successful create, and on a queue of any length the
+            new row is below the fold — so a user pressed Open again and hit
+            `failures_org_code_key`, a refusal that reads as though the first
+            attempt had failed too. */}
+        {open.opened && (
+          <p role="status" className="mt-2 text-sm text-slate-700">
+            Investigation opened. It is in the queue below.
+          </p>
+        )}
+      </div>
     );
   }
 
@@ -193,13 +224,22 @@ function OpenInvestigation() {
               code.trim().length < 3 ||
               title.trim().length < 3
             }
+            // Reset on SUCCESS only, and collapse the panel — see the
+            // acknowledgement below for why silence was the defect.
             onClick={() =>
-              open.submit({
-                project_id: projectId,
-                failure_code: code.trim(),
-                title: title.trim(),
-                severity,
-              })
+              open.submit(
+                {
+                  project_id: projectId,
+                  failure_code: code.trim(),
+                  title: title.trim(),
+                  severity,
+                },
+                () => {
+                  setCode("");
+                  setTitle("");
+                  setExpanded(false);
+                },
+              )
             }
           >
             {open.isPending ? "Opening…" : "Open"}

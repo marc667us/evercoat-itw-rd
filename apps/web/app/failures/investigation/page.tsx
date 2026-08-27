@@ -116,9 +116,15 @@ function HypothesisCard({
   mayInvestigate: boolean;
   mayAccept: boolean;
   pending: boolean;
-  onAccept: (hypothesisId: string, rationale: string) => void;
-  onReject: (hypothesisId: string, reason: string) => void;
-  onLink: (hypothesisId: string, evidenceId: string, relationship: string, note: string) => void;
+  onAccept: (hypothesisId: string, rationale: string, after: () => void) => void;
+  onReject: (hypothesisId: string, reason: string, after: () => void) => void;
+  onLink: (
+    hypothesisId: string,
+    evidenceId: string,
+    relationship: string,
+    note: string,
+    after: () => void,
+  ) => void;
 }) {
   const [rationale, setRationale] = useState("");
   const [reason, setReason] = useState("");
@@ -127,6 +133,24 @@ function HypothesisCard({
   const [note, setNote] = useState("");
 
   const settled = hypothesis.status === "accepted" || hypothesis.status === "rejected";
+
+  // 🔴 EVIDENCE ALREADY LINKED TO THIS HYPOTHESIS IS NOT OFFERED AGAIN.
+  //
+  // Raised by the Supervisor. `quality.hypothesis_evidence` carries
+  // `UNIQUE (hypothesis_id, evidence_id)` (migration 021) and `link_evidence`
+  // does a plain INSERT with no ON CONFLICT — so re-linking the same piece,
+  // which is what somebody does when they realise they labelled it `supports`
+  // and it actually `contradicts`, came back as a raw constraint violation.
+  //
+  // ⚠️ AND THIS ONLY HALF-FIXES IT, WHICH IS WORTH SAYING PLAINLY. Offering an
+  // already-linked item was the visible defect; the real gap is that there is
+  // no UNLINK and no relabel, so a wrong relationship is permanent. On a screen
+  // whose whole argument is that hiding contradicting evidence makes every
+  // hypothesis look well-founded, a relationship that cannot be corrected is in
+  // scope — and it needs a DELETE endpoint that does not exist. Filed rather
+  // than invented here.
+  const alreadyLinked = new Set(hypothesis.evidence.map((e) => e.evidence_id));
+  const linkable = evidencePool.filter((e) => !alreadyLinked.has(e.id));
 
   return (
     <li className="rounded border border-slate-200 bg-white p-4">
@@ -174,7 +198,7 @@ function HypothesisCard({
         )}
       </div>
 
-      {mayInvestigate && !settled && evidencePool.length > 0 && (
+      {mayInvestigate && !settled && linkable.length > 0 && (
         <div className="mt-3 flex flex-wrap items-end gap-2">
           <div className="min-w-[14rem] flex-1">
             <label className={LABEL} htmlFor={`link-${hypothesis.id}`}>
@@ -187,7 +211,7 @@ function HypothesisCard({
               onChange={(e) => setEvidenceId(e.target.value)}
             >
               <option value="">Choose a piece of evidence</option>
-              {evidencePool.map((e) => (
+              {linkable.map((e) => (
                 <option key={e.id} value={e.id}>
                   {e.summary}
                 </option>
@@ -226,11 +250,14 @@ function HypothesisCard({
             type="button"
             className={BUTTON_QUIET}
             disabled={pending || evidenceId === ""}
-            onClick={() => {
-              onLink(hypothesis.id, evidenceId, relationship, note.trim());
-              setEvidenceId("");
-              setNote("");
-            }}
+            // 🔴 CLEARED ON SUCCESS, NOT ON CLICK. A failed link used to
+            // discard the note with it.
+            onClick={() =>
+              onLink(hypothesis.id, evidenceId, relationship, note.trim(), () => {
+                setEvidenceId("");
+                setNote("");
+              })
+            }
           >
             Link
           </button>
@@ -254,10 +281,7 @@ function HypothesisCard({
             type="button"
             className={BUTTON_QUIET}
             disabled={pending || reason.trim().length < 3}
-            onClick={() => {
-              onReject(hypothesis.id, reason.trim());
-              setReason("");
-            }}
+            onClick={() => onReject(hypothesis.id, reason.trim(), () => setReason(""))}
           >
             Reject
           </button>
@@ -289,10 +313,9 @@ function HypothesisCard({
             // The server requires at least 3 characters. Matching it here is a
             // courtesy that avoids a round trip, never the enforcement.
             disabled={pending || rationale.trim().length < 3}
-            onClick={() => {
-              onAccept(hypothesis.id, rationale.trim());
-              setRationale("");
-            }}
+            // A refused acceptance keeps the rationale. A 403 from segregation
+            // of duties is the common case and the text is the expensive part.
+            onClick={() => onAccept(hypothesis.id, rationale.trim(), () => setRationale(""))}
           >
             Accept as root cause
           </button>
@@ -440,12 +463,16 @@ function InvestigationWorkspace({ failure }: { failure: FailureDetail }) {
                 pending={actions.isPending}
                 onAccept={actions.accept}
                 onReject={actions.reject}
-                onLink={(hypothesisId, id, relationship, note) =>
-                  actions.link(hypothesisId, {
-                    evidence_id: id,
-                    relationship: relationship as "supports" | "contradicts" | "inconclusive",
-                    ...(note === "" ? {} : { note }),
-                  })
+                onLink={(hypothesisId, id, relationship, note, after) =>
+                  actions.link(
+                    hypothesisId,
+                    {
+                      evidence_id: id,
+                      relationship: relationship as "supports" | "contradicts" | "inconclusive",
+                      ...(note === "" ? {} : { note }),
+                    },
+                    after,
+                  )
                 }
               />
             ))}
@@ -501,15 +528,19 @@ function InvestigationWorkspace({ failure }: { failure: FailureDetail }) {
                 type="button"
                 className={BUTTON}
                 disabled={actions.isPending || cause.trim().length < 3}
-                onClick={() => {
-                  actions.propose({
-                    possible_cause: cause.trim(),
-                    confidence,
-                    ...(mechanism.trim() === "" ? {} : { mechanism: mechanism.trim() }),
-                  });
-                  setCause("");
-                  setMechanism("");
-                }}
+                onClick={() =>
+                  actions.propose(
+                    {
+                      possible_cause: cause.trim(),
+                      confidence,
+                      ...(mechanism.trim() === "" ? {} : { mechanism: mechanism.trim() }),
+                    },
+                    () => {
+                      setCause("");
+                      setMechanism("");
+                    },
+                  )
+                }
               >
                 Propose
               </button>
@@ -582,10 +613,12 @@ function InvestigationWorkspace({ failure }: { failure: FailureDetail }) {
               type="button"
               className={BUTTON_QUIET}
               disabled={actions.isPending || summary.trim().length < 3}
-              onClick={() => {
-                actions.addEvidence({ evidence_type: evidenceType, summary: summary.trim() });
-                setSummary("");
-              }}
+              onClick={() =>
+                actions.addEvidence(
+                  { evidence_type: evidenceType, summary: summary.trim() },
+                  () => setSummary(""),
+                )
+              }
             >
               Record evidence
             </button>
@@ -660,13 +693,12 @@ function InvestigationWorkspace({ failure }: { failure: FailureDetail }) {
               type="button"
               className={BUTTON_QUIET}
               disabled={actions.isPending || actionText.trim().length < 3}
-              onClick={() => {
-                actions.raiseAction({
-                  action_type: actionType,
-                  description: actionText.trim(),
-                });
-                setActionText("");
-              }}
+              onClick={() =>
+                actions.raiseAction(
+                  { action_type: actionType, description: actionText.trim() },
+                  () => setActionText(""),
+                )
+              }
             >
               Raise action
             </button>

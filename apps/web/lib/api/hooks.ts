@@ -1433,12 +1433,16 @@ export function useFailure(failureId: string): LiveOnly<FailureDetail> {
  * workspace here wants to render.
  */
 export function useFailureActions(failureId: string): {
-  readonly propose: (request: HypothesisRequest) => void;
-  readonly addEvidence: (request: EvidenceRequest) => void;
-  readonly link: (hypothesisId: string, request: EvidenceLinkRequest) => void;
-  readonly accept: (hypothesisId: string, rationale: string) => void;
-  readonly reject: (hypothesisId: string, reason: string) => void;
-  readonly raiseAction: (request: ActionRequest) => void;
+  readonly propose: (request: HypothesisRequest, after?: () => void) => void;
+  readonly addEvidence: (request: EvidenceRequest, after?: () => void) => void;
+  readonly link: (
+    hypothesisId: string,
+    request: EvidenceLinkRequest,
+    after?: () => void,
+  ) => void;
+  readonly accept: (hypothesisId: string, rationale: string, after?: () => void) => void;
+  readonly reject: (hypothesisId: string, reason: string, after?: () => void) => void;
+  readonly raiseAction: (request: ActionRequest, after?: () => void) => void;
   readonly close: (summary: string) => void;
   readonly isPending: boolean;
   readonly error: Error | null;
@@ -1468,34 +1472,62 @@ export function useFailureActions(failureId: string): {
     return resolved.credentials;
   };
 
+  // 🔴 `after` RUNS ONLY ON SUCCESS, AND THAT IS WHY IT EXISTS.
+  //
+  // Raised by the Supervisor. `mutate` is fire-and-forget, so the screen was
+  // clearing its inputs on the line AFTER the call — before anything was known.
+  // A lead who wrote a long acceptance rationale and hit a 403 from segregation
+  // of duties, or a 409 from `failure_hypotheses_one_accepted_idx`, got the
+  // error banner and an empty field, with the text nowhere to recover from.
+  //
+  // Clearing belongs to the outcome, not to the click.
   const mutation = useMutation({
-    mutationFn: async (job: { readonly label: string; readonly run: () => Promise<unknown> }) => {
+    mutationFn: async (job: {
+      readonly label: string;
+      readonly run: () => Promise<unknown>;
+      readonly after?: () => void;
+    }) => {
       await job.run();
       return job.label;
     },
-    onSuccess: refresh,
+    onSuccess: (_label, job) => {
+      refresh();
+      job.after?.();
+    },
   });
 
-  const run = (label: string, make: () => Promise<unknown>) =>
-    mutation.mutate({ label, run: make });
+  const run = (label: string, make: () => Promise<unknown>, after?: () => void) =>
+    mutation.mutate({ label, run: make, after });
 
   return {
-    propose: (request) =>
-      run("hypothesis", () => proposeHypothesis(credentials(), failureId, request)),
-    addEvidence: (request) =>
-      run("evidence", () => recordEvidence(credentials(), failureId, request)),
-    link: (hypothesisId, request) =>
-      run("evidence link", () => linkEvidence(credentials(), failureId, hypothesisId, request)),
-    accept: (hypothesisId, rationale) =>
-      run("root cause", () =>
-        acceptRootCause(credentials(), failureId, {
-          hypothesis_id: hypothesisId,
-          rationale,
-        }),
+    propose: (request, after) =>
+      run("hypothesis", () => proposeHypothesis(credentials(), failureId, request), after),
+    addEvidence: (request, after) =>
+      run("evidence", () => recordEvidence(credentials(), failureId, request), after),
+    link: (hypothesisId, request, after) =>
+      run(
+        "evidence link",
+        () => linkEvidence(credentials(), failureId, hypothesisId, request),
+        after,
       ),
-    reject: (hypothesisId, reason) =>
-      run("rejection", () => rejectHypothesis(credentials(), failureId, hypothesisId, reason)),
-    raiseAction: (request) => run("action", () => raiseAction(credentials(), failureId, request)),
+    accept: (hypothesisId, rationale, after) =>
+      run(
+        "root cause",
+        () =>
+          acceptRootCause(credentials(), failureId, {
+            hypothesis_id: hypothesisId,
+            rationale,
+          }),
+        after,
+      ),
+    reject: (hypothesisId, reason, after) =>
+      run(
+        "rejection",
+        () => rejectHypothesis(credentials(), failureId, hypothesisId, reason),
+        after,
+      ),
+    raiseAction: (request, after) =>
+      run("action", () => raiseAction(credentials(), failureId, request), after),
     close: (summary) => run("closure", () => closeFailure(credentials(), failureId, summary)),
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
@@ -1616,32 +1648,44 @@ export function useApprovalDecision(): {
  * to key it by yet.
  */
 export function useOpenInvestigation(): {
-  readonly submit: (request: FailureCreateRequest) => void;
+  readonly submit: (request: FailureCreateRequest, after?: () => void) => void;
   readonly isPending: boolean;
   readonly error: Error | null;
+  /** True once one has been opened, so the screen can say so. */
+  readonly opened: boolean;
   readonly unavailable: string | null;
 } {
   const resolved = useCredentials();
   const queryClient = useQueryClient();
 
   const mutation = useMutation({
-    mutationFn: async (request: FailureCreateRequest) => {
+    mutationFn: async (job: {
+      readonly request: FailureCreateRequest;
+      readonly after?: () => void;
+    }) => {
       if (!resolved.ok) {
         throw isApiConfigured
           ? new ApiNoSessionError(resolved.reason)
           : new ApiNotConfiguredError();
       }
-      return openInvestigation(resolved.credentials, request);
+      return openInvestigation(resolved.credentials, job.request);
     },
-    onSuccess: () => {
+    onSuccess: (_data, job) => {
       void queryClient.invalidateQueries({ queryKey: ["quality-failures"] });
+      // 🔴 THE FORM IS RESET ON SUCCESS, AND ONLY ON SUCCESS. Raised by the
+      // Supervisor: nothing acknowledged a create and nothing cleared the
+      // failure code, so a user who saw no confirmation pressed Open again and
+      // hit `failures_org_code_key` — a refusal that reads as though the FIRST
+      // attempt had failed too.
+      job.after?.();
     },
   });
 
   return {
-    submit: (request) => mutation.mutate(request),
+    submit: (request, after) => mutation.mutate({ request, after }),
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
+    opened: mutation.isSuccess,
     unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
   };
 }
