@@ -149,6 +149,39 @@ const INGESTER = process.env.TEST_INGEST_USER ?? "lead.demo";
 /** The ingest control, by its accessible name. */
 const INGEST_CONTROL = "Add technical text to the library";
 
+/**
+ * Reach the Knowledge Library the way a person does — by pressing the link.
+ *
+ * 🔴 `page.goto()` THROWS THE SESSION AWAY, AND THE FIRST VERSION USED IT.
+ *
+ * ADR-025 keeps the access token in MEMORY with no silent renew: the
+ * `prompt=none` hidden-iframe path was deliberately declined, because it works
+ * in development and stops working for some users in production. So a full page
+ * load is ANONYMOUS by design, and `page.goto("/knowledge/")` after signing in
+ * discards the session the sign-in just established.
+ *
+ * The live suite caught it on 2026-08-27 in the only way it could: the POSITIVE
+ * half failed. "A Lead IS offered the ingest form" went red because the Lead had
+ * been signed out by the navigation — while the negative half, "a Chemist is
+ * NOT offered it", passed happily for exactly the wrong reason. That is the
+ * argument for asserting both directions, arriving as a measurement rather than
+ * as a principle.
+ *
+ * Clicking the sidebar link is client-side routing, so the in-memory session
+ * survives — and it is the path a human uses, which is this project's other
+ * standing rule.
+ */
+async function openKnowledgeLibrary(page: import("@playwright/test").Page) {
+  const link = page.getByRole("navigation").getByRole("link", { name: "Knowledge Library" });
+  await expect(
+    link,
+    "Knowledge Library is not in the sidebar — this caller lacks knowledge.view, " +
+      "or the session was lost before the menu rendered",
+  ).toBeVisible({ timeout: 30_000 });
+  await link.click();
+  await expect(page).toHaveURL(/knowledge/, { timeout: 30_000 });
+}
+
 async function signIn(page: import("@playwright/test").Page, username: string) {
   await page.goto("/");
 
@@ -194,7 +227,7 @@ test.describe("a control inside a page is gated too, not just the menu", () => {
     );
 
     await signIn(page, CHEMIST);
-    await page.goto("/knowledge/");
+    await openKnowledgeLibrary(page);
 
     // 🔴 THE POSITIVE HALF FIRST. `chem.demo` holds `knowledge.view`, so the
     // library itself must be there. Without this, a page that failed to render
@@ -219,7 +252,7 @@ test.describe("a control inside a page is gated too, not just the menu", () => {
     );
 
     await signIn(page, INGESTER);
-    await page.goto("/knowledge/");
+    await openKnowledgeLibrary(page);
 
     await expect(
       page.getByRole("button", { name: INGEST_CONTROL }),
