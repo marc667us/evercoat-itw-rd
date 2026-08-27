@@ -46,6 +46,7 @@ import { serverMessage } from "@/lib/api/client";
 import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useCreateFormula, useFormulas, useProjects } from "@/lib/api/hooks";
+import { permits, usePermissions } from "@/lib/permissions";
 import type { Formula } from "@/lib/api/formulations";
 import {
   FORMULAS,
@@ -196,6 +197,16 @@ function CreateFormulaPanel() {
   const [name, setName] = useState("");
   const [projectId, setProjectId] = useState("");
   const create = useCreateFormula();
+  const permissions = usePermissions();
+
+  // 🔴 `formula.create`, WHICH `POST /api/formulations` DECLARES. Measured on
+  // the seeded realm 2026-08-27: the Chemist holds it and the Lead, Director,
+  // QA, Technician, Engineer, Procurement, Production and Executive do not. A
+  // "New formula" button offered to the other nine was a control that could
+  // only ever answer 403.
+  if (!permits(permissions, "formula.create")) {
+    return null;
+  }
 
   if (!open) {
     return (

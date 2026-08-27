@@ -29,73 +29,19 @@
  */
 
 import { Sidebar } from "@/components/nav/sidebar";
-import {
-  useAuth,
-  type OrganizationChoice,
-} from "@/components/providers/auth-provider";
+import { useAuth } from "@/components/providers/auth-provider";
 import { useMyWork } from "@/lib/api/hooks";
-import { useSession, type SessionState } from "@/lib/api/session";
+import { useSession } from "@/lib/api/session";
 import { DEMO_VIEWER, tasksAssignedTo } from "@/lib/demo/dataset";
-
-/**
- * Which permission set the sidebar should filter by (I79).
- *
- * A pure function on purpose: the rule below has four cases and three of
- * them are wrong in a way that looks fine on screen, so it needs a test
- * that does not have to stand up two React hooks to reach it.
- *
- * @param session       who the browser currently is.
- * @param organizations every tenant `/api/me` offered, each with its own
- *                      permissions -- membership is per-tenant.
- * @param fallback      what `app/layout.tsx` passes: the whole module map.
- */
-export function effectiveNavPermissions(
-  session: SessionState,
-  organizations: readonly OrganizationChoice[],
-  fallback: ReadonlySet<string>,
-): ReadonlySet<string> {
-  if (session.status !== "authenticated") {
-    // 🔴 NOT the empty set. A static export with no identity provider, or a
-    // reader who has not signed in, must still see the module map --
-    // `layout.tsx` records what an empty set did: Projects, Innovation and
-    // Pipeline vanished from the sidebar and the pages existed but were
-    // unreachable. Nothing is disclosed by showing a menu; every route
-    // re-authorizes server-side (§6).
-    return fallback;
-  }
-
-  const active = organizations.find(
-    (org) => org.organizationId === session.credentials.organizationId,
-  );
-
-  if (active === undefined) {
-    // 🔴 FAIL CLOSED. The first version returned `fallback` here and called
-    // that "we do not know, so we do not pretend to" -- which sounds careful
-    // and is backwards. Codex caught it, and it directly contradicts the
-    // rule written one file away in `auth-provider.tsx`: an API that cannot
-    // report permissions must yield a shell that shows LESS, never one that
-    // shows everything.
-    //
-    // Authenticated with an active tenant that `/api/me` did not return is a
-    // BROKEN state -- a stale organization id, a revoked membership, a list
-    // that has not loaded. Every request made in it carries an organization
-    // header the API will refuse, so showing the full module map offers a
-    // menu on which nothing works. Showing nothing is the honest rendering
-    // of "you have no access here", and unlike the signed-out case it does
-    // not strand a legitimate reader: a signed-in user whose tenant is
-    // missing has no working destination to be stranded from.
-    //
-    // The fallback exists for ABSENCE OF A SESSION, not for a broken one.
-    return new Set();
-  }
-
-  // 🔴 AN EMPTY SET HERE IS AN ANSWER, NOT AN ABSENCE. A member who holds
-  // no roles yet holds no permissions, and the sidebar must say so. This is
-  // the case the old code got wrong for every caller: it showed the entire
-  // module map to a laboratory technician, who then found the limits by
-  // pressing a control and receiving a 403.
-  return new Set(active.permissions);
-}
+// 🔴 THE RULE MOVED OUT OF THIS FILE, AND THAT IS THE POINT.
+//
+// `effectiveNavPermissions` was defined here, which quietly made it the
+// SIDEBAR's rule rather than the application's. Everything below the sidebar
+// — the contextual submenu, the ingest form, the workspace action bars — had
+// nowhere to import it from, and three page comments recorded that absence as
+// if it were a property of the API. It lives in `lib/permissions.ts` now, with
+// its tests, and this component is one of its callers rather than its owner.
+import { effectiveNavPermissions } from "@/lib/permissions";
 
 export function AppSidebar({ permissions }: { permissions: ReadonlySet<string> }) {
   // 🔴 THE SIGNED-IN CALLER'S OWN PERMISSIONS, WHEN THERE IS ONE (I79).

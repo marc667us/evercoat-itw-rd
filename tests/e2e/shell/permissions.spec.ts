@@ -109,3 +109,115 @@ test.describe("the sidebar reflects the caller's permissions", () => {
     ).toHaveCount(0);
   });
 });
+
+/**
+ * The SECOND level — a control inside a page, not a destination in the menu.
+ *
+ * 🔴 WHY THE SIDEBAR TEST ABOVE WAS NOT ENOUGH.
+ *
+ * I79 gave the sidebar the caller's permissions on 2026-08-25 and nothing
+ * else. Three screens went on offering every control to every role, each with
+ * a comment stating the reason: *"`/api/me` returns roles, not permissions."*
+ * That reason had expired two days before those words were last true, and the
+ * comment kept the screens frozen in the shape it had chosen. So the sidebar
+ * was role-scoped and the workspace inside it was not.
+ *
+ * The knowledge library is the cleanest place to measure that in a browser:
+ * `chem.demo` and `lead.demo` BOTH hold `knowledge.view`, so both reach the
+ * page and see the same library, and only `lead.demo` holds
+ * `knowledge.ingest`. Measured against the deployed demo on 2026-08-27 —
+ * `chem.demo` holds `knowledge.promote` and NOT `knowledge.ingest`, so before
+ * this change a Chemist was offered a form that could only ever answer 403.
+ *
+ * 🔴 BOTH DIRECTIONS, IN TWO TESTS. "The Chemist is not offered the form"
+ * passes when the page fails to load, when the session dies, and when the
+ * filter hides everything from everybody. The second test is what makes the
+ * first one mean something.
+ */
+
+const CHEMIST = process.env.TEST_CHEMIST_USER ?? "chem.demo";
+const LEAD = process.env.TEST_SIGNIN_USER ?? "lead.demo";
+
+/** The ingest control, by its accessible name. */
+const INGEST_CONTROL = "Add technical text to the library";
+
+async function signIn(page: import("@playwright/test").Page, username: string) {
+  await page.goto("/");
+
+  const signInButton = page.getByRole("button", { name: "Sign in" });
+  await expect(
+    signInButton,
+    "no Sign in button — the deployment may have no identity provider compiled in",
+  ).toBeVisible();
+  await signInButton.click();
+
+  await page.waitForURL(/\/realms\/[^/]+\/protocol\/openid-connect\/auth/, {
+    timeout: 60_000,
+  });
+  await expect(
+    page.locator(USERNAME_FIELD),
+    "no username field — the realm most likely rejected redirect_uri",
+  ).toBeVisible({ timeout: 30_000 });
+
+  await page.locator(USERNAME_FIELD).fill(username);
+  await page.locator(PASSWORD_FIELD).fill(PASSWORD);
+  await page.locator(PASSWORD_FIELD).press("Enter");
+
+  await page.waitForURL(
+    (url) => !/\/realms\/|\/protocol\/openid-connect\//.test(url.pathname),
+    { timeout: 60_000 },
+  );
+
+  // 🔴 THE SESSION MUST EXIST BEFORE ANY OF THIS MEANS ANYTHING. An anonymous
+  // shell falls back to the module map deliberately, so an assertion made
+  // before the switcher appears is an assertion against the wrong branch.
+  await expect(
+    page.getByLabel("Active organization"),
+    `no organization switcher — ${username} is not signed in, so what follows ` +
+      "would be measuring the anonymous fallback",
+  ).toBeVisible({ timeout: 60_000 });
+}
+
+test.describe("a control inside a page is gated too, not just the menu", () => {
+  test("a Chemist is not offered the knowledge ingest form", async ({ page }) => {
+    test.skip(
+      PASSWORD === "",
+      "TEST_KEYCLOAK_PASSWORD is not set — permission gating was NOT verified",
+    );
+
+    await signIn(page, CHEMIST);
+    await page.goto("/knowledge/");
+
+    // 🔴 THE POSITIVE HALF FIRST. `chem.demo` holds `knowledge.view`, so the
+    // library itself must be there. Without this, a page that failed to render
+    // at all would satisfy the assertion below.
+    await expect(
+      page.getByRole("heading", { name: "Knowledge library", level: 1 }),
+      "the Knowledge Library did not render for a Chemist who holds " +
+        "knowledge.view — the page is broken, not gated",
+    ).toBeVisible({ timeout: 30_000 });
+
+    await expect(
+      page.getByRole("button", { name: INGEST_CONTROL }),
+      "the ingest form is offered to a Chemist who does not hold " +
+        "knowledge.ingest — the control can only ever answer 403",
+    ).toHaveCount(0);
+  });
+
+  test("a Lead IS offered the knowledge ingest form", async ({ page }) => {
+    test.skip(
+      PASSWORD === "",
+      "TEST_KEYCLOAK_PASSWORD is not set — permission gating was NOT verified",
+    );
+
+    await signIn(page, LEAD);
+    await page.goto("/knowledge/");
+
+    await expect(
+      page.getByRole("button", { name: INGEST_CONTROL }),
+      "the ingest form is HIDDEN from a Lead who holds knowledge.ingest — the " +
+        "gate is filtering on an empty set, which hides the control from " +
+        "everybody and would make the Chemist test above pass for the wrong reason",
+    ).toBeVisible({ timeout: 30_000 });
+  });
+});

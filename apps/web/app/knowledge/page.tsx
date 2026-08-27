@@ -34,6 +34,7 @@ import { useMemo, useState } from "react";
 
 import { LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { ApiError, serverMessage } from "@/lib/api/client";
+import { permits, usePermissions } from "@/lib/permissions";
 import {
   useIngestKnowledgeDocument,
   useKnowledgeDocuments,
@@ -232,17 +233,27 @@ function PassageCard({ passage }: { passage: KnowledgePassage }) {
  * on the strength of the route alone, which is the "which production path
  * writes it?" defect committed while closing an instance of itself.
  *
- * ⚠️ SHOWN TO EVERYONE, BECAUSE THE CLIENT DOES NOT KNOW ITS OWN PERMISSIONS.
+ * ✅ CORRECTED 2026-08-27 — IT IS NO LONGER SHOWN TO EVERYONE.
  *
- * `/api/me` returns roles, not permissions, and the sidebar is handed the full
- * module map rather than the caller's grants. So this form cannot be hidden
- * from a Chemist the way a permission-aware UI would hide it. §6 is explicit
- * that frontend checks are cosmetic and every control is re-enforced
- * server-side — which it is, with `knowledge.ingest` — so the honest thing is
- * to let the server answer and then SAY what the answer means, rather than
- * render a dead form and let a 403 look like a bug.
+ * This comment used to read: *"SHOWN TO EVERYONE, BECAUSE THE CLIENT DOES NOT
+ * KNOW ITS OWN PERMISSIONS. `/api/me` returns roles, not permissions."* That
+ * was true when written and stopped being true on 2026-08-25, when I79 closed
+ * and migration 045 added permission codes to `core.memberships_for_subject`.
+ * Measured against the deployed demo on 2026-08-27: `/api/me` returns 38
+ * permissions for `lead.demo`, 33 for `chem.demo` and 11 for `tech.demo`.
+ *
+ * 🔴 SO THE REASON THIS FORM WAS UNGATED HAD EXPIRED, AND THE COMMENT KEPT
+ * IT ALIVE. *A comment can assert a rule that does not exist* — this
+ * platform's own recorded lesson. `chem.demo` holds `knowledge.promote` and
+ * NOT `knowledge.ingest`, so a Chemist was offered a form that could only ever
+ * answer 403.
+ *
+ * The 403 branch below STAYS. Hiding the control is cosmetic (§6) and the
+ * server remains the authority: a caller whose grant is revoked between render
+ * and submit must still get a sentence rather than a stack trace.
  */
 function AddDocument() {
+  const permissions = usePermissions();
   const ingest = useIngestKnowledgeDocument();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -251,6 +262,15 @@ function AddDocument() {
   const [open, setOpen] = useState(false);
 
   const forbidden = ingest.error instanceof ApiError && ingest.error.status === 403;
+
+  // 🔴 NOTHING AT ALL, NOT A DISABLED CONTROL. A greyed-out "Add technical
+  // text to the library" tells a Chemist the product is broken for them; an
+  // absent one tells them the library is read-only from where they stand,
+  // which is the truth. The sidebar reached the same conclusion for a
+  // destination and this is the same decision one level down.
+  if (!permits(permissions, "knowledge.ingest")) {
+    return null;
+  }
 
   return (
     <section aria-labelledby="knowledge-add-heading" className="mt-10">

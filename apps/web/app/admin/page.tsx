@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
-import { ContextSubmenu, EntityHeader } from "@/components/ui/entity-header";
+import { ContextSubmenu } from "@/components/ui/context-submenu";
+import { EntityHeader } from "@/components/ui/entity-header";
 
 export const metadata: Metadata = { title: "Administration" };
 
@@ -21,19 +22,45 @@ export const metadata: Metadata = { title: "Administration" };
  * how a feature ships having never worked.
  */
 
+/**
+ * Administration's nine sections, each gated on the permission its own
+ * endpoint requires.
+ *
+ * 🔴 UNTIL 2026-08-27 THIS LIST HAD NO PERMISSIONS AT ALL, AND THAT WAS THE
+ * SECOND LEVEL OF THE MENU PROBLEM.
+ *
+ * `admin.users` is what puts Administration in the sidebar. It is NOT what the
+ * sections behind it require: Roles and Permissions are served by
+ * `GET /api/admin/roles` and `GET /api/admin/permissions`, both of which
+ * demand `admin.roles`, and Stage Gates demands `admin.stage_gates`. So a
+ * caller holding `admin.users` alone was offered eight sections of which one
+ * answered — the shape §6 calls cosmetic and a reader calls broken.
+ *
+ * ⚠️ FOUR OF THESE NAME A PERMISSION NO ROUTE CHECKS YET. `admin.organization`,
+ * `admin.workflow`, `admin.notifications` and `admin.audit` are seeded and held
+ * (the administrator role holds all four, measured 2026-08-27) and no endpoint
+ * reads them, because those sections are `not-started`. That is deliberate and
+ * it is written down rather than hidden: naming the permission the section WILL
+ * require keeps the menu honest today and makes the endpoint's gate a
+ * one-line agreement rather than a decision to re-make later. It is the
+ * "permission with no enforcement point" shape, held open on purpose with the
+ * reason stated — not an oversight.
+ */
 const SECTIONS = [
-  { label: "Users & Members", href: "/admin", state: "active" as const },
-  { label: "Roles", href: "/admin/roles", state: "active" as const, unavailable: true },
-  { label: "Permissions", href: "/admin/permissions", state: "active" as const, unavailable: true },
-  { label: "Organization", href: "/admin/organization", state: "active" as const, unavailable: true },
+  { label: "Users & Members", href: "/admin", state: "active" as const, permission: "admin.users" },
+  // GET /api/admin/roles and GET /api/admin/permissions both require
+  // `admin.roles` — not `admin.users`, which is what reaches this page.
+  { label: "Roles", href: "/admin/roles", state: "active" as const, unavailable: true, permission: "admin.roles" },
+  { label: "Permissions", href: "/admin/permissions", state: "active" as const, unavailable: true, permission: "admin.roles" },
+  { label: "Organization", href: "/admin/organization", state: "active" as const, unavailable: true, permission: "admin.organization" },
   // Ship with the slice that first depends on them (ADR-021). Shown as
   // not-started rather than hidden, so the shape of Administration is
   // visible and nobody re-invents a section that is already scheduled.
-  { label: "Stage Gates", href: "/admin/stage-gates", state: "not-started" as const, unavailable: true },
-  { label: "Test Methods", href: "/admin/test-methods", state: "not-started" as const, unavailable: true },
-  { label: "Approval Templates", href: "/admin/approval-templates", state: "not-started" as const, unavailable: true },
-  { label: "Notifications", href: "/admin/notifications", state: "not-started" as const, unavailable: true },
-  { label: "Audit", href: "/admin/audit", state: "not-started" as const, unavailable: true },
+  { label: "Stage Gates", href: "/admin/stage-gates", state: "not-started" as const, unavailable: true, permission: "admin.stage_gates" },
+  { label: "Test Methods", href: "/admin/test-methods", state: "not-started" as const, unavailable: true, permission: "admin.reference_data" },
+  { label: "Approval Templates", href: "/admin/approval-templates", state: "not-started" as const, unavailable: true, permission: "admin.workflow" },
+  { label: "Notifications", href: "/admin/notifications", state: "not-started" as const, unavailable: true, permission: "admin.notifications" },
+  { label: "Audit", href: "/admin/audit", state: "not-started" as const, unavailable: true, permission: "admin.audit" },
 ];
 
 export default function AdministrationPage() {

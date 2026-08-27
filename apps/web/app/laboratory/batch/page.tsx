@@ -36,13 +36,24 @@
  * look finished"*. This screen renders the two differently and never fills the
  * gap with a dash that could be mistaken for a measurement.
  *
- * 🔴 EVERY ACTION IS OFFERED AND THE SERVER DECIDES. Buttons are shown for the
- * steps the batch's own status allows, but nothing here is an authorization
- * check: `batch.reject` is held only by the Engineer, and §6 makes frontend
- * checks cosmetic with the server authoritative. A 403 is surfaced as the
- * sentence the server sent. Hiding controls properly needs `/api/me` to report
- * permissions, which it does not — that is I79, and pretending otherwise here
- * would be a second, wrong, copy of the permission model.
+ * ✅ CORRECTED 2026-08-27 — AN ACTION THE CALLER CANNOT PERFORM IS NO LONGER
+ * OFFERED, AND THE SERVER STILL DECIDES.
+ *
+ * This paragraph used to end: *"Hiding controls properly needs `/api/me` to
+ * report permissions, which it does not — that is I79, and pretending
+ * otherwise here would be a second, wrong, copy of the permission model."*
+ * I79 CLOSED on 2026-08-25. `/api/me` has reported permissions ever since, so
+ * the reason had expired while the sentence went on holding the screen in the
+ * shape the reason had chosen — and it was right about the second copy, which
+ * is why the permission names below are read off `app/api/laboratory.py` and
+ * `REVIEW_PERMISSION` rather than invented here.
+ *
+ * 🔴 STATUS AND PERMISSION ARE TWO DIFFERENT GATES AND BOTH STAY. A control
+ * appears when the batch's status permits the step AND the caller holds the
+ * permission the endpoint requires. The server remains the authority on both:
+ * it refuses a step out of sequence with a 409 and an unauthorized caller with
+ * a 403, and each message is surfaced verbatim. Only the permission half is
+ * knowable in the browser, and only that half is hidden.
  */
 
 import Link from "next/link";
@@ -51,6 +62,7 @@ import { Suspense, useState } from "react";
 
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { serverMessage } from "@/lib/api/client";
+import { usePermissions } from "@/lib/permissions";
 import { Absent } from "@/components/ui/record-link";
 import { StatusBadge, type StatusBadgeInput } from "@/components/ui/status-badge";
 import {
@@ -146,6 +158,12 @@ const BUTTON_QUIET =
  * and read by nothing.
  */
 function PlanTestForSample({ sample }: { sample: BatchSample }) {
+  // 🔴 `test.plan`, WHICH IS NOT `test.execute`. `POST /api/testing/tests`
+  // declares `test.plan`; a laboratory technician holds `test.execute` and
+  // `sample.create` and NOT `test.plan`, so the person who takes the sample is
+  // deliberately not the person who decides what it will be tested for. That
+  // separation is in the permission table and was invisible on this screen.
+  const permissions = usePermissions();
   const methods = useTestMethods();
   const [open, setOpen] = useState(false);
   const [methodId, setMethodId] = useState("");
@@ -153,6 +171,10 @@ function PlanTestForSample({ sample }: { sample: BatchSample }) {
   const [purpose, setPurpose] = useState("oversight");
   const [authority, setAuthority] = useState("development");
   const plan = usePlanTest();
+
+  if (!permissions.has("test.plan")) {
+    return null;
+  }
 
   if (!open) {
     return (
@@ -408,6 +430,20 @@ function ComponentRow({
 }
 
 function BatchWorkspace({ batch }: { batch: BatchDetail }) {
+  // Read off `app/api/laboratory.py`, not inferred from the button labels:
+  // authorization requires `batch.create`, start/weigh/parameters require
+  // `batch.execute`, a deviation accepts `batch.execute` OR `batch.complete`,
+  // a sample requires `sample.create`, completion requires `batch.complete`,
+  // and review is decision-dependent — `REVIEW_PERMISSION` maps accept to
+  // `batch.complete` and reject to `batch.reject`, which only the Engineer
+  // holds.
+  const permissions = usePermissions();
+  const mayAuthorize = permissions.has("batch.create");
+  const mayExecute = permissions.has("batch.execute");
+  const mayComplete = permissions.has("batch.complete");
+  const mayReject = permissions.has("batch.reject");
+  const mayCreateSample = permissions.has("sample.create");
+  const mayRecordDeviation = mayExecute || mayComplete;
   const actions = useBatchActions(batch.id);
   const d = batchStatus(batch.status);
 
@@ -415,6 +451,12 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
   // The statuses the server accepts a weighing in (`_RECORDABLE` in the
   // service). Offered from the status, refused by the server — never both.
   const canWeigh = ["in_progress", "weighing", "mixing"].includes(batch.status);
+  // 🔴 STATUS *AND* PERMISSION. `canWeigh` is the batch's own state machine and
+  // says nothing about who is asking; `mayExecute` is the endpoint's
+  // requirement and says nothing about whether the step is available. Recording
+  // needs both, and conflating them would either offer a technician a control
+  // on a completed batch or withhold one from a technician on a live batch.
+  const canRecordExecution = canWeigh && mayExecute;
 
   const [deviation, setDeviation] = useState({ description: "", severity: "minor" });
   const [sample, setSample] = useState({ sample_number: "", quantity_g: "", purpose: "" });
@@ -483,7 +525,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
 
         {/* The lifecycle, as the steps this status actually permits. */}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          {batch.status === "draft" && (
+          {batch.status === "draft" && mayAuthorize && (
             <button
               type="button"
               className={BUTTON}
@@ -493,7 +535,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
               Issue weigh-up sheet
             </button>
           )}
-          {batch.status === "authorized" && (
+          {batch.status === "authorized" && mayExecute && (
             <button
               type="button"
               className={BUTTON}
@@ -503,7 +545,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
               Start execution
             </button>
           )}
-          {canWeigh && (
+          {canWeigh && mayComplete && (
             <button
               type="button"
               className={BUTTON}
@@ -522,8 +564,16 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
               Close execution
             </button>
           )}
-          {(batch.status === "completed" || batch.status === "under_review") && (
+          {/* 🔴 ACCEPT AND REJECT ARE TWO PERMISSIONS, NOT ONE CONTROL.
+              `REVIEW_PERMISSION` maps accept to `batch.complete` and reject to
+              `batch.reject`, and only the Engineer holds the second — so a
+              reviewer who may accept and may not reject sees exactly one
+              button, which is the shape the authorization model has always
+              had and the screen has never shown. */}
+          {(batch.status === "completed" || batch.status === "under_review") &&
+            (mayComplete || mayReject) && (
             <>
+              {mayComplete && (
               <button
                 type="button"
                 className={BUTTON}
@@ -532,6 +582,8 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
               >
                 Accept for testing
               </button>
+              )}
+              {mayReject && (
               <button
                 type="button"
                 className={BUTTON_QUIET}
@@ -540,6 +592,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
               >
                 Reject — process deviation
               </button>
+              )}
               <label className="sr-only" htmlFor="review-note">
                 Review note
               </label>
@@ -603,7 +656,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
                   <th scope="col" className="py-2 pr-4 font-medium">Deviation</th>
                   <th scope="col" className="py-2 pr-4 font-medium">Lot</th>
                   <th scope="col" className="py-2 font-medium">
-                    {canWeigh ? "Record" : "Weighed"}
+                    {canRecordExecution ? "Record" : "Weighed"}
                   </th>
                 </tr>
               </thead>
@@ -612,7 +665,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
                   <ComponentRow
                     key={line.id}
                     line={line}
-                    canWeigh={canWeigh}
+                    canWeigh={canRecordExecution}
                     pending={actions.isPending}
                     onWeigh={(componentId, mass) =>
                       actions.weigh(componentId, { actual_mass_kg: mass })
@@ -653,7 +706,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
           </ul>
         )}
 
-        {canWeigh && (
+        {canRecordExecution && (
           <form
             className="mt-3 flex flex-wrap items-end gap-3"
             onSubmit={(e) => {
@@ -759,6 +812,10 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
           </ul>
         )}
 
+        {/* `POST /{batch_id}/deviations` accepts `batch.execute` OR
+            `batch.complete` — the technician who saw it and the chemist
+            reviewing afterwards can both record one. */}
+        {mayRecordDeviation && (
         <form
           className="mt-3 flex flex-wrap items-end gap-3"
           onSubmit={(e) => {
@@ -795,6 +852,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
             Raise deviation
           </button>
         </form>
+        )}
       </section>
 
       {/* ---------------------------------------------------------------- */}
@@ -836,6 +894,10 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
           </ul>
         )}
 
+        {/* `sample.create`, which is its own permission and not `batch.execute`
+            — the technician who ran the batch and the chemist who owns it both
+            hold it, and a production engineer holds neither. */}
+        {mayCreateSample && (
         <form
           className="mt-3 flex flex-wrap items-end gap-3"
           onSubmit={(e) => {
@@ -885,6 +947,7 @@ function BatchWorkspace({ batch }: { batch: BatchDetail }) {
             Take sample
           </button>
         </form>
+        )}
       </section>
     </div>
   );

@@ -27,7 +27,7 @@ import { describe, expect, it } from "vitest";
 import type { OrganizationChoice } from "@/components/providers/auth-provider";
 import type { SessionState } from "@/lib/api/session";
 
-import { effectiveNavPermissions } from "./app-sidebar";
+import { effectiveNavPermissions, permits } from "./permissions";
 
 const FULL_MAP: ReadonlySet<string> = new Set([
   "project.view",
@@ -158,5 +158,41 @@ describe("effectiveNavPermissions", () => {
     );
 
     expect([...result]).toEqual(["product.release"]);
+  });
+});
+
+/**
+ * `permits` — the "an item that names no permission is visible" half of the
+ * rule, stated once instead of at every call site.
+ *
+ * 🔴 BOTH DIRECTIONS. "Hidden when not held" passes just as happily when the
+ * function returns `false` for everything, which would empty every submenu in
+ * the product.
+ */
+describe("permits", () => {
+  const HELD: ReadonlySet<string> = new Set(["batch.view", "test.execute"]);
+
+  it("allows a control that names no permission", () => {
+    // Matches `visibleNavigation`: a nav item with no `permission` is offered
+    // to any authenticated member. If the two disagreed, the sidebar and the
+    // submenu would answer differently for the same caller.
+    expect(permits(HELD, undefined)).toBe(true);
+    expect(permits(new Set(), undefined)).toBe(true);
+  });
+
+  it("allows a permission the caller holds", () => {
+    expect(permits(HELD, "batch.view")).toBe(true);
+  });
+
+  it("refuses a permission the caller does not hold", () => {
+    expect(permits(HELD, "admin.roles")).toBe(false);
+  });
+
+  it("🔴 refuses on a near-miss rather than matching a prefix", () => {
+    // `admin.role` is not `admin.roles`, and `batch` is not `batch.view`.
+    // A `startsWith` implementation would pass every other test in this file
+    // and hand `admin.roles` to anyone holding `admin.rolesomething`.
+    expect(permits(new Set(["admin.rolesomething"]), "admin.roles")).toBe(false);
+    expect(permits(HELD, "batch")).toBe(false);
   });
 });

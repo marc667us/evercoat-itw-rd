@@ -49,14 +49,25 @@
  * a claim one measurement cannot support, and one that would make rule 6 pass
  * silently. This screen renders the absence, never a zero.
  *
- * ⚠️ EVERY ACTION IS OFFERED AND THE SERVER DECIDES. Controls appear for the
- * steps the test's own state allows; none of that is an authorization check.
- * The executor may supply no approval at qualification or release authority,
- * QA may not approve after a development-side approval, and the technician
- * who ran a test may not review it — all enforced server-side (ADR-019). A
- * 403 is surfaced as the sentence the server sent, because here it means two
- * different things and the server says which. Hiding controls properly needs
- * `/api/me` to report permissions, which it does not — that is I79.
+ * ✅ CORRECTED 2026-08-27 — AN ACTION THE CALLER CANNOT PERFORM IS NO LONGER
+ * OFFERED, AND THE SERVER STILL DECIDES.
+ *
+ * This paragraph used to end: *"Hiding controls properly needs `/api/me` to
+ * report permissions, which it does not — that is I79."* I79 CLOSED on
+ * 2026-08-25 and `/api/me` has reported permissions ever since (measured
+ * 2026-08-27: `tech.demo` 11, `chem.demo` 33, `lead.demo` 38). The sentence
+ * outlived the constraint it described and kept this screen offering
+ * `test.confirm` to a technician who has never held it.
+ *
+ * 🔴 SO THE HIDING IS ONLY ABOUT PERMISSIONS, AND THAT IS THE WHOLE POINT.
+ * A 403 here means two different things and the server says which: the caller
+ * lacks the permission, or the caller HOLDS it and is barred on THIS test by
+ * their own earlier involvement (ADR-019). Only the first is knowable in the
+ * browser. So a control whose permission the caller does not hold is hidden,
+ * every control that survives is still offered to the server for the second
+ * decision, and the refusal is surfaced verbatim exactly as before. Hiding the
+ * first case does not hide the second, and pretending otherwise would be the
+ * more dangerous change.
  */
 
 import Link from "next/link";
@@ -65,6 +76,7 @@ import { Suspense, useState } from "react";
 
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { serverMessage } from "@/lib/api/client";
+import { usePermissions } from "@/lib/permissions";
 import { Absent } from "@/components/ui/record-link";
 import {
   StatusBadge,
@@ -165,10 +177,21 @@ function dispositionBadge(d: Disposition, authorityLevel: string): StatusBadgeIn
 /** One raw measurement, with the exclusion control. */
 function ReplicateRow({
   replicate,
+  mayExclude,
   onExclude,
   pending,
 }: {
   replicate: Replicate;
+  /**
+   * Whether this caller may set a measurement aside.
+   *
+   * `POST /{test_id}/replicates/{replicate_id}/exclusion` accepts
+   * `test.execute` OR `test.review` — the only endpoint on this screen that
+   * takes two, because an excluded replicate is both an execution correction
+   * and a review judgement. Passed in rather than read from a hook here so
+   * the row stays a presentational component with no session of its own.
+   */
+  mayExclude: boolean;
   onExclude: (replicateId: string, reason: string) => void;
   pending: boolean;
 }) {
@@ -207,7 +230,7 @@ function ReplicateRow({
       </td>
 
       <td className="py-2">
-        {replicate.is_excluded ? null : open ? (
+        {replicate.is_excluded || !mayExclude ? null : open ? (
           <div className="flex flex-wrap items-start gap-2">
             <label className="sr-only" htmlFor={`reason-${replicate.id}`}>
               Reason for excluding replicate {replicate.replicate_number}
@@ -346,6 +369,25 @@ function ApprovalLadder({ steps }: { steps: readonly ApprovalStep[] }) {
 
 function TestWorkspace({ test }: { test: TestDetail }) {
   const actions = useTestActions(test.id);
+  // Each name below is the permission THAT endpoint declares, read off
+  // `app/api/testing.py` rather than inferred from the label on the button:
+  // start / replicate / completion require `test.execute`, exclusion accepts
+  // `test.execute` OR `test.review`, confirmation requires `test.confirm`, and
+  // a decision requires `test.review` at the review stage or the rung's own
+  // permission at the approval stage.
+  const permissions = usePermissions();
+  const mayExecute = permissions.has("test.execute");
+  const mayReview = permissions.has("test.review");
+  const mayConfirm = permissions.has("test.confirm");
+  // 🔴 THE LADDER NAMES ITS OWN PERMISSIONS, SO ASK IT RATHER THAN GUESS.
+  // `authority_level` selects nothing any more — the route opens at the test's
+  // authority and each rung carries `permission_required`. A hard-coded list
+  // here would be a second copy of the ladder, disagreeing with the first the
+  // day a template changes.
+  const mayApproveARung = test.approval_route.some(
+    (step) => step.permission_required !== null && permissions.has(step.permission_required),
+  );
+  const mayDecide = mayReview || mayApproveARung;
   const [value, setValue] = useState("");
   const [unit, setUnit] = useState("");
   const [decision, setDecision] = useState<(typeof DECISIONS)[number][0]>("approve");
@@ -494,6 +536,7 @@ function TestWorkspace({ test }: { test: TestDetail }) {
                   <ReplicateRow
                     key={r.id}
                     replicate={r}
+                    mayExclude={mayExecute || mayReview}
                     onExclude={actions.excludeOne}
                     pending={actions.isPending}
                   />
@@ -503,8 +546,12 @@ function TestWorkspace({ test }: { test: TestDetail }) {
           </table>
         </div>
 
-        {/* Entry. Offered whenever the server might accept it; it refuses
-            outside `in_progress` with a 409 and the message is shown. */}
+        {/* Entry. Offered to a caller holding `test.execute`, which is what
+            `POST /{test_id}/replicates` requires. Beyond that the server still
+            decides: it refuses outside `in_progress` with a 409, and the
+            message is shown. Permission is knowable here; execution state is
+            the server's answer. */}
+        {mayExecute && (
         <div className="mt-3 flex flex-wrap items-end gap-2">
           <div>
             <label className={LABEL} htmlFor="measured">
@@ -559,6 +606,7 @@ function TestWorkspace({ test }: { test: TestDetail }) {
             Record measurement
           </button>
         </div>
+        )}
       </section>
 
       {/* ---------------------------------------------------------------- */}
@@ -650,6 +698,7 @@ function TestWorkspace({ test }: { test: TestDetail }) {
         </p>
 
         <div className="mt-3 flex flex-wrap gap-2">
+          {mayExecute && (
           <button
             type="button"
             className={BUTTON_QUIET}
@@ -658,11 +707,13 @@ function TestWorkspace({ test }: { test: TestDetail }) {
           >
             Start execution
           </button>
+          )}
           {/*
             No body, and nothing to add one to. The result is COMPUTED — the
             route "takes no body on purpose. There is nowhere to put a result,
             because the caller does not get to state one."
           */}
+          {mayExecute && (
           <button
             type="button"
             className={BUTTON_QUIET}
@@ -671,6 +722,8 @@ function TestWorkspace({ test }: { test: TestDetail }) {
           >
             Complete execution (computes the result)
           </button>
+          )}
+          {mayConfirm && (
           <button
             type="button"
             className={BUTTON_QUIET}
@@ -679,8 +732,31 @@ function TestWorkspace({ test }: { test: TestDetail }) {
           >
             Confirm as final
           </button>
+          )}
         </div>
 
+        {/* 🔴 SAY SO RATHER THAN RENDER AN EMPTY BAR. Every lifecycle control
+            filtered out leaves a heading over nothing, which reads as a screen
+            that failed to load rather than as a screen that is read-only for
+            this reader. Naming the three permissions is deliberate: a chemist
+            asking "why can I not start this?" gets an answer they can take to
+            an administrator. */}
+        {!mayExecute && !mayConfirm && (
+          <p className="mt-3 text-sm text-slate-600">
+            You hold neither <code className="text-xs">test.execute</code> nor{" "}
+            <code className="text-xs">test.confirm</code>, so this test is
+            read-only from here. The record above is complete; only the controls
+            are withheld.
+          </p>
+        )}
+
+        {/* 🔴 THE DECISION FORM IS GATED ON THE LADDER, NOT ON A GUESS.
+            `test.review` covers the review stage; the approval stage is
+            covered when the caller holds the permission named by any rung of
+            THIS test's own snapshotted route. A caller holding neither can
+            record nothing here, and the seven decision types are not a menu
+            worth offering them. */}
+        {mayDecide && (
         <div className="mt-4 grid gap-2 sm:max-w-2xl">
           <div className="flex flex-wrap gap-2">
             <div className="flex-1">
@@ -770,6 +846,7 @@ function TestWorkspace({ test }: { test: TestDetail }) {
             </button>
           </div>
         </div>
+        )}
 
         {actions.error !== null && (
           <p

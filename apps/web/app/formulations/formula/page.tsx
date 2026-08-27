@@ -66,6 +66,7 @@ import {
   type VersionComparison,
   type VersionEvaluation,
 } from "@/lib/api/formulations";
+import { permits, usePermissions } from "@/lib/permissions";
 import {
   useClassifications,
   useClassifyFormula,
@@ -433,6 +434,15 @@ function CreateBatchPanel({
   const [number, setNumber] = useState("");
   const [mass, setMass] = useState("");
   const batch = useCreateBatch();
+  const permissions = usePermissions();
+
+  // `POST /api/laboratory/batches` declares `batch.create` — the Chemist's
+  // permission, not the Technician's. The technician EXECUTES a batch that
+  // somebody else authorised, which is the separation §9 is built around and
+  // which this panel used to render identically for both.
+  if (!permits(permissions, "batch.create")) {
+    return null;
+  }
 
   return (
     <>
@@ -516,8 +526,16 @@ function ClassifyPanel({ formulaId }: { formulaId: string }) {
   const [code, setCode] = useState("");
   const [reason, setReason] = useState("");
   const classify = useClassifyFormula(formulaId);
+  const permissions = usePermissions();
 
   const options = levels.data ?? [];
+
+  // `formula.classify` — held by the Administrator, Lead, QA and Director, and
+  // not by the Chemist who wrote the formula. Confidentiality is somebody
+  // else's decision, and the screen now says so by not offering the control.
+  if (!permits(permissions, "formula.classify")) {
+    return null;
+  }
 
   return (
     <>
