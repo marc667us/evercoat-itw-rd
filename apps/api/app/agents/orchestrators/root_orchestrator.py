@@ -23,8 +23,13 @@ from sqlalchemy.orm import Session
 
 from app.agents.conductors import (
     analysis_conductor,
+    formulations_conductor,
+    innovation_conductor,
+    knowledge_conductor,
     laboratory_conductor,
+    materials_conductor,
     msd_conductor,
+    quality_conductor,
     testing_conductor,
 )
 from app.agents.conductors.analysis_conductor import UnknownDashboardError
@@ -39,10 +44,26 @@ __all__ = [
     "analysis_dashboard",
     "analysis_report",
     "answer_question",
+    "formulations_classifications",
+    "formulations_comparison",
+    "formulations_evaluation",
+    "formulations_formulas",
+    "formulations_version",
+    "innovation_opportunities",
+    "innovation_opportunity",
+    "knowledge_documents",
+    "knowledge_search",
     "laboratory_batch",
     "laboratory_batches",
+    "materials_documents",
+    "materials_material",
+    "materials_materials",
+    "materials_suppliers",
+    "materials_usage",
     "msd_threads",
     "msd_turns",
+    "quality_failure",
+    "quality_failures",
     "testing_methods",
     "testing_test",
     "testing_tests",
@@ -274,3 +295,186 @@ def msd_turns(
 ) -> list[dict[str, Any]]:
     """One conversation and its evidence, through the MSD conductor."""
     return msd_conductor.turns(session, caller=caller, thread_id=thread_id, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# Five more departments — formulations, materials, innovation, quality,
+# knowledge.
+#
+# 🔴 EVERY ONE OF THESE HAD A ROUTE AND NO DOOR, WHICH IS THE SAME DEFECT AS A
+# CONDUCTOR WITH NO CALLERS.
+#
+# Before this, eight of nineteen API modules never touched the orchestrator at
+# all. The four wired departments were the ones an agent happened to need, so
+# §0.2's topology described a quarter of the product and the rest was a
+# convention that had not been tested. A question put to MSD about a raw
+# material, a formula's genealogy, an open failure investigation or the
+# opportunity pipeline had NOWHERE to be answered from except a domain service
+# with no permission gate on the non-HTTP path.
+#
+# ⚠️ THEY ARE READ-ONLY, LIKE THE OTHERS, AND FOR THE SAME REASON. §4: humans
+# approve. No `submit_version`, no `accept_root_cause`, no `create_material`, no
+# `ingest_document` is reachable from this module. `export_version` is absent
+# too, and that one is a read — it WRITES an export audit event naming the
+# actor, and §4 keeps the audited act of taking proprietary composition out of
+# the building on the human path.
+#
+# ⚠️ AND THE GATE IS THE CONDUCTOR'S, NOT THIS FILE'S. Nothing here checks a
+# permission. Each function below is a dispatch; the department owns its own
+# requirement, which is what stops this module becoming a second, competing
+# statement of the authorization model.
+# ---------------------------------------------------------------------------
+
+
+def formulations_formulas(
+    session: Session,
+    *,
+    caller: AgentPrincipal,
+    project_id: uuid.UUID | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Formulas, through the formulations conductor."""
+    return formulations_conductor.formulas(
+        session, caller=caller, project_id=project_id, limit=limit
+    )
+
+
+def formulations_version(
+    session: Session, *, version_id: uuid.UUID, caller: AgentPrincipal
+) -> dict[str, Any]:
+    """One formula version — cost included only if the caller holds it."""
+    return formulations_conductor.version(session, version_id=version_id, caller=caller)
+
+
+def formulations_evaluation(
+    session: Session, *, version_id: uuid.UUID, caller: AgentPrincipal
+) -> dict[str, Any]:
+    """The version's computed evaluation, through the formulations conductor."""
+    return formulations_conductor.evaluation(session, version_id=version_id, caller=caller)
+
+
+def formulations_comparison(
+    session: Session,
+    *,
+    left_version_id: uuid.UUID,
+    right_version_id: uuid.UUID,
+    caller: AgentPrincipal,
+) -> dict[str, Any]:
+    """Two versions against each other, through the formulations conductor."""
+    return formulations_conductor.comparison(
+        session,
+        left_version_id=left_version_id,
+        right_version_id=right_version_id,
+        caller=caller,
+    )
+
+
+def formulations_classifications(
+    session: Session, *, caller: AgentPrincipal
+) -> list[dict[str, Any]]:
+    """The confidentiality lattice, through the formulations conductor."""
+    return formulations_conductor.classifications(session, caller=caller)
+
+
+def materials_materials(
+    session: Session,
+    *,
+    caller: AgentPrincipal,
+    status: str | None = None,
+    role: str | None = None,
+    search: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Raw materials, through the materials conductor."""
+    return materials_conductor.materials(
+        session, caller=caller, status=status, role=role, search=search, limit=limit
+    )
+
+
+def materials_material(
+    session: Session, *, material_id: uuid.UUID, caller: AgentPrincipal
+) -> dict[str, Any]:
+    """One raw material, through the materials conductor."""
+    return materials_conductor.material(session, material_id=material_id, caller=caller)
+
+
+def materials_usage(
+    session: Session, *, material_id: uuid.UUID, caller: AgentPrincipal
+) -> list[dict[str, Any]]:
+    """Where a material is used — needs `formula.view` as well as `material.view`."""
+    return materials_conductor.usage(session, material_id=material_id, caller=caller)
+
+
+def materials_documents(
+    session: Session, *, material_id: uuid.UUID, caller: AgentPrincipal
+) -> list[dict[str, Any]]:
+    """A material's documents, through the materials conductor."""
+    return materials_conductor.documents(session, material_id=material_id, caller=caller)
+
+
+def materials_suppliers(
+    session: Session,
+    *,
+    caller: AgentPrincipal,
+    status: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Suppliers, through the materials conductor — they share its permission."""
+    return materials_conductor.suppliers(session, caller=caller, status=status, limit=limit)
+
+
+def innovation_opportunities(
+    session: Session,
+    *,
+    caller: AgentPrincipal,
+    status: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """The opportunity pipeline, through the innovation conductor."""
+    return innovation_conductor.opportunities(session, caller=caller, status=status, limit=limit)
+
+
+def innovation_opportunity(
+    session: Session, *, opportunity_id: uuid.UUID, caller: AgentPrincipal
+) -> dict[str, Any]:
+    """One opportunity, through the innovation conductor."""
+    return innovation_conductor.opportunity(session, opportunity_id=opportunity_id, caller=caller)
+
+
+def quality_failures(
+    session: Session,
+    *,
+    caller: AgentPrincipal,
+    project_id: uuid.UUID | None = None,
+    status: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Failure investigations, through the quality conductor."""
+    return quality_conductor.failures(
+        session, caller=caller, project_id=project_id, status=status, limit=limit
+    )
+
+
+def quality_failure(
+    session: Session, *, failure_id: uuid.UUID, caller: AgentPrincipal
+) -> dict[str, Any]:
+    """One investigation and its hypotheses — whose status only a human moves."""
+    return quality_conductor.failure(session, failure_id=failure_id, caller=caller)
+
+
+def knowledge_documents(
+    session: Session, *, caller: AgentPrincipal, limit: int = 100
+) -> dict[str, Any]:
+    """The library, through the knowledge conductor."""
+    return knowledge_conductor.documents(session, caller=caller, limit=limit)
+
+
+def knowledge_search(
+    session: Session,
+    *,
+    caller: AgentPrincipal,
+    question: str,
+    limit: int = knowledge_conductor.MAX_SEARCH_RESULTS,
+) -> list[dict[str, Any]]:
+    """Ranked passages for a PERSON — no relevance cut, unlike MSD's tool."""
+    return knowledge_conductor.search(session, caller=caller, question=question, limit=limit)

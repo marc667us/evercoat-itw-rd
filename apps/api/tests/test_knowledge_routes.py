@@ -80,20 +80,53 @@ def test_the_routes_carry_the_permissions_they_should() -> None:
     }, f"the knowledge routes' permissions changed: {found}"
 
 
-def test_the_routes_never_import_the_agent_tier() -> None:
+def test_the_routes_never_import_a_specialist() -> None:
     """§0.2: *"API routes never call specialists directly."*
 
-    `tests/test_agent_topology.py` asserts this across every route module, so
-    this is a local restatement for the one most likely to be tempted: MSD's
-    `search_knowledge` does almost exactly what `GET /search` does, and reusing
-    it would be one import away.
+    🔴 CORRECTED 2026-08-27 — THE ASSERTION WAS BROADER THAN ITS OWN RULE.
 
+    It read `assert "app.agents" not in source`, which forbids the ROOT
+    ORCHESTRATOR as well as the tool. §0.2 does not: it says routes must not
+    reach a specialist, and that MSD *is reached through the orchestrator* —
+    which is precisely how `app/api/laboratory.py`, `testing.py`, `analysis.py`
+    and `dashboards.py` were already wired. So this guard would have failed the
+    build for doing the thing the rule requires, and it did: wiring the
+    knowledge department's reads through its conductor turned it red.
+
+    A string ban on a package prefix cannot express "not these two subpackages",
+    and reaching for one is how a guard ends up enforcing something adjacent to
+    its docstring. `tests/test_agent_topology.py` had the right shape all along
+    — it parses imports and names `app.agents.conductors` and `app.agents.tools`
+    — and this is the same check, kept local for the module most likely to be
+    tempted.
+
+    THE TEMPTATION IS REAL AND UNCHANGED: MSD's `search_knowledge` does almost
+    exactly what `GET /search` does, and reusing it would be one import away.
     They differ in a way that matters, which is why the duplication is right:
     the tool applies a relevance cut because MSD QUOTES what it gets back, and
     this route does not because a person can judge a weak match themselves.
     """
     source = (API_ROOT / "app" / "api" / "knowledge.py").read_text(encoding="utf-8")
-    assert "app.agents" not in source, (
-        "app/api/knowledge.py imports the agent tier. The domain service is "
-        "the shared layer; the tool is not a library for routes to call."
+    for forbidden in ("app.agents.tools", "app.agents.conductors"):
+        assert forbidden not in source, (
+            f"app/api/knowledge.py imports {forbidden}. The domain service is "
+            "the shared layer and the orchestrator is the door; a tool is not a "
+            "library for routes to call."
+        )
+
+
+def test_the_knowledge_route_does_reach_the_orchestrator() -> None:
+    """The positive half, without which the test above passes hardest when the
+    department is gone.
+
+    Deleting the orchestrator import entirely satisfies "imports no specialist"
+    perfectly — and would leave the knowledge department with a permission gate
+    on the HTTP path and none on the agent path, which is the state this
+    wiring closed. `test_the_msd_route_does_reach_the_orchestrator` exists for
+    exactly this reason and this is its counterpart.
+    """
+    source = (API_ROOT / "app" / "api" / "knowledge.py").read_text(encoding="utf-8")
+    assert "app.agents.orchestrators.root_orchestrator" in source, (
+        "app/api/knowledge.py no longer reaches the knowledge department "
+        "through the root orchestrator"
     )

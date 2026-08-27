@@ -35,6 +35,28 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+# 🔴 THE READS GO THROUGH THE ORCHESTRATOR (§0.2).
+#
+# The quality department is where §7's most consequential rule lands: an AI
+# hypothesis is never an accepted root cause. Readable from the agent tier,
+# and its state machine untouchable from it -- a distinction that only exists
+# if the door is here rather than in a route the agent path never traverses.
+#
+# ⚠️ THE WRITES DELIBERATELY DO NOT. §4: humans approve. The orchestrator
+# exposes no write-side entry point at all, and every mutation below still
+# calls the domain service directly. The asymmetry is the rule, not an
+# omission -- if a write ever appears on that door, it is a §4 violation and
+# not a convenience.
+#
+# ⚠️ `require_permission(...)` ON EACH ROUTE STAYS. The conductor asserts the
+# same permission; that is defence in depth. The dependency refuses an
+# unauthenticated caller before any handler runs, and the conductor refuses on
+# the paths that have no route.
+from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
+    quality_failure,
+    quality_failures,
+)
 from app.core.security import PermissionDenied, Principal, get_db, require_permission
 from app.core.tenancy import CrossTenantReferenceError
 from app.domains.approvals.service import (
@@ -60,9 +82,7 @@ from app.domains.failures.service import (
     HypothesisInput,
     accept_root_cause,
     close_failure,
-    get_failure,
     link_evidence,
-    list_failures,
     open_failure,
     raise_action,
     record_driver,
@@ -203,9 +223,9 @@ def get_failures(
     they are what makes it actionable — §11 requires counts to represent
     items needing action, not total rows.
     """
-    return list_failures(
+    return quality_failures(
         session,
-        organization_id=principal.organization_id,
+        caller=AgentPrincipal.of(principal),
         project_id=project_id,
         status=status_filter,
     )
@@ -253,9 +273,7 @@ def get_one_failure(
     as distinct from "here are some ideas".
     """
     try:
-        return get_failure(
-            session, failure_id=failure_id, organization_id=principal.organization_id
-        )
+        return quality_failure(session, failure_id=failure_id, caller=AgentPrincipal.of(principal))
     except FailureNotFoundError as exc:
         raise _missing(exc) from exc
 

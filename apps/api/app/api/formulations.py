@@ -26,6 +26,36 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+# 🔴 THE READS GO THROUGH THE ORCHESTRATOR (§0.2).
+#
+# This module called its domain service directly on every path, which meant the
+# formulations department existed for HTTP callers and not at all for the agent
+# tier -- and `include_cost=principal.has("formula.view_cost")` was written out
+# four times, once per route. The conductor decides it once, from the verified
+# principal, and there is no argument for it on the door: an agent cannot ask
+# for cost it does not hold, because there is no flag to pass.
+#
+# ⚠️ THE WRITES DELIBERATELY DO NOT. §4: humans approve, and AI must not submit,
+# approve, revise or classify a formula. The orchestrator exposes no write-side
+# entry point at all, and every mutation below still calls the domain service
+# directly. The asymmetry is the rule, not an omission.
+#
+# ⚠️ `export_version` STAYS ON THE DIRECT PATH TOO, AND IT IS A READ. It WRITES
+# an export audit event naming the actor, so §4 keeps the audited act of taking
+# proprietary composition out of the building where a human signed for it.
+#
+# ⚠️ `require_permission(...)` ON EACH ROUTE STAYS. The conductor asserts the
+# same permission; that is defence in depth. The dependency refuses an
+# unauthenticated caller before any handler runs, and the conductor refuses on
+# the paths that have no route.
+from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
+    formulations_classifications,
+    formulations_comparison,
+    formulations_evaluation,
+    formulations_formulas,
+    formulations_version,
+)
 from app.core.security import Principal, get_db, require_permission
 from app.core.tenancy import CrossTenantReferenceError
 from app.domains.formulations.service import (
@@ -39,14 +69,9 @@ from app.domains.formulations.service import (
     SubmissionBlockedError,
     VersionFrozenError,
     VersionNotFoundError,
-    compare_versions,
     create_formula,
     decide_version,
-    evaluate_version,
     export_version,
-    get_version,
-    list_classifications,
-    list_formulas,
     record_observed_effect,
     revise_version,
     set_classification,
@@ -152,7 +177,9 @@ def get_formulas(
     principal: Principal = Depends(require_permission("formula.view")),
     session: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    return list_formulas(session, organization_id=principal.organization_id, project_id=project_id)
+    return formulations_formulas(
+        session, caller=AgentPrincipal.of(principal), project_id=project_id
+    )
 
 
 @router.get("/classifications", tags=["formulations"])
@@ -171,7 +198,7 @@ def get_classifications(
     route itself is gated on `formula.classify`. Hiding the vocabulary would
     only stop the person who is allowed to change it from seeing the options.
     """
-    return list_classifications(session)
+    return formulations_classifications(session, caller=AgentPrincipal.of(principal))
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, tags=["formulations"])
@@ -218,14 +245,13 @@ def get_one_version(
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     try:
-        return get_version(
-            session,
-            version_id=version_id,
-            organization_id=principal.organization_id,
-            # Per-material cost plus per-component percentage is the whole
-            # cost of the formula. Codex found this payload handing both to
-            # a caller holding only `formula.view`.
-            include_cost=principal.has("formula.view_cost"),
+        # Per-material cost plus per-component percentage is the whole cost of
+        # the formula. Codex found this payload handing both to a caller holding
+        # only `formula.view`; the conductor now decides it from the verified
+        # principal, so the decision cannot differ between the four routes that
+        # used to make it separately.
+        return formulations_version(
+            session, version_id=version_id, caller=AgentPrincipal.of(principal)
         )
     except VersionNotFoundError as exc:
         raise _missing(exc) from exc
@@ -284,11 +310,8 @@ def get_evaluation(
     a status function called itself "derived" and read a stored string.
     """
     try:
-        return evaluate_version(
-            session,
-            version_id=version_id,
-            organization_id=principal.organization_id,
-            include_cost=principal.has("formula.view_cost"),
+        return formulations_evaluation(
+            session, version_id=version_id, caller=AgentPrincipal.of(principal)
         )
     except VersionNotFoundError as exc:
         raise _missing(exc) from exc
@@ -546,12 +569,11 @@ def get_comparison(
     the URL reads the way the screen does -- "what changed to get here".
     """
     try:
-        return compare_versions(
+        return formulations_comparison(
             session,
             left_version_id=against,
             right_version_id=version_id,
-            organization_id=principal.organization_id,
-            include_cost=principal.has("formula.view_cost"),
+            caller=AgentPrincipal.of(principal),
         )
     except VersionNotFoundError as exc:
         raise _missing(exc) from exc

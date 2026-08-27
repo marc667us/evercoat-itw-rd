@@ -25,6 +25,34 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+# 🔴 THE READS GO THROUGH THE ORCHESTRATOR (§0.2).
+#
+# This module called its domain service directly, so the materials department
+# existed for HTTP callers and not for the agent tier at all. `usage` is the
+# reason it matters most: *"which formulas use this material"* needs
+# `formula.view` as well as `material.view`, and the two callers that hold the
+# first and not the second -- the administrator and the procurement specialist,
+# measured 2026-08-27 -- were refused by this route and by nothing on the
+# agent path.
+#
+# ⚠️ THE WRITES DELIBERATELY DO NOT. §4: humans approve. The orchestrator
+# exposes no write-side entry point at all, and every mutation below still
+# calls the domain service directly. The asymmetry is the rule, not an
+# omission -- if a write ever appears on that door, it is a §4 violation and
+# not a convenience.
+#
+# ⚠️ `require_permission(...)` ON EACH ROUTE STAYS. The conductor asserts the
+# same permission; that is defence in depth. The dependency refuses an
+# unauthenticated caller before any handler runs, and the conductor refuses on
+# the paths that have no route.
+from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
+    materials_documents,
+    materials_material,
+    materials_materials,
+    materials_suppliers,
+    materials_usage,
+)
 from app.core.audit import AuditEvent, write_audit
 from app.core.documents import get_object_store, get_scanner
 from app.core.file_types import FileTypeRejectedError
@@ -47,12 +75,7 @@ from app.domains.materials.service import (
     SupplierNotFoundError,
     create_material,
     create_supplier,
-    get_material,
     link_supplier,
-    list_material_documents,
-    list_materials,
-    list_suppliers,
-    material_usage,
     set_material_status,
     set_supplier_status,
     store_document,
@@ -204,9 +227,9 @@ def get_materials(
     session: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """The material library."""
-    return list_materials(
+    return materials_materials(
         session,
-        organization_id=principal.organization_id,
+        caller=AgentPrincipal.of(principal),
         status=status_filter,
         role=role,
         search=search,
@@ -242,8 +265,8 @@ def get_one_material(
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     try:
-        return get_material(
-            session, material_id=material_id, organization_id=principal.organization_id
+        return materials_material(
+            session, material_id=material_id, caller=AgentPrincipal.of(principal)
         )
     except MaterialNotFoundError as exc:
         raise _missing(exc) from exc
@@ -342,9 +365,7 @@ def get_material_usage(
     it is why the endpoint returns the rows rather than a count: a bare
     number that RLS had quietly reduced would present as a fact.
     """
-    return material_usage(
-        session, material_id=material_id, organization_id=principal.organization_id
-    )
+    return materials_usage(session, material_id=material_id, caller=AgentPrincipal.of(principal))
 
 
 @router.get("/{material_id}/documents", tags=["materials"])
@@ -354,8 +375,8 @@ def get_material_documents(
     session: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """The document register: TDS, SDS, CoA, regulatory."""
-    return list_material_documents(
-        session, material_id=material_id, organization_id=principal.organization_id
+    return materials_documents(
+        session, material_id=material_id, caller=AgentPrincipal.of(principal)
     )
 
 
@@ -512,7 +533,7 @@ def get_suppliers(
     the maintenance permission to READ would make the material detail page
     half-empty for the role that uses it most.
     """
-    return list_suppliers(session, organization_id=principal.organization_id, status=status_filter)
+    return materials_suppliers(session, caller=AgentPrincipal.of(principal), status=status_filter)
 
 
 @suppliers_router.post("", status_code=status.HTTP_201_CREATED, tags=["suppliers"])

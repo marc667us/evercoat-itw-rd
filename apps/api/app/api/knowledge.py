@@ -37,9 +37,32 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+# 🔴 THE READS GO THROUGH THE ORCHESTRATOR (§0.2).
+#
+# ⚠️ THIS IS NOT THE TOOL. `search_knowledge` in `app/agents/tools/knowledge.py`
+# is a specialist and importing it here would be the §0.2 violation
+# `tests/test_agent_topology.py` fails the build for. The conductor keeps this
+# route's semantics -- ranked passages with NO relevance cut -- because a
+# person can see the distance and judge, while MSD quotes what it is given.
+#
+# ⚠️ THE WRITES DELIBERATELY DO NOT. §4: humans approve. The orchestrator
+# exposes no write-side entry point at all, and every mutation below still
+# calls the domain service directly. The asymmetry is the rule, not an
+# omission -- if a write ever appears on that door, it is a §4 violation and
+# not a convenience.
+#
+# ⚠️ `require_permission(...)` ON EACH ROUTE STAYS. The conductor asserts the
+# same permission; that is defence in depth. The dependency refuses an
+# unauthenticated caller before any handler runs, and the conductor refuses on
+# the paths that have no route.
+from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
+    knowledge_documents,
+    knowledge_search,
+)
 from app.core.embedding import EmbeddingUnavailableError, build_embedder
 from app.core.security import Principal, get_db, require_permission
-from app.domains.knowledge.service import ingest_document, list_documents, retrieve
+from app.domains.knowledge.service import ingest_document
 
 router = APIRouter()
 
@@ -171,7 +194,7 @@ def get_documents(
     changed rather than a header being added: a truncation notice that lives in
     a header is one a client forgets to read.
     """
-    return list_documents(session, organization_id=principal.organization_id)
+    return knowledge_documents(session, caller=AgentPrincipal.of(principal))
 
 
 @router.post("/documents", status_code=status.HTTP_201_CREATED, tags=["knowledge"])
@@ -268,21 +291,16 @@ def get_search(
     `app/core/embedding.py`; the screen must not imply the library "understood"
     the question.
     """
-    # See `post_document`: `build_embedder()` does not raise, it falls back.
-    embedder = build_embedder()
-
-    try:
-        passages = retrieve(
-            session,
-            organization_id=principal.organization_id,
-            question=q,
-            embedder=embedder,
-            limit=limit,
-        )
-    except EmbeddingUnavailableError:
-        # A query with no searchable words in it. "?" is a question the library
-        # cannot answer, not an error worth a stack trace.
-        return []
+    # 🔴 THE EMBEDDER AND THE EMPTY-QUERY CASE MOVED INTO THE CONDUCTOR.
+    #
+    # `build_embedder()` does not raise, it falls back; and
+    # `EmbeddingUnavailableError` means the QUESTION carried no searchable
+    # words -- "?" is a question the library cannot answer, not an error worth
+    # a stack trace. Both facts belong to the department rather than to this
+    # route, because the agent path needs the same two answers and had neither.
+    passages = knowledge_search(
+        session, caller=AgentPrincipal.of(principal), question=q, limit=limit
+    )
 
     return [
         {

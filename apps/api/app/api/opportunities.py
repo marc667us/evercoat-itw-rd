@@ -21,6 +21,28 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+# 🔴 THE READS GO THROUGH THE ORCHESTRATOR (§0.2).
+#
+# The innovation department has the NARROWEST gate in the product -- three of
+# ten seeded roles hold `opportunity.view`, measured 2026-08-27 -- and until
+# now that gate existed only on the HTTP path. A question put to an agent about
+# what the organization is considering next had no department to refuse it.
+#
+# ⚠️ THE WRITES DELIBERATELY DO NOT. §4: humans approve. The orchestrator
+# exposes no write-side entry point at all, and every mutation below still
+# calls the domain service directly. The asymmetry is the rule, not an
+# omission -- if a write ever appears on that door, it is a §4 violation and
+# not a convenience.
+#
+# ⚠️ `require_permission(...)` ON EACH ROUTE STAYS. The conductor asserts the
+# same permission; that is defence in depth. The dependency refuses an
+# unauthenticated caller before any handler runs, and the conductor refuses on
+# the paths that have no route.
+from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
+    innovation_opportunities,
+    innovation_opportunity,
+)
 from app.core.security import Principal, get_db, require_permission
 from app.core.tenancy import CrossTenantReferenceError
 from app.domains.opportunities.service import (
@@ -31,8 +53,6 @@ from app.domains.opportunities.service import (
     convert_to_project,
     create_opportunity,
     decide_opportunity,
-    list_opportunities,
-    opportunity_detail,
     submit_opportunity,
 )
 
@@ -81,8 +101,8 @@ def get_opportunities(
     session: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """The funnel. Optionally filtered to one status."""
-    return list_opportunities(
-        session, organization_id=principal.organization_id, status=status_filter
+    return innovation_opportunities(
+        session, caller=AgentPrincipal.of(principal), status=status_filter
     )
 
 
@@ -111,10 +131,10 @@ def get_opportunity(
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     try:
-        return opportunity_detail(
+        return innovation_opportunity(
             session,
             opportunity_id=opportunity_id,
-            organization_id=principal.organization_id,
+            caller=AgentPrincipal.of(principal),
         )
     except OpportunityNotFoundError as exc:
         raise _missing(exc) from exc

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import inspect
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -41,8 +42,13 @@ import pytest
 from app.agents.boundary import DepartmentDeniedError, UnverifiedPrincipalError, require
 from app.agents.conductors import (
     analysis_conductor,
+    formulations_conductor,
+    innovation_conductor,
+    knowledge_conductor,
     laboratory_conductor,
+    materials_conductor,
     msd_conductor,
+    quality_conductor,
     testing_conductor,
 )
 from app.agents.orchestrators import root_orchestrator
@@ -176,6 +182,89 @@ DENIED_CASES = [
         "msd.turns",
         lambda: msd_conductor.turns(_ProbeSession(), caller=principal(), thread_id=THING),
     ),
+    # The five departments wired 2026-08-27. Before that, eight of nineteen API
+    # modules never touched the orchestrator, so §0.2's topology described a
+    # quarter of the product and the rest was a convention nothing tested.
+    (
+        "formulations.formulas",
+        lambda: formulations_conductor.formulas(_ProbeSession(), caller=principal()),
+    ),
+    (
+        "formulations.version",
+        lambda: formulations_conductor.version(
+            _ProbeSession(), version_id=THING, caller=principal()
+        ),
+    ),
+    (
+        "formulations.evaluation",
+        lambda: formulations_conductor.evaluation(
+            _ProbeSession(), version_id=THING, caller=principal()
+        ),
+    ),
+    (
+        "formulations.comparison",
+        lambda: formulations_conductor.comparison(
+            _ProbeSession(), left_version_id=THING, right_version_id=THING, caller=principal()
+        ),
+    ),
+    # 🔴 A GLOBAL READ IS STILL GATED. `list_classifications` takes no
+    # `organization_id` because the lattice is shared by every tenant -- which
+    # is exactly the shape whose gate gets skipped by reflex, so it is asserted
+    # rather than assumed.
+    (
+        "formulations.classifications",
+        lambda: formulations_conductor.classifications(_ProbeSession(), caller=principal()),
+    ),
+    (
+        "materials.materials",
+        lambda: materials_conductor.materials(_ProbeSession(), caller=principal()),
+    ),
+    (
+        "materials.material",
+        lambda: materials_conductor.material(
+            _ProbeSession(), material_id=THING, caller=principal()
+        ),
+    ),
+    (
+        "materials.usage",
+        lambda: materials_conductor.usage(_ProbeSession(), material_id=THING, caller=principal()),
+    ),
+    (
+        "materials.documents",
+        lambda: materials_conductor.documents(
+            _ProbeSession(), material_id=THING, caller=principal()
+        ),
+    ),
+    (
+        "materials.suppliers",
+        lambda: materials_conductor.suppliers(_ProbeSession(), caller=principal()),
+    ),
+    (
+        "innovation.opportunities",
+        lambda: innovation_conductor.opportunities(_ProbeSession(), caller=principal()),
+    ),
+    (
+        "innovation.opportunity",
+        lambda: innovation_conductor.opportunity(
+            _ProbeSession(), opportunity_id=THING, caller=principal()
+        ),
+    ),
+    (
+        "quality.failures",
+        lambda: quality_conductor.failures(_ProbeSession(), caller=principal()),
+    ),
+    (
+        "quality.failure",
+        lambda: quality_conductor.failure(_ProbeSession(), failure_id=THING, caller=principal()),
+    ),
+    (
+        "knowledge.documents",
+        lambda: knowledge_conductor.documents(_ProbeSession(), caller=principal()),
+    ),
+    (
+        "knowledge.search",
+        lambda: knowledge_conductor.search(_ProbeSession(), caller=principal(), question="resin"),
+    ),
 ]
 
 
@@ -237,6 +326,64 @@ ALLOWED_CASES = [
         msd_conductor.USE,
         lambda: msd_conductor.turns(
             _ProbeSession(msd_conductor.USE), caller=principal(msd_conductor.USE), thread_id=THING
+        ),
+    ),
+    # Each permission is READ FROM THE CONDUCTOR, never restated. The literal
+    # has exactly one home, which is what the drift tests below rely on.
+    (
+        "formulations.formulas",
+        formulations_conductor.VIEW,
+        lambda: formulations_conductor.formulas(
+            _ProbeSession(formulations_conductor.VIEW),
+            caller=principal(formulations_conductor.VIEW),
+        ),
+    ),
+    (
+        "formulations.classifications",
+        formulations_conductor.VIEW,
+        lambda: formulations_conductor.classifications(
+            _ProbeSession(formulations_conductor.VIEW),
+            caller=principal(formulations_conductor.VIEW),
+        ),
+    ),
+    (
+        "materials.materials",
+        materials_conductor.VIEW,
+        lambda: materials_conductor.materials(
+            _ProbeSession(materials_conductor.VIEW), caller=principal(materials_conductor.VIEW)
+        ),
+    ),
+    # 🔴 `usage` NEEDS BOTH, so it opens only when BOTH are supplied. The
+    # single-permission case is asserted separately below, because "it opened
+    # for two" does not prove it would have refused for one.
+    (
+        "materials.usage",
+        materials_conductor.FORMULA_VIEW,
+        lambda: materials_conductor.usage(
+            _ProbeSession(materials_conductor.VIEW, materials_conductor.FORMULA_VIEW),
+            material_id=THING,
+            caller=principal(materials_conductor.VIEW, materials_conductor.FORMULA_VIEW),
+        ),
+    ),
+    (
+        "innovation.opportunities",
+        innovation_conductor.VIEW,
+        lambda: innovation_conductor.opportunities(
+            _ProbeSession(innovation_conductor.VIEW), caller=principal(innovation_conductor.VIEW)
+        ),
+    ),
+    (
+        "quality.failures",
+        quality_conductor.VIEW,
+        lambda: quality_conductor.failures(
+            _ProbeSession(quality_conductor.VIEW), caller=principal(quality_conductor.VIEW)
+        ),
+    ),
+    (
+        "knowledge.documents",
+        knowledge_conductor.VIEW,
+        lambda: knowledge_conductor.documents(
+            _ProbeSession(knowledge_conductor.VIEW), caller=principal(knowledge_conductor.VIEW)
         ),
     ),
 ]
@@ -1334,3 +1481,135 @@ def test_roles_are_derived_from_the_database_too() -> None:
         "survived, so role-addressed work is still selected by caller-supplied state"
     )
     assert "product_development_director" not in verified.roles
+
+
+def test_material_usage_needs_formula_view_as_well_as_material_view() -> None:
+    """🔴 THE `require_all` CASE, ASSERTED IN THE DIRECTION THAT CAN BE WRONG.
+
+    `GET /api/materials/{id}/usage` declares
+    `require_permission("material.view", "formula.view", require_all=True)`,
+    because *"which formulas use this material"* is a statement about FORMULAS
+    wearing a material's label. `app/agents/boundary.py` takes ONE permission,
+    so the conductor makes two calls — and two calls are exactly the shape that
+    silently becomes one when somebody tidies them.
+
+    The `ALLOWED_CASES` entry above proves it opens when BOTH are held. That
+    passes just as happily against a conductor that checks only
+    `material.view`, so this asserts the half that cannot: `material.view`
+    ALONE is refused, and the refusal names `formula.view` rather than some
+    other code.
+
+    ⚠️ THIS IS NOT A HYPOTHETICAL PAIR. Measured against the deployed demo on
+    2026-08-27, the administrator and the procurement specialist hold
+    `material.view` and NOT `formula.view` — two of ten seeded roles are in
+    exactly this state, so the distinction has real callers on both sides.
+    """
+    with pytest.raises(DepartmentDeniedError) as caught:
+        materials_conductor.usage(
+            _ProbeSession(materials_conductor.VIEW),
+            material_id=THING,
+            caller=principal(materials_conductor.VIEW),
+        )
+    assert caught.value.permission == materials_conductor.FORMULA_VIEW, (
+        "materials.usage refused a caller holding material.view but named "
+        f"{caught.value.permission!r} rather than formula.view — the second "
+        "require() call is missing or checks the wrong code"
+    )
+
+
+def test_formulation_cost_follows_the_verified_principal_and_takes_no_argument() -> None:
+    """🔴 COST IS DECIDED FROM THE PRINCIPAL, AND THERE IS NO FLAG TO PASS.
+
+    `include_cost=principal.has("formula.view_cost")` used to be written out
+    four times in `app/api/formulations.py`, once per route — four copies of
+    one rule, one route away from becoming five, and absent entirely on the
+    agent path where no route runs at all.
+
+    Two things are asserted, and the second is the one that matters:
+
+      1. `_cost_visible` answers from the permission set;
+      2. NO entry point on this conductor accepts an `include_cost` argument.
+
+    Without (2) the rule would be a default rather than a boundary: an agent
+    could ask for cost by naming it, and a gate a caller can override is a
+    lookup. Read from the signatures rather than from prose, so a parameter
+    added later fails here instead of shipping.
+    """
+    assert formulations_conductor._cost_visible(principal(formulations_conductor.COST)) is True
+    assert formulations_conductor._cost_visible(principal(formulations_conductor.VIEW)) is False
+
+    offenders = []
+    for name in formulations_conductor.__all__:
+        entry = getattr(formulations_conductor, name)
+        if not callable(entry):
+            continue
+        parameters = inspect.signature(entry).parameters
+        if "include_cost" in parameters:
+            offenders.append(name)
+
+    assert not offenders, (
+        "these formulations conductor entry points accept include_cost, which "
+        f"lets a caller ask for cost it may not hold: {offenders}"
+    )
+
+
+def test_no_conductor_exposes_a_write() -> None:
+    """§4: humans approve, and the agent tier is read-only by construction.
+
+    🔴 READ FROM THE CALL GRAPH, NOT FROM THE DOCSTRINGS THAT PROMISE IT.
+
+    Every conductor's header says it dispatches reads only. Four of them said
+    so before the other five existed, and a promise repeated in nine files is
+    nine places for one of them to be quietly wrong — this repository's
+    recorded failure mode exactly.
+
+    So this parses each conductor and refuses any call to a domain-service
+    function whose name begins with a mutating verb. It is a NAME check and
+    says so: `service.record_everything()` would pass. What it catches is the
+    realistic case — somebody adding `create_`/`approve_`/`confirm_` to a
+    conductor because it was convenient — and that is the case §4 is about.
+    """
+    conductors = sorted(
+        (Path(__file__).resolve().parents[1] / "app" / "agents" / "conductors").glob(
+            "*_conductor.py"
+        )
+    )
+    assert conductors, "no conductors found; this test is looking in the wrong place"
+
+    mutating = (
+        "create_",
+        "update_",
+        "delete_",
+        "submit_",
+        "approve_",
+        "reject_",
+        "confirm_",
+        "record_",
+        "authorize_batch",
+        "complete_",
+        "start_",
+        "ingest_",
+        "promote_",
+        "classify_",
+        "revise",
+        "decide",
+        "accept_",
+        "close_",
+        "open_",
+    )
+
+    offenders: list[str] = []
+    for path in conductors:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            called = node.func.attr
+            if called.startswith(mutating):
+                offenders.append(f"{path.name} calls {called}()")
+
+    assert not offenders, (
+        "§4: humans approve. These conductors reach a write-side function, so "
+        "the agent tier can change a controlled record without a person: "
+        f"{offenders}"
+    )
