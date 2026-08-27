@@ -43,9 +43,21 @@ export const ADMIN_SECTIONS: readonly SubmenuItem[] = [
   { label: "Users & Members", href: "/admin", state: "active", permission: "admin.users" },
   // GET /api/admin/roles and GET /api/admin/permissions both require
   // `admin.roles` — not `admin.users`, which is what reaches this page.
-  { label: "Roles", href: "/admin/roles", state: "active", unavailable: true, permission: "admin.roles" },
-  { label: "Permissions", href: "/admin/permissions", state: "active", unavailable: true, permission: "admin.roles" },
-  { label: "Organization", href: "/admin/organization", state: "active", unavailable: true, permission: "admin.organization" },
+  // ✅ BUILT 2026-08-27, read-only — which is the API's shape, not a shortcut.
+  // `GET /roles` and `GET /permissions` exist; nothing creates a role, renames
+  // one or changes what it carries, because §6 fixes the ten by name and
+  // migration 002 grants them.
+  { label: "Roles", href: "/admin/roles", state: "active", permission: "admin.roles" },
+  { label: "Permissions", href: "/admin/permissions", state: "active", permission: "admin.roles" },
+  // 🔴 STILL UNAVAILABLE, AND FOR A REASON WORTH STATING RATHER THAN HIDING:
+  // `admin.organization` is seeded, held by the administrator, and read by NO
+  // ROUTE ANYWHERE. Measured 2026-08-27 — as are `admin.workflow`,
+  // `admin.notifications`, `admin.audit`, `admin.ai` and `admin.system`. Six of
+  // the nine sections have no endpoint at all, so a screen for any of them
+  // would have to invent one. They stay marked, because §H's whole argument is
+  // that a configuration value referenced in the plan must have a screen — and
+  // the honest first step is showing which ones do not.
+  { label: "Organization", href: "/admin/organization", state: "not-started", unavailable: true, permission: "admin.organization" },
   // Ship with the slice that first depends on them (ADR-021). Shown as
   // not-started rather than hidden, so the shape of Administration is
   // visible and nobody re-invents a section that is already scheduled.
