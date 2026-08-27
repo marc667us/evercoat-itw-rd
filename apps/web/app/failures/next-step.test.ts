@@ -22,7 +22,7 @@ import { describe, expect, it } from "vitest";
 
 import type { FailureSummary } from "@/lib/api/failures";
 
-import { nextStep } from "./page";
+import { nextStep } from "./next-step";
 
 /** A row with nothing going on, to be overridden per case. */
 function row(overrides: Partial<FailureSummary> = {}): FailureSummary {

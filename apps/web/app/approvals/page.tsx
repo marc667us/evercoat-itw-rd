@@ -44,6 +44,8 @@ import Link from "next/link";
 import { useApprovalDecision, useApprovalQueue, useApprovalRoute } from "@/lib/api/hooks";
 import type { ApprovalQueueItem, StepDecisionRequest } from "@/lib/api/failures";
 
+import { DECISIONS } from "./decisions";
+
 const INPUT =
   "mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm text-slate-900 " +
   "focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500";
@@ -52,22 +54,6 @@ const BUTTON =
   "rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 " +
   "disabled:cursor-not-allowed disabled:bg-slate-300";
 
-/**
- * §9's seven decisions, with the label a person reads.
- *
- * Exported so a test can assert there are seven of them. A control that
- * quietly offered two would not fail to compile, would not fail any rendering
- * test, and would remove five capabilities from a regulated approval chain.
- */
-export const DECISIONS: ReadonlyArray<readonly [StepDecisionRequest["decision"], string]> = [
-  ["approve", "Approve"],
-  ["approve_with_condition", "Approve with condition"],
-  ["return_for_correction", "Return for correction"],
-  ["request_retest", "Request retest"],
-  ["reject", "Reject"],
-  ["escalate", "Escalate"],
-  ["request_additional_test", "Request an additional test"],
-];
 
 /**
  * The decisions the server refuses without a rationale.

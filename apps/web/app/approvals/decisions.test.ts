@@ -38,7 +38,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { DECISIONS } from "./page";
+import { DECISIONS } from "./decisions";
 
 /** Where `StepDecision.decision` declares the vocabulary. */
 const ROUTES = join(process.cwd(), "..", "..", "apps", "api", "app", "api", "failures.py");
