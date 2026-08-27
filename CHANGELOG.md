@@ -7,6 +7,9 @@ apps/web **211** vitest (was 182); `tsc`, ESLint, ruff, ruff format and mypy
 clean; `next build` and `NEXT_OUTPUT=export` both verified, and the pre-paint
 script confirmed in the exported `<head>`.
 
+**Live suite on the deployed demo: 922 passed / 0 failed / 0 skipped**
+(`api-live` 857 + e2e 65, two phases, same build).
+
 Applied the 19 findings Codex and the Supervisor raised on `b84a300` /
 `ad55d99`. Measuring them found four more. **Reviewing the repair found eleven
 more — Codex 1, the Supervisor 10, none overlapping.**

@@ -74,6 +74,32 @@ never made.
 | Two pages missing from the a11y sweep | Measuring the route list found **eight more**. `accessibility-coverage.test.ts` derives it from the filesystem |
 | Four Administration headers reporting "0" while unknown | `headerCount()` — and the Supervisor caught that I fixed "Permissions" and left "Domains" beside it |
 
+### ▶ LIVE SUITE ON THE DEPLOYED DEMO — 922 / 0 / 0
+
+| phase | passed | failed | skipped |
+|---|---|---|---|
+| `api-live` (pytest against the deployed instance) | **857** | 0 | 0 |
+| e2e `shell` (Playwright against the deployed site) | **65** | 0 | 0 |
+| **total** | **922** | **0** | **0** |
+
+Run as **two phases** — a single `live-suite.sh` invocation exceeds the harness's
+ten-minute cap (api 3m03s + e2e 7m00s). Both halves ran against the SAME
+deployed build, with no commit between them that changed the bundle.
+
+🔴 **THE FIRST api-live RUN WAS A RED, AND IT WAS RIGHT.** `857 passed, 1
+failed` — my new assertion that each membership carries its own `email` found
+the DEPLOYED API still serving the old `/api/me` shape. The `:18000` listener
+predated the change. Restarted the listener only; `cloudflared` is never
+restarted, because a quick tunnel mints a new hostname and `NEXT_PUBLIC_*` is
+baked in at build time.
+
+⚠️ **THE PREVIOUS e2e RUN WAS VOID, NOT GREEN** — a duplicate test title made
+Playwright refuse the entire run, and the shell chain reported `tail`'s exit
+code. This run executed all 65, and `sign-in.spec.ts`'s two are recorded `ok`
+rather than skipped (I100's rule: a capability that skips while configured is a
+failure). All 22 accessibility pages pass axe-core, **including the ten the
+sweep had never seen**.
+
 ### Codex's P2 — the CSP, measured
 
 The pre-paint script is inline, and `SECURITY.md` §13 states *"a
