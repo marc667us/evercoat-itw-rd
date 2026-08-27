@@ -985,8 +985,18 @@ def list_failures(
                    f.test_id, f.formula_version_id, f.opened_at, f.closed_at,
                    (SELECT count(*) FROM quality.failure_hypotheses h
                      WHERE h.failure_id = f.id) AS hypothesis_count,
+                   -- 🔴 `> 0`, SO THE COLUMN ANSWERS WHAT ITS NAME ASKS.
+                   -- It used to be a bare count() called `has_root_cause`, which
+                   -- is this platform's recorded trap: *ask what a returned
+                   -- value ANSWERS, not what the column is CALLED*. Every
+                   -- consumer that read it as a boolean was right by accident
+                   -- (0 is falsy, 2 is truthy) and every consumer that VALIDATED
+                   -- the type was wrong -- the first browser client written
+                   -- against it declared `z.boolean()` from the name and would
+                   -- have rejected every response. Found 2026-08-27 while
+                   -- writing that client, before it shipped.
                    (SELECT count(*) FROM quality.failure_hypotheses h
-                     WHERE h.failure_id = f.id AND h.status = 'accepted')
+                     WHERE h.failure_id = f.id AND h.status = 'accepted') > 0
                      AS has_root_cause,
                    (SELECT count(*) FROM quality.failure_actions a
                      WHERE a.failure_id = f.id
