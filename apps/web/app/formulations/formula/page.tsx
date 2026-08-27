@@ -613,6 +613,20 @@ function FormulaWorkspace({
 }) {
   const actions = useFormulaActions(version.id);
   const comparison = useFormulaComparison(version.id, version.parent_version_id);
+  // 🔴 RAISED BY CODEX AGAINST THE FIRST PASS OF THIS CHANGE, AND MEASURED.
+  // The Lifecycle section below was left ungated while every other workspace
+  // was gated -- five writing controls offered to anyone holding
+  // `formula.view`. Each name is read off `app/api/formulations.py`:
+  // submission `formula.submit`, decision `formula.approve_lab`, revision
+  // `formula.clone`, and observed effect EITHER `formula.clone` OR
+  // `formula.modify_draft`, because the chemist who wrote the hypothesis and
+  // whoever holds the revision right are both legitimate authors of what
+  // actually happened.
+  const permissions = usePermissions();
+  const maySubmit = permissions.has("formula.submit");
+  const mayDecide = permissions.has("formula.approve_lab");
+  const mayRevise = permissions.has("formula.clone");
+  const mayRecordObserved = mayRevise || permissions.has("formula.modify_draft");
   const [reason, setReason] = useState("");
   const [hypothesis, setHypothesis] = useState("");
   const [driver, setDriver] = useState<RevisionDriver | "">("");
@@ -785,11 +799,13 @@ function FormulaWorkspace({
         <h2 className="text-sm font-semibold text-slate-900">Lifecycle</h2>
         <p className="mt-1 text-xs text-slate-600">
           An approved formulation is <strong>never edited in place</strong>. It is
-          superseded by a revision that records why. Every control is offered and the
-          server decides.
+          superseded by a revision that records why. A control you hold the
+          permission for is offered and the <strong>server still decides</strong>{" "}
+          whether the formula&rsquo;s own state allows it.
         </p>
 
         <div className="mt-3 flex flex-wrap gap-2">
+          {maySubmit && (
           <button
             type="button"
             className={BUTTON_QUIET}
@@ -798,6 +814,15 @@ function FormulaWorkspace({
           >
             Submit for approval
           </button>
+          )}
+          {/* 🔴 APPROVE AND REJECT ARE ONE PERMISSION, UNLIKE THE BATCH REVIEW
+              A FEW FILES AWAY. `POST /versions/{version_id}/decision` declares
+              `formula.approve_lab` for both decisions, so they travel together
+              here -- and the difference from `REVIEW_PERMISSION`'s two-way
+              split is why each is read off its own route rather than assumed
+              from the pattern next door. */}
+          {mayDecide && (
+          <>
           <button
             type="button"
             className={BUTTON_QUIET}
@@ -814,7 +839,18 @@ function FormulaWorkspace({
           >
             Reject
           </button>
+          </>
+          )}
         </div>
+
+        {!maySubmit && !mayDecide && !mayRevise && !mayRecordObserved && (
+          <p className="mt-3 text-sm text-slate-600">
+            This formula version is read-only from here: you hold{" "}
+            <code className="text-xs">formula.view</code> and none of the
+            permissions its lifecycle steps require. The record above is
+            complete; only the controls are withheld.
+          </p>
+        )}
 
         <div className="mt-4 grid gap-3 sm:max-w-2xl">
           {/*
@@ -827,6 +863,7 @@ function FormulaWorkspace({
             objective caused it, and a default would answer that on the
             chemist's behalf.
           */}
+          {mayRevise && (
           <div className="grid gap-2 rounded border border-slate-200 p-3">
             <p className="text-xs font-medium text-slate-700">
               Revise — an approved formula is never edited in place
@@ -905,7 +942,9 @@ function FormulaWorkspace({
               </button>
             </div>
           </div>
+          )}
 
+          {mayRecordObserved && (
           <div>
             <label className={LABEL} htmlFor="observed">
               Observed effect — what actually happened
@@ -926,6 +965,7 @@ function FormulaWorkspace({
               Record observed effect
             </button>
           </div>
+          )}
         </div>
 
         {actions.error !== null && (

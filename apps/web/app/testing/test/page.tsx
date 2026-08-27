@@ -388,12 +388,32 @@ function TestWorkspace({ test }: { test: TestDetail }) {
     (step) => step.permission_required !== null && permissions.has(step.permission_required),
   );
   const mayDecide = mayReview || mayApproveARung;
+
   const [value, setValue] = useState("");
   const [unit, setUnit] = useState("");
   const [decision, setDecision] = useState<(typeof DECISIONS)[number][0]>("approve");
   const [stage, setStage] = useState<"review" | "approval">("review");
   const [condition, setCondition] = useState("");
   const [rationale, setRationale] = useState("");
+  // 🔴 RAISED BY CODEX AND MEASURED: THE STAGE SELECT OFFERED BOTH MODES TO
+  // BOTH KINDS OF CALLER, WITH `review` AS THE DEFAULT.
+  //
+  // `mayDecide` decides whether the FORM appears. It does not decide which
+  // STAGE the caller may use, and those are different questions:
+  // `POST /{test_id}/decisions` requires `test.review` for a review decision
+  // and the CURRENT RUNG's own permission for an approval one. So a lead
+  // holding an approval rung and not `test.review` saw a form defaulted to the
+  // one stage they cannot use — and the first thing they would have pressed
+  // was a 403.
+  //
+  // ⚠️ THE DEFAULT MOVES WITH THE OPTIONS. Offering only `approval` while
+  // leaving `stage` initialised to `review` would send the refused value
+  // anyway, which is the same defect with the evidence removed.
+  const stages = [
+    ...(mayReview ? (["review"] as const) : []),
+    ...(mayApproveARung ? (["approval"] as const) : []),
+  ];
+  const effectiveStage = stages.includes(stage) ? stage : (stages[0] ?? "review");
 
   const stats = test.statistics;
   const auto = test.automatic_evaluation;
@@ -785,11 +805,17 @@ function TestWorkspace({ test }: { test: TestDetail }) {
               <select
                 id="stage"
                 className={INPUT}
-                value={stage}
+                value={effectiveStage}
                 onChange={(e) => setStage(e.target.value as "review" | "approval")}
+                // One option left is not a choice, and a select the caller
+                // cannot change reads as a control that is not working.
+                disabled={stages.length < 2}
               >
-                <option value="review">review</option>
-                <option value="approval">approval</option>
+                {stages.map((available) => (
+                  <option key={available} value={available}>
+                    {available}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
@@ -836,7 +862,9 @@ function TestWorkspace({ test }: { test: TestDetail }) {
               onClick={() =>
                 actions.decide({
                   decision,
-                  stage,
+                  // `effectiveStage`, never `stage`. The state can hold the
+                  // initial `review` for a caller who was never offered it.
+                  stage: effectiveStage,
                   condition_text: condition.trim() === "" ? undefined : condition.trim(),
                   rationale: rationale.trim() === "" ? undefined : rationale.trim(),
                 })

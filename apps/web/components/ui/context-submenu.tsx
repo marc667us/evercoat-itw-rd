@@ -120,7 +120,7 @@ export function ContextSubmenu({
   items,
   activeHref,
 }: {
-  items: SubmenuItem[];
+  items: readonly SubmenuItem[];
   activeHref: string;
 }): ReactNode {
   const permissions = usePermissions();

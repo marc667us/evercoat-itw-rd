@@ -19,23 +19,27 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { ADMIN_SECTIONS } from "@/app/admin/sections";
+
 import { visibleSubmenu, type SubmenuItem } from "./context-submenu";
 
-/** The real Administration sections, with the permissions their routes require. */
-const ADMIN_SECTIONS: SubmenuItem[] = [
-  { label: "Users & Members", href: "/admin", permission: "admin.users" },
-  { label: "Roles", href: "/admin/roles", permission: "admin.roles" },
-  { label: "Permissions", href: "/admin/permissions", permission: "admin.roles" },
-  { label: "Organization", href: "/admin/organization", permission: "admin.organization" },
-  { label: "Audit", href: "/admin/audit", permission: "admin.audit" },
-];
-
-const labels = (items: SubmenuItem[]): string[] => items.map((i) => i.label);
+/**
+ * 🔴 THE REAL ARRAY, IMPORTED — NOT A FIXTURE THAT RESEMBLES IT.
+ *
+ * The first version of this file built its own five-entry `ADMIN_SECTIONS`
+ * that looked like the production list and omitted four of its sections. Codex
+ * caught it: that proves the generic filter and nothing about THIS menu, so a
+ * wrong or missing permission code in `app/admin/sections.ts` left every test
+ * here green. *Two literals in two files cannot be type-checked into
+ * agreement* — this repository's most repeated defect, committed inside the
+ * change closing an instance of it.
+ */
+const labels = (items: readonly SubmenuItem[]): string[] => items.map((i) => i.label);
 
 describe("visibleSubmenu", () => {
   it("offers only the sections whose permission the caller holds", () => {
     // A caller who may manage members and nothing else. `admin.users` is what
-    // puts Administration in the sidebar, and it is NOT what the other four
+    // puts Administration in the sidebar, and it is NOT what the other eight
     // sections require — which is the whole defect this closes.
     const result = visibleSubmenu(ADMIN_SECTIONS, new Set(["admin.users"]));
 
@@ -44,22 +48,27 @@ describe("visibleSubmenu", () => {
 
   it("offers every section to a caller who holds every permission", () => {
     // The other direction. Without this, a filter that returned `[]` for
-    // everyone would pass the test above. Measured 2026-08-27: `admin.demo` is
-    // the one seeded role holding all ten `admin.*` codes.
-    const all = new Set([
-      "admin.users",
-      "admin.roles",
-      "admin.organization",
-      "admin.audit",
-    ]);
+    // everyone would pass the test above. Measured 2026-08-27 against the
+    // deployed demo: `admin.demo` is the one seeded role holding every
+    // `admin.*` code, and it must still see all nine sections.
+    const all = new Set(
+      ADMIN_SECTIONS.map((s) => s.permission).filter((p): p is string => p !== undefined),
+    );
 
-    expect(labels(visibleSubmenu(ADMIN_SECTIONS, all))).toEqual([
-      "Users & Members",
-      "Roles",
-      "Permissions",
-      "Organization",
-      "Audit",
-    ]);
+    expect(labels(visibleSubmenu(ADMIN_SECTIONS, all))).toEqual(labels(ADMIN_SECTIONS));
+  });
+
+  it("🔴 every section names a permission, and every one is an `admin.*` code", () => {
+    // The guard the fixture could never provide. A section added with no
+    // permission is offered to every caller who reaches the page, which is the
+    // exact state this whole change was closing; one gated on a code from
+    // another module would be a typo nothing else catches.
+    for (const section of ADMIN_SECTIONS) {
+      expect(section.permission, `${section.label} names no permission`).toBeDefined();
+      expect(section.permission, `${section.label} is not gated on an admin code`).toMatch(
+        /^admin\./,
+      );
+    }
   });
 
   it("🔴 shows two sections that share one permission together, or neither", () => {
