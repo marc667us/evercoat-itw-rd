@@ -322,7 +322,22 @@ function InvestigationWorkspace({ failure }: { failure: FailureDetail }) {
   const [actionText, setActionText] = useState("");
   const [closure, setClosure] = useState("");
 
-  const open = failure.status !== "closed";
+  // 🔴 `cancelled` IS SETTLED TOO. Raised by Codex: this read
+  // `status !== "closed"`, so a cancelled investigation kept every control and
+  // each one 409'd. `quality.failures.status` has six values (migration 021).
+  const open = failure.status !== "closed" && failure.status !== "cancelled";
+
+  // 🔴 AND ACCEPTANCE IS OFFERED ONCE PER INVESTIGATION, NOT ONCE PER
+  // HYPOTHESIS. Also raised by Codex. Each card gated only on its OWN settled
+  // state, so once a root cause was accepted the remaining `proposed`
+  // hypotheses still showed "Accept as root cause" — and pressing one hits
+  // `failure_hypotheses_one_accepted_idx`, which is a partial unique index and
+  // therefore a hard refusal rather than a supersede.
+  //
+  // ⚠️ THIS IS COSMETIC, LIKE EVERY GATE ON THIS SCREEN. The index is the
+  // guarantee; hiding the control just stops offering an action that cannot
+  // work.
+  const rootCauseSettled = failure.accepted_root_cause !== null;
 
   return (
     <div className="space-y-6">
@@ -421,7 +436,7 @@ function InvestigationWorkspace({ failure }: { failure: FailureDetail }) {
                 hypothesis={h}
                 evidencePool={failure.evidence}
                 mayInvestigate={mayInvestigate && open}
-                mayAccept={mayAccept && open}
+                mayAccept={mayAccept && open && !rootCauseSettled}
                 pending={actions.isPending}
                 onAccept={actions.accept}
                 onReject={actions.reject}

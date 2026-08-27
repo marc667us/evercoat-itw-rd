@@ -198,6 +198,39 @@ export function fetchFailure(
 // The writes. Eleven endpoints, none of which had a caller.
 // ---------------------------------------------------------------------------
 
+export interface FailureCreateRequest {
+  readonly project_id: string;
+  readonly failure_code: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly severity: "critical" | "major" | "minor";
+}
+
+/**
+ * Open an investigation by hand.
+ *
+ * 🔴 THE QUEUE'S OWN COPY CLAIMED THIS BEFORE THE CONTROL EXISTED. Raised by
+ * Codex: `/failures` said investigations are opened *"by hand when a problem is
+ * found another way"* while `POST /api/quality/failures` had no client function
+ * and the page had no control. A sentence describing a capability the product
+ * does not have is the same defect as a comment asserting a rule that does not
+ * exist — and this one was on a screen, where a user reads it.
+ *
+ * §10 opens an investigation automatically on a RED confirmation result. That
+ * is the common path and it is not the only one: a problem found in the field,
+ * in a complaint or by a technician mid-batch has no failing test to hang off,
+ * and `failure.create` exists precisely for it.
+ */
+export function openInvestigation(
+  credentials: ApiCredentials,
+  request: FailureCreateRequest,
+): Promise<unknown> {
+  return apiRequest(
+    { path: "/api/quality/failures", method: "POST", body: request, credentials },
+    (payload) => payload,
+  );
+}
+
 export interface HypothesisRequest {
   readonly possible_cause: string;
   readonly mechanism?: string;
@@ -406,7 +439,19 @@ export const routeStepSchema = z.object({
   permission_required: z.string().nullable(),
   step_label: z.string(),
   is_mandatory: z.boolean(),
-  must_differ_from_group: z.boolean(),
+  // 🔴 A NULLABLE INTEGER, NOT A BOOLEAN. Raised by Codex and confirmed
+  // against `migrations/020_approval_engine.sql:112`: the column is
+  // `INTEGER CHECK (must_differ_from_group IS NULL OR ... > 0)` and it names
+  // the parallel GROUP whose signatory this step must differ from — the
+  // segregation-of-duties rule §9 requires at qualification and release
+  // authority. Declared `z.boolean()` from the `must_` prefix, which would
+  // have thrown on every non-empty route the first time anybody opened one.
+  //
+  // The same mistake as `has_root_cause` two commits ago, in the opposite
+  // direction: there a yes/no name hid a count, here a yes/no-sounding name
+  // hides a group number. *Ask what a returned value answers, not what the
+  // column is called* — twice in one slice.
+  must_differ_from_group: z.number().nullable(),
   decision: z.string().nullable(),
   condition_text: z.string().nullable(),
   rationale: z.string().nullable(),

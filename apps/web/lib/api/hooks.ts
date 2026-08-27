@@ -33,6 +33,7 @@ import {
   fetchFailure,
   fetchFailures,
   linkEvidence,
+  openInvestigation,
   proposeHypothesis,
   raiseAction,
   recordEvidence,
@@ -42,6 +43,7 @@ import {
   type ApprovalRoute,
   type EvidenceLinkRequest,
   type EvidenceRequest,
+  type FailureCreateRequest,
   type FailureDetail,
   type FailureSummary,
   type HypothesisRequest,
@@ -1602,6 +1604,44 @@ export function useApprovalDecision(): {
     error: (mutation.error as Error | null) ?? null,
     lastAction: mutation.data ?? null,
     reset: mutation.reset,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+/**
+ * Open an investigation by hand.
+ *
+ * Its own hook rather than a member of `useFailureActions`, because that one is
+ * keyed by `failureId` and this is the call that CREATES one — there is no id
+ * to key it by yet.
+ */
+export function useOpenInvestigation(): {
+  readonly submit: (request: FailureCreateRequest) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: async (request: FailureCreateRequest) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return openInvestigation(resolved.credentials, request);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["quality-failures"] });
+    },
+  });
+
+  return {
+    submit: (request) => mutation.mutate(request),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
     unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
   };
 }

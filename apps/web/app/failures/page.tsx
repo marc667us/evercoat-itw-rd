@@ -35,9 +35,19 @@
 
 import Link from "next/link";
 
+import { useState } from "react";
+
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
-import { useFailures } from "@/lib/api/hooks";
+import { serverMessage } from "@/lib/api/client";
+import { useFailures, useOpenInvestigation, useProjects } from "@/lib/api/hooks";
 import type { FailureSummary } from "@/lib/api/failures";
+import { permits, usePermissions } from "@/lib/permissions";
+
+interface ProjectOption {
+  readonly id: string;
+  readonly project_code: string;
+  readonly name: string;
+}
 
 /** A stored value as a readable word, without implying a judgement. */
 function words(value: string): string {
@@ -58,8 +68,20 @@ function words(value: string): string {
  * finished work.
  */
 export function nextStep(row: FailureSummary): string {
+  // 🔴 SIX STATUSES, NOT TWO. Raised by Codex. `quality.failures.status` is
+  // CHECKed against open · investigating · root_cause_accepted ·
+  // action_in_progress · closed · cancelled (migration 021), and this rule
+  // recognised only `closed` — so a CANCELLED investigation was described as
+  // needing a hypothesis and offered mutation controls that then 409'd.
+  //
+  // Both are SETTLED and neither needs work, but they are not the same
+  // sentence: "closed" means somebody concluded it, "cancelled" means nobody
+  // will. Collapsing them would lose the difference a reader is looking for.
   if (row.status === "closed") {
     return "Closed";
+  }
+  if (row.status === "cancelled") {
+    return "Cancelled";
   }
   if (row.open_actions > 0) {
     return `${row.open_actions} corrective action${row.open_actions === 1 ? "" : "s"} open`;
@@ -71,6 +93,172 @@ export function nextStep(row: FailureSummary): string {
     return "No hypothesis yet";
   }
   return `${row.hypothesis_count} hypothes${row.hypothesis_count === 1 ? "is" : "es"}, none accepted`;
+}
+
+/**
+ * Opening an investigation by hand — the eleventh write, and the one the
+ * queue's own copy promised before the control existed.
+ *
+ * 🔴 RAISED BY CODEX. This page said investigations are opened *"by hand when a
+ * problem is found another way"* while `POST /api/quality/failures` had no
+ * client function and no control anywhere. A sentence on a screen describing a
+ * capability the product does not have is the same defect as a comment
+ * asserting a rule that does not exist, except that a user reads this one.
+ *
+ * §10 opens an investigation automatically on a RED confirmation result, and
+ * that is the common path rather than the only one: a problem found in the
+ * field, in a complaint, or by a technician mid-batch has no failing test to
+ * hang off. `failure.create` exists for exactly that, and is held by the
+ * Chemist, Engineer and QA — measured on the seeded realm 2026-08-27.
+ *
+ * ⚠️ THE PROJECT IS CHOSEN FROM A LIST, NEVER TYPED. `project_id` is a UUID and
+ * a free-text field for one is how a form becomes unusable — the same reason
+ * `PlanTestForSample` takes its method from `GET /api/testing/methods` rather
+ * than asking for an id.
+ */
+function OpenInvestigation() {
+  const permissions = usePermissions();
+  const projects = useProjects<ProjectOption[]>([], (live) =>
+    live.map((p) => ({ id: p.id, project_code: p.project_code, name: p.name })),
+  );
+  const open = useOpenInvestigation();
+  const [expanded, setExpanded] = useState(false);
+  const [projectId, setProjectId] = useState("");
+  const [code, setCode] = useState("");
+  const [title, setTitle] = useState("");
+  const [severity, setSeverity] = useState<"critical" | "major" | "minor">("major");
+
+  if (!permits(permissions, "failure.create")) {
+    return null;
+  }
+
+  const options = projects.data ?? [];
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        className="mb-4 rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
+        onClick={() => setExpanded(true)}
+      >
+        Open an investigation
+      </button>
+    );
+  }
+
+  return (
+    <section aria-labelledby="open-investigation" className="mb-4 rounded border border-slate-200 bg-white p-4">
+      <h2 id="open-investigation" className="text-sm font-semibold text-slate-900">
+        Open an investigation
+      </h2>
+      <p className="mt-1 text-xs text-slate-600">
+        For a problem found outside a failing test. A RED confirmation result
+        opens one automatically.
+      </p>
+
+      <div className="mt-3 grid max-w-2xl gap-3">
+        <div>
+          <label className="block text-xs font-medium text-slate-700" htmlFor="failure-project">
+            Project
+          </label>
+          <select
+            id="failure-project"
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+          >
+            <option value="">Choose a project</option>
+            {options.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.project_code} · {p.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="block text-xs font-medium text-slate-700" htmlFor="failure-code">
+              Failure code
+            </label>
+            <input
+              id="failure-code"
+              className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="FL-2026-001"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-700" htmlFor="failure-severity">
+              Severity
+            </label>
+            <select
+              id="failure-severity"
+              className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              value={severity}
+              onChange={(e) => setSeverity(e.target.value as "critical" | "major" | "minor")}
+            >
+              <option value="critical">critical</option>
+              <option value="major">major</option>
+              <option value="minor">minor</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-slate-700" htmlFor="failure-title">
+            What went wrong
+          </label>
+          <input
+            id="failure-title"
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            // The server requires 3 characters on the code and the title, and a
+            // real project. Matching that here avoids a round trip to be told
+            // so; the server still refuses either way.
+            disabled={
+              open.isPending ||
+              projectId === "" ||
+              code.trim().length < 3 ||
+              title.trim().length < 3
+            }
+            onClick={() =>
+              open.submit({
+                project_id: projectId,
+                failure_code: code.trim(),
+                title: title.trim(),
+                severity,
+              })
+            }
+          >
+            {open.isPending ? "Opening…" : "Open"}
+          </button>
+          <button
+            type="button"
+            className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
+            onClick={() => setExpanded(false)}
+          >
+            Cancel
+          </button>
+        </div>
+
+        {open.error !== null && (
+          <p role="alert" className="text-sm text-red-700">
+            The investigation was not opened: {serverMessage(open.error)}
+          </p>
+        )}
+      </div>
+    </section>
+  );
 }
 
 export default function FailuresPage() {
@@ -111,6 +299,8 @@ export default function FailuresPage() {
             accepted root cause</strong> — only a person accepts one, and the
             investigation records who.
           </div>
+
+          <OpenInvestigation />
 
           {rows.length === 0 ? (
             <p className="text-sm text-slate-600">
