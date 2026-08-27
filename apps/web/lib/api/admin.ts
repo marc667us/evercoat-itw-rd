@@ -84,7 +84,14 @@ export function fetchRoles(credentials: ApiCredentials, signal?: AbortSignal): P
 export const permissionSchema = z.object({
   code: z.string(),
   domain: z.string(),
-  description: z.string().nullable(),
+  // 🔴 NOT NULLABLE. Raised by Codex: `PermissionRead.description` is a
+  // mandatory `str`, while `RoleRead.description` a few lines above it in the
+  // same file is `str | None`. Copying the role's nullability onto the
+  // permission made this client MORE permissive than the response model — so a
+  // server-side regression that started emitting null would have parsed
+  // cleanly here and rendered as an empty cell. A schema looser than the
+  // contract hides exactly the change it exists to catch.
+  description: z.string(),
 });
 export type Permission = z.infer<typeof permissionSchema>;
 
@@ -333,9 +340,25 @@ export const productFamilySchema = z.object({
 });
 export type ProductFamily = z.infer<typeof productFamilySchema>;
 
+/**
+ * 🔴 `include_inactive=true`, AND WITHOUT IT "RESTORE" WAS UNREACHABLE.
+ *
+ * Raised by Codex. Both endpoints default `include_inactive` to FALSE, so
+ * retiring a row and then refetching made it vanish — taking its Restore
+ * control with it. The screen's own comment said *"a retired row still appears.
+ * It has to"*, which was a description of intent rather than of the request
+ * being sent: a comment asserting a behaviour the code did not have.
+ *
+ * This is an ADMINISTRATION surface, so it wants everything: an administrator
+ * needs to see the retired row before wondering why its code cannot be reused,
+ * and needs it on screen to bring it back. Read paths for ordinary callers —
+ * the unit picker on a requirement form — should keep the default and get only
+ * what is offerable.
+ */
 export function fetchUnits(credentials: ApiCredentials, signal?: AbortSignal): Promise<Unit[]> {
-  return apiRequest({ path: "/api/admin/units", credentials, signal }, (payload) =>
-    z.array(unitSchema).parse(payload),
+  return apiRequest(
+    { path: "/api/admin/units?include_inactive=true", credentials, signal },
+    (payload) => z.array(unitSchema).parse(payload),
   );
 }
 
@@ -343,8 +366,9 @@ export function fetchProductFamilies(
   credentials: ApiCredentials,
   signal?: AbortSignal,
 ): Promise<ProductFamily[]> {
-  return apiRequest({ path: "/api/admin/product-families", credentials, signal }, (payload) =>
-    z.array(productFamilySchema).parse(payload),
+  return apiRequest(
+    { path: "/api/admin/product-families?include_inactive=true", credentials, signal },
+    (payload) => z.array(productFamilySchema).parse(payload),
   );
 }
 

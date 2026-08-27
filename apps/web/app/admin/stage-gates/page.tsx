@@ -88,6 +88,12 @@ function StageForm({
     sequenceNumber >= 1 &&
     sequenceNumber <= 999;
   const codeValid = STAGE_CODE.test(code);
+  // 🔴 THE SERVER'S OWN VALIDATOR, MIRRORED. Raised by Codex.
+  // `_approval_needs_an_approver` refuses `requires_approval` with no
+  // `approval_role` — *"a gate that requires approval from nobody never opens"*
+  // — and it mirrors a CHECK constraint, so it is refused twice. The form
+  // enabled submission anyway and the omission produced a guaranteed 422.
+  const approverMissing = requiresApproval && approvalRole.trim() === "";
 
   return (
     <div className="mt-3 grid max-w-3xl gap-2 rounded border border-slate-200 p-3">
@@ -215,7 +221,7 @@ function StageForm({
         <button
           type="button"
           className={BUTTON}
-          disabled={pending || !codeValid || name.trim() === "" || !sequenceValid}
+          disabled={pending || !codeValid || name.trim() === "" || !sequenceValid || approverMissing}
           onClick={() =>
             onSubmit(
               {
@@ -259,6 +265,12 @@ function StageForm({
           <button type="button" className={BUTTON_QUIET} onClick={onCancel}>
             Cancel
           </button>
+        )}
+        {approverMissing && (
+          <p className="w-full text-xs text-slate-600">
+            A stage that requires approval has to name the role that gives it — a
+            gate requiring approval from nobody never opens.
+          </p>
         )}
       </div>
     </div>
@@ -410,7 +422,7 @@ function StageRow({
 export default function StageGatesPage() {
   const permissions = usePermissions();
   const mayManage = permits(permissions, "admin.stage_gates");
-  const { data, error } = useStageDefinitions();
+  const { data, error, isLoading, unavailable } = useStageDefinitions();
   const actions = useAdminActions();
   const [adding, setAdding] = useState(false);
 
@@ -463,10 +475,18 @@ export default function StageGatesPage() {
           lede="The stages a project can be in, in order. The project workspace's
                 'Advance to' list is built from these rows, so this is where the
                 shape of the pipeline is decided."
-          unavailable={null}
+          // 🔴 THE HOOK'S ANSWER, NOT A HARD-CODED `null`. Raised by Codex: a
+          // build with no API compiled in returns `unavailable`, and claiming
+          // the source was live turned that into a permission message — which
+          // sends a reader to an administrator for a problem no grant can fix.
+          unavailable={unavailable}
           notInvented="stage definitions"
         >
-          {!mayManage ? (
+          {unavailable !== null ? (
+            <p className="text-sm text-slate-600">
+              Stage gates cannot be shown until this build is pointed at an API.
+            </p>
+          ) : !mayManage ? (
             <p className="text-sm text-slate-600">
               Configuring stage gates needs{" "}
               <code className="text-xs">admin.stage_gates</code>, which this account
@@ -478,7 +498,14 @@ export default function StageGatesPage() {
             </p>
           ) : (
             <>
-              {stages.length === 0 ? (
+              {/* 🔴 "LOADING" AND "NONE" ARE DIFFERENT ANSWERS. Raised by
+                  Codex: collapsing `data === undefined` to an empty list made
+                  a first load render "No stages defined" and enable the create
+                  form before any existing code or sequence was known — an
+                  invitation to collide with a stage already there. */}
+              {isLoading ? (
+                <p className="text-sm text-slate-600">Loading stage definitions…</p>
+              ) : stages.length === 0 ? (
                 <p className="text-sm text-slate-600">No stages defined.</p>
               ) : (
                 <ol className="space-y-2">
@@ -497,7 +524,7 @@ export default function StageGatesPage() {
                 </ol>
               )}
 
-              {!adding ? (
+              {isLoading ? null : !adding ? (
                 <button
                   type="button"
                   className={BUTTON_QUIET + " mt-4"}

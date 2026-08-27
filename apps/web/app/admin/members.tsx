@@ -35,6 +35,7 @@ import { useState } from "react";
 
 import { serverMessage } from "@/lib/api/client";
 import { useAdminActions, useAdminMembers, useRoles } from "@/lib/api/hooks";
+import { useSession } from "@/lib/api/session";
 import type { AdminMember, Role } from "@/lib/api/admin";
 import { permits, usePermissions } from "@/lib/permissions";
 
@@ -69,6 +70,8 @@ function MemberRow({
   roles,
   mayManageUsers,
   mayManageRoles,
+  isSelf,
+  soleGrantingRole,
   pending,
   onGrant,
   onRevoke,
@@ -78,6 +81,13 @@ function MemberRow({
   roles: readonly Role[];
   mayManageUsers: boolean;
   mayManageRoles: boolean;
+  /** Whether this row is the signed-in caller. */
+  isSelf: boolean;
+  /**
+   * The one role on THIS member whose removal would leave the organization with
+   * nobody holding `admin.roles`, or null when there is no such role.
+   */
+  soleGrantingRole: string | null;
   pending: boolean;
   onGrant: (memberId: string, roleCode: string, reason: string, after: () => void) => void;
   onRevoke: (memberId: string, roleCode: string, reason: string, after: () => void) => void;
@@ -131,18 +141,39 @@ function MemberRow({
             Grant a role
           </button>
         )}
+        {/* 🔴 NOT THE ROLE THAT WOULD LEAVE NOBODY ABLE TO GRANT. Raised by
+            Codex. `revoke_role` refuses the last role holding `admin.roles`
+            with a 409, and the browser has everything needed to know which one
+            that is: the member list with each member's roles and status, and
+            the role catalogue with each role's permissions. Offering it was
+            offering a button that cannot work — and the one refusal an
+            administrator is least likely to expect. */}
         {mayManageRoles &&
-          member.roles.map((code) => (
-            <button
-              key={`revoke-${code}`}
-              type="button"
-              className="text-xs text-slate-700 underline underline-offset-2"
-              onClick={() => setRevoking(code)}
-            >
-              Revoke {words(code)}
-            </button>
-          ))}
-        {mayManageUsers && !changingStatus && (
+          member.roles
+            .filter((code) => code !== soleGrantingRole)
+            .map((code) => (
+              <button
+                key={`revoke-${code}`}
+                type="button"
+                className="text-xs text-slate-700 underline underline-offset-2"
+                onClick={() => setRevoking(code)}
+              >
+                Revoke {words(code)}
+              </button>
+            ))}
+        {mayManageRoles && soleGrantingRole !== null && (
+          <span className={TAG}>
+            {words(soleGrantingRole)} cannot be revoked — last holder of
+            admin.roles
+          </span>
+        )}
+        {/* 🔴 NOT YOUR OWN MEMBERSHIP. Raised by Codex: `set_member_status`
+            refuses it outright — *"refusing to change your own membership
+            status"* — which is the right rule, since an administrator
+            deactivating themselves is how an organization loses its last one
+            by accident. The browser knows who it is, so the control is simply
+            not offered. */}
+        {mayManageUsers && !isSelf && !changingStatus && (
           <button
             type="button"
             className="text-xs text-slate-700 underline underline-offset-2"
@@ -151,6 +182,7 @@ function MemberRow({
             {member.status === "active" ? "Deactivate" : "Reactivate"}
           </button>
         )}
+        {mayManageUsers && isSelf && <span className={TAG}>you</span>}
       </div>
 
       {mayManageRoles && granting && (
@@ -322,6 +354,13 @@ export function MembersAdministration() {
   const mayManageUsers = permits(permissions, "admin.users");
   const mayManageRoles = permits(permissions, "admin.roles");
 
+  // Who the caller is, so their own row can withhold the control the server
+  // refuses. `null` when there is no session, which is the anonymous build —
+  // and then nothing matches, which is the right way round.
+  const session = useSession();
+  const signedInUserId =
+    session.status === "authenticated" ? session.credentials.userId : null;
+
   const members = useAdminMembers();
   const roles = useRoles();
   const actions = useAdminActions();
@@ -336,6 +375,42 @@ export function MembersAdministration() {
   // `roles.error` as a failure of the whole page would be wrong: it is a
   // legitimate refusal for that caller.
   const roleList: Role[] = roles.data ?? [];
+  const memberList: AdminMember[] = members.data ?? [];
+
+  /**
+   * Which roles carry `admin.roles`, and who still holds one.
+   *
+   * 🔴 DERIVED FROM THE CATALOGUE, NOT FROM THE ROLE'S NAME. The permission is
+   * what matters, and any role could carry it — assuming it is `administrator`
+   * would be a second, wrong definition of "can grant", and §6 is explicit that
+   * authorization is on permissions and never on role names.
+   *
+   * ⚠️ ACTIVE MEMBERS ONLY. A deactivated member holding the role cannot grant
+   * anything, so they do not count towards "somebody can still grant".
+   */
+  const grantingRoles = new Set(
+    roleList.filter((r) => r.permissions.includes("admin.roles")).map((r) => r.code),
+  );
+  const grantingHolders = memberList.filter(
+    (m) => m.status === "active" && m.roles.some((code) => grantingRoles.has(code)),
+  );
+
+  /**
+   * For one member, the role whose revocation would leave nobody able to grant.
+   *
+   * Null unless this member is the ONLY active holder AND the role in question
+   * is their only granting role — which is exactly the state `revoke_role`
+   * refuses. When the catalogue has not loaded (a caller with `admin.users` and
+   * not `admin.roles` cannot read it) `grantingRoles` is empty, nothing is
+   * marked, and the server remains the authority.
+   */
+  const soleGrantingRoleFor = (member: AdminMember): string | null => {
+    if (grantingHolders.length !== 1) return null;
+    const only = grantingHolders[0];
+    if (only === undefined || only.member_id !== member.member_id) return null;
+    const held = member.roles.filter((code) => grantingRoles.has(code));
+    return held.length === 1 ? (held[0] ?? null) : null;
+  };
 
   if (!mayManageUsers) {
     return (
@@ -356,7 +431,15 @@ export function MembersAdministration() {
           credentials</strong> — Keycloak owns identity.
         </p>
 
-        {members.error !== null ? (
+        {/* 🔴 `unavailable` IS AN ANSWER, NOT A SLOW LOAD. Raised by Codex: this
+            checked only `error` and `data === undefined`, so a build with no API
+            compiled in sat on "Loading memberships…" for ever — while still
+            offering the bind form below it. */}
+        {members.unavailable !== null ? (
+          <p className="mt-2 text-sm text-slate-600">
+            Memberships cannot be shown until this build is pointed at an API.
+          </p>
+        ) : members.error !== null ? (
           <p role="alert" className="mt-2 text-sm text-red-700">
             The member list could not be loaded: {serverMessage(members.error)}
           </p>
@@ -375,6 +458,8 @@ export function MembersAdministration() {
                 roles={roleList}
                 mayManageUsers={mayManageUsers}
                 mayManageRoles={mayManageRoles}
+                isSelf={m.user_id === signedInUserId}
+                soleGrantingRole={soleGrantingRoleFor(m)}
                 pending={actions.isPending}
                 onGrant={actions.grant}
                 onRevoke={actions.revoke}
@@ -385,6 +470,7 @@ export function MembersAdministration() {
         )}
       </section>
 
+      {members.unavailable === null && (
       <section>
         <h3 className="text-sm font-semibold text-slate-900">Bind an existing subject</h3>
         {/* ⚠️ NOT A SIGN-UP FORM, AND IT HAS TO SAY SO. A page called
@@ -463,6 +549,7 @@ export function MembersAdministration() {
           </button>
         </div>
       </section>
+      )}
 
       {actions.error !== null && (
         <p

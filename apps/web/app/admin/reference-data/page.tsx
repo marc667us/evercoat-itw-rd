@@ -128,10 +128,17 @@ export default function ReferenceDataPage() {
           lede="Canonical units are what stop a measurement being a free string
                 (§5). Every requirement, test result and material property points
                 at a row here."
-          unavailable={null}
+          // The hook's answer, not a hard-coded `null` — see the stage-gates
+          // page for the measurement. `units` and `families` share a session,
+          // so either one reporting unavailable means the same thing.
+          unavailable={units.unavailable}
           notInvented="reference data"
         >
-          {!mayManage ? (
+          {units.unavailable !== null ? (
+            <p className="text-sm text-slate-600">
+              Reference data cannot be shown until this build is pointed at an API.
+            </p>
+          ) : !mayManage ? (
             <p className="text-sm text-slate-600">
               Managing reference data needs{" "}
               <code className="text-xs">admin.reference_data</code>, which this
@@ -152,6 +159,8 @@ export default function ReferenceDataPage() {
                   <p role="alert" className="mt-1 text-sm text-red-700">
                     The units could not be loaded: {serverMessage(units.error)}
                   </p>
+                ) : units.isLoading ? (
+                  <p className="mt-1 text-sm text-slate-600">Loading units…</p>
                 ) : unitRows.length === 0 ? (
                   <p className="mt-1 text-sm text-slate-600">No units defined.</p>
                 ) : (
@@ -218,6 +227,9 @@ export default function ReferenceDataPage() {
                     className={BUTTON_QUIET}
                     disabled={
                       actions.isPending ||
+                      // Not while the list is still arriving: a code cannot be
+                      // checked against rows nobody has seen yet.
+                      units.isLoading ||
                       unitCode.trim() === "" ||
                       unitName.trim() === "" ||
                       // Required, not optional — without it the unit cannot be
@@ -251,6 +263,8 @@ export default function ReferenceDataPage() {
                     The product families could not be loaded:{" "}
                     {serverMessage(families.error)}
                   </p>
+                ) : families.isLoading ? (
+                  <p className="mt-1 text-sm text-slate-600">Loading product families…</p>
                 ) : familyRows.length === 0 ? (
                   <p className="mt-1 text-sm text-slate-600">None defined.</p>
                 ) : (
@@ -302,7 +316,10 @@ export default function ReferenceDataPage() {
                     type="button"
                     className={BUTTON_QUIET}
                     disabled={
-                      actions.isPending || familyCode.trim() === "" || familyName.trim() === ""
+                      actions.isPending ||
+                      families.isLoading ||
+                      familyCode.trim() === "" ||
+                      familyName.trim() === ""
                     }
                     onClick={() =>
                       actions.addFamily(
