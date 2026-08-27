@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Front door. Sends the visitor to the dashboard.
+ * Front door. Sends the visitor to the screen they chose to open on.
  *
  * WHY THIS IS A CLIENT REDIRECT AND NOT `redirect("/dashboard")`.
  *
@@ -35,13 +35,26 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
+import { DEFAULT_LANDING, readLanding } from "@/lib/preferences";
+
 export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
+    // 🔴 THE CHOSEN SCREEN, NOT A CONSTANT. Settings offers three destinations
+    // under "After signing in, open"; this used to be a hard `/dashboard`, so
+    // the preference had no reader anywhere in the application and the screen
+    // asserted a behaviour nothing implemented. Both reviewers found it — and
+    // it is the project's own rule about a setting with no enforcement point,
+    // reached from the other side.
+    //
+    // Read here rather than in a provider because this is the front door: it
+    // is where "where does the application open" is actually decided, and it
+    // works signed in or out.
+    //
     // `replace`, not `push` — the front door should not become a back-button
     // trap that bounces the visitor straight back out to it.
-    router.replace("/dashboard");
+    router.replace(readLanding());
   }, [router]);
 
   return (
@@ -55,10 +68,16 @@ export default function Home() {
           a screen-reader user landing here got an unlabelled page.
           The layout already supplies the <main> landmark. */}
       <h1 className="text-sm font-medium text-slate-600">
-        Redirecting to the dashboard…
+        Opening the application…
       </h1>
+      {/* ⚠️ THE DEFAULT, NOT THE PREFERENCE, AND DELIBERATELY SO. This link is
+          the whole page for a visitor with JavaScript disabled or still
+          loading. The preference lives in `localStorage`, which is only
+          readable by script, so a link that claimed to honour it would be a
+          link that could not — and rendering it from the preference after
+          hydration would change the destination under a reader mid-click. */}
       <Link
-        href="/dashboard"
+        href={DEFAULT_LANDING}
         className="mt-2 inline-block text-sm font-medium text-slate-900 underline"
       >
         Continue to the dashboard

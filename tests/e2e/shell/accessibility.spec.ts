@@ -66,6 +66,36 @@ const PAGES = [
   // Administration's new sections.
   { name: "stage gates", path: "/admin/stage-gates" },
   { name: "reference data", path: "/admin/reference-data" },
+  // 🔴 THESE TWO WERE SHIPPED IN THE SAME COMMIT AND LEFT OUT OF THIS LIST.
+  // The Supervisor found it. They are the densest pages in Administration —
+  // `/admin/permissions` renders every permission code in the product as a
+  // `<code>` chip, and a chip is exactly the small, low-contrast element this
+  // sweep exists to catch. A page absent from the list is a page nobody
+  // checked, and the list looked complete because it had just grown.
+  { name: "roles", path: "/admin/roles" },
+  { name: "permissions", path: "/admin/permissions" },
+  // 🔴 AND MEASURING THE WHOLE ROUTE LIST FOUND EIGHT MORE.
+  //
+  // The Supervisor named the two above. Asking the wider question — which
+  // routes exist and which appear here — found that this list had never
+  // covered `/analytics`, `/knowledge`, `/reports`, or any of the five
+  // workspace routes, some of them since the slice that built them. The list
+  // has always LOOKED complete because it grows whenever somebody remembers.
+  //
+  // `lib/accessibility-coverage.test.ts` now derives the route list from the
+  // filesystem and fails when one is absent, so remembering is no longer the
+  // mechanism.
+  { name: "analytics", path: "/analytics" },
+  { name: "knowledge", path: "/knowledge" },
+  { name: "reports", path: "/reports" },
+  // The workspace routes, with no record named. That is a REAL state — it is
+  // what a bookmarked link without its query string renders — and it is the
+  // one most likely to be an unlabelled empty page.
+  { name: "failure investigation", path: "/failures/investigation" },
+  { name: "formula workspace", path: "/formulations/formula" },
+  { name: "batch workspace", path: "/laboratory/batch" },
+  { name: "project workspace", path: "/projects/workspace" },
+  { name: "test workspace", path: "/testing/test" },
 ];
 
 for (const target of PAGES) {

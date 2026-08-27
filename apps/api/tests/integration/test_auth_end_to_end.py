@@ -288,7 +288,6 @@ def test_a_signed_in_user_can_discover_their_organizations() -> None:
     assert response.status_code == 200, response.text
 
     body = response.json()
-    assert body["email"], "a principal with no email is not a usable identity"
     assert body["organizations"], (
         "a valid token resolved to a user with NO organizations. A browser "
         "cannot proceed from here -- it has nothing to put in the header that "
@@ -298,6 +297,13 @@ def test_a_signed_in_user_can_discover_their_organizations() -> None:
     org = body["organizations"][0]
     assert uuid.UUID(org["organization_id"])
     assert org["name"], "an organization with no name cannot be offered in a picker"
+    # 🔴 ON THE MEMBERSHIP, NOT ON THE IDENTITY. This used to read
+    # `body["email"]`, which the route filled from whichever row sorted first
+    # -- so it asserted a name for a tenant it had not chosen. Migration 052
+    # put both attributes on the membership precisely because a user can be
+    # known by different addresses in different organizations.
+    assert org["email"], "a membership with no address is not a usable identity"
+    assert org["display_name"], "a membership with no name renders as a blank top bar"
 
     # 🔴 THE PERMISSIONS ARE PART OF THE CONTRACT NOW (I79), AND THIS IS THE
     # ONLY PLACE THE PYTHON/SQL RESPONSE EDGE IS ASSERTED END TO END.

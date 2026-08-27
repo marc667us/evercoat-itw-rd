@@ -59,6 +59,8 @@ const TECHNICIAN: OrganizationChoice = {
   organizationId: ACME_ID,
   name: "Acme Coatings",
   code: "ACME",
+  email: "tech@acme.example",
+  displayName: "Ama Technician",
   roles: ["laboratory_technician"],
   // The real figure, measured against the seeded realm on 2026-08-25:
   // tech.demo holds 11 permissions and lead.demo holds 38.
@@ -147,6 +149,8 @@ describe("effectiveNavPermissions", () => {
       organizationId: OTHER_ID,
       name: "Boreal Adhesives",
       code: "BOR",
+      email: "esi.lead@boreal.example",
+      displayName: "Esi Lead",
       roles: ["product_development_lead"],
       permissions: ["product.release"],
     };

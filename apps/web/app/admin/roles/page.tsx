@@ -27,7 +27,7 @@
 import Link from "next/link";
 
 import { ContextSubmenu } from "@/components/ui/context-submenu";
-import { EntityHeader } from "@/components/ui/entity-header";
+import { EntityHeader, headerCount } from "@/components/ui/entity-header";
 import { LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { serverMessage } from "@/lib/api/client";
 import { useRoles } from "@/lib/api/hooks";
@@ -56,7 +56,7 @@ export default function RolesPage() {
           { label: "Dashboard", href: "/dashboard" },
           { label: "Administration", href: "/admin" },
         ]}
-        fields={[{ label: "Roles", value: String(roles.length) }]}
+        fields={[{ label: "Roles", value: headerCount(roles, mayRead && !isLoading && error === null && unavailable === null) }]}
       />
       <ContextSubmenu items={ADMIN_SECTIONS} activeHref="/admin/roles" />
 

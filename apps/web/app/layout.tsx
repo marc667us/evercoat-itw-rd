@@ -20,6 +20,7 @@ import { QueryProvider } from "@/components/providers/query-provider";
 import { AppSidebar } from "@/components/nav/app-sidebar";
 import { TopBar } from "@/components/nav/top-bar";
 import { ALL_NAV_PERMISSIONS } from "@/lib/navigation";
+import { prePaintScript } from "@/lib/theme";
 
 import "./globals.css";
 
@@ -73,6 +74,23 @@ export default function RootLayout({
 
   return (
     <html lang="en">
+      <head>
+        {/* 🔴 BEFORE THE FIRST PAINT, NOT AFTER HYDRATION.
+ 
+            The themed variables were only ever set by `ThemeProvider`, which is
+            React and therefore runs after the document has already been
+            painted. A reader who had chosen dark got a full white page and then
+            their theme — on a static export served from a CDN, that flash is
+            the whole first impression, and it lands hardest on the people who
+            chose dark because a bright screen bothers them. Both reviewers
+            found it.
+
+            `dangerouslySetInnerHTML` because there is no other way to inline a
+            script in the document head from a server component. The content is
+            generated from this application's own constants — no request, no
+            user input, nothing interpolated from outside the build. */}
+        <script dangerouslySetInnerHTML={{ __html: prePaintScript() }} />
+      </head>
       <body className="bg-slate-50 text-slate-900 antialiased">
         {/* TanStack Query, for the whole tree. It wraps the shell rather
             than each page so that a query started on one screen is still

@@ -22,6 +22,25 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+/**
+ * A count for a header field, or an em dash while it is not yet known.
+ *
+ * 🔴 "0" IS AN ANSWER AND AN EMPTY LIST BEFORE THE RESPONSE ARRIVES IS NOT.
+ *
+ * Every Administration header rendered `String(rows.length)` over a list that
+ * starts empty, so each one reported **0 roles**, **0 permissions**, **0
+ * stages** for the whole of the first request — and reported exactly the same
+ * thing when the caller lacked the permission to read it, and again when the
+ * request failed. A reader cannot tell "there are none" from "nobody has said
+ * yet", and this application has already shipped the same shape once, where an
+ * empty requirement set rendered ALL REQUIREMENTS PASSED. Codex found it.
+ *
+ * Absence must never present as an answer.
+ */
+export function headerCount(rows: { readonly length: number }, known: boolean): string {
+  return known ? String(rows.length) : "—";
+}
+
 export interface Crumb {
   label: string;
   href: string;

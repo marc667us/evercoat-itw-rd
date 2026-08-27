@@ -18,12 +18,9 @@
  */
 
 import { EntityHeader } from "@/components/ui/entity-header";
-import { LANDING_SCREENS, usePreferences } from "@/lib/preferences";
+import { RadioCards } from "@/components/ui/radio-cards";
+import { LANDING_SCREENS, usePreferences, type LandingScreen } from "@/lib/preferences";
 import { PALETTES, THEMES, contrast, type ThemeId } from "@/lib/theme";
-
-const TAG =
-  "rounded border border-slate-300 px-1.5 py-0.5 text-[10px] font-medium uppercase " +
-  "tracking-wide text-slate-600";
 
 /**
  * A miniature of what the theme actually paints.
@@ -89,43 +86,24 @@ export default function SettingsPage() {
             traffic-light colours are checked against every theme.
           </p>
 
-          {/* radiogroup, not a list of buttons: these are one choice among
-              five, and arrow-key navigation between them is what a screen
-              reader user expects from a radiogroup and does not get from a row
-              of buttons. */}
-          <div role="radiogroup" aria-labelledby="theme-heading" className="mt-3 grid gap-2">
-            {THEMES.map((option) => {
-              const chosen = option.id === theme;
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={chosen}
-                  onClick={() => setTheme(option.id)}
-                  className={[
-                    "flex items-center gap-3 rounded border p-3 text-left",
-                    chosen
-                      ? "border-slate-900 bg-slate-50"
-                      : "border-slate-200 bg-white hover:bg-slate-50",
-                  ].join(" ")}
-                >
-                  <Swatch theme={option.id} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium text-slate-900">
-                      {option.label}
-                    </span>
-                    <span className="block text-xs text-slate-600">{option.description}</span>
-                  </span>
-                  {/* 🔴 A WORD, NOT A TICK ALONE. §11 forbids state carried by
-                      colour or shape alone, and "which one is selected" is
-                      state. `aria-checked` says it assistively; this says it
-                      to everyone else. */}
-                  {chosen && <span className={TAG}>selected</span>}
-                </button>
-              );
-            })}
-          </div>
+          {/* 🔴 `RadioCards` RATHER THAN A ROW OF BUTTONS WITH A ROLE ON IT.
+              This markup used to declare `role="radiogroup"` over five
+              ordinary buttons, under a comment arguing that arrow-key
+              navigation "is what a screen reader user expects from a
+              radiogroup and does not get from a row of buttons" — and it did
+              not implement any. The Supervisor found the gap between the
+              comment and the widget. */}
+          <RadioCards<ThemeId>
+            labelledBy="theme-heading"
+            value={theme}
+            onChange={setTheme}
+            options={THEMES.map((option) => ({
+              id: option.id,
+              label: option.label,
+              description: option.description,
+              preview: <Swatch theme={option.id} />,
+            }))}
+          />
 
           <p className="mt-3 text-xs text-slate-600">
             Measured on the light surface: body text{" "}
@@ -137,41 +115,38 @@ export default function SettingsPage() {
 
         <section aria-labelledby="landing-heading" className="max-w-3xl">
           <h2 id="landing-heading" className="text-sm font-semibold text-slate-900">
-            After signing in, open
+            Where the application opens
           </h2>
+          {/* 🔴 THE HEADING USED TO SAY "AFTER SIGNING IN, OPEN" AND NOTHING
+              IMPLEMENTED IT. `readLanding` had no reader anywhere in the
+              codebase: the front door redirected to a hard-coded `/dashboard`
+              and sign-in returned you to wherever you already were. Both
+              reviewers found it, and it is this project's own rule — a setting
+              with no enforcement point is a defect — arriving from the user's
+              side of the screen.
+
+              It is now the front door's destination, which is also what
+              sign-in returns you to when you have not navigated somewhere
+              else first. The heading says what happens rather than the
+              narrower thing the first version claimed. */}
           <p className="mt-1 text-sm text-slate-600">
             Three screens to choose from. Each one exists — a preference pointing
             at an unbuilt screen would be a setting whose only effect is a 404.
+            Opening a link straight to a record still takes you to that record;
+            this is where you arrive when you have not asked for anywhere in
+            particular.
           </p>
 
-          <div role="radiogroup" aria-labelledby="landing-heading" className="mt-3 grid gap-2">
-            {LANDING_SCREENS.map((screen) => {
-              const chosen = screen.id === landing;
-              return (
-                <button
-                  key={screen.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={chosen}
-                  onClick={() => setLanding(screen.id)}
-                  className={[
-                    "flex items-center gap-3 rounded border p-3 text-left",
-                    chosen
-                      ? "border-slate-900 bg-slate-50"
-                      : "border-slate-200 bg-white hover:bg-slate-50",
-                  ].join(" ")}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium text-slate-900">
-                      {screen.label}
-                    </span>
-                    <span className="block text-xs text-slate-600">{screen.description}</span>
-                  </span>
-                  {chosen && <span className={TAG}>selected</span>}
-                </button>
-              );
-            })}
-          </div>
+          <RadioCards<LandingScreen>
+            labelledBy="landing-heading"
+            value={landing}
+            onChange={setLanding}
+            options={LANDING_SCREENS.map((screen) => ({
+              id: screen.id,
+              label: screen.label,
+              description: screen.description,
+            }))}
+          />
         </section>
 
         <section className="max-w-3xl">

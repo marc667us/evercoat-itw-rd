@@ -57,11 +57,28 @@ router = APIRouter()
 
 
 class OrganizationMembership(BaseModel):
-    """One organization this user may act in."""
+    """One organization this user may act in, as that organization knows them."""
 
     organization_id: uuid.UUID
     name: str
     code: str
+    #: The address and name THIS ORGANIZATION holds for the caller (052).
+    #:
+    #: 🔴 052 MOVED THESE ONTO THE MEMBERSHIP AND THIS ROUTE PUT THEM BACK.
+    #:
+    #: ``core.memberships_for_subject`` returns one row per organization and
+    #: each row carries its own ``om.email`` / ``om.display_name`` -- the
+    #: migration's own comment says so, because reading the global identity
+    #: "meant every tenant in the list was described by a single shared
+    #: address". This route then took ``rows[0]`` and reported it as *the*
+    #: identity, and the rows are ordered by organization NAME. So a member of
+    #: two organizations saw the alphabetically-first one's name in the top bar
+    #: no matter which tenant they were working in -- the exact defect 052
+    #: exists to prevent, re-introduced one tier up. Codex found it while
+    #: asking a narrower question: why switching organization does not change
+    #: the displayed profile.
+    email: str
+    display_name: str
     #: Role codes held IN THIS ORGANIZATION. Membership is per-tenant, so
     #: a user can be a chemist in one and a viewer in another. A single
     #: flat role list would be wrong in a way nobody would notice until a
@@ -91,11 +108,23 @@ class OrganizationMembership(BaseModel):
 
 
 class Me(BaseModel):
-    """The caller's identity, and the tenants they may choose from."""
+    """The caller's identity, and the tenants they may choose from.
+
+    🔴 THERE IS NO TOP-LEVEL NAME OR ADDRESS HERE, AND THAT IS THE POINT.
+
+    There used to be, taken from the first row. An identity in this system
+    has exactly one tenant-independent attribute -- ``user_id`` -- because
+    migration 052 is titled *an identity has no tenant attributes* and moved
+    everything else onto the membership. A top-level ``display_name`` is a
+    tenant attribute wearing an identity's clothes: it has to come from
+    somewhere, and "whichever organization sorts first" is not an answer a
+    caller can reason about.
+
+    The browser reads the ACTIVE organization's pair. See
+    ``components/providers/auth-provider.tsx``.
+    """
 
     user_id: uuid.UUID
-    email: str
-    display_name: str
     organizations: list[OrganizationMembership] = Field(default_factory=list)
 
 
@@ -155,16 +184,17 @@ async def read_me(subject: Annotated[str, Depends(get_verified_subject)]) -> Me:
             ),
         )
 
-    first = rows[0]
+    # The id is the one attribute every row agrees on -- it is the identity,
+    # and the function keys on it. Everything else is per-membership.
     return Me(
-        user_id=first["user_id"],
-        email=first["email"],
-        display_name=first["display_name"],
+        user_id=rows[0]["user_id"],
         organizations=[
             OrganizationMembership(
                 organization_id=row["organization_id"],
                 name=row["organization_name"],
                 code=row["organization_code"],
+                email=row["email"],
+                display_name=row["display_name"],
                 roles=sorted(row["roles"]),
                 permissions=sorted(row["permissions"]),
             )

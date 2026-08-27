@@ -24,7 +24,7 @@
 import Link from "next/link";
 
 import { ContextSubmenu } from "@/components/ui/context-submenu";
-import { EntityHeader } from "@/components/ui/entity-header";
+import { EntityHeader, headerCount } from "@/components/ui/entity-header";
 import { LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { serverMessage } from "@/lib/api/client";
 import { usePermissionCatalogue } from "@/lib/api/hooks";
@@ -58,7 +58,13 @@ export default function PermissionsPage() {
           { label: "Administration", href: "/admin" },
         ]}
         fields={[
-          { label: "Permissions", value: String(catalogue.length) },
+          {
+            label: "Permissions",
+            value: headerCount(
+              catalogue,
+              mayRead && !isLoading && error === null && unavailable === null,
+            ),
+          },
           { label: "Domains", value: String(byDomain.size) },
         ]}
       />

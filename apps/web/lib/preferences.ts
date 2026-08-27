@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * What this person prefers — theme, and where they land after signing in.
+ * What this person prefers — theme, and where the application opens.
  *
  * 🔴 STORED IN THE BROWSER, AND THAT IS A DECISION RATHER THAN A SHORTCUT.
  *
@@ -24,16 +24,27 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { DEFAULT_THEME, isThemeId, type ThemeId } from "./theme";
+import { DEFAULT_THEME, THEME_STORAGE_KEY, isThemeId, type ThemeId } from "./theme";
 
-const THEME_KEY = "evercoat.theme";
+// 🔴 IMPORTED, NOT REPEATED. The pre-paint script in `app/layout.tsx` reads the
+// same key before this module exists, and two spellings of a storage key cannot
+// be type-checked into agreement — the reader would simply find nothing and
+// paint the default, forever, with every test green.
+const THEME_KEY = THEME_STORAGE_KEY;
 const LANDING_KEY = "evercoat.landing";
 
 /**
- * Where a person lands after signing in.
+ * Where the application opens.
  *
  * Three, and each is a real destination that exists today — a preference
  * pointing at an unbuilt screen would be a setting whose only effect is a 404.
+ *
+ * 🔴 ITS READER IS `app/page.tsx`, AND FOR A WHILE IT HAD NONE. The front door
+ * redirected to a hard-coded `/dashboard`, so this value was written by the
+ * settings screen, validated on the way back out, and consulted by nothing.
+ * Both reviewers found it. Because `/` resolves here before anybody presses
+ * Sign in, it is also what sign-in returns you to — `signIn()` remembers where
+ * you were, and where you were is this.
  */
 export const LANDING_SCREENS = [
   {

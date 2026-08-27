@@ -57,18 +57,27 @@ import { safeReturnTo, saveFlow } from "@/lib/auth/flow-state";
 import { authorizationUrl, createChallenge, refreshTokens } from "@/lib/auth/pkce";
 
 /**
- * Who the signed-in person is, as `/api/me` reports them.
+ * Who the signed-in person is, in the organization they are currently working in.
  *
- * 🔴 THE API HAS ALWAYS SENT THIS AND THE PROVIDER THREW IT AWAY.
- * `GET /api/me` returns `user_id`, `email` and `display_name` at the top level
- * beside `organizations`, and the parse below read only `organizations`. So the
- * application knew the caller's name on every load and had nowhere to put it —
- * which is why the top bar showed a grey circle with a dash in it.
+ * 🔴 DERIVED FROM THE ACTIVE MEMBERSHIP. NOT STORED, AND THAT IS THE FIX.
+ *
+ * It used to be its own `useState`, set from a top-level `display_name` on
+ * `/api/me`, and it went wrong in three directions at once. `signOut` cleared
+ * the session and the organizations and never cleared this, so the previous
+ * user's name stayed in the top bar of an anonymous application — on a shared
+ * bench machine, somebody else's name over your work. Switching organization
+ * did not change it. And the value itself was whichever tenant sorted first
+ * alphabetically, because migration 052 put the name on the MEMBERSHIP and the
+ * route flattened the rows back to one.
+ *
+ * All three were the same defect: a per-tenant fact kept as though it were a
+ * global one, in a second place, needing a second thing to remember to clear
+ * it. Derived from the active membership there is nothing to clear, nothing to
+ * refresh, and no second copy — the anonymous state has no active membership,
+ * so it has no name. Both reviewers found the first of the three; Codex found
+ * the second.
  *
  * ⚠️ THIS IS THE ORGANIZATION'S VIEW OF THE PERSON, not a global identity.
- * Migration 052 moved `email` and `display_name` onto the membership (I106);
- * `/api/me` resolves them through the same path, so what arrives here is the
- * name THIS tenant knows them by.
  */
 export interface UserProfile {
   readonly userId: string;
@@ -95,6 +104,9 @@ export interface OrganizationChoice {
   readonly organizationId: string;
   readonly name: string;
   readonly code: string;
+  /** What THIS organization calls the caller (052). Per-tenant, like the roles. */
+  readonly email: string;
+  readonly displayName: string;
   readonly roles: readonly string[];
   /**
    * Permission codes held in THIS organization (I79).
@@ -170,10 +182,45 @@ export function chooseOrganization(
   return first;
 }
 
+/**
+ * The caller as the organization they are working in knows them.
+ *
+ * 🔴 A BLANK NAME IS AN ABSENT NAME. The previous version required all three
+ * fields to be `!== undefined`, which an empty string satisfies — so an API
+ * returning `""` produced "signed in as ''" in the top bar, under a comment
+ * claiming that exact case was excluded. Codex found the gap between the
+ * comment and the check. Nothing here trims a name into existence: if either
+ * attribute is blank there is no profile, and `UserMenu` renders nothing rather
+ * than an initialled circle with no initials.
+ *
+ * Exported and pure so the rule can be tested without a network call or a
+ * React tree — the same reason `chooseOrganization` is.
+ */
+export function activeProfile(
+  session: SessionState,
+  organizations: readonly OrganizationChoice[],
+): UserProfile | null {
+  // Anonymous has no active membership, so it has no name. That is the whole
+  // of the "signOut must clear the profile" fix: there is no profile to clear.
+  if (session.status !== "authenticated") return null;
+
+  const active = organizations.find(
+    (org) => org.organizationId === session.credentials.organizationId,
+  );
+  if (active === undefined) return null;
+
+  if (active.displayName.trim() === "" || active.email.trim() === "") return null;
+
+  return {
+    userId: session.credentials.userId,
+    email: active.email,
+    displayName: active.displayName,
+  };
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const session = useSession();
   const [organizations, setOrganizations] = useState<readonly OrganizationChoice[]>([]);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
   const tokens = useRef<LiveTokens | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 🔴 clearTimeout CANNOT STOP A REFRESH THAT IS ALREADY IN FLIGHT.
@@ -251,12 +298,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const body = (await response.json()) as {
       user_id?: string;
-      email?: string;
-      display_name?: string;
       organizations?: {
         organization_id: string;
         name: string;
         code: string;
+        email?: string;
+        display_name?: string;
         roles?: string[];
         permissions?: string[];
       }[];
@@ -266,6 +313,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       organizationId: org.organization_id,
       name: org.name,
       code: org.code,
+      // 🔴 THE MEMBERSHIP'S OWN PAIR (052). An API too old to send them yields
+      // an empty string, which `useProfile` reads as "no name" rather than
+      // rendering "signed in as ''" — see the profile derivation below.
+      email: org.email ?? "",
+      displayName: org.display_name ?? "",
       roles: org.roles ?? [],
       // `?? []` and not `?? ALL_NAV_PERMISSIONS`: an API too old to send
       // permissions must yield a shell that shows LESS, never one that shows
@@ -273,21 +325,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // cosmetic filter turns into a claim the server never made.
       permissions: org.permissions ?? [],
     }));
-
-    // 🔴 ONLY WHEN ALL THREE ARE PRESENT. A half-populated profile would put an
-    // empty string where a name goes, and "signed in as ''" is worse than no
-    // name at all — it looks like a rendering bug rather than an absent field.
-    setProfile(
-      body.user_id !== undefined &&
-        body.email !== undefined &&
-        body.display_name !== undefined
-        ? {
-            userId: body.user_id,
-            email: body.email,
-            displayName: body.display_name,
-          }
-        : null,
-    );
 
     const first = choices[0];
     if (first === undefined) {
@@ -554,6 +591,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
     },
     [organizations],
+  );
+
+  const profile = useMemo(
+    () => activeProfile(session, organizations),
+    [session, organizations],
   );
 
   const value = useMemo<AuthContextValue>(

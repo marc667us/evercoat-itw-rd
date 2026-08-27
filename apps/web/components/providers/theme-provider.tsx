@@ -24,17 +24,18 @@
 import { useEffect } from "react";
 
 import { readTheme } from "@/lib/preferences";
-import { CSS_VARIABLES, STATUS_VARIABLES, resolvePalette, type ThemeId } from "@/lib/theme";
+import { paletteVariables, resolvePalette, type ThemeId } from "@/lib/theme";
 
 function apply(theme: ThemeId, prefersDark: boolean): void {
   const palette = resolvePalette(theme, prefersDark);
   const root = document.documentElement;
 
-  for (const [key, variable] of Object.entries(CSS_VARIABLES)) {
-    root.style.setProperty(variable, palette[key as keyof typeof CSS_VARIABLES]);
-  }
-  for (const [key, variable] of Object.entries(STATUS_VARIABLES)) {
-    root.style.setProperty(variable, palette.status[key as keyof typeof STATUS_VARIABLES]);
+  // 🔴 THE SAME LIST THE PRE-PAINT SCRIPT USES. `paletteVariables` is the one
+  // producer; this provider and `app/layout.tsx` are its two consumers. When
+  // they each owned a loop, adding a variable to one meant the page changed
+  // colour the moment React arrived — the flash this pair exists to prevent.
+  for (const [variable, value] of Object.entries(paletteVariables(palette))) {
+    root.style.setProperty(variable, value);
   }
 
   // Which theme is active, for anything that needs to branch on it — and for a

@@ -33,7 +33,7 @@ import { useState } from "react";
 
 import { LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { ContextSubmenu } from "@/components/ui/context-submenu";
-import { EntityHeader } from "@/components/ui/entity-header";
+import { EntityHeader, headerCount } from "@/components/ui/entity-header";
 import { serverMessage } from "@/lib/api/client";
 import { useAdminActions, useStageDefinitions } from "@/lib/api/hooks";
 import type { StageDefinition, StageWriteRequest } from "@/lib/api/admin";
@@ -465,7 +465,12 @@ export default function StageGatesPage() {
           { label: "Dashboard", href: "/dashboard" },
           { label: "Administration", href: "/admin" },
         ]}
-        fields={[{ label: "Stages", value: String(stages.length) }]}
+        fields={[
+          {
+            label: "Stages",
+            value: headerCount(stages, !isLoading && error === null && unavailable === null),
+          },
+        ]}
       />
       <ContextSubmenu items={ADMIN_SECTIONS} activeHref="/admin/stage-gates" />
 

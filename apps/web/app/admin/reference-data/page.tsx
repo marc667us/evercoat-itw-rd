@@ -31,7 +31,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { ContextSubmenu } from "@/components/ui/context-submenu";
-import { EntityHeader } from "@/components/ui/entity-header";
+import { EntityHeader, headerCount } from "@/components/ui/entity-header";
 import { LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { serverMessage } from "@/lib/api/client";
 import { useAdminActions, useProductFamilies, useUnits } from "@/lib/api/hooks";
@@ -116,8 +116,20 @@ export default function ReferenceDataPage() {
           { label: "Administration", href: "/admin" },
         ]}
         fields={[
-          { label: "Units", value: String(unitRows.length) },
-          { label: "Product families", value: String(familyRows.length) },
+          {
+            label: "Units",
+            value: headerCount(
+              unitRows,
+              !units.isLoading && units.error === null && units.unavailable === null,
+            ),
+          },
+          {
+            label: "Product families",
+            value: headerCount(
+              familyRows,
+              !families.isLoading && families.error === null && families.unavailable === null,
+            ),
+          },
         ]}
       />
       <ContextSubmenu items={ADMIN_SECTIONS} activeHref="/admin/reference-data" />

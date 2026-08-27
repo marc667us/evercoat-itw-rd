@@ -27,7 +27,7 @@ import { useAuth } from "@/components/providers/auth-provider";
 /** The three things a person can do about their own account. */
 const ITEMS = [
   { href: "/account/profile", label: "Profile", hint: "Who you are here, and what you may do" },
-  { href: "/account/settings", label: "Settings", hint: "Theme, and where you land after signing in" },
+  { href: "/account/settings", label: "Settings", hint: "Theme, and where the application opens" },
   { href: "/account/security", label: "Security", hint: "Your session, password and sign-out" },
 ] as const;
 
@@ -35,6 +35,8 @@ export function UserMenu() {
   const { profile } = useAuth();
   const [open, setOpen] = useState(false);
   const container = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const firstItem = useRef<HTMLAnchorElement>(null);
 
   // 🔴 CLOSES ON OUTSIDE CLICK **AND** ON ESCAPE. A menu that only closes by
   // clicking its own trigger is a keyboard trap: tab into it, and the only way
@@ -48,7 +50,14 @@ export function UserMenu() {
       }
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      // 🔴 AND FOCUS GOES BACK TO THE TRIGGER. Escape used to close the menu
+      // and leave focus on an element that had just been removed from the
+      // document, which browsers resolve by sending it to `<body>` — so a
+      // keyboard user was returned to the top of the page and had to tab all
+      // the way back to where they were. Codex found it.
+      trigger.current?.focus();
     };
 
     document.addEventListener("mousedown", onPointer);
@@ -59,6 +68,15 @@ export function UserMenu() {
     };
   }, [open]);
 
+  // 🔴 OPENING A MENU MOVES FOCUS INTO IT. Without this the menu appeared and
+  // focus stayed on the trigger, so a screen reader announced a menu the user
+  // then had to hunt for, and the next Tab left it entirely. This is the other
+  // half of the Escape behaviour above: focus enters on open and returns on
+  // close, which is what `aria-haspopup="menu"` promises.
+  useEffect(() => {
+    if (open) firstItem.current?.focus();
+  }, [open]);
+
   if (profile === null) {
     return null;
   }
@@ -66,6 +84,7 @@ export function UserMenu() {
   return (
     <div ref={container} className="relative">
       <button
+        ref={trigger}
         type="button"
         aria-expanded={open}
         aria-haspopup="menu"
@@ -103,9 +122,10 @@ export function UserMenu() {
             <p className="truncate text-xs text-slate-600">{profile.email}</p>
           </div>
 
-          {ITEMS.map((item) => (
+          {ITEMS.map((item, index) => (
             <Link
               key={item.href}
+              ref={index === 0 ? firstItem : undefined}
               href={item.href}
               role="menuitem"
               onClick={() => setOpen(false)}
