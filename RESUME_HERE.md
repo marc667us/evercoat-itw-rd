@@ -1,5 +1,77 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION 2026-08-27 — THE API'S WRITE PATHS FINALLY GOT BROWSERS
+
+Tip **`ad55d99`**, 20 commits. apps/api **855 / 0 / 11**, apps/web **182**
+vitest, **64** e2e specs.
+
+🔴 **THE MEASUREMENT THAT SET THE DAY.** Asked how each role puts information in
+and gets results out, I measured rather than answered: every
+`require_permission` in `app/api/*.py`, all ten seeded roles signed in against
+the live demo, cross-referenced with the web client and the pages calling it.
+
+    31 of 79 write endpoints were pressable. 48 had NO client function at all.
+
+The five modules with full coverage were exactly the five closed on 2026-08-24;
+the same audit had never been run on the other nine. Per role: chemist 16
+controls, technician 14, lead 10, **administrator 3**, executive 1. The Lead
+held `project.advance_stage`, `requirement.approve`, `milestone.manage` and
+`project.assign_member` — with a control for none of them.
+
+**By close: ~63 of 79.**
+
+### What shipped
+
+| Slice | What |
+|---|---|
+| Navigation | The SECOND level is gated. `ContextSubmenu` had no permission concept at all, and three page comments still claimed *"/api/me returns roles, not permissions"* — false since I79 closed two days earlier. |
+| Agent tier | Five more departments (formulations, materials, innovation, quality, knowledge). 9 of 19 API modules reach the orchestrator, was 4. |
+| Slice 6 | `/failures`, `/failures/investigation?id=`, `/approvals` — eleven write endpoints that had no caller, in the module §10 writes to automatically. |
+| Slice 2 | `/projects/workspace?id=` — ten of eleven project writes. |
+| Administration | `/admin` members, stage gates, reference data, roles, permissions. All 11 `admin.*` writes reachable. |
+| Account | User menu in the top bar, five themes, a landing screen. |
+
+### 🔴 WHAT THIS COST, AND WHAT IT TAUGHT
+
+**THE SQL IS NOT THE CONTRACT; THE RESPONSE IS.** Three wrong client types in
+two days from reading a SELECT and believing it: `has_root_cause` was a
+`count(*)` behind a yes/no name; `must_differ_from_group` is a nullable INTEGER
+naming a parallel group; the requirements matrix is reshaped past recognition.
+Probing the API with a real token before writing a schema caught the third.
+
+**A GREEN TYPECHECK IS NOT A WORKING BUILD.** `tsc --noEmit`, lint and 173 tests
+all passed over a bundle that could not be produced — a `page.tsx` may export
+only its page, and only `next build` enforces it.
+
+**I REPEATED A DEFECT HOURS AFTER FIXING IT.** The Supervisor found one test
+hand-copying a list instead of importing it; I then wrote another doing exactly
+the same thing. Both now read the other tier and both are falsified.
+
+**A COMMENT ASSERTING A BEHAVIOUR THE CODE LACKS — three times, all mine.**
+
+**36+ real defects from two reviewers, none overlapping.** One Codex claim was
+wrong and six right; one Supervisor claim was wrong and five right.
+
+### ⚠️ WHAT IS OWED
+
+🔴 **THE LAST LIVE RUN WAS VOID, NOT RED.** `api-live` reported **855 / 0 / 0**
+and the e2e phase was still running when the harness killed it at ten minutes.
+The suite grew 41 → 64 specs. **Re-run and report three numbers before quoting
+anything.** It also needs `KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD` now:
+five browser sign-ins per run, and one run went 881/1/0 on that contention.
+
+🔴 **`b84a300` AND `ad55d99` HAVE HAD NO CODEX OR SUPERVISOR REVIEW.** Every
+other slice today was reviewed by both and both found real defects in every one.
+`b84a300` is the largest unreviewed change — the theme system touches
+`tailwind.config.ts`, so it affects every screen.
+
+- **The deltaE measurement has not been redone for the dark status palette.**
+- **Six of nine Administration sections have NO endpoint at all.**
+- **No unlink for evidence**, only relabel.
+- `next build` rewrites `apps/web/tsconfig.json`; swept into commits twice.
+
+---
+
 ## ▶▶ SESSION 2026-08-26 (part 4) — I109 CLOSED
 
 Tip **`3a8af36`**, migration **053 (`l1000`)**, **ADR-032**. API suite
