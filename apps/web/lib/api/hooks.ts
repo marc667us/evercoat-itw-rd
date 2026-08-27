@@ -34,6 +34,7 @@ import {
   fetchFailures,
   linkEvidence,
   openInvestigation,
+  relabelEvidence,
   proposeHypothesis,
   raiseAction,
   recordEvidence,
@@ -1440,6 +1441,13 @@ export function useFailureActions(failureId: string): {
     request: EvidenceLinkRequest,
     after?: () => void,
   ) => void;
+  readonly relabel: (
+    hypothesisId: string,
+    evidenceId: string,
+    relationship: "supports" | "contradicts" | "inconclusive",
+    note: string | undefined,
+    after?: () => void,
+  ) => void;
   readonly accept: (hypothesisId: string, rationale: string, after?: () => void) => void;
   readonly reject: (hypothesisId: string, reason: string, after?: () => void) => void;
   readonly raiseAction: (request: ActionRequest, after?: () => void) => void;
@@ -1508,6 +1516,16 @@ export function useFailureActions(failureId: string): {
       run(
         "evidence link",
         () => linkEvidence(credentials(), failureId, hypothesisId, request),
+        after,
+      ),
+    relabel: (hypothesisId, evidenceId, relationship, note, after) =>
+      run(
+        "relabelled evidence",
+        () =>
+          relabelEvidence(credentials(), failureId, hypothesisId, evidenceId, {
+            relationship,
+            ...(note === undefined || note === "" ? {} : { note }),
+          }),
         after,
       ),
     accept: (hypothesisId, rationale, after) =>

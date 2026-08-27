@@ -531,3 +531,42 @@ export function decideStep(
     (payload) => payload,
   );
 }
+
+/**
+ * Correct how a piece of evidence bears on a hypothesis.
+ *
+ * 🔴 THE ONE THING A LINK COULD NOT DO WAS BE WRONG. `UNIQUE (hypothesis_id,
+ * evidence_id)` plus a plain INSERT meant re-linking was refused by the pair
+ * key, and nothing else could change the relationship — so an observation
+ * recorded as `supports` when it actually `contradicts` stayed that way, on a
+ * screen whose whole argument is that only showing supporting evidence makes
+ * every hypothesis look well-founded.
+ *
+ * PATCH, not a second POST: this corrects an existing assertion. The row keeps
+ * its identity and the previous reading — and who gave it — goes into
+ * `audit.events`, which is append-only and hash-chained.
+ *
+ * ⚠️ `evidenceId` IS IN THE PATH. The body carries only the new relationship
+ * and note; a body that could also name an evidence id would be two statements
+ * of which link is meant.
+ */
+export function relabelEvidence(
+  credentials: ApiCredentials,
+  failureId: string,
+  hypothesisId: string,
+  evidenceId: string,
+  request: { readonly relationship: "supports" | "contradicts" | "inconclusive"; readonly note?: string },
+): Promise<unknown> {
+  return apiRequest(
+    {
+      path: `/api/quality/failures/${failureId}/hypotheses/${hypothesisId}/evidence/${evidenceId}`,
+      method: "PATCH",
+      // `evidence_id` is required by the shared `EvidenceLink` model and is
+      // ignored by the route, which reads the path. Sent as the path value so
+      // the two can never disagree.
+      body: { evidence_id: evidenceId, ...request },
+      credentials,
+    },
+    (payload) => payload,
+  );
+}

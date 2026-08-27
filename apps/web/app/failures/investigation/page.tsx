@@ -45,7 +45,12 @@ import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banne
 import { Absent } from "@/components/ui/record-link";
 import { serverMessage } from "@/lib/api/client";
 import { useFailure, useFailureActions } from "@/lib/api/hooks";
-import type { Evidence, FailureDetail, Hypothesis } from "@/lib/api/failures";
+import type {
+  Evidence,
+  FailureDetail,
+  Hypothesis,
+  HypothesisEvidence,
+} from "@/lib/api/failures";
 import { permits, usePermissions } from "@/lib/permissions";
 
 const INPUT =
@@ -101,6 +106,135 @@ function RelationTag({ relationship }: { relationship: string }) {
   );
 }
 
+/**
+ * One linked piece of evidence, and the control that corrects it.
+ *
+ * 🔴 A WRONG RELATIONSHIP USED TO BE PERMANENT. `UNIQUE (hypothesis_id,
+ * evidence_id)` refused a re-link and nothing else could change it, so an
+ * observation recorded as `supports` when it actually `contradicts` stayed that
+ * way. On a screen whose header argues that showing only supporting evidence
+ * makes every hypothesis look well-founded, that is the failure itself rather
+ * than an inconvenience: the reading that FLATTERS the hypothesis was the one
+ * that could not be taken back.
+ *
+ * ⚠️ CORRECTING IS NOT DELETING, AND THE SCREEN SAYS SO. The previous reading
+ * and its author go into the append-only, hash-chained audit record; nothing is
+ * erased. There is deliberately no unlink — removing an assertion is a delete of
+ * investigation history, which §5 governs and which needs a retire column and a
+ * migration. Evidence linked to the wrong hypothesis altogether is corrected to
+ * `inconclusive` with a note saying so, which leaves a reader the truth rather
+ * than a gap.
+ */
+function LinkedEvidence({
+  link,
+  hypothesisId,
+  mayCorrect,
+  pending,
+  onRelabel,
+}: {
+  link: HypothesisEvidence;
+  hypothesisId: string;
+  mayCorrect: boolean;
+  pending: boolean;
+  onRelabel: (
+    hypothesisId: string,
+    evidenceId: string,
+    relationship: "supports" | "contradicts" | "inconclusive",
+    note: string,
+    after: () => void,
+  ) => void;
+}) {
+  const [correcting, setCorrecting] = useState(false);
+  const [relationship, setRelationship] = useState(link.relationship);
+  const [note, setNote] = useState(link.note ?? "");
+
+  return (
+    <li className="text-xs">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <RelationTag relationship={link.relationship} />
+        <span className="text-slate-800">{link.summary}</span>
+        <span className="text-slate-500">({words(link.evidence_type)})</span>
+        {link.origin === "msd" && <OriginTag origin="msd" />}
+        {link.note !== null && <span className="text-slate-600">— {link.note}</span>}
+        {mayCorrect && !correcting && (
+          <button
+            type="button"
+            className="text-slate-700 underline underline-offset-2 hover:text-slate-900"
+            onClick={() => setCorrecting(true)}
+          >
+            Correct how it bears
+          </button>
+        )}
+      </div>
+
+      {correcting && (
+        <div className="mt-1 flex flex-wrap items-end gap-2">
+          <div className="w-40">
+            <label className={LABEL} htmlFor={`relabel-${hypothesisId}-${link.evidence_id}`}>
+              How it bears
+            </label>
+            <select
+              id={`relabel-${hypothesisId}-${link.evidence_id}`}
+              className={INPUT}
+              value={relationship}
+              onChange={(e) =>
+                setRelationship(e.target.value as "supports" | "contradicts" | "inconclusive")
+              }
+            >
+              <option value="supports">supports</option>
+              <option value="contradicts">contradicts</option>
+              <option value="inconclusive">inconclusive</option>
+            </select>
+          </div>
+          <div className="min-w-[14rem] flex-1">
+            <label
+              className={LABEL}
+              htmlFor={`relabel-note-${hypothesisId}-${link.evidence_id}`}
+            >
+              Why the reading changed
+            </label>
+            <input
+              id={`relabel-note-${hypothesisId}-${link.evidence_id}`}
+              className={INPUT}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            className={BUTTON_QUIET}
+            disabled={pending}
+            onClick={() =>
+              onRelabel(hypothesisId, link.evidence_id, relationship, note.trim(), () =>
+                setCorrecting(false),
+              )
+            }
+          >
+            Correct
+          </button>
+          <button
+            type="button"
+            className={BUTTON_QUIET}
+            onClick={() => {
+              // Restore what the server holds, so cancelling does not leave a
+              // half-typed correction sitting in the control next time.
+              setRelationship(link.relationship);
+              setNote(link.note ?? "");
+              setCorrecting(false);
+            }}
+          >
+            Cancel
+          </button>
+          <p className="w-full text-slate-600">
+            The previous reading, and who gave it, stay in the audit record.
+            Nothing is deleted.
+          </p>
+        </div>
+      )}
+    </li>
+  );
+}
+
 function HypothesisCard({
   hypothesis,
   evidencePool,
@@ -110,6 +244,7 @@ function HypothesisCard({
   onAccept,
   onReject,
   onLink,
+  onRelabel,
 }: {
   hypothesis: Hypothesis;
   evidencePool: readonly Evidence[];
@@ -122,6 +257,13 @@ function HypothesisCard({
     hypothesisId: string,
     evidenceId: string,
     relationship: string,
+    note: string,
+    after: () => void,
+  ) => void;
+  onRelabel: (
+    hypothesisId: string,
+    evidenceId: string,
+    relationship: "supports" | "contradicts" | "inconclusive",
     note: string,
     after: () => void,
   ) => void;
@@ -186,13 +328,14 @@ function HypothesisCard({
         ) : (
           <ul className="mt-1 space-y-1">
             {hypothesis.evidence.map((e) => (
-              <li key={e.evidence_id} className="flex flex-wrap items-baseline gap-2 text-xs">
-                <RelationTag relationship={e.relationship} />
-                <span className="text-slate-800">{e.summary}</span>
-                <span className="text-slate-500">({words(e.evidence_type)})</span>
-                {e.origin === "msd" && <OriginTag origin="msd" />}
-                {e.note !== null && <span className="text-slate-600">— {e.note}</span>}
-              </li>
+              <LinkedEvidence
+                key={e.evidence_id}
+                link={e}
+                hypothesisId={hypothesis.id}
+                mayCorrect={mayInvestigate && !settled}
+                pending={pending}
+                onRelabel={onRelabel}
+              />
             ))}
           </ul>
         )}
@@ -463,6 +606,15 @@ function InvestigationWorkspace({ failure }: { failure: FailureDetail }) {
                 pending={actions.isPending}
                 onAccept={actions.accept}
                 onReject={actions.reject}
+                onRelabel={(hypothesisId, evidenceId, relationship, note, after) =>
+                  actions.relabel(
+                    hypothesisId,
+                    evidenceId,
+                    relationship,
+                    note === "" ? undefined : note,
+                    after,
+                  )
+                }
                 onLink={(hypothesisId, id, relationship, note, after) =>
                   actions.link(
                     hypothesisId,

@@ -1125,3 +1125,125 @@ def _failure_row(
     if row is None:
         raise FailureNotFoundError("no such failure investigation in this organization")
     return dict(row)
+
+
+def relabel_evidence_link(
+    session: Session,
+    *,
+    hypothesis_id: uuid.UUID,
+    evidence_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    relationship: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Correct HOW a piece of evidence bears on a hypothesis.
+
+    🔴 WHY THIS EXISTS: A WRONG RELATIONSHIP WAS PERMANENT.
+
+    `quality.hypothesis_evidence` carries `UNIQUE (hypothesis_id, evidence_id)`
+    and `link_evidence` does a plain INSERT, so somebody who realised they had
+    recorded an observation as `supports` when it actually `contradicts` could
+    not re-link it -- the pair key refused the second row -- and nothing else
+    could change it. Raised by the Supervisor against the Slice 6 browser, on a
+    screen whose whole argument is that hiding contradicting evidence makes
+    every hypothesis look well-founded. A relationship that cannot be corrected
+    is that failure with an extra step.
+
+    🔴 IT UPDATES IN PLACE AND THE PRIOR ASSESSMENT SURVIVES IN THE AUDIT.
+
+    §5 forbids destroying R&D history, and an evidence link is a judgement with
+    an author and a timestamp -- not a scratch value. So the correction is
+    written to `audit.events`, which is append-only and hash-chained, carrying
+    `previous_state` and `new_state`. Nothing is lost: "X said supports on
+    Tuesday, Y said contradicts on Thursday" is fully recoverable, and it is
+    recoverable from the place this system keeps history rather than from a
+    column somebody has to remember to read.
+
+    ⚠️ THERE IS DELIBERATELY NO UNLINK, AND THE REASON IS NOT AN OVERSIGHT.
+    Removing the assertion entirely is a DELETE of investigation history, which
+    §5 governs -- *"retire with inactive / obsolete / archived, never DELETE"* --
+    and doing it properly needs a `retired_at` / `retired_by` pair and a
+    migration. Evidence linked to the wrong hypothesis altogether is corrected
+    here by relabelling to `inconclusive` with a note saying so, which leaves a
+    reader the truth rather than a gap. A real retire is a decision, not a
+    reflex, and it is written down rather than quietly added.
+    """
+    if relationship not in {"supports", "contradicts", "inconclusive"}:
+        raise FailureError(f"'{relationship}' is not a relationship")
+
+    before = (
+        session.execute(
+            text(
+                """
+                SELECT relationship, note, linked_by
+                FROM quality.hypothesis_evidence
+                WHERE hypothesis_id = :hid AND evidence_id = :eid
+                  AND organization_id = :org
+                """
+            ),
+            {"hid": hypothesis_id, "eid": evidence_id, "org": organization_id},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if before is None:
+        raise FailureNotFoundError("that evidence is not linked to that hypothesis")
+
+    # 🔴 A CORRECTION THAT CHANGES NOTHING IS NOT RECORDED AS ONE. Writing an
+    # audit event for a no-op would fill the chain with entries a reader has to
+    # rule out, and would make "this was re-assessed" stop meaning anything.
+    if before["relationship"] == relationship and before["note"] == note:
+        return {
+            "hypothesis_id": str(hypothesis_id),
+            "evidence_id": str(evidence_id),
+            "relationship": relationship,
+            "changed": False,
+        }
+
+    with guarded_write(session):
+        session.execute(
+            text(
+                """
+                UPDATE quality.hypothesis_evidence
+                SET relationship = :rel, note = :note,
+                    linked_by = :actor, linked_at = now()
+                WHERE hypothesis_id = :hid AND evidence_id = :eid
+                  AND organization_id = :org
+                """
+            ),
+            {
+                "hid": hypothesis_id,
+                "eid": evidence_id,
+                "org": organization_id,
+                "rel": relationship,
+                "note": note,
+                "actor": actor_id,
+            },
+        )
+
+    write_audit(
+        session,
+        AuditEvent(
+            action="failure.evidence_relabelled",
+            entity_type="hypothesis_evidence",
+            entity_id=f"{hypothesis_id}:{evidence_id}",
+            organization_id=organization_id,
+            user_id=actor_id,
+            # The BEFORE, which is the whole point: the row no longer holds it.
+            previous_state={
+                "relationship": before["relationship"],
+                "note": before["note"],
+                "linked_by": str(before["linked_by"]),
+            },
+            new_state={"relationship": relationship, "note": note},
+            reason="how this evidence bears on the hypothesis was corrected",
+        ),
+    )
+
+    return {
+        "hypothesis_id": str(hypothesis_id),
+        "evidence_id": str(evidence_id),
+        "relationship": relationship,
+        "changed": True,
+    }

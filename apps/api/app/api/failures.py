@@ -89,6 +89,7 @@ from app.domains.failures.service import (
     record_evidence,
     record_hypothesis,
     reject_hypothesis,
+    relabel_evidence_link,
 )
 
 router = APIRouter()
@@ -358,6 +359,55 @@ def post_evidence_link(
     except FailureError as exc:
         raise _invalid(exc) from exc
     return {"id": str(link_id)}
+
+
+@router.patch(
+    "/{failure_id}/hypotheses/{hypothesis_id}/evidence/{evidence_id}",
+    tags=["failures"],
+)
+def patch_evidence_link(
+    failure_id: uuid.UUID,
+    hypothesis_id: uuid.UUID,
+    evidence_id: uuid.UUID,
+    payload: EvidenceLink,
+    principal: Principal = Depends(require_permission("failure.investigate")),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Correct how a piece of evidence bears on a hypothesis.
+
+    🔴 THE ONE THING A LINK COULD NOT DO WAS BE WRONG.
+
+    `UNIQUE (hypothesis_id, evidence_id)` plus a plain INSERT meant re-linking
+    was refused by the pair key, and nothing else could change the
+    relationship. So a chemist who recorded an observation as `supports` and
+    then realised it `contradicts` was stuck with the reading that makes a
+    hypothesis look better than the evidence does.
+
+    PATCH rather than a second POST: this corrects an existing assertion rather
+    than making a new one, and the row keeps its identity so the audit trail can
+    say what it used to be.
+
+    ⚠️ `evidence_id` IS IN THE PATH AND `payload.evidence_id` IS IGNORED.
+    `EvidenceLink` is reused for its `relationship` and `note`, and the body's
+    own `evidence_id` plays no part — the resource being corrected is named by
+    the URL. A body that could name a DIFFERENT link than the path would be two
+    statements of which row is meant, and this codebase has been caught by that
+    shape before.
+    """
+    try:
+        return relabel_evidence_link(
+            session,
+            hypothesis_id=hypothesis_id,
+            evidence_id=evidence_id,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            relationship=payload.relationship,
+            note=payload.note,
+        )
+    except FailureNotFoundError as exc:
+        raise _missing(exc) from exc
+    except FailureError as exc:
+        raise _invalid(exc) from exc
 
 
 @router.post("/{failure_id}/root-cause", tags=["failures"])
