@@ -25,7 +25,9 @@
 import {
   addProjectMember,
   advanceStage,
+  approveRequirement,
   createMilestone,
+  createRequirement,
   createRisk,
   fetchMilestones,
   fetchPipeline,
@@ -34,6 +36,7 @@ import {
   fetchRequirementMatrix,
   fetchRisks,
   removeProjectMember,
+  reviseRequirement,
   setMilestoneStatus,
   updateRisk,
   type Milestone,
@@ -41,6 +44,7 @@ import {
   type PipelineStage,
   type ProjectMember,
   type RequirementMatrix,
+  type RequirementRequest,
   type Risk,
   type RiskRequest,
 } from "./projects";
@@ -1869,6 +1873,13 @@ export function useProjectActions(projectId: string): {
     after?: () => void,
   ) => void;
   readonly removeMember: (userId: string, reason: string, after?: () => void) => void;
+  readonly addRequirement: (request: RequirementRequest, after?: () => void) => void;
+  readonly approve: (requirementId: string, after?: () => void) => void;
+  readonly revise: (
+    requirementId: string,
+    request: RequirementRequest & { readonly reason: string },
+    after?: () => void,
+  ) => void;
   readonly isPending: boolean;
   readonly error: Error | null;
   readonly lastAction: string | null;
@@ -1960,6 +1971,27 @@ export function useProjectActions(projectId: string): {
         "member removal",
         ["project-members"],
         () => removeProjectMember(credentials(), projectId, userId, reason),
+        after,
+      ),
+    addRequirement: (request, after) =>
+      run(
+        "requirement",
+        ["project-requirements"],
+        () => createRequirement(credentials(), projectId, request),
+        after,
+      ),
+    approve: (requirementId, after) =>
+      run(
+        "requirement approval",
+        ["project-requirements"],
+        () => approveRequirement(credentials(), projectId, requirementId),
+        after,
+      ),
+    revise: (requirementId, request, after) =>
+      run(
+        "requirement revision",
+        ["project-requirements"],
+        () => reviseRequirement(credentials(), projectId, requirementId, request),
         after,
       ),
     isPending: mutation.isPending,

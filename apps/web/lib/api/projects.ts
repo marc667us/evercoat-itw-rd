@@ -111,7 +111,14 @@ export const projectMemberSchema = z.object({
   // entitled to.
   display_name: z.string(),
   email: z.string(),
-  is_project_lead: z.boolean(),
+  // 🔴 NULLABLE. Raised by Codex and confirmed against migration 003:
+  // `lead_user_id` is a nullable UUID, and `(p.lead_user_id = pm.user_id)`
+  // yields NULL — not false — when there is no lead. A project without one is
+  // rare (everything created through `POST /api/projects` sets it) and the
+  // database permits it, so `z.boolean()` would have failed the WHOLE members
+  // response for exactly the projects most likely to be imported rather than
+  // created here. Null means "not the lead", which is what a reader needs.
+  is_project_lead: z.boolean().nullable(),
 });
 export type ProjectMember = z.infer<typeof projectMemberSchema>;
 
@@ -196,17 +203,26 @@ export function fetchRisks(
 /**
  * One stage of the pipeline.
  *
- * ⚠️ `status` IS NULLABLE BECAUSE THE JOIN IS. `project_pipeline` LEFT JOINs
- * the project's stage rows onto the stage DEFINITIONS, so a stage the project
- * has not reached has no row and every `ps.*` column comes back null. A schema
- * requiring `status` would reject every project that is not finished.
+ * 🔴 `status` IS NOT NULLABLE, AND THE FIRST VERSION OF THIS COMMENT WAS WRONG.
+ *
+ * It read: *"`status` IS NULLABLE BECAUSE THE JOIN IS… a stage the project has
+ * not reached has no row and every `ps.*` column comes back null."* The join
+ * is indeed a LEFT JOIN — and `project_pipeline` RESHAPES the result before
+ * returning it: `"status": r["status"] or "not_started"`. So the API never
+ * emits null here, the screen's "not reached" branch was unreachable code, and
+ * the comment asserted a distinction the response does not make.
+ *
+ * Raised by Codex. It is the same mistake as the requirement matrix twenty
+ * lines of this file away — reading the SQL and believing it — caught twice in
+ * one commit, once by measuring and once by review. *The SQL is not the
+ * contract; the response is.*
  */
 export const pipelineStageSchema = z.object({
   stage_code: z.string(),
   name: z.string(),
   sequence: z.number(),
   requires_approval: z.boolean(),
-  status: z.string().nullable(),
+  status: z.string(),
   started_at: z.string().nullable(),
   completed_at: z.string().nullable(),
   blocked_reason: z.string().nullable(),
@@ -472,6 +488,93 @@ export function removeProjectMember(
       path: `/api/projects/${projectId}/members/${userId}/remove`,
       method: "POST",
       body: { reason },
+      credentials,
+    },
+    (payload) => payload,
+  );
+}
+
+/**
+ * A requirement, as `RequirementCreate` expects it.
+ *
+ * 🔴 THE NUMERIC FIELDS ARE STRINGS ON THE WIRE AND MUST STAY STRINGS. §5:
+ * NUMERIC, never float. Pydantic parses `Decimal` from a JSON string exactly,
+ * and from a JSON *number* through a float — so sending `1.15` as a number is
+ * how a specification acquires a rounding error nobody typed. The form keeps
+ * what the user entered, character for character.
+ */
+export interface RequirementRequest {
+  readonly requirement_code: string;
+  readonly name: string;
+  readonly category?: string;
+  readonly description?: string;
+  readonly target_value?: string;
+  readonly minimum_value?: string;
+  readonly maximum_value?: string;
+  readonly canonical_unit?: string;
+  readonly criticality: "critical" | "major" | "minor" | "informational";
+  readonly verification_method?: string;
+}
+
+/** Add a requirement. `requirement.create`. */
+export function createRequirement(
+  credentials: ApiCredentials,
+  projectId: string,
+  request: RequirementRequest,
+): Promise<unknown> {
+  return apiRequest(
+    {
+      path: `/api/projects/${projectId}/requirements`,
+      method: "POST",
+      body: request,
+      credentials,
+    },
+    (payload) => payload,
+  );
+}
+
+/**
+ * Approve a requirement. `requirement.approve` — the Lead's permission.
+ *
+ * ⚠️ NO BODY, AND 204 BACK. There is nowhere to put an opinion: approving a
+ * requirement freezes it, and `RequirementImmutableError` turns a second
+ * attempt into a 409 rather than a silent no-op.
+ */
+export function approveRequirement(
+  credentials: ApiCredentials,
+  projectId: string,
+  requirementId: string,
+): Promise<unknown> {
+  return apiRequest(
+    {
+      path: `/api/projects/${projectId}/requirements/${requirementId}/approve`,
+      method: "POST",
+      body: {},
+      credentials,
+    },
+    (payload) => payload,
+  );
+}
+
+/**
+ * Revise an approved requirement. `requirement.create`, plus a mandatory reason.
+ *
+ * 🔴 A REVISION IS A NEW REVISION, NOT AN EDIT. `RequirementRevise` extends
+ * `RequirementCreate`, so the whole requirement is restated and the server
+ * bumps `revision` — an approved requirement is never changed in place, which
+ * is §8's rule for formulas applied to the thing formulas are tested against.
+ */
+export function reviseRequirement(
+  credentials: ApiCredentials,
+  projectId: string,
+  requirementId: string,
+  request: RequirementRequest & { readonly reason: string },
+): Promise<unknown> {
+  return apiRequest(
+    {
+      path: `/api/projects/${projectId}/requirements/${requirementId}/revise`,
+      method: "POST",
+      body: request,
       credentials,
     },
     (payload) => payload,

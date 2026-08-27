@@ -62,6 +62,7 @@ import type {
   Project,
   ProjectMember,
   RequirementMatrix,
+  RequirementRequest,
   Risk,
 } from "@/lib/api/projects";
 import { permits, usePermissions } from "@/lib/permissions";
@@ -107,6 +108,10 @@ function PipelineSection({
   const [reason, setReason] = useState("");
 
   const stages: PipelineStage[] = data ?? [];
+  // `_ENTERABLE` in `app/domains/pipeline/service.py`. Named here so the two
+  // are findable together; a filter with four inline strings would not be.
+  const ENTERABLE = ["not_started", "rework_required", "blocked", "on_hold"];
+  const enterable = stages.filter((stage) => ENTERABLE.includes(stage.status));
 
   return (
     <section>
@@ -126,12 +131,14 @@ function PipelineSection({
             <li key={s.stage_code} className="flex flex-wrap items-baseline gap-2 text-xs">
               <span className="tabular-nums text-slate-500">{s.sequence}</span>
               <span className="font-medium text-slate-900">{s.name}</span>
-              {/* 🔴 A STAGE WITH NO ROW IS "NOT REACHED", NOT "not_started".
-                  `project_pipeline` LEFT JOINs the project's stage rows onto
-                  the definitions, so `status` is null for a stage the project
-                  has never been in — a different fact from a stage it has
-                  reached and not begun. */}
-              <span className={TAG}>{s.status === null ? "not reached" : words(s.status)}</span>
+              {/* ✅ CORRECTED. This branched on `s.status === null` to render
+                  "not reached", under a comment claiming the LEFT JOIN left it
+                  null for a stage the project had never been in. It does — and
+                  `project_pipeline` then reshapes it: `r["status"] or
+                  "not_started"`. The branch was unreachable and the comment
+                  described a distinction the response does not make. Raised by
+                  Codex. */}
+              <span className={TAG}>{words(s.status)}</span>
               {s.requires_approval && <span className={TAG}>needs approval</span>}
               {s.is_rework && <span className={TAG}>rework</span>}
               {s.blocked_reason !== null && (
@@ -155,12 +162,23 @@ function PipelineSection({
               onChange={(e) => setTarget(e.target.value)}
             >
               <option value="">Choose a stage</option>
-              {/* From the pipeline the server returned, never a hardcoded list:
-                  stages are configuration rows and a second copy here would go
-                  stale the first time Administration edited one. */}
-              {stages.map((s) => (
-                <option key={s.stage_code} value={s.stage_code}>
-                  {s.sequence}. {s.name}
+              {/* 🔴 ONLY STAGES THE ENGINE WILL ACCEPT. Raised by Codex.
+                  `advance_stage` re-enters a stage only when its previous
+                  status is one of `not_started`, `rework_required`, `blocked`
+                  or `on_hold` (`_ENTERABLE`); anything else is refused with a
+                  409. The browser already HAS each status, so offering the
+                  current stage and every completed one was offering work the
+                  server had already decided against — the same shape as the
+                  approvals queue listing test-owned routes.
+
+                  ⚠️ THE LIST IS READ OFF THE SERVER'S OWN STATUSES, not from a
+                  copy of `_ENTERABLE` invented here. If the engine widens the
+                  rule this list widens with it only when the constant below is
+                  updated too — which is why it is named and commented rather
+                  than inlined as four strings in a filter. */}
+              {enterable.map((stage) => (
+                <option key={stage.stage_code} value={stage.stage_code}>
+                  {stage.sequence}. {stage.name} ({words(stage.status)})
                 </option>
               ))}
             </select>
@@ -172,6 +190,7 @@ function PipelineSection({
             <input
               id="advance-reason"
               className={INPUT}
+              maxLength={500}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
             />
@@ -189,6 +208,13 @@ function PipelineSection({
           >
             Advance
           </button>
+          {enterable.length === 0 && (
+            <p className="w-full text-xs text-slate-600">
+              No stage can be entered from here. A stage already in progress or
+              completed has to be marked <code>rework_required</code> before it
+              can be re-entered.
+            </p>
+          )}
         </div>
       )}
     </section>
@@ -199,8 +225,244 @@ function PipelineSection({
 /* Requirements                                                                */
 /* -------------------------------------------------------------------------- */
 
-function RequirementsSection({ projectId }: { projectId: string }) {
+const CRITICALITIES = ["critical", "major", "minor", "informational"] as const;
+
+/**
+ * The three requirement writes — and my own commit message said they were done.
+ *
+ * 🔴 CODEX CORRECTED A CLAIM I MADE. The commit that added this workspace said
+ * *"ten of eleven endpoints now do"*. It was seven: `POST /requirements`,
+ * `/approve` and `/revise` had client functions in neither the API module nor
+ * the hook, and no control anywhere. A Lead still could not approve a
+ * requirement — which is one of the four permissions the commit itself named as
+ * the reason the Lead role was not real.
+ *
+ * Counting the endpoints I had wired, rather than the ones I meant to, would
+ * have caught it. *Measure the claim, including your own.*
+ *
+ * 🔴 APPROVING FREEZES IT, AND REVISING MAKES A NEW REVISION.
+ * `approve_requirement` is a 204 with no body — there is nowhere to put an
+ * opinion — and a second attempt is a 409 rather than a silent no-op.
+ * `RequirementRevise` extends `RequirementCreate`, so a revision RESTATES the
+ * whole requirement and the server bumps `revision`: an approved requirement is
+ * never edited in place, which is §8's rule for formulas applied to the thing
+ * formulas are tested against.
+ *
+ * ⚠️ THE NUMERIC FIELDS ARE TEXT INPUTS AND STAY STRINGS ON THE WIRE. §5:
+ * NUMERIC, never float. Pydantic parses a `Decimal` from a JSON string exactly
+ * and from a JSON number through a float, so `type="number"` here is how a
+ * specification quietly acquires a rounding error nobody typed.
+ */
+function RequirementForm({
+  heading,
+  submitLabel,
+  requireReason,
+  pending,
+  onSubmit,
+}: {
+  heading: string;
+  submitLabel: string;
+  requireReason: boolean;
+  pending: boolean;
+  onSubmit: (
+    request: RequirementRequest & { reason?: string },
+    after: () => void,
+  ) => void;
+}) {
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [criticality, setCriticality] =
+    useState<(typeof CRITICALITIES)[number]>("major");
+  const [target, setTarget] = useState("");
+  const [minimum, setMinimum] = useState("");
+  const [maximum, setMaximum] = useState("");
+  const [unit, setUnit] = useState("");
+  const [reason, setReason] = useState("");
+
+  const ready =
+    code.trim().length >= 3 &&
+    name.trim() !== "" &&
+    (!requireReason || reason.trim().length >= 3);
+
+  return (
+    <div className="mt-3 grid max-w-3xl gap-2 rounded border border-slate-200 p-3">
+      <p className="text-xs font-medium text-slate-700">{heading}</p>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="w-40">
+          <label className={LABEL} htmlFor={`req-code-${heading}`}>
+            Requirement code
+          </label>
+          <input
+            id={`req-code-${heading}`}
+            className={INPUT}
+            maxLength={50}
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="REQ-ADH-001"
+          />
+        </div>
+        <div className="min-w-[14rem] flex-1">
+          <label className={LABEL} htmlFor={`req-name-${heading}`}>
+            What is required
+          </label>
+          <input
+            id={`req-name-${heading}`}
+            className={INPUT}
+            maxLength={200}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <div className="w-40">
+          <label className={LABEL} htmlFor={`req-crit-${heading}`}>
+            Criticality
+          </label>
+          <select
+            id={`req-crit-${heading}`}
+            className={INPUT}
+            value={criticality}
+            onChange={(e) =>
+              setCriticality(e.target.value as (typeof CRITICALITIES)[number])
+            }
+          >
+            {CRITICALITIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2">
+        {/* Text inputs, not `type="number"` — see the header. A browser that
+            normalises "6.00" to "6" has changed a specification. */}
+        <div className="w-28">
+          <label className={LABEL} htmlFor={`req-target-${heading}`}>
+            Target
+          </label>
+          <input
+            id={`req-target-${heading}`}
+            className={INPUT + " tabular-nums"}
+            inputMode="decimal"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+          />
+        </div>
+        <div className="w-28">
+          <label className={LABEL} htmlFor={`req-min-${heading}`}>
+            Minimum
+          </label>
+          <input
+            id={`req-min-${heading}`}
+            className={INPUT + " tabular-nums"}
+            inputMode="decimal"
+            value={minimum}
+            onChange={(e) => setMinimum(e.target.value)}
+          />
+        </div>
+        <div className="w-28">
+          <label className={LABEL} htmlFor={`req-max-${heading}`}>
+            Maximum
+          </label>
+          <input
+            id={`req-max-${heading}`}
+            className={INPUT + " tabular-nums"}
+            inputMode="decimal"
+            value={maximum}
+            onChange={(e) => setMaximum(e.target.value)}
+          />
+        </div>
+        <div className="w-32">
+          <label className={LABEL} htmlFor={`req-unit-${heading}`}>
+            Unit
+          </label>
+          <input
+            id={`req-unit-${heading}`}
+            className={INPUT}
+            value={unit}
+            onChange={(e) => setUnit(e.target.value)}
+            placeholder="MPa"
+          />
+        </div>
+      </div>
+
+      {requireReason && (
+        <div>
+          <label className={LABEL} htmlFor={`req-reason-${heading}`}>
+            Why it is being revised
+          </label>
+          <input
+            id={`req-reason-${heading}`}
+            className={INPUT}
+            maxLength={500}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
+        </div>
+      )}
+
+      <div>
+        <button
+          type="button"
+          className={BUTTON}
+          disabled={pending || !ready}
+          onClick={() =>
+            onSubmit(
+              {
+                requirement_code: code.trim(),
+                name: name.trim(),
+                criticality,
+                // Omitted when blank, never sent as "". A Decimal field given
+                // an empty string is a 422; given nothing, it is absent.
+                ...(target.trim() === "" ? {} : { target_value: target.trim() }),
+                ...(minimum.trim() === "" ? {} : { minimum_value: minimum.trim() }),
+                ...(maximum.trim() === "" ? {} : { maximum_value: maximum.trim() }),
+                ...(unit.trim() === "" ? {} : { canonical_unit: unit.trim() }),
+                ...(requireReason ? { reason: reason.trim() } : {}),
+              },
+              () => {
+                setCode("");
+                setName("");
+                setTarget("");
+                setMinimum("");
+                setMaximum("");
+                setUnit("");
+                setReason("");
+              },
+            )
+          }
+        >
+          {submitLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RequirementsSection({
+  projectId,
+  mayCreate,
+  mayApprove,
+  pending,
+  onCreate,
+  onApprove,
+  onRevise,
+}: {
+  projectId: string;
+  mayCreate: boolean;
+  mayApprove: boolean;
+  pending: boolean;
+  onCreate: (request: RequirementRequest, after: () => void) => void;
+  onApprove: (requirementId: string, after: () => void) => void;
+  onRevise: (
+    requirementId: string,
+    request: RequirementRequest & { reason: string },
+    after: () => void,
+  ) => void;
+}) {
   const { data, error } = useRequirementMatrix(projectId);
+  const [revising, setRevising] = useState<string | null>(null);
 
   if (error !== null) {
     return (
@@ -253,6 +515,29 @@ function RequirementsSection({ projectId }: { projectId: string }) {
                     <span className={TAG}>{words(r.requirement_status)}</span>
                     <span className={TAG}>{words(r.verification_status)}</span>
                     {r.blocking_validation && <span className={TAG}>blocks validation</span>}
+                    {/* 🔴 APPROVE ONLY WHAT IS NOT APPROVED. `approve_requirement`
+                        raises `RequirementImmutableError` on an approved one and
+                        the route answers 409, so offering it again would be a
+                        button that cannot work. */}
+                    {mayApprove && r.requirement_status !== "approved" && (
+                      <button
+                        type="button"
+                        className="text-xs text-slate-700 underline underline-offset-2"
+                        disabled={pending}
+                        onClick={() => onApprove(r.requirement_id, () => undefined)}
+                      >
+                        Approve
+                      </button>
+                    )}
+                    {mayCreate && revising !== r.requirement_id && (
+                      <button
+                        type="button"
+                        className="text-xs text-slate-700 underline underline-offset-2"
+                        onClick={() => setRevising(r.requirement_id)}
+                      >
+                        Revise
+                      </button>
+                    )}
                   </div>
                   <dl className="mt-1 flex flex-wrap gap-x-6 text-xs text-slate-600">
                     <div className="flex gap-1.5">
@@ -271,9 +556,38 @@ function RequirementsSection({ projectId }: { projectId: string }) {
                       <dd className="tabular-nums">{r.revision}</dd>
                     </div>
                   </dl>
+
+                  {mayCreate && revising === r.requirement_id && (
+                    <RequirementForm
+                      heading={`Revise ${r.requirement_code} — this creates revision ${r.revision + 1}`}
+                      submitLabel="Revise"
+                      requireReason
+                      pending={pending}
+                      onSubmit={(request, after) =>
+                        onRevise(
+                          r.requirement_id,
+                          request as RequirementRequest & { reason: string },
+                          () => {
+                            after();
+                            setRevising(null);
+                          },
+                        )
+                      }
+                    />
+                  )}
                 </li>
               ))}
             </ul>
+          )}
+
+          {mayCreate && (
+            <RequirementForm
+              heading="Add a requirement"
+              submitLabel="Add"
+              requireReason={false}
+              pending={pending}
+              onSubmit={(request, after) => onCreate(request, after)}
+            />
           )}
         </>
       )}
@@ -286,6 +600,129 @@ function RequirementsSection({ projectId }: { projectId: string }) {
 /* -------------------------------------------------------------------------- */
 
 const MILESTONE_STATUSES = ["planned", "in_progress", "met", "missed", "cancelled"] as const;
+
+/**
+ * One milestone, holding its OWN draft.
+ *
+ * 🔴 THE SECTION USED TO HOLD ONE `status`/`reason` PAIR FOR EVERY ROW.
+ *
+ * Raised by Codex. Opening a second row only moved `openFor`; it did not clear
+ * or re-initialise the fields — so a reason typed for milestone A appeared in
+ * milestone B's box and could be submitted against it. On a screen whose whole
+ * purpose is that a reason is recorded and reconstructable later, attaching the
+ * wrong one to the wrong record is worse than having no control.
+ *
+ * State lives on the ROW. There is no shared draft to leak, and `status`
+ * initialises from the milestone's own current value rather than from a
+ * constant, so "change status" opens on what it actually is.
+ */
+function MilestoneRow({
+  milestone,
+  mayManage,
+  pending,
+  onSetStatus,
+}: {
+  milestone: Milestone;
+  mayManage: boolean;
+  pending: boolean;
+  onSetStatus: (
+    milestoneId: string,
+    request: { status: string; reason: string },
+    after: () => void,
+  ) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [status, setStatus] = useState(milestone.status);
+  const [reason, setReason] = useState("");
+
+  return (
+    <li className="rounded border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="flex-1 text-sm font-medium text-slate-900">{milestone.name}</span>
+        <span className={TAG}>{words(milestone.status)}</span>
+        {/* Computed by the server. A browser deriving "overdue" from a date
+            string would be a second definition of it, in a timezone of its
+            own choosing. */}
+        {milestone.is_overdue && <span className={TAG}>overdue</span>}
+        <span className="text-xs tabular-nums text-slate-600">
+          planned {milestone.planned_date}
+        </span>
+        {milestone.actual_date !== null && (
+          <span className="text-xs tabular-nums text-slate-600">
+            actual {milestone.actual_date}
+          </span>
+        )}
+        {mayManage && !editing && (
+          <button
+            type="button"
+            className="text-xs text-slate-700 underline underline-offset-2"
+            onClick={() => setEditing(true)}
+          >
+            Change status
+          </button>
+        )}
+      </div>
+
+      {mayManage && editing && (
+        <div className="mt-2 flex flex-wrap items-end gap-2">
+          <div className="w-40">
+            <label className={LABEL} htmlFor={`ms-status-${milestone.id}`}>
+              Status
+            </label>
+            <select
+              id={`ms-status-${milestone.id}`}
+              className={INPUT}
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+            >
+              {MILESTONE_STATUSES.map((value) => (
+                <option key={value} value={value}>
+                  {words(value)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="min-w-[14rem] flex-1">
+            <label className={LABEL} htmlFor={`ms-reason-${milestone.id}`}>
+              Why
+            </label>
+            <input
+              id={`ms-reason-${milestone.id}`}
+              className={INPUT}
+              maxLength={500}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            className={BUTTON_QUIET}
+            disabled={pending || reason.trim().length < 3}
+            onClick={() =>
+              onSetStatus(milestone.id, { status, reason: reason.trim() }, () => {
+                setReason("");
+                setEditing(false);
+              })
+            }
+          >
+            Record
+          </button>
+          <button
+            type="button"
+            className={BUTTON_QUIET}
+            onClick={() => {
+              setStatus(milestone.status);
+              setReason("");
+              setEditing(false);
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </li>
+  );
+}
 
 function MilestonesSection({
   projectId,
@@ -307,9 +744,6 @@ function MilestonesSection({
   const { data, error } = useMilestones(projectId);
   const [name, setName] = useState("");
   const [plannedDate, setPlannedDate] = useState("");
-  const [openFor, setOpenFor] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>("in_progress");
-  const [reason, setReason] = useState("");
 
   const milestones: Milestone[] = data ?? [];
 
@@ -324,89 +758,13 @@ function MilestonesSection({
       ) : (
         <ul className="mt-2 space-y-2">
           {milestones.map((m) => (
-            <li key={m.id} className="rounded border border-slate-200 bg-white p-3">
-              <div className="flex flex-wrap items-baseline gap-2">
-                <span className="flex-1 text-sm font-medium text-slate-900">{m.name}</span>
-                <span className={TAG}>{words(m.status)}</span>
-                {/* Computed by the server. A browser deriving "overdue" from a
-                    date string would be a second definition of it, and would
-                    get the timezone wrong. */}
-                {m.is_overdue && <span className={TAG}>overdue</span>}
-                <span className="text-xs tabular-nums text-slate-600">
-                  planned {m.planned_date}
-                </span>
-                {m.actual_date !== null && (
-                  <span className="text-xs tabular-nums text-slate-600">
-                    actual {m.actual_date}
-                  </span>
-                )}
-                {mayManage && openFor !== m.id && (
-                  <button
-                    type="button"
-                    className="text-xs text-slate-700 underline underline-offset-2"
-                    onClick={() => setOpenFor(m.id)}
-                  >
-                    Change status
-                  </button>
-                )}
-              </div>
-
-              {mayManage && openFor === m.id && (
-                <div className="mt-2 flex flex-wrap items-end gap-2">
-                  <div className="w-40">
-                    <label className={LABEL} htmlFor={`ms-status-${m.id}`}>
-                      Status
-                    </label>
-                    <select
-                      id={`ms-status-${m.id}`}
-                      className={INPUT}
-                      value={status}
-                      onChange={(e) => setStatus(e.target.value)}
-                    >
-                      {MILESTONE_STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {words(s)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="min-w-[14rem] flex-1">
-                    <label className={LABEL} htmlFor={`ms-reason-${m.id}`}>
-                      Why
-                    </label>
-                    <input
-                      id={`ms-reason-${m.id}`}
-                      className={INPUT}
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    className={BUTTON_QUIET}
-                    disabled={pending || reason.trim().length < 3}
-                    onClick={() =>
-                      onSetStatus(m.id, { status, reason: reason.trim() }, () => {
-                        setReason("");
-                        setOpenFor(null);
-                      })
-                    }
-                  >
-                    Record
-                  </button>
-                  <button
-                    type="button"
-                    className={BUTTON_QUIET}
-                    onClick={() => {
-                      setReason("");
-                      setOpenFor(null);
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-            </li>
+            <MilestoneRow
+              key={m.id}
+              milestone={m}
+              mayManage={mayManage}
+              pending={pending}
+              onSetStatus={onSetStatus}
+            />
           ))}
         </ul>
       )}
@@ -420,6 +778,7 @@ function MilestonesSection({
             <input
               id="milestone-name"
               className={INPUT}
+              maxLength={200}
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
@@ -471,6 +830,174 @@ const RISK_CATEGORIES = [
 const RISK_STATUSES = ["open", "mitigating", "closed", "accepted", "realised"] as const;
 const LEVELS = ["low", "medium", "high"] as const;
 
+/**
+ * One risk, holding its OWN draft.
+ *
+ * 🔴 TWO DEFECTS AT ONCE, BOTH RAISED BY CODEX.
+ *
+ * The section held one `status`/`mitigation`/`reason` set for every row, so a
+ * mitigation typed against risk A could be submitted against risk B — and the
+ * status opened on the constant `"mitigating"` rather than on the row's own
+ * value, so a reader who only wanted to add a mitigation silently also changed
+ * the status.
+ *
+ * 🔴 AND THAT DEFAULT MADE A GUARANTEED 422 THE EASIEST THING TO PRESS.
+ * `risks_mitigating_states_the_mitigation` (migration 012) refuses
+ * `status = 'mitigating'` with a blank mitigation. A risk whose stored
+ * mitigation is null, opened with the status defaulted to `mitigating` and the
+ * mitigation box empty, produced a request the DATABASE must reject — from a
+ * form that looked complete once a reason was typed.
+ *
+ * Both are the same root cause: the draft did not come from the record. It does
+ * now, and the button knows the constraint.
+ */
+function RiskRow({
+  risk,
+  mayManage,
+  pending,
+  onChange,
+}: {
+  risk: Risk;
+  mayManage: boolean;
+  pending: boolean;
+  onChange: (
+    riskId: string,
+    request: { reason: string; status?: string; mitigation?: string },
+    after: () => void,
+  ) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [status, setStatus] = useState(risk.status);
+  const [mitigation, setMitigation] = useState(risk.mitigation ?? "");
+  const [reason, setReason] = useState("");
+
+  // 🔴 THE DATABASE'S RULE, MIRRORED SO THE BUTTON CAN BE HONEST.
+  // `risks_mitigating_states_the_mitigation`: a risk that is being mitigated
+  // must say how. The server enforces it either way; this stops the form
+  // offering a submission that cannot succeed.
+  const mitigatingNeedsText = status === "mitigating" && mitigation.trim() === "";
+
+  return (
+    <li className="rounded border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="text-xs tabular-nums text-slate-500">{risk.risk_code}</span>
+        <span className="flex-1 text-sm font-medium text-slate-900">{risk.title}</span>
+        <span className={TAG}>{words(risk.category)}</span>
+        {/* Probability and impact in words, both of them, always. A single
+            "risk score" would be a judgement this endpoint has not made, and
+            §11 forbids colour-only status — which a heat-map cell is. */}
+        <span className={TAG}>probability {risk.probability}</span>
+        <span className={TAG}>impact {risk.impact}</span>
+        <span className={TAG}>{words(risk.status)}</span>
+        {mayManage && !editing && (
+          <button
+            type="button"
+            className="text-xs text-slate-700 underline underline-offset-2"
+            onClick={() => setEditing(true)}
+          >
+            Update
+          </button>
+        )}
+      </div>
+      {risk.mitigation !== null && (
+        <p className="mt-1 text-xs text-slate-700">
+          <span className="font-medium">Mitigation: </span>
+          {risk.mitigation}
+        </p>
+      )}
+
+      {mayManage && editing && (
+        <div className="mt-2 flex flex-wrap items-end gap-2">
+          <div className="w-40">
+            <label className={LABEL} htmlFor={`risk-status-${risk.id}`}>
+              Status
+            </label>
+            <select
+              id={`risk-status-${risk.id}`}
+              className={INPUT}
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+            >
+              {RISK_STATUSES.map((value) => (
+                <option key={value} value={value}>
+                  {words(value)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="min-w-[14rem] flex-1">
+            <label className={LABEL} htmlFor={`risk-mitigation-${risk.id}`}>
+              Mitigation
+            </label>
+            <input
+              id={`risk-mitigation-${risk.id}`}
+              className={INPUT}
+              value={mitigation}
+              onChange={(e) => setMitigation(e.target.value)}
+            />
+          </div>
+          <div className="min-w-[12rem] flex-1">
+            <label className={LABEL} htmlFor={`risk-reason-${risk.id}`}>
+              Why
+            </label>
+            <input
+              id={`risk-reason-${risk.id}`}
+              className={INPUT}
+              maxLength={500}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            className={BUTTON_QUIET}
+            disabled={pending || reason.trim().length < 3 || mitigatingNeedsText}
+            onClick={() =>
+              onChange(
+                risk.id,
+                {
+                  reason: reason.trim(),
+                  status,
+                  // 🔴 OMITTED WHEN BLANK, NEVER SENT AS "". `RiskUpdate` treats
+                  // absence as "leave unchanged", and its own docstring says
+                  // why: a PATCH that blanked the mitigation because the client
+                  // did not resend it is how a risk stops being tracked without
+                  // anyone deciding that.
+                  ...(mitigation.trim() === "" ? {} : { mitigation: mitigation.trim() }),
+                },
+                () => {
+                  setReason("");
+                  setEditing(false);
+                },
+              )
+            }
+          >
+            Record
+          </button>
+          <button
+            type="button"
+            className={BUTTON_QUIET}
+            onClick={() => {
+              setStatus(risk.status);
+              setMitigation(risk.mitigation ?? "");
+              setReason("");
+              setEditing(false);
+            }}
+          >
+            Cancel
+          </button>
+          {mitigatingNeedsText && (
+            <p className="w-full text-xs text-slate-600">
+              A risk being <strong>mitigated</strong> has to say how — the
+              database refuses a blank mitigation on that status.
+            </p>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
 function RisksSection({
   projectId,
   mayCreate,
@@ -505,10 +1032,6 @@ function RisksSection({
   const [probability, setProbability] = useState<"low" | "medium" | "high">("medium");
   const [impact, setImpact] = useState<"low" | "medium" | "high">("medium");
   const [category, setCategory] = useState<string>("technical");
-  const [openFor, setOpenFor] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>("mitigating");
-  const [mitigation, setMitigation] = useState("");
-  const [reason, setReason] = useState("");
 
   const risks: Risk[] = data ?? [];
 
@@ -523,107 +1046,13 @@ function RisksSection({
       ) : (
         <ul className="mt-2 space-y-2">
           {risks.map((r) => (
-            <li key={r.id} className="rounded border border-slate-200 bg-white p-3">
-              <div className="flex flex-wrap items-baseline gap-2">
-                <span className="text-xs tabular-nums text-slate-500">{r.risk_code}</span>
-                <span className="flex-1 text-sm font-medium text-slate-900">{r.title}</span>
-                <span className={TAG}>{words(r.category)}</span>
-                {/* Probability and impact in words, both of them, always. A
-                    single "risk score" would be a judgement this endpoint has
-                    not made — and §11 forbids colour-only status, which a
-                    heat-map cell is. */}
-                <span className={TAG}>probability {r.probability}</span>
-                <span className={TAG}>impact {r.impact}</span>
-                <span className={TAG}>{words(r.status)}</span>
-                {mayManage && openFor !== r.id && (
-                  <button
-                    type="button"
-                    className="text-xs text-slate-700 underline underline-offset-2"
-                    onClick={() => setOpenFor(r.id)}
-                  >
-                    Update
-                  </button>
-                )}
-              </div>
-              {r.mitigation !== null && (
-                <p className="mt-1 text-xs text-slate-700">
-                  <span className="font-medium">Mitigation: </span>
-                  {r.mitigation}
-                </p>
-              )}
-
-              {mayManage && openFor === r.id && (
-                <div className="mt-2 flex flex-wrap items-end gap-2">
-                  <div className="w-40">
-                    <label className={LABEL} htmlFor={`risk-status-${r.id}`}>
-                      Status
-                    </label>
-                    <select
-                      id={`risk-status-${r.id}`}
-                      className={INPUT}
-                      value={status}
-                      onChange={(e) => setStatus(e.target.value)}
-                    >
-                      {RISK_STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {words(s)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="min-w-[14rem] flex-1">
-                    <label className={LABEL} htmlFor={`risk-mitigation-${r.id}`}>
-                      Mitigation
-                    </label>
-                    <input
-                      id={`risk-mitigation-${r.id}`}
-                      className={INPUT}
-                      value={mitigation}
-                      onChange={(e) => setMitigation(e.target.value)}
-                    />
-                  </div>
-                  <div className="min-w-[12rem] flex-1">
-                    <label className={LABEL} htmlFor={`risk-reason-${r.id}`}>
-                      Why
-                    </label>
-                    <input
-                      id={`risk-reason-${r.id}`}
-                      className={INPUT}
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    className={BUTTON_QUIET}
-                    disabled={pending || reason.trim().length < 3}
-                    onClick={() =>
-                      onChange(
-                        r.id,
-                        {
-                          reason: reason.trim(),
-                          status,
-                          // 🔴 OMITTED WHEN EMPTY, NEVER SENT AS "". `RiskUpdate`
-                          // treats null as "leave unchanged", and its own
-                          // docstring says why: a PATCH that blanked the
-                          // mitigation because the client did not resend it is
-                          // how a risk stops being tracked without anyone
-                          // deciding that.
-                          ...(mitigation.trim() === "" ? {} : { mitigation: mitigation.trim() }),
-                        },
-                        () => {
-                          setReason("");
-                          setMitigation("");
-                          setOpenFor(null);
-                        },
-                      )
-                    }
-                  >
-                    Record
-                  </button>
-                </div>
-              )}
-            </li>
+            <RiskRow
+              key={r.id}
+              risk={r}
+              mayManage={mayManage}
+              pending={pending}
+              onChange={onChange}
+            />
           ))}
         </ul>
       )}
@@ -638,6 +1067,7 @@ function RisksSection({
               <input
                 id="risk-code"
                 className={INPUT}
+                maxLength={50}
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 placeholder="RSK-01"
@@ -650,6 +1080,7 @@ function RisksSection({
               <input
                 id="risk-title"
                 className={INPUT}
+                maxLength={200}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
               />
@@ -750,6 +1181,102 @@ const PROJECT_ROLES = [
   "observer",
 ] as const;
 
+/**
+ * A UUID, as PostgreSQL and Pydantic accept one.
+ *
+ * 🔴 THE MEMBER FORM ENABLED ITS BUTTON FOR ANY NON-EMPTY TEXT. Raised by
+ * Codex: `MemberAdd.user_id` is a `uuid.UUID`, so anything else is a 422 the
+ * browser could have seen coming. This is not validation for its own sake —
+ * the field asks for an id a person has to paste from somewhere, which is
+ * exactly the input most likely to arrive with a stray space or half a value.
+ */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * One member, holding its own removal reason.
+ *
+ * 🔴 THE SECTION HELD ONE `reason` FOR EVERY ROW. Raised by Codex, and the
+ * same defect as the milestone and risk lists: a reason typed against one
+ * colleague could be submitted against another. On the record that answers
+ * *"who was taken off this project, and why"* after an incident, attaching the
+ * wrong reason to the wrong person is the worst version of it.
+ */
+function MemberRow({
+  member,
+  mayAssign,
+  pending,
+  onRemove,
+}: {
+  member: ProjectMember;
+  mayAssign: boolean;
+  pending: boolean;
+  onRemove: (userId: string, reason: string, after: () => void) => void;
+}) {
+  const [removing, setRemoving] = useState(false);
+  const [reason, setReason] = useState("");
+
+  // 🔴 NOT THE PROJECT LEAD. `remove_member` refuses the lead outright and the
+  // route answers 409, so offering the control was offering a button that
+  // cannot work. `is_project_lead` is NULLABLE — null means "not the lead" —
+  // so this tests for `true` rather than for truthiness.
+  const removable = mayAssign && member.status === "active" && member.is_project_lead !== true;
+
+  return (
+    <li className="flex flex-wrap items-baseline gap-2 text-sm">
+      <span className="font-medium text-slate-900">{member.display_name}</span>
+      <span className="text-xs text-slate-600">{member.email}</span>
+      <span className={TAG}>{words(member.project_role)}</span>
+      {member.is_project_lead === true && <span className={TAG}>project lead</span>}
+      {member.status !== "active" && <span className={TAG}>{words(member.status)}</span>}
+
+      {removable && !removing && (
+        <button
+          type="button"
+          className="text-xs text-slate-700 underline underline-offset-2"
+          onClick={() => setRemoving(true)}
+        >
+          Remove
+        </button>
+      )}
+      {removable && removing && (
+        <span className="flex flex-wrap items-end gap-2">
+          <input
+            aria-label={`Reason for removing ${member.display_name}`}
+            className={INPUT + " w-64"}
+            maxLength={500}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="why they are coming off the project"
+          />
+          <button
+            type="button"
+            className={BUTTON_QUIET}
+            disabled={pending || reason.trim().length < 3}
+            onClick={() =>
+              onRemove(member.user_id, reason.trim(), () => {
+                setReason("");
+                setRemoving(false);
+              })
+            }
+          >
+            Remove
+          </button>
+          <button
+            type="button"
+            className={BUTTON_QUIET}
+            onClick={() => {
+              setReason("");
+              setRemoving(false);
+            }}
+          >
+            Cancel
+          </button>
+        </span>
+      )}
+    </li>
+  );
+}
+
 function MembersSection({
   projectId,
   mayAssign,
@@ -766,10 +1293,9 @@ function MembersSection({
   const { data, error } = useProjectMembers(projectId);
   const [userId, setUserId] = useState("");
   const [role, setRole] = useState<string>("chemist");
-  const [openFor, setOpenFor] = useState<string | null>(null);
-  const [reason, setReason] = useState("");
 
   const members: ProjectMember[] = data ?? [];
+  const idLooksRight = UUID.test(userId.trim());
 
   return (
     <section>
@@ -787,56 +1313,13 @@ function MembersSection({
       ) : (
         <ul className="mt-2 space-y-1">
           {members.map((m) => (
-            <li key={m.id} className="flex flex-wrap items-baseline gap-2 text-sm">
-              <span className="font-medium text-slate-900">{m.display_name}</span>
-              <span className="text-xs text-slate-600">{m.email}</span>
-              <span className={TAG}>{words(m.project_role)}</span>
-              {m.is_project_lead && <span className={TAG}>project lead</span>}
-              {m.status !== "active" && <span className={TAG}>{words(m.status)}</span>}
-              {mayAssign && m.status === "active" && openFor !== m.user_id && (
-                <button
-                  type="button"
-                  className="text-xs text-slate-700 underline underline-offset-2"
-                  onClick={() => setOpenFor(m.user_id)}
-                >
-                  Remove
-                </button>
-              )}
-              {mayAssign && openFor === m.user_id && (
-                <span className="flex flex-wrap items-end gap-2">
-                  <input
-                    aria-label={`Reason for removing ${m.display_name}`}
-                    className={INPUT + " w-64"}
-                    value={reason}
-                    onChange={(e) => setReason(e.target.value)}
-                    placeholder="why they are coming off the project"
-                  />
-                  <button
-                    type="button"
-                    className={BUTTON_QUIET}
-                    disabled={pending || reason.trim().length < 3}
-                    onClick={() =>
-                      onRemove(m.user_id, reason.trim(), () => {
-                        setReason("");
-                        setOpenFor(null);
-                      })
-                    }
-                  >
-                    Remove
-                  </button>
-                  <button
-                    type="button"
-                    className={BUTTON_QUIET}
-                    onClick={() => {
-                      setReason("");
-                      setOpenFor(null);
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </span>
-              )}
-            </li>
+            <MemberRow
+              key={m.id}
+              member={m}
+              mayAssign={mayAssign}
+              pending={pending}
+              onRemove={onRemove}
+            />
           ))}
         </ul>
       )}
@@ -848,19 +1331,26 @@ function MembersSection({
               Person — their user id
             </label>
             {/* ⚠️ A UUID FIELD, AND THAT IS A KNOWN GAP RATHER THAN A CHOICE.
-                There is no endpoint that lists the organization's members for
-                somebody to pick from: `GET /api/admin/members` needs
-                `admin.users`, which the Lead does not hold, and the project's
-                own member list only shows who is already on it. Asking for a
-                UUID is honest about that; inventing a directory read the API
-                does not offer would not be. Filed rather than papered over. */}
+                No endpoint lists the organization's people for a Lead to pick
+                from: `GET /api/admin/members` needs `admin.users`, which the
+                Lead does not hold, and the project's own member list only shows
+                who is already on it. Asking for a UUID is honest about that;
+                inventing a directory read the API does not offer would not be.
+                Filed rather than papered over. */}
             <input
               id="member-user"
               className={INPUT}
               value={userId}
               onChange={(e) => setUserId(e.target.value)}
               placeholder="00000000-0000-0000-0000-000000000000"
+              aria-describedby="member-user-hint"
             />
+            {userId.trim() !== "" && !idLooksRight && (
+              <p id="member-user-hint" className="mt-1 text-xs text-slate-600">
+                That is not a user id. It should look like the placeholder —
+                thirty-two hexadecimal characters in five dash-separated groups.
+              </p>
+            )}
           </div>
           <div className="w-44">
             <label className={LABEL} htmlFor="member-role">
@@ -882,7 +1372,7 @@ function MembersSection({
           <button
             type="button"
             className={BUTTON_QUIET}
-            disabled={pending || userId.trim() === ""}
+            disabled={pending || !idLooksRight}
             onClick={() =>
               onAdd({ user_id: userId.trim(), project_role: role }, () => setUserId(""))
             }
@@ -908,6 +1398,11 @@ function ProjectWorkspace({ project }: { project: Project }) {
   const mayCreateRisk = permits(permissions, "risk.create");
   const mayManageRisk = permits(permissions, "risk.manage");
   const mayAssign = permits(permissions, "project.assign_member");
+  // `requirement.create` covers BOTH creating and revising — `post_requirement`
+  // and `post_requirement_revision` declare the same permission, because a
+  // revision is a new statement of the requirement rather than an edit of it.
+  const mayCreateRequirement = permits(permissions, "requirement.create");
+  const mayApproveRequirement = permits(permissions, "requirement.approve");
 
   return (
     <div className="space-y-6">
@@ -945,7 +1440,15 @@ function ProjectWorkspace({ project }: { project: Project }) {
         pending={actions.isPending}
         onAdvance={actions.advance}
       />
-      <RequirementsSection projectId={project.id} />
+      <RequirementsSection
+        projectId={project.id}
+        mayCreate={mayCreateRequirement}
+        mayApprove={mayApproveRequirement}
+        pending={actions.isPending}
+        onCreate={actions.addRequirement}
+        onApprove={actions.approve}
+        onRevise={actions.revise}
+      />
       <MilestonesSection
         projectId={project.id}
         mayManage={mayManageMilestones}
@@ -973,14 +1476,22 @@ function ProjectWorkspace({ project }: { project: Project }) {
           project membership — `GET /api/projects/{id}` is member-gated — so the
           only thing withheld here is a permission, and naming them gives
           "why can I not do anything?" an answer somebody can act on. */}
-      {!mayAdvance && !mayManageMilestones && !mayCreateRisk && !mayManageRisk && !mayAssign && (
+      {!mayAdvance &&
+        !mayManageMilestones &&
+        !mayCreateRisk &&
+        !mayManageRisk &&
+        !mayAssign &&
+        !mayCreateRequirement &&
+        !mayApproveRequirement && (
         <p className="text-sm text-slate-600">
           You are a member of this project and hold none of{" "}
           <code className="text-xs">project.advance_stage</code>,{" "}
           <code className="text-xs">milestone.manage</code>,{" "}
           <code className="text-xs">risk.create</code>,{" "}
-          <code className="text-xs">risk.manage</code> or{" "}
-          <code className="text-xs">project.assign_member</code>, so it is read-only
+          <code className="text-xs">risk.manage</code>,{" "}
+          <code className="text-xs">project.assign_member</code>,{" "}
+          <code className="text-xs">requirement.create</code> or{" "}
+          <code className="text-xs">requirement.approve</code>, so it is read-only
           from here. The record above is complete; only the controls are withheld.
         </p>
       )}
