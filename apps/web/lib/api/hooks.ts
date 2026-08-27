@@ -22,6 +22,28 @@
  * A request that IS made and fails stays failed. The page shows the error.
  */
 
+import {
+  addProjectMember,
+  advanceStage,
+  createMilestone,
+  createRisk,
+  fetchMilestones,
+  fetchPipeline,
+  fetchProject,
+  fetchProjectMembers,
+  fetchRequirementMatrix,
+  fetchRisks,
+  removeProjectMember,
+  setMilestoneStatus,
+  updateRisk,
+  type Milestone,
+  type MilestoneRequest,
+  type PipelineStage,
+  type ProjectMember,
+  type RequirementMatrix,
+  type Risk,
+  type RiskRequest,
+} from "./projects";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -380,6 +402,62 @@ export interface LiveOnly<T> {
    * given an API, the other is an outage.
    */
   readonly unavailable: string | null;
+}
+
+/**
+ * One live record, by id — the shape `useTest`, `useFailure` and four project
+ * hooks all needed.
+ *
+ * 🔴 EXTRACTED RATHER THAN COPIED A SIXTH TIME. `useTest`, `useBatch`,
+ * `useFailure` and `useApprovalRoute` are the same twenty-five lines with a
+ * different key and fetcher: the query key carries the id AND the caller's
+ * organization and user (so a cached response cannot cross either), `enabled`
+ * waits for both a session and a non-empty id, and the not-ok branch tells a
+ * FAILED `/api/me` apart from an absent one — an outage must not render as a
+ * tidy "not available on this build" notice.
+ *
+ * Adding the project workspace would have made six copies of that, and the
+ * fourth thing to drift would have been the organization in the key. Written
+ * once here; the older four are left alone deliberately rather than rewritten
+ * in a slice that is about something else.
+ */
+function useLiveOnlyRecord<T>(
+  key: string,
+  id: string,
+  fetcher: (credentials: ApiCredentials, signal?: AbortSignal) => Promise<T>,
+): LiveOnly<T> {
+  const resolved = useCredentials();
+
+  const query = useQuery({
+    queryKey: [
+      key,
+      id,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && id.length > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return fetcher(resolved.credentials, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: query.data,
+    isLoading: query.isPending,
+    error: (query.error as Error | null) ?? null,
+    unavailable: null,
+  };
 }
 
 function useLiveOnlyList<TLive, TShown>(
@@ -1704,6 +1782,189 @@ export function useOpenInvestigation(): {
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
     opened: mutation.isSuccess,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Slice 2's project workspace — the ten writes that had no browser caller
+// ---------------------------------------------------------------------------
+
+/** One live project, by id. */
+export function useProject(projectId: string): LiveOnly<Project> {
+  return useLiveOnlyRecord("project", projectId, (credentials, signal) =>
+    fetchProject(credentials, projectId, signal),
+  );
+}
+
+export function useProjectMembers(projectId: string): LiveOnly<ProjectMember[]> {
+  return useLiveOnlyRecord("project-members", projectId, (credentials, signal) =>
+    fetchProjectMembers(credentials, projectId, signal),
+  );
+}
+
+export function useMilestones(projectId: string): LiveOnly<Milestone[]> {
+  return useLiveOnlyRecord("project-milestones", projectId, (credentials, signal) =>
+    fetchMilestones(credentials, projectId, signal),
+  );
+}
+
+export function useRisks(projectId: string): LiveOnly<Risk[]> {
+  return useLiveOnlyRecord("project-risks", projectId, (credentials, signal) =>
+    fetchRisks(credentials, projectId, signal),
+  );
+}
+
+export function usePipeline(projectId: string): LiveOnly<PipelineStage[]> {
+  return useLiveOnlyRecord("project-pipeline", projectId, (credentials, signal) =>
+    fetchPipeline(credentials, projectId, signal),
+  );
+}
+
+export function useRequirementMatrix(projectId: string): LiveOnly<RequirementMatrix> {
+  return useLiveOnlyRecord("project-requirements", projectId, (credentials, signal) =>
+    fetchRequirementMatrix(credentials, projectId, signal),
+  );
+}
+
+/**
+ * The ten writes a project workspace supports.
+ *
+ * One bundled hook, matching `useTestActions`, `useBatchActions` and
+ * `useFailureActions`: the screen needs a single `isPending` and a single
+ * `error`, because two mutations in flight against one project is a state no
+ * workspace here wants to render.
+ *
+ * 🔴 EVERY ONE INVALIDATES THE READ IT AFFECTS, AND ONLY THOSE. Advancing a
+ * stage changes the pipeline AND the project's `current_stage`, so both go;
+ * adding a milestone changes neither. This project has shipped an invalidation
+ * that matched nothing under a comment claiming it kept a queue current, so the
+ * keys below are the ones the hooks above actually register.
+ */
+export function useProjectActions(projectId: string): {
+  readonly advance: (
+    request: { readonly to_stage_code: string; readonly reason: string; readonly force?: boolean },
+    after?: () => void,
+  ) => void;
+  readonly addMilestone: (request: MilestoneRequest, after?: () => void) => void;
+  readonly setMilestone: (
+    milestoneId: string,
+    request: { readonly status: string; readonly actual_date?: string; readonly reason: string },
+    after?: () => void,
+  ) => void;
+  readonly addRisk: (request: RiskRequest, after?: () => void) => void;
+  readonly changeRisk: (
+    riskId: string,
+    request: {
+      readonly reason: string;
+      readonly status?: string;
+      readonly mitigation?: string;
+      readonly probability?: "low" | "medium" | "high";
+      readonly impact?: "low" | "medium" | "high";
+    },
+    after?: () => void,
+  ) => void;
+  readonly addMember: (
+    request: { readonly user_id: string; readonly project_role: string },
+    after?: () => void,
+  ) => void;
+  readonly removeMember: (userId: string, reason: string, after?: () => void) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const invalidate = (keys: readonly string[]) => {
+    for (const key of keys) {
+      void queryClient.invalidateQueries({ queryKey: [key, projectId] });
+    }
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (job: {
+      readonly label: string;
+      readonly keys: readonly string[];
+      readonly run: () => Promise<unknown>;
+      readonly after?: () => void;
+    }) => {
+      await job.run();
+      return job;
+    },
+    onSuccess: (job) => {
+      invalidate(job.keys);
+      job.after?.();
+    },
+  });
+
+  const run = (
+    label: string,
+    keys: readonly string[],
+    make: () => Promise<unknown>,
+    after?: () => void,
+  ) => mutation.mutate({ label, keys, run: make, after });
+
+  return {
+    advance: (request, after) =>
+      // Both: the pipeline gains a stage row and the project's `current_stage`
+      // moves, and the header reads the second.
+      run(
+        "stage advance",
+        ["project-pipeline", "project"],
+        () => advanceStage(credentials(), projectId, request),
+        after,
+      ),
+    addMilestone: (request, after) =>
+      run(
+        "milestone",
+        ["project-milestones"],
+        () => createMilestone(credentials(), projectId, request),
+        after,
+      ),
+    setMilestone: (milestoneId, request, after) =>
+      run(
+        "milestone status",
+        ["project-milestones"],
+        () => setMilestoneStatus(credentials(), projectId, milestoneId, request),
+        after,
+      ),
+    addRisk: (request, after) =>
+      run("risk", ["project-risks"], () => createRisk(credentials(), projectId, request), after),
+    changeRisk: (riskId, request, after) =>
+      run(
+        "risk update",
+        ["project-risks"],
+        () => updateRisk(credentials(), projectId, riskId, request),
+        after,
+      ),
+    addMember: (request, after) =>
+      run(
+        "member",
+        ["project-members"],
+        () => addProjectMember(credentials(), projectId, request),
+        after,
+      ),
+    removeMember: (userId, reason, after) =>
+      run(
+        "member removal",
+        ["project-members"],
+        () => removeProjectMember(credentials(), projectId, userId, reason),
+        after,
+      ),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data?.label ?? null,
     unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
   };
 }

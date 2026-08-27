@@ -33,6 +33,8 @@ import { useMemo } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
+import Link from "next/link";
+
 import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
@@ -49,6 +51,16 @@ import { PROJECTS, stageName, type DemoProject } from "@/lib/demo/dataset";
  * them.
  */
 interface ProjectRow {
+  /**
+   * The server's id, or null for a demonstration row.
+   *
+   * 🔴 THE LIVE WORKSPACE IS REACHED BY ID, NOT BY CODE. `/projects/[code]` is
+   * a static export of the bundled fixture — `generateStaticParams` prerenders
+   * three codes and there is no server to resolve a fourth — so a live project
+   * has no page under that route. `/projects/workspace?id=` is the live one,
+   * and it needs the id this row previously threw away.
+   */
+  readonly id: string | null;
   readonly project_code: string;
   readonly name: string;
   readonly product_family: string | null;
@@ -61,6 +73,7 @@ interface ProjectRow {
 
 function fromApi(project: Project): ProjectRow {
   return {
+    id: project.id,
     project_code: project.project_code,
     name: project.name,
     product_family: project.product_family,
@@ -88,6 +101,9 @@ function fromApi(project: Project): ProjectRow {
 
 function fromDemo(project: DemoProject): ProjectRow {
   return {
+    // A fixture row has no database record behind it, so there is nothing for
+    // the live workspace to open. `RecordLink` says so in words.
+    id: null,
     project_code: project.project_code,
     name: project.name,
     product_family: project.product_family,
@@ -113,10 +129,22 @@ export default function ProjectsPage() {
       {
         accessorKey: "project_code",
         header: "Code",
-        // A link only when a detail page for this code exists in the
-        // build. Every live row linked to a 404 before this — see
-        // `record-link.tsx`.
-        cell: ({ row }) => <RecordLink kind="project" code={row.original.project_code} />,
+        // 🔴 A LIVE ROW OPENS THE LIVE WORKSPACE; A FIXTURE ROW SAYS WHY IT
+        // CANNOT. Until Slice 2's write half was built there was no live
+        // project screen at all, so every live row fell through to
+        // `RecordLink`'s refusal — correct at the time and now only correct for
+        // the demonstration path, where there is no database record to open.
+        cell: ({ row }) =>
+          row.original.id === null ? (
+            <RecordLink kind="project" code={row.original.project_code} />
+          ) : (
+            <Link
+              href={`/projects/workspace?id=${row.original.id}`}
+              className="underline underline-offset-2"
+            >
+              {row.original.project_code}
+            </Link>
+          ),
       },
       { accessorKey: "name", header: "Project" },
       {

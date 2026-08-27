@@ -50,8 +50,13 @@ const HREF: Record<RecordKind, (code: string) => string> = {
 };
 
 const NOT_BUILT: Record<RecordKind, string> = {
+  // ✅ CORRECTED 2026-08-27. This read "the project detail screen is not wired
+  // to the database yet", which stopped being true when `/projects/workspace`
+  // shipped. The refusal still applies — but for a different reason, and saying
+  // the wrong one would send a reader looking for a missing screen rather than
+  // a missing record.
   project:
-    "the project detail screen is not wired to the database yet, so there is no page for this record",
+    "this is a demonstration row with no record in the database, so there is nothing for the project workspace to open",
   formula:
     "the formula detail screen is not wired to the database yet, so there is no page for this record",
 };
