@@ -185,14 +185,6 @@ export function chooseOrganization(
 /**
  * The caller as the organization they are working in knows them.
  *
- * 🔴 A BLANK NAME IS AN ABSENT NAME. The previous version required all three
- * fields to be `!== undefined`, which an empty string satisfies — so an API
- * returning `""` produced "signed in as ''" in the top bar, under a comment
- * claiming that exact case was excluded. Codex found the gap between the
- * comment and the check. Nothing here trims a name into existence: if either
- * attribute is blank there is no profile, and `UserMenu` renders nothing rather
- * than an initialled circle with no initials.
- *
  * Exported and pure so the rule can be tested without a network call or a
  * React tree — the same reason `chooseOrganization` is.
  */
@@ -209,13 +201,52 @@ export function activeProfile(
   );
   if (active === undefined) return null;
 
-  if (active.displayName.trim() === "" || active.email.trim() === "") return null;
-
+  // 🔴 A BLANK NAME DOES NOT REMOVE THE PROFILE. IT USED TO, AND THAT LOCKED
+  // PEOPLE OUT OF THEIR OWN ACCOUNT.
+  //
+  // The first repair returned `null` whenever `displayName` or `email` was
+  // blank, so that the top bar could never read "signed in as ''". But
+  // `UserMenu` renders nothing on a null profile, `top-bar.tsx` is its only
+  // mount, and `/account/settings`, `/account/security` and `/account/profile`
+  // are linked from nowhere else in the shell — so a signed-in person with a
+  // blank name had **no route to Settings and no way to sign out**. That is far
+  // worse than the cosmetic defect it was avoiding, and it was reachable: the
+  // parse maps an absent field to `""` for an API too old to send it, which is
+  // exactly the deployment state this project is in. The Supervisor found it.
+  //
+  // The profile therefore always exists for a signed-in caller. What a blank
+  // name costs is the NAME, and `profileLabel` answers that with something a
+  // person can read instead of an empty span.
   return {
     userId: session.credentials.userId,
     email: active.email,
     displayName: active.displayName,
   };
+}
+
+/**
+ * What to call this person on screen.
+ *
+ * The name their organization holds; failing that the address; failing both, a
+ * plain description. Never an empty string — "signed in as ''" reads as a
+ * rendering fault and sends the reader looking for a bug that is not there,
+ * which is the whole reason the blank case is handled at all.
+ */
+export function profileLabel(profile: UserProfile): string {
+  return profile.displayName.trim() || profile.email.trim() || "Your account";
+}
+
+/**
+ * Initials for the avatar, or null when there is no name to take them from.
+ *
+ * Null rather than "?" because this is decoration — the label sits beside it —
+ * and a circle containing a question mark states something the application does
+ * not mean.
+ */
+export function profileInitials(profile: UserProfile): string | null {
+  const parts = profile.displayName.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+  if (parts.length === 0) return null;
+  return parts.map((part) => part.charAt(0).toUpperCase()).join("");
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {

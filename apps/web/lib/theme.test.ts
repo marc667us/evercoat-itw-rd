@@ -39,6 +39,7 @@ import {
   paletteVariables,
   prePaintScript,
   resolvePalette,
+  type AccentName,
   type Palette,
 } from "./theme";
 
@@ -259,7 +260,14 @@ function pairings(): Pairing[] {
       const text = readFileSync(file, "utf8");
       // Runs of class names between quotes. Deliberately crude: a run that
       // happens to contain a background and a foreground is exactly the thing
-      // being looked for, and a false positive costs one measurement.
+      // being looked for.
+      //
+      // ⚠️ AND A FALSE POSITIVE IS NOT FREE. An earlier version of this
+      // comment said one "costs one measurement" — it does not: a spurious
+      // pair below 4.5:1 lands in `failures` and reds the suite over a
+      // pairing nobody renders. The Supervisor found the comment, which is
+      // the version of this that matters, because it is what would let the
+      // next reader wave a real failure through as harmless.
       for (const literal of text.match(/"[^"\n]{0,400}"/g) ?? []) {
         const tokens = literal.slice(1, -1).split(/\s+/);
         const background = tokens.find((token) => token.startsWith("bg-"));
@@ -465,5 +473,199 @@ describe("the pre-paint script", () => {
     // some private windows, and an exception here would be an unstyled page.
     expect(script.startsWith("(function(){try{")).toBe(true);
     expect(script.endsWith("}catch(e){}})();")).toBe(true);
+  });
+});
+
+describe("the grounds an alert sits on", () => {
+  it("🔴 every accent ground is visible against its own page", () => {
+    // 🔴 THE PAPER THEME ERASED THEM AND NOTHING NOTICED.
+    //
+    // `warmed()` mixed each accent `50` 55% into the paper surface. Both are
+    // near-white and the surface is the DARKER of the two, so every alert fill
+    // landed on the page's own luminance: red 1.007:1, orange 1.004:1 — a
+    // two-in-255 difference in one channel. A red notice and an amber one
+    // became identical by fill. The Supervisor measured it; no test could,
+    // because every assertion here compared text to a ground and none compared
+    // the ground to the page.
+    //
+    // 1.02 is deliberately a floor and not a target: `bg-red-50` on white is
+    // only 1.12:1 and always has been. What this refuses is a fill that is not
+    // there at all.
+    const failures: string[] = [];
+
+    for (const [name, palette] of Object.entries(PALETTES)) {
+      for (const hue of ACCENT_NAMES) {
+        const ratio = contrast(palette.accents[hue]["50"], palette.white);
+        if (ratio < 1.02) {
+          failures.push(`${name}: bg-${hue}-50 on the page = ${ratio.toFixed(3)}:1`);
+        }
+      }
+    }
+
+    expect(
+      failures.sort(),
+      "an alert fill this close to the page is not a fill — the notice loses " +
+        "its shape and two different kinds of message become the same colour",
+    ).toEqual([]);
+  });
+
+  it("🔴 the status colours clear AA on the grounds they are painted on, not only on the page", () => {
+    // The pairing that broke twice: `StatusBadge` puts `text-status-pass` on
+    // `bg-emerald-50`, `text-status-fail` on `bg-red-50`,
+    // `text-status-conditional` on `bg-amber-50`. Measuring status against
+    // `palette.white` said all three were fine while they were 1.65, 2.53 and
+    // 1.61 on dark, and 4.08/4.82/4.09 on paper.
+    const ON: ReadonlyArray<readonly [keyof typeof PALETTES.light.status, AccentName]> = [
+      ["pass", "emerald"],
+      ["fail", "red"],
+      ["conditional", "amber"],
+      ["invalid", "red"],
+    ];
+    const failures: string[] = [];
+
+    for (const [name, palette] of Object.entries(PALETTES)) {
+      for (const [status, hue] of ON) {
+        const ratio = contrast(palette.status[status], palette.accents[hue]["50"]);
+        if (ratio < 4.5) {
+          failures.push(`${name}: status-${status} on bg-${hue}-50 = ${ratio.toFixed(2)}:1`);
+        }
+      }
+    }
+
+    expect(failures.sort()).toEqual([]);
+  });
+});
+
+describe("the ramps cover what the product paints with", () => {
+  /** Every colour utility in the source, whatever hue it names. */
+  function colourUtilities(): Map<string, string[]> {
+    const found = new Map<string, string[]>();
+    const roots = [join(__dirname, "..", "app"), join(__dirname, "..", "components")];
+    const pattern =
+      /\b(?:bg|text|border|ring|fill|divide|placeholder|decoration|outline|accent|caret|from|via|to)-([a-z]+)-(\d{2,3})\b/g;
+
+    for (const root of roots) {
+      for (const file of sources(root)) {
+        const text = readFileSync(file, "utf8");
+        for (const match of text.matchAll(pattern)) {
+          const key = `${match[1] as string}-${match[2] as string}`;
+          const where = found.get(key) ?? [];
+          where.push(file.replace(/\\/g, "/").split("/apps/web/")[1] ?? file);
+          found.set(key, where);
+        }
+      }
+    }
+    return found;
+  }
+
+  it("finds the utilities it is meant to be checking", () => {
+    // The guard on the guard: a regex that stops matching turns the assertion
+    // below into a test that proves nothing.
+    expect(colourUtilities().size).toBeGreaterThan(15);
+  });
+
+  it("🔴 no component paints with a hue or step no palette defines", () => {
+    // 🔴 THE FILE'S OWN THESIS HAD NO REGRESSION GUARD. `theme.ts` says "a
+    // partial theme is a theme with a lie in its header" and then defines the
+    // ramps as two hand-written lists. The moment somebody writes
+    // `text-red-600` or `bg-blue-50`, Tailwind's deep merge keeps the literal —
+    // the half-theme returns — AND `resolve()` above returns null, so the
+    // pairing scan silently steps past it. Two mechanisms failing in the same
+    // direction, quietly. The Supervisor found that nothing asserted it.
+    const known = new Set<string>();
+    for (const hue of ACCENT_NAMES) {
+      for (const step of ACCENT_STEPS) known.add(`${hue}-${step}`);
+    }
+    for (const step of ["50", "100", "200", "300", "400", "500", "600", "700", "800", "900", "950"]) {
+      known.add(`slate-${step}`);
+    }
+
+    const unthemed = [...colourUtilities().entries()]
+      .filter(([token]) => !known.has(token))
+      .map(([token, where]) => `${token} (${[...new Set(where)].sort().join(", ")})`);
+
+    expect(
+      unthemed.sort(),
+      "these resolve to Tailwind's own literal on every theme, because a " +
+        "colour scale given only some steps is DEEP-MERGED rather than " +
+        "replaced. Add the hue to ACCENT_NAMES or the step to ACCENT_STEPS in " +
+        "lib/theme.ts, or use a step the palette already defines",
+    ).toEqual([]);
+  });
+});
+
+describe("the pairings a parent and a child make", () => {
+  /**
+   * 🔴 THE LITERAL-SCOPED SCAN MISSES THE COMMONEST SHAPE IN THIS PRODUCT.
+   *
+   * `pairings()` above only pairs a `bg-` with a foreground found in the SAME
+   * quoted string. That catches `StatusBadge`, whose whole pairing is one
+   * literal — and misses a parent `bg-red-50` with `text-status-fail` on a
+   * child, and misses the two halves of a `[…].join(" ")`. The Supervisor
+   * named two live examples: `formula-detail.tsx` and `project-detail.tsx`,
+   * both status-colour-on-accent-ground, both invisible to it.
+   *
+   * This pairs, WITHIN ONE FILE, every accent ground against every status and
+   * accent foreground that file also names. It is deliberately coarser: a file
+   * that uses `bg-amber-50` somewhere and `text-red-900` elsewhere will be
+   * measured as though they met. That is acceptable here because both are
+   * foreground-on-tint pairings the themes must keep readable anyway — and it
+   * is NOT acceptable in the literal-scoped test above, where a false positive
+   * would fail a suite over a pairing nobody renders.
+   */
+  function fileScoped(): { file: string; ground: string; ink: string }[] {
+    const found: { file: string; ground: string; ink: string }[] = [];
+    const roots = [join(__dirname, "..", "app"), join(__dirname, "..", "components")];
+    const groundPattern = new RegExp(`\\bbg-(${ACCENT_NAMES.join("|")})-50\\b`, "g");
+    const inkPattern = new RegExp(
+      `\\btext-(?:status-(?:pass|fail|conditional|invalid|neutral)|(?:${ACCENT_NAMES.join("|")})-(?:700|800|900))\\b`,
+      "g",
+    );
+
+    for (const root of roots) {
+      for (const file of sources(root)) {
+        const text = readFileSync(file, "utf8");
+        const grounds = [...new Set([...text.matchAll(groundPattern)].map((m) => m[0] as string))];
+        if (grounds.length === 0) continue;
+        const inks = [...new Set([...text.matchAll(inkPattern)].map((m) => m[0] as string))];
+        for (const ground of grounds) {
+          const hue = ground.slice("bg-".length, -"-50".length);
+          for (const ink of inks) {
+            // ⚠️ SAME HUE, OR A STATUS INK. The first version paired every
+            // ground in a file with every ink in it, and immediately reported
+            // `text-amber-700` on `bg-purple-50` — a pairing no component
+            // renders, reddening a suite over nothing. A status colour really
+            // does go on all three grounds (`StatusBadge`), and an accent ink
+            // really does go on its own; a red ink on a purple fill does not.
+            if (!ink.startsWith(`text-${hue}-`) && !ink.startsWith("text-status-")) continue;
+            found.push({ file: file.replace(/\\/g, "/"), ground, ink });
+          }
+        }
+      }
+    }
+    return found;
+  }
+
+  it("finds the parent/child pairings the literal scan cannot see", () => {
+    expect(fileScoped().length).toBeGreaterThan(10);
+  });
+
+  it("🔴 a foreground on an accent ground clears AA wherever the two share a file", () => {
+    const failures: string[] = [];
+
+    for (const [name, palette] of Object.entries(PALETTES)) {
+      for (const pair of fileScoped()) {
+        const background = resolve(pair.ground, palette);
+        const foreground = resolve(pair.ink, palette);
+        if (background === null || foreground === null) continue;
+
+        const ratio = contrast(foreground, background);
+        if (ratio < 4.5) {
+          failures.push(`${name}: ${pair.ink} on ${pair.ground} = ${ratio.toFixed(2)}:1`);
+        }
+      }
+    }
+
+    expect([...new Set(failures)].sort()).toEqual([]);
   });
 });

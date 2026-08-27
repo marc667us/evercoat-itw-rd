@@ -94,6 +94,31 @@ const STATUS_ON_LIGHT: StatusColours = {
   neutral: "82 81 78",
 };
 
+/**
+ * The same hues, deepened for the warm paper surface.
+ *
+ * 🔴 A THIRD SET, FOR THE SAME REASON THERE WAS A SECOND.
+ *
+ * Paper reuses the light traffic-light colours, and on the page itself that is
+ * fine — `conditional` measures 4.57:1. But an alert box on this theme sits on
+ * a TINTED ground a clear step below the page, and on that ground the light
+ * set fell to **4.08:1 for pass and 4.09 for conditional**. The dark theme
+ * taught this exact lesson three hours earlier: a surface that moves needs its
+ * own status set, and the way to find out is to measure rather than to reason
+ * that "the page is still light".
+ *
+ * 15% toward black, which keeps the hue — and therefore the deltaE separation
+ * the light set was validated for — while clearing AA on both the page and the
+ * grounds (measured: 5.90 to 8.89 on the page, 5.23 to 8.08 on the grounds).
+ */
+const STATUS_ON_PAPER: StatusColours = {
+  pass: "18 109 52",
+  fail: "157 24 24",
+  conditional: "137 83 6",
+  invalid: "157 24 24",
+  neutral: "70 69 66",
+};
+
 /** The same hues, lifted for a dark surface. Ratios measured, not estimated. */
 const STATUS_ON_DARK: StatusColours = {
   pass: "74 222 128",
@@ -293,16 +318,43 @@ const PAPER_SURFACE = "250 246 238";
  * if it is not adjusted — a cool white-pink rectangle on cream reads as a
  * rendering fault. The ink steps are already dark enough on a light ground and
  * moving them would cost contrast for nothing.
+ *
+ * 🔴 THE GROUND IS BUILT FROM THE HUE'S `100`, NOT ITS `50`, AND THAT IS THE
+ * WHOLE DIFFERENCE BETWEEN A TINT AND NOTHING.
+ *
+ * The first version mixed each `50` 55% into the paper surface. Both are
+ * near-white, and the paper surface is the DARKER of the two — so the result
+ * landed on the page's own luminance and every alert fill vanished. Measured
+ * by the Supervisor against the paper page: red **1.007:1**, orange
+ * **1.004:1** — a two-in-255 difference in one channel. A red notice and an
+ * amber one became identical by fill, which is exactly the distinction
+ * `hardened()`'s own comment says these themes exist to keep; only the border
+ * survived.
+ *
+ * A ground has to be darker than the page it sits on, and on cream that means
+ * starting a step further down the ramp. `theme.test.ts` now measures every
+ * ground against its own surface, so "the fill is visible" is no longer
+ * something a palette can be assumed to have.
  */
 function warmed(name: AccentName): Accent {
   const accent = ACCENTS_ON_LIGHT[name];
   return {
-    "50": mix(accent["50"], PAPER_SURFACE, 0.55),
-    "200": mix(accent["200"], PAPER_SURFACE, 0.3),
-    "300": mix(accent["300"], PAPER_SURFACE, 0.2),
+    // The ground starts at the hue's `200` rather than its `50`: on cream, a
+    // `50` IS the page. Lightened a quarter of the way back so it still reads
+    // as a tint and not as a filled chip.
+    "50": mix(accent["200"], PAPER_SURFACE, 0.25),
+    // Which pushes the border steps down one, or the border would be the same
+    // colour as the ground it outlines.
+    "200": accent["300"],
+    "300": mix(accent["300"], BLACK, 0.2),
     "400": accent["400"],
-    "700": accent["700"],
-    "800": accent["800"],
+    // 🔴 THE INKS HAD TO FOLLOW THE GROUND DOWN. Leaving them at the light
+    // values was right while the paper ground was a near-white `50`; once the
+    // ground became a real tint, `text-amber-700` on `bg-amber-50` measured
+    // 4.17:1 — my own repair taking the margin away. Found by the same-hue
+    // pairing scan below, in the run that added it.
+    "700": mix(accent["700"], BLACK, 0.15),
+    "800": mix(accent["800"], BLACK, 0.1),
     "900": accent["900"],
   };
 }
@@ -434,7 +486,7 @@ const CONTRAST: Palette = {
  * complaint a paper-like theme actually answers.
  */
 const PAPER: Palette = {
-  status: STATUS_ON_LIGHT,
+  status: STATUS_ON_PAPER,
   accents: mapAccents(warmed),
   white: PAPER_SURFACE,
   slate50: "243 237 225",
@@ -628,9 +680,21 @@ export function prePaintScript(): string {
     `(function(){try{` +
     `var P=${JSON.stringify(palettes)},K=${JSON.stringify(THEME_STORAGE_KEY)},t=null;` +
     `try{t=window.localStorage.getItem(K)}catch(e){}` +
-    // An unknown id -- a theme a previous version of this application offered
-    // -- resolves to the default rather than to nothing.
-    `if(t!=="light"&&t!=="dark"&&t!=="contrast"&&t!=="paper")t="system";` +
+    // 🔴 VALID IDS COME FROM `P`, NOT FROM A LIST WRITTEN OUT AGAIN.
+    //
+    // This was `t!=="light"&&t!=="dark"&&t!=="contrast"&&t!=="paper"` — a
+    // hand-copied list, in the one file whose surrounding comments condemn
+    // hand-copied lists, and the second copy of a set the application already
+    // validates with `isThemeId`. A sixth palette would have been given its
+    // colours by `P` and refused by the list: the script resolves to `system`,
+    // paints the default, and React then switches to the chosen theme —
+    // precisely the flash this script exists to prevent, and the test would
+    // have stayed green because it only checks the keys of `P`. The
+    // Supervisor found it.
+    //
+    // An unknown id — a theme a previous version of this application offered
+    // — still resolves to the default rather than to nothing.
+    `if(!Object.prototype.hasOwnProperty.call(P,t))t="system";` +
     `var d=window.matchMedia("(prefers-color-scheme: dark)").matches;` +
     `var p=P[t==="system"?(d?"dark":"light"):t],r=document.documentElement;` +
     `for(var k in p)r.style.setProperty(k,p[k]);` +

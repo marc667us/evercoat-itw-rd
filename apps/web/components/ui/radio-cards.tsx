@@ -53,6 +53,18 @@ export function RadioCards<T extends string>({
 }) {
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
 
+  // 🔴 A GROUP WHERE NOTHING IS SELECTED MUST STILL BE REACHABLE.
+  //
+  // The tab stop was derived solely from `option.id === value`, so a `value`
+  // matching no option gave every button `tabIndex={-1}` and the whole
+  // radiogroup became unreachable by keyboard — silently, with no visible
+  // difference. Today's two callers are seeded from validated preferences and
+  // cannot hit it, but this is exported as general-purpose and the failure
+  // mode is invisible. WAI-ARIA's own answer for an unselected radiogroup is
+  // the first option, which is what this is. The Supervisor found it.
+  const selected = options.findIndex((option) => option.id === value);
+  const tabStop = selected === -1 ? 0 : selected;
+
   const move = (from: number, delta: number) => {
     // Wrapping, because a radiogroup is a ring: arrowing past the end of five
     // options and stopping dead reads as a broken control rather than a
@@ -105,7 +117,7 @@ export function RadioCards<T extends string>({
             // 🔴 THE GROUP IS ONE TAB STOP. Only the selected option is
             // reachable by Tab; the arrows move within. A group where every
             // option is tabbable is the thing this component replaced.
-            tabIndex={chosen ? 0 : -1}
+            tabIndex={index === tabStop ? 0 : -1}
             onClick={() => onChange(option.id)}
             onKeyDown={(event) => onKeyDown(event, index)}
             className={[

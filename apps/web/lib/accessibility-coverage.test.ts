@@ -81,16 +81,32 @@ describe("the accessibility sweep covers the application", () => {
 
   it("🔴 every route is either swept or exempt with a stated reason", () => {
     const paths = swept();
+    const all = routes(APP);
 
-    const uncovered = routes(APP).filter((route) => {
+    const uncovered = all.filter((route) => {
       if (EXEMPT.has(route)) return false;
-      // A dynamic segment is covered by any concrete path under the same
-      // prefix — the sweep visits `/projects/RDP-2026-014` for
-      // `/projects/[code]`, which is the only way to visit it at all.
+      // A dynamic segment can only be visited through a concrete instance —
+      // the sweep goes to `/projects/RDP-2026-014` for `/projects/[code]`.
+      //
+      // 🔴 "ANY PATH UNDER THE PREFIX" WAS TOO LOOSE, AND IT MADE THIS GUARD
+      // AGREE WITH ITSELF. `/projects/workspace` is a STATIC sibling route, and
+      // it satisfied `/projects/[code]`; `/formulations/formula` satisfied
+      // `/formulations/[code]`. Delete the concrete `/formulations/FRM-014`
+      // entry from the spec and this stayed green with the dynamic route
+      // unswept — the "list that looks complete" failure this file exists to
+      // end, reproduced inside the check for it. The Supervisor found it, and
+      // found the comment claiming the concrete path "is the only way to visit
+      // it at all" was not true of the code as written.
+      //
+      // A sibling that is itself a route in `app/` therefore does not count.
       const dynamic = route.indexOf("/[");
       if (dynamic !== -1) {
         const parent = route.slice(0, dynamic);
-        return !paths.some((path) => path.startsWith(`${parent}/`) && path !== parent);
+        const concrete = paths.filter(
+          (path) =>
+            path.startsWith(`${parent}/`) && path !== parent && !all.includes(path),
+        );
+        return concrete.length === 0;
       }
       return !paths.includes(route);
     });
@@ -116,6 +132,33 @@ describe("the accessibility sweep covers the application", () => {
     });
 
     expect(stale, "the sweep visits paths that no longer have a page").toEqual([]);
+  });
+
+  it("🔴 no two entries share a name, because the name is the test title", () => {
+    // 🔴 THIS TOOK THE ENTIRE LIVE SUITE OUT, AND NOT ONE TEST RAN.
+    //
+    // Adding `{ name: "project workspace", path: "/projects/workspace" }` beside
+    // the existing `{ name: "project workspace", path: "/projects/RDP-2026-014" }`
+    // made Playwright refuse the whole run:
+    //
+    //     Error: duplicate test title "project workspace has no WCAG 2.1 AA
+    //     violations", first declared in shell/accessibility.spec.ts:102
+    //
+    // Not a failed test — a refused suite, from one repeated string, in the
+    // commit that was widening coverage. And the shell pipeline that ran it
+    // reported success, because the exit code belonged to the `tail` at the
+    // end of the chain.
+    const names = [...readFileSync(SPEC, "utf8").matchAll(/name:\s*"([^"]+)",\s*path:/g)].map(
+      (match) => match[1] as string,
+    );
+    expect(names.length).toBeGreaterThan(20);
+
+    const duplicated = names.filter((name, index) => names.indexOf(name) !== index);
+    expect(
+      [...new Set(duplicated)].sort(),
+      "Playwright refuses to run ANY test when two share a title, so this is a " +
+        "suite-wide outage rather than a failure",
+    ).toEqual([]);
   });
 
   it("every exemption names a route that exists", () => {

@@ -91,10 +91,23 @@ const PAGES = [
   // The workspace routes, with no record named. That is a REAL state — it is
   // what a bookmarked link without its query string renders — and it is the
   // one most likely to be an unlabelled empty page.
+  //
+  // ⚠️ NAMED "(no record named)" BECAUSE THE NAME IS THE TEST TITLE, AND A
+  // DUPLICATE TITLE TAKES THE WHOLE SUITE OUT. `project workspace` and
+  // `formula workspace` were already taken by the DETAIL routes above, and
+  // Playwright refuses to run a single test when two share a title:
+  //
+  //     Error: duplicate test title "project workspace has no WCAG 2.1 AA
+  //     violations", first declared in shellccessibility.spec.ts:102
+  //
+  // Nothing ran. Not one test, not one file — a suite-wide outage from one
+  // repeated string, and the process still exited through a pipeline that
+  // reported rc=0. `accessibility-coverage.test.ts` now asserts the names are
+  // unique, so this cannot reach a live run again.
   { name: "failure investigation", path: "/failures/investigation" },
-  { name: "formula workspace", path: "/formulations/formula" },
+  { name: "formula workspace (no record named)", path: "/formulations/formula" },
   { name: "batch workspace", path: "/laboratory/batch" },
-  { name: "project workspace", path: "/projects/workspace" },
+  { name: "project workspace (no record named)", path: "/projects/workspace" },
   { name: "test workspace", path: "/testing/test" },
 ];
 

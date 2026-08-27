@@ -23,7 +23,15 @@ import { describe, expect, it } from "vitest";
 
 import type { SessionState } from "@/lib/api/session";
 
-import { activeProfile, chooseOrganization, type OrganizationChoice } from "./auth-provider";
+import type { UserProfile } from "./auth-provider";
+
+import {
+  activeProfile,
+  chooseOrganization,
+  profileInitials,
+  profileLabel,
+  type OrganizationChoice,
+} from "./auth-provider";
 
 const ACME: OrganizationChoice = {
   organizationId: "11111111-1111-1111-1111-111111111111",
@@ -130,16 +138,36 @@ describe("activeProfile", () => {
     );
   });
 
-  it("🔴 a blank name is an absent name, not an empty top bar entry", () => {
-    // The previous check was `!== undefined`, which `""` satisfies — so an API
-    // returning a blank produced "signed in as ''", which reads as a rendering
-    // fault rather than a missing field. The comment claimed this case was
-    // excluded; Codex measured that it was not.
+  it("🔴 a blank name does NOT remove the profile, because that removes the menu", () => {
+    // 🔴 THE FIRST REPAIR LOCKED PEOPLE OUT OF THEIR OWN ACCOUNT.
+    //
+    // Returning null on a blank name stopped "signed in as ''" — and removed
+    // `UserMenu`, which `top-bar.tsx` is the only mount of, and which is the
+    // only route in the shell to Settings, Profile and Sign out. A signed-in
+    // person with no name on file could not sign out. Reachable, not
+    // theoretical: the parse maps an absent field to `""` for an API too old
+    // to send it. The Supervisor found it.
     const nameless: OrganizationChoice = { ...ACME, displayName: "  " };
-    expect(activeProfile(authenticated(ACME.organizationId), [nameless])).toBeNull();
+    const profile = activeProfile(authenticated(ACME.organizationId), [nameless]);
 
-    const addressless: OrganizationChoice = { ...ACME, email: "" };
-    expect(activeProfile(authenticated(ACME.organizationId), [addressless])).toBeNull();
+    expect(profile, "no profile means no user menu means no way to sign out").not.toBeNull();
+    // What is lost is the NAME, not the account.
+    expect(profileLabel(profile as UserProfile)).toBe("kwame.chemist@acme.example");
+    expect(profileInitials(profile as UserProfile)).toBeNull();
+  });
+
+  it("falls all the way back to something a person can read", () => {
+    const anonymousLooking: OrganizationChoice = { ...ACME, displayName: "", email: "  " };
+    const profile = activeProfile(authenticated(ACME.organizationId), [anonymousLooking]);
+    expect(profileLabel(profile as UserProfile)).toBe("Your account");
+  });
+
+  it("takes initials from a real name, and at most two", () => {
+    expect(profileInitials(activeProfile(authenticated(ACME.organizationId), [ACME]) as UserProfile))
+      .toBe("KC");
+    const long: OrganizationChoice = { ...ACME, displayName: "Ama Serwaa Boakye Mensah" };
+    expect(profileInitials(activeProfile(authenticated(ACME.organizationId), [long]) as UserProfile))
+      .toBe("AS");
   });
 
   it("has no name for an organization it holds no membership for", () => {

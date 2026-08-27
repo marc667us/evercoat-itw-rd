@@ -57,16 +57,21 @@ export default function PermissionsPage() {
           { label: "Dashboard", href: "/dashboard" },
           { label: "Administration", href: "/admin" },
         ]}
-        fields={[
-          {
-            label: "Permissions",
-            value: headerCount(
-              catalogue,
-              mayRead && !isLoading && error === null && unavailable === null,
-            ),
-          },
-          { label: "Domains", value: String(byDomain.size) },
-        ]}
+        fields={(() => {
+          // 🔴 ONE FLAG, BOTH FIELDS. The first repair moved "Permissions" to
+          // `headerCount` and left "Domains" beside it as `String(size)` — so
+          // the same header still reported **0 domains** during the first
+          // request, when the caller lacks `admin.permissions`, and when the
+          // request fails. The Supervisor found it: the defect `headerCount`
+          // was introduced for, surviving on the same line of the same screen,
+          // with the flag it needed already computed. Deriving both from one
+          // expression is what stops the next field repeating it.
+          const known = mayRead && !isLoading && error === null && unavailable === null;
+          return [
+            { label: "Permissions", value: headerCount(catalogue, known) },
+            { label: "Domains", value: headerCount({ length: byDomain.size }, known) },
+          ];
+        })()}
       />
       <ContextSubmenu items={ADMIN_SECTIONS} activeHref="/admin/permissions" />
 

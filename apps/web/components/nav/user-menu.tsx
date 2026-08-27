@@ -22,7 +22,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
-import { useAuth } from "@/components/providers/auth-provider";
+import { profileInitials, profileLabel, useAuth } from "@/components/providers/auth-provider";
 
 /** The three things a person can do about their own account. */
 const ITEMS = [
@@ -52,11 +52,16 @@ export function UserMenu() {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setOpen(false);
-      // 🔴 AND FOCUS GOES BACK TO THE TRIGGER. Escape used to close the menu
-      // and leave focus on an element that had just been removed from the
-      // document, which browsers resolve by sending it to `<body>` — so a
-      // keyboard user was returned to the top of the page and had to tab all
-      // the way back to where they were. Codex found it.
+      // 🔴 AND FOCUS GOES BACK TO THE TRIGGER.
+      //
+      // ⚠️ AN EARLIER VERSION OF THIS COMMENT DESCRIBED A HISTORY THAT COULD
+      // NOT HAVE HAPPENED — that Escape "used to leave focus on an element
+      // just removed from the document, so a keyboard user was returned to the
+      // top of the page". Before the effect below, focus never ENTERED the
+      // menu, so there was nothing to restore and Escape lost nothing. The
+      // Supervisor found it. The restore is still correct: it is the other
+      // half of moving focus in on open, and without it Escape would now be
+      // the thing that drops focus to `<body>`.
       trigger.current?.focus();
     };
 
@@ -81,6 +86,15 @@ export function UserMenu() {
     return null;
   }
 
+  // 🔴 THE LABEL IS NEVER AN EMPTY STRING, AND THE MENU IS NEVER WITHHELD.
+  //
+  // A blank `display_name` used to remove the profile entirely, which removed
+  // this component — and with it the only route in the shell to Settings,
+  // Profile and Sign out. See `activeProfile`. What a missing name costs now is
+  // the name.
+  const label = profileLabel(profile);
+  const initials = profileInitials(profile);
+
   return (
     <div ref={container} className="relative">
       <button
@@ -95,15 +109,13 @@ export function UserMenu() {
           aria-hidden
           className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-slate-200 text-[10px] font-semibold text-slate-700"
         >
-          {/* Initials, and only as decoration — the name itself is beside it,
-              so this never has to be the thing a reader relies on. */}
-          {profile.displayName
-            .split(/\s+/)
-            .slice(0, 2)
-            .map((part) => part.charAt(0).toUpperCase())
-            .join("")}
+          {/* Initials, and only as decoration — the label itself is beside it,
+              so this never has to be the thing a reader relies on. With no name
+              to take them from it stays empty rather than showing a "?", which
+              would state something the application does not mean. */}
+          {initials}
         </span>
-        <span className="max-w-[10rem] truncate">{profile.displayName}</span>
+        <span className="max-w-[10rem] truncate">{label}</span>
         <span aria-hidden className="text-[10px] text-slate-500">
           {open ? "▲" : "▼"}
         </span>
@@ -116,10 +128,15 @@ export function UserMenu() {
           className="absolute right-0 z-50 mt-1 w-72 rounded border border-slate-200 bg-white p-1 shadow-lg"
         >
           <div className="border-b border-slate-200 px-3 py-2">
-            <p className="truncate text-sm font-medium text-slate-900">{profile.displayName}</p>
+            <p className="truncate text-sm font-medium text-slate-900">{label}</p>
             {/* The address this ORGANIZATION knows them by. Migration 052 moved
                 it onto the membership, so it is not a global identity. */}
-            <p className="truncate text-xs text-slate-600">{profile.email}</p>
+            {/* Not when it is already the label — an address printed twice,
+                once as a name, reads as a duplicated element rather than as a
+                person with no name on file. */}
+            {profile.email.trim() !== "" && profile.email.trim() !== label && (
+              <p className="truncate text-xs text-slate-600">{profile.email}</p>
+            )}
           </div>
 
           {ITEMS.map((item, index) => (
