@@ -49,7 +49,14 @@ export const ADMIN_SECTIONS: readonly SubmenuItem[] = [
   // Ship with the slice that first depends on them (ADR-021). Shown as
   // not-started rather than hidden, so the shape of Administration is
   // visible and nobody re-invents a section that is already scheduled.
-  { label: "Stage Gates", href: "/admin/stage-gates", state: "not-started", unavailable: true, permission: "admin.stage_gates" },
+  // ✅ BUILT 2026-08-27. Both were `not-started` and `unavailable`, which was
+  // honest and had been true for four slices past the point §H schedules them.
+  { label: "Stage Gates", href: "/admin/stage-gates", state: "active", permission: "admin.stage_gates" },
+  { label: "Reference Data", href: "/admin/reference-data", state: "active", permission: "admin.reference_data" },
+  // Test methods live under `/api/testing`, not under `/api/admin`, so this is
+  // a different section from Reference Data despite sharing its permission.
+  // Left not-started rather than folded in, because folding it in would claim
+  // the endpoint is wired when it is not.
   { label: "Test Methods", href: "/admin/test-methods", state: "not-started", unavailable: true, permission: "admin.reference_data" },
   { label: "Approval Templates", href: "/admin/approval-templates", state: "not-started", unavailable: true, permission: "admin.workflow" },
   { label: "Notifications", href: "/admin/notifications", state: "not-started", unavailable: true, permission: "admin.notifications" },

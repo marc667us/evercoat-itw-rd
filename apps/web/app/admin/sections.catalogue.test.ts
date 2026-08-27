@@ -101,10 +101,24 @@ describe("ADMIN_SECTIONS against the seeded permission catalogue", () => {
   });
 
   it("🔴 and the sections are not gated on the same code as each other by accident", () => {
-    // Roles and Permissions SHARE `admin.roles` deliberately — both are served
-    // by endpoints requiring it. Everything else must differ, because a section
-    // silently copying its neighbour's code is the typo this file exists to
-    // catch and it would not show up as an unknown code.
+    // 🔴 THIS GUARD FIRED ON A REAL CHANGE, WHICH IS WHAT IT IS FOR.
+    //
+    // Building the Reference Data section on 2026-08-27 made it share
+    // `admin.reference_data` with Test Methods, and this test went red. That is
+    // the correct outcome: two sections on one permission is either a typo or a
+    // decision, and the difference is not visible in the array. It is a
+    // decision here — units and product families live under `/api/admin`, test
+    // methods under `/api/testing`, so they are separate SECTIONS served by
+    // separate endpoints that happen to require the same code.
+    //
+    // The expectation is widened deliberately rather than the assertion
+    // loosened. A test that stopped checking would not have caught the next
+    // one.
+    //
+    // Roles and Permissions share `admin.roles` for the same kind of reason:
+    // both are served by endpoints requiring it. Everything else must differ,
+    // because a section silently copying its neighbour's code is the typo this
+    // file exists to catch and it would not show up as an unknown code.
     const byCode = new Map<string, string[]>();
     for (const section of ADMIN_SECTIONS) {
       if (section.permission === undefined) continue;
@@ -117,6 +131,7 @@ describe("ADMIN_SECTIONS against the seeded permission catalogue", () => {
 
     expect(shared, "unexpected sections sharing a permission").toEqual([
       "admin.roles: Roles, Permissions",
+      "admin.reference_data: Reference Data, Test Methods",
     ]);
   });
 });

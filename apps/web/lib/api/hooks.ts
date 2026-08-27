@@ -23,6 +23,33 @@
  */
 
 import {
+  createProductFamily,
+  createStage,
+  createUnit,
+  fetchAdminMembers,
+  fetchPermissions,
+  fetchProductFamilies,
+  fetchRoles,
+  fetchStageDefinitions,
+  fetchUnits,
+  grantRole,
+  inviteMember,
+  reorderStages,
+  revokeRole,
+  setMemberStatus,
+  setReferenceItemActive,
+  setStageActive,
+  updateStage,
+  type AdminMember,
+  type MemberInviteRequest,
+  type Permission,
+  type ProductFamily,
+  type Role,
+  type StageDefinition,
+  type StageWriteRequest,
+  type Unit,
+} from "./admin";
+import {
   addProjectMember,
   advanceStage,
   approveRequirement,
@@ -1992,6 +2019,212 @@ export function useProjectActions(projectId: string): {
         "requirement revision",
         ["project-requirements"],
         () => reviseRequirement(credentials(), projectId, requirementId, request),
+        after,
+      ),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data?.label ?? null,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Administration — the eleven writes the plan's own §H warned about
+// ---------------------------------------------------------------------------
+//
+// 🔴 "AN ADMINISTRATOR WHO CAN BE READ BUT NEVER GRANTED DOES NOT EXIST."
+//
+// `IMPLEMENTATION_PLAN.md` §H says that, in a section written because two
+// earlier plan versions promised things were "editable in Administration" while
+// no slice built the screen. The API answered it in Slice 1; the browser did
+// not. Measured 2026-08-27: eleven `admin.*` write endpoints, zero client
+// functions, zero controls.
+
+export function useAdminMembers(): LiveOnly<AdminMember[]> {
+  return useLiveOnlyList("admin-members", (live) => live, fetchAdminMembers);
+}
+
+export function useRoles(): LiveOnly<Role[]> {
+  return useLiveOnlyList("admin-roles", (live) => live, fetchRoles);
+}
+
+export function usePermissionCatalogue(): LiveOnly<Permission[]> {
+  return useLiveOnlyList("admin-permissions", (live) => live, fetchPermissions);
+}
+
+export function useStageDefinitions(): LiveOnly<StageDefinition[]> {
+  return useLiveOnlyList("admin-stage-gates", (live) => live, fetchStageDefinitions);
+}
+
+export function useUnits(): LiveOnly<Unit[]> {
+  return useLiveOnlyList("admin-units", (live) => live, fetchUnits);
+}
+
+export function useProductFamilies(): LiveOnly<ProductFamily[]> {
+  return useLiveOnlyList("admin-product-families", (live) => live, fetchProductFamilies);
+}
+
+/**
+ * Every administration write, in one hook.
+ *
+ * Matching `useTestActions`, `useBatchActions`, `useFailureActions` and
+ * `useProjectActions`: one `isPending`, one `error`, and an `after` callback
+ * that runs only on success so a refused write does not clear the reason
+ * somebody typed.
+ */
+export function useAdminActions(): {
+  readonly invite: (request: MemberInviteRequest, after?: () => void) => void;
+  readonly grant: (
+    memberId: string,
+    roleCode: string,
+    reason: string,
+    after?: () => void,
+  ) => void;
+  readonly revoke: (
+    memberId: string,
+    roleCode: string,
+    reason: string,
+    after?: () => void,
+  ) => void;
+  readonly setStatus: (
+    memberId: string,
+    status: "active" | "inactive",
+    reason: string,
+    after?: () => void,
+  ) => void;
+  readonly addStage: (request: StageWriteRequest, after?: () => void) => void;
+  readonly editStage: (
+    stageId: string,
+    request: StageWriteRequest,
+    after?: () => void,
+  ) => void;
+  readonly setStageActive: (
+    stageId: string,
+    isActive: boolean,
+    reason: string,
+    after?: () => void,
+  ) => void;
+  readonly reorder: (orderedStageIds: readonly string[], after?: () => void) => void;
+  readonly addUnit: (
+    request: { code: string; name: string; quantity_kind: string },
+    after?: () => void,
+  ) => void;
+  readonly addFamily: (
+    request: { code: string; name: string; description?: string },
+    after?: () => void,
+  ) => void;
+  readonly setItemActive: (
+    collection: "units" | "product-families",
+    itemId: string,
+    isActive: boolean,
+    after?: () => void,
+  ) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (job: {
+      readonly label: string;
+      readonly keys: readonly string[];
+      readonly run: () => Promise<unknown>;
+      readonly after?: () => void;
+    }) => {
+      await job.run();
+      return job;
+    },
+    onSuccess: (job) => {
+      for (const key of job.keys) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+      job.after?.();
+    },
+  });
+
+  const run = (
+    label: string,
+    keys: readonly string[],
+    make: () => Promise<unknown>,
+    after?: () => void,
+  ) => mutation.mutate({ label, keys, run: make, after });
+
+  return {
+    invite: (request, after) =>
+      run("membership", ["admin-members"], () => inviteMember(credentials(), request), after),
+    grant: (memberId, roleCode, reason, after) =>
+      run(
+        "role grant",
+        ["admin-members"],
+        () => grantRole(credentials(), memberId, roleCode, reason),
+        after,
+      ),
+    revoke: (memberId, roleCode, reason, after) =>
+      run(
+        "role revoke",
+        ["admin-members"],
+        () => revokeRole(credentials(), memberId, roleCode, reason),
+        after,
+      ),
+    setStatus: (memberId, status, reason, after) =>
+      run(
+        "membership status",
+        ["admin-members"],
+        () => setMemberStatus(credentials(), memberId, status, reason),
+        after,
+      ),
+    addStage: (request, after) =>
+      run("stage", ["admin-stage-gates"], () => createStage(credentials(), request), after),
+    editStage: (stageId, request, after) =>
+      run(
+        "stage update",
+        ["admin-stage-gates"],
+        () => updateStage(credentials(), stageId, request),
+        after,
+      ),
+    setStageActive: (stageId, isActive, reason, after) =>
+      run(
+        isActive ? "stage restored" : "stage retired",
+        ["admin-stage-gates"],
+        () => setStageActive(credentials(), stageId, isActive, reason),
+        after,
+      ),
+    reorder: (orderedStageIds, after) =>
+      run(
+        "stage order",
+        ["admin-stage-gates"],
+        () => reorderStages(credentials(), orderedStageIds),
+        after,
+      ),
+    addUnit: (request, after) =>
+      run("unit", ["admin-units"], () => createUnit(credentials(), request), after),
+    addFamily: (request, after) =>
+      run(
+        "product family",
+        ["admin-product-families"],
+        () => createProductFamily(credentials(), request),
+        after,
+      ),
+    setItemActive: (collection, itemId, isActive, after) =>
+      run(
+        isActive ? "restored" : "retired",
+        // Only the collection that changed. `units` and `product-families` are
+        // separate queries, and invalidating both on either would refetch a
+        // list nothing touched.
+        [collection === "units" ? "admin-units" : "admin-product-families"],
+        () => setReferenceItemActive(credentials(), collection, itemId, isActive),
         after,
       ),
     isPending: mutation.isPending,

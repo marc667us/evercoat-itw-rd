@@ -4,6 +4,8 @@ import { ADMIN_SECTIONS } from "@/app/admin/sections";
 import { ContextSubmenu } from "@/components/ui/context-submenu";
 import { EntityHeader } from "@/components/ui/entity-header";
 
+import { MembersAdministration } from "./members";
+
 export const metadata: Metadata = { title: "Administration" };
 
 /**
@@ -38,29 +40,22 @@ export default function AdministrationPage() {
       <ContextSubmenu items={ADMIN_SECTIONS} activeHref="/admin" />
 
       <div className="p-6">
-        <section className="max-w-3xl">
-          <h2 className="text-sm font-semibold text-slate-900">
-            Users and memberships
-          </h2>
-          <p className="mt-1.5 text-sm leading-relaxed text-slate-600">
-            Membership binds an existing Keycloak subject to this
-            organization and carries its roles. The application deliberately
-            cannot create credentials — Keycloak owns identity.
-          </p>
+        {/* ✅ CONNECTED 2026-08-27. This block read: "Not yet connected. The API
+            is live at /api/admin/members; this table is wired in Slice 2, once
+            authentication supplies a verified principal. No placeholder rows are
+            shown, because invented data is indistinguishable from real data at a
+            glance."
 
-          <div className="mt-4 rounded border border-dashed border-slate-300 bg-white p-5">
-            <p className="text-sm text-slate-600">
-              Not yet connected. The API is live at{" "}
-              <code className="rounded bg-slate-100 px-1 text-xs">
-                /api/admin/members
-              </code>
-              ; this table is wired in Slice 2, once authentication supplies a
-              verified principal. No placeholder rows are shown, because
-              invented data is indistinguishable from real data at a glance.
-            </p>
-          </div>
+            🔴 THE HONESTY WAS RIGHT AND THE WAIT WAS TOO LONG. Authentication
+            arrived on 2026-08-19 and the table did not — so a sentence written
+            to avoid faking a screen became a sentence describing a gap nobody
+            was scheduled to close, which is the exact failure §H wrote this page
+            to record. Four member write endpoints, zero controls, for four
+            slices after their precondition was met. */}
+        <MembersAdministration />
 
-          <h3 className="mt-8 text-sm font-semibold text-slate-900">
+        <section className="mt-8 max-w-3xl">
+          <h3 className="text-sm font-semibold text-slate-900">
             Two guards worth knowing about
           </h3>
           <ul className="mt-2 space-y-2 text-sm leading-relaxed text-slate-600">
