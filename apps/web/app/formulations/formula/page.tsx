@@ -627,6 +627,14 @@ function FormulaWorkspace({
   const mayDecide = permissions.has("formula.approve_lab");
   const mayRevise = permissions.has("formula.clone");
   const mayRecordObserved = mayRevise || permissions.has("formula.modify_draft");
+  // 🔴 THE SECTION AND ITS PANEL ASK THE SAME QUESTION, IN ONE PLACE.
+  // `CreateBatchPanel` and `ClassifyPanel` each re-check these before
+  // rendering, which is right — they are used from here only today and a
+  // component that trusts its parent for authorization is one move from being
+  // reused without it. What must not happen is the SECTION and the PANEL
+  // disagreeing, which is what left two empty headings on the page.
+  const mayCreateBatch = permissions.has("batch.create");
+  const mayClassify = permissions.has("formula.classify");
   const [reason, setReason] = useState("");
   const [hypothesis, setHypothesis] = useState("");
   const [driver, setDriver] = useState<RevisionDriver | "">("");
@@ -775,6 +783,16 @@ function FormulaWorkspace({
       </section>
 
       {/* ---------------------------------------------------------------- */}
+      {/* 🔴 THE HEADING GOES WITH THE PANEL. Raised by the Supervisor against
+          the first version, which gated only the panels: `CreateBatchPanel`
+          returned `null` for a caller without `batch.create` and left "Take it
+          to the bench" standing over an empty div, complete with its
+          explanatory paragraph. "A heading over nothing reads as a page that
+          failed to load" is the rule this same change applies in
+          `ContextSubmenu` and in the Lifecycle section — applying it to two
+          panels and not to the sections containing them is the rule half-kept,
+          which looks more broken than not having it. */}
+      {mayCreateBatch && (
       <section className="mt-6">
         <h2 className="text-sm font-semibold text-slate-900">Take it to the bench</h2>
         <p className="mt-1 text-xs text-slate-600">
@@ -785,14 +803,17 @@ function FormulaWorkspace({
           <CreateBatchPanel versionId={version.id} versionCode={version.version_code} />
         </div>
       </section>
+      )}
 
       {/* ---------------------------------------------------------------- */}
+      {mayClassify && (
       <section className="mt-6">
         <h2 className="text-sm font-semibold text-slate-900">Classification</h2>
         <div className="mt-2">
           <ClassifyPanel formulaId={version.formula_id} />
         </div>
       </section>
+      )}
 
       {/* ---------------------------------------------------------------- */}
       <section className="mt-6">

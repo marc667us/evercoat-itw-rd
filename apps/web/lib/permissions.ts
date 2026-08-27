@@ -138,6 +138,37 @@ export function usePermissions(): ReadonlySet<string> {
 }
 
 /**
+ * Whether there is a signed-in caller to filter by at all.
+ *
+ * 🔴 RAISED BY THE SUPERVISOR, AND IT WAS A REGRESSION I INTRODUCED.
+ *
+ * `usePermissions` falls back to `ALL_NAV_PERMISSIONS` with no session, and
+ * that set contains only the codes some NAV ITEM asks for. For a write control
+ * that is the right way round — an anonymous reader is offered the modules and
+ * not every action in the product. For a NAVIGATION SURFACE it is wrong, and
+ * `ContextSubmenu` is one: `admin.roles`, `admin.organization`,
+ * `admin.stage_gates`, `admin.reference_data`, `admin.workflow`,
+ * `admin.notifications` and `admin.audit` are not in the nav set, so on a build
+ * with no identity provider — the demonstration state this application is
+ * shown in — Administration's submenu collapsed from nine sections to one,
+ * including the five `not-started` entries that exist so nobody re-invents a
+ * section already scheduled.
+ *
+ * Reachability is the reason the anonymous fallback exists at all
+ * (`layout.tsx` records Projects, Innovation and Pipeline disappearing when the
+ * sidebar was handed an empty set). A submenu is the same class of surface as
+ * the sidebar and takes the same answer; a button that writes is not.
+ *
+ * So the two questions are separated rather than one being bent to fit the
+ * other: this reports whether a caller is KNOWN, and the submenu shows
+ * everything when nobody is.
+ */
+export function useCallerIsKnown(): boolean {
+  const session = useSession();
+  return session.status === "authenticated";
+}
+
+/**
  * Whether the caller holds a permission — or `true` when a control names none.
  *
  * A control with no stated permission is visible to any caller, matching

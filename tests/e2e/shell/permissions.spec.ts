@@ -136,7 +136,15 @@ test.describe("the sidebar reflects the caller's permissions", () => {
  */
 
 const CHEMIST = process.env.TEST_CHEMIST_USER ?? "chem.demo";
-const LEAD = process.env.TEST_SIGNIN_USER ?? "lead.demo";
+/**
+ * 🔴 ITS OWN VARIABLE, NOT `TEST_SIGNIN_USER`. Raised by the Supervisor, and
+ * this file's own comment thirty lines up already rejected that variable for
+ * the technician case: it selects who drives the SIGN-IN round trip, so a run
+ * setting `TEST_SIGNIN_USER=tech.demo` would silently point the positive half
+ * of this pair at a caller who does not hold `knowledge.ingest` — and the
+ * positive half is the whole reason the negative one means anything.
+ */
+const INGESTER = process.env.TEST_INGEST_USER ?? "lead.demo";
 
 /** The ingest control, by its accessible name. */
 const INGEST_CONTROL = "Add technical text to the library";
@@ -210,7 +218,7 @@ test.describe("a control inside a page is gated too, not just the menu", () => {
       "TEST_KEYCLOAK_PASSWORD is not set — permission gating was NOT verified",
     );
 
-    await signIn(page, LEAD);
+    await signIn(page, INGESTER);
     await page.goto("/knowledge/");
 
     await expect(

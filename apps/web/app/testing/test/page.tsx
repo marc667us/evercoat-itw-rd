@@ -761,12 +761,21 @@ function TestWorkspace({ test }: { test: TestDetail }) {
             this reader. Naming the three permissions is deliberate: a chemist
             asking "why can I not start this?" gets an answer they can take to
             an administrator. */}
-        {!mayExecute && !mayConfirm && (
+        {/* 🔴 `mayDecide` IS IN THIS CONDITION, AND LEAVING IT OUT WAS A REAL
+            CONTRADICTION. Raised by the Supervisor. Gated on execute and
+            confirm alone, a QA reviewer holding `test.review` and neither of
+            those — the exact role separation this whole change exists to
+            express — was told "this test is read-only from here" directly
+            above a fully working decision form. A sentence that disagrees with
+            the screen under it is worse than no sentence. */}
+        {!mayExecute && !mayConfirm && !mayDecide && (
           <p className="mt-3 text-sm text-slate-600">
-            You hold neither <code className="text-xs">test.execute</code> nor{" "}
-            <code className="text-xs">test.confirm</code>, so this test is
-            read-only from here. The record above is complete; only the controls
-            are withheld.
+            You hold none of <code className="text-xs">test.execute</code>,{" "}
+            <code className="text-xs">test.review</code> or{" "}
+            <code className="text-xs">test.confirm</code>, and no rung of this
+            test&rsquo;s approval route names a permission you hold — so this
+            test is read-only from here. The record above is complete; only the
+            controls are withheld.
           </p>
         )}
 

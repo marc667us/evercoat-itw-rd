@@ -38,7 +38,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
-import { permits, usePermissions } from "@/lib/permissions";
+import { permits, useCallerIsKnown, usePermissions } from "@/lib/permissions";
 
 export interface SubmenuItem {
   label: string;
@@ -112,7 +112,26 @@ const STATE_MARK: Record<
 export function visibleSubmenu(
   items: readonly SubmenuItem[],
   permissions: ReadonlySet<string>,
+  callerIsKnown = true,
 ): SubmenuItem[] {
+  // 🔴 NO SESSION MEANS SHOW THE SHAPE OF THE MODULE, NOT ONE SECTION OF IT.
+  //
+  // Raised by the Supervisor against the first version, which filtered
+  // unconditionally. A build with no identity provider compiled in has no
+  // caller and never will, and this application is DEMONSTRATED in that state
+  // — so filtering there does not withhold anything from anybody, it just
+  // collapses Administration from nine sections to whichever ones happen to
+  // appear in `ALL_NAV_PERMISSIONS`. That set is derived from nav DESTINATIONS
+  // and contains none of the `admin.*` section codes.
+  //
+  // This is the sidebar's own documented rule, one level down: the fallback
+  // exists for ABSENCE OF A SESSION, and a menu discloses nothing because
+  // every route re-authorizes server-side (§6). A signed-in caller who holds
+  // nothing still sees nothing — that case goes through the filter below,
+  // because it is an ANSWER rather than an absence.
+  if (!callerIsKnown) {
+    return [...items];
+  }
   return items.filter((item) => permits(permissions, item.permission));
 }
 
@@ -124,7 +143,10 @@ export function ContextSubmenu({
   activeHref: string;
 }): ReactNode {
   const permissions = usePermissions();
-  const visible = visibleSubmenu(items, permissions);
+  // A named binding, not a hook call in argument position: both work, and one
+  // of them is what `react-hooks/rules-of-hooks` is written to be suspicious of.
+  const callerIsKnown = useCallerIsKnown();
+  const visible = visibleSubmenu(items, permissions, callerIsKnown);
 
   // Every section filtered out. Render nothing rather than an empty sticky
   // bar with a border and no content — the same reasoning `visibleNavigation`
