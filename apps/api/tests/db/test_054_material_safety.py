@@ -494,12 +494,27 @@ def test_every_organization_has_a_decidable_safety_template(owner_session: Sessi
     assert unheld is None, f"SAFETY_REVIEW steps require permissions no role holds: {unheld}"
 
 
-def test_segregation_of_duties_is_satisfiable(owner_session: Session) -> None:
+def test_segregation_of_duties_is_satisfiable(
+    owner_session: Session, safety_fixture
+) -> None:
     """🔴 THE RULE THAT WOULD HAVE MADE THE ROUTE UNCOMPLETABLE.
 
     Step 2 must be decided by somebody who did not decide step 1. If both
     steps' permissions reached only ONE role, no route could ever close --
     and nothing about the seed would have looked wrong.
+
+    🔴 IT TAKES `safety_fixture` FOR ITS ORGANIZATION, AND THAT IS THE POINT.
+
+    This test used to name no organization at all: it asked whether ANY org
+    anywhere had a SAFETY_REVIEW template with steps. Templates are provisioned
+    per organization by 055's trigger, so it was silently reading whatever
+    another test had left behind -- and it PASSED ONLY BECAUSE THOSE TESTS
+    LEAKED. The moment their fixtures were given the teardown a commit makes
+    mandatory, this went red on a fresh database, having never actually tested
+    its own subject.
+
+    A test that depends on another test's residue is order-dependent and green
+    by accident. It now creates the organization it asks about.
     """
     roles_per_step = owner_session.execute(
         text(
@@ -511,12 +526,17 @@ def test_segregation_of_duties_is_satisfiable(owner_session: Session) -> None:
               JOIN core.permissions p ON p.code = s.permission_required
               JOIN core.role_permissions rp ON rp.permission_id = p.id
              WHERE t.template_code = 'SAFETY_REVIEW'
+               AND t.organization_id = :org
              GROUP BY s.step_number ORDER BY s.step_number
             """
-        )
+        ),
+        {"org": safety_fixture["org_id"]},
     ).all()
     by_step = {row.step_number: row.roles for row in roles_per_step}
-    assert by_step, "the SAFETY_REVIEW template has no steps"
+    assert by_step, (
+        "the SAFETY_REVIEW template has no steps for this organization -- "
+        "055's provisioning trigger did not fire on organization creation"
+    )
     assert by_step.get(2, 0) >= 2, (
         "step 2 of SAFETY_REVIEW is reachable by fewer than two roles, so "
         "must_differ_from_group makes it undecidable whenever the same person "
