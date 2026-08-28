@@ -31,6 +31,7 @@ rows and reported a clean `INSERT 0 0` that looked exactly like a pass.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 import pytest
 from sqlalchemy import text
@@ -48,7 +49,7 @@ pytestmark = pytest.mark.db
 
 
 @pytest.fixture
-def competitor_fixture(owner_session: Session) -> dict[str, uuid.UUID]:
+def competitor_fixture(owner_session: Session) -> Iterator[dict[str, uuid.UUID]]:
     suffix = uuid.uuid4().hex[:8]
 
     org_id = owner_session.execute(
@@ -156,7 +157,7 @@ def competitor_fixture(owner_session: Session) -> dict[str, uuid.UUID]:
     )
     owner_session.flush()
 
-    return {
+    yield {
         "sample_id": sample_id,
         "org_id": org_id,
         "user_id": user_id,
@@ -168,6 +169,45 @@ def competitor_fixture(owner_session: Session) -> dict[str, uuid.UUID]:
         "sds_id": sds_id,
         "label_a": label_a,
     }
+
+    # 🔴 EXPLICIT TEARDOWN, BECAUSE TWO TESTS BELOW COMMIT.
+    #
+    # `owner_session`'s rollback cannot undo a commit, and a committed fixture
+    # row is permanent. CI counts `materials.materials` GLOBALLY after seeding
+    # twice and compares it with `demo-data.json`, so every leaked material
+    # makes the seed look non-idempotent -- which is exactly how this was
+    # found: the suite was green locally on a database that had quietly
+    # accumulated dozens of these orgs.
+    #
+    # Children before parents: every FK in the digital thread is RESTRICT by
+    # design (CLAUDE.md §5), so the order below is not cosmetic. The GUC is
+    # re-set because the competitor and safety tables FORCE row-level
+    # security, which binds the owner too -- without it these DELETEs match
+    # nothing and report success.
+    owner_session.rollback()
+    owner_session.begin()
+    owner_session.execute(
+        text("SELECT set_config('app.current_org', :o, true)"), {"o": str(org_id)}
+    )
+    for statement in (
+        "DELETE FROM competitors.composition_evidence WHERE organization_id = :o",
+        "DELETE FROM competitors.benchmarks WHERE organization_id = :o",
+        "DELETE FROM competitors.samples WHERE organization_id = :o",
+        # 🔴 DOCUMENTS BEFORE PRODUCTS. `material_documents_competitor_fk` is
+        # RESTRICT, so a competitor label pins the product it belongs to. I got
+        # this order wrong first time and the foreign key said so immediately --
+        # which is the constraint doing precisely the job it exists for.
+        "DELETE FROM materials.material_documents WHERE organization_id = :o",
+        "DELETE FROM competitors.products WHERE organization_id = :o",
+        "DELETE FROM materials.materials WHERE organization_id = :o",
+        "DELETE FROM projects.projects WHERE organization_id = :o",
+        "DELETE FROM core.member_roles WHERE member_id = :m",
+        "DELETE FROM core.organization_members WHERE organization_id = :o",
+        "DELETE FROM core.users WHERE id = :u",
+        "DELETE FROM core.organizations WHERE id = :o",
+    ):
+        owner_session.execute(text(statement), {"o": org_id, "u": user_id, "m": member_id})
+    owner_session.commit()
 
 
 def _make_product(session: Session, org_id: uuid.UUID, user_id: uuid.UUID, name: str) -> uuid.UUID:

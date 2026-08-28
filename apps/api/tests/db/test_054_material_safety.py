@@ -17,6 +17,7 @@ it needs, so the guard actually executes.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 import pytest
 from sqlalchemy import text
@@ -32,7 +33,7 @@ pytestmark = pytest.mark.db
 
 
 @pytest.fixture
-def safety_fixture(owner_session: Session) -> dict[str, uuid.UUID]:
+def safety_fixture(owner_session: Session) -> Iterator[dict[str, uuid.UUID]]:
     """An organization with a material and one approved, scan-clean SDS."""
     suffix = uuid.uuid4().hex[:8]
 
@@ -98,12 +99,54 @@ def safety_fixture(owner_session: Session) -> dict[str, uuid.UUID]:
         text("SELECT set_config('app.current_org', :o, true)"), {"o": str(org_id)}
     )
 
-    return {
+    yield {
         "org_id": org_id,
         "user_id": user_id,
         "material_id": material_id,
         "document_id": document_id,
     }
+
+    # 🔴 EXPLICIT TEARDOWN, BECAUSE ONE TEST BELOW COMMITS.
+    #
+    # `test_another_organization_reaches_no_interpretations` commits so the
+    # runtime role on a second connection can see the row. Its `finally`
+    # removes the `sds_versions` row it made and NOTHING ELSE, so the
+    # organization, the material and the document stayed behind for ever.
+    #
+    # CI counts `materials.materials` GLOBALLY after seeding twice and compares
+    # it with `demo-data.json`, so each leaked material makes the SEED look
+    # non-idempotent -- a red pointing at innocent code. Found on the first CI
+    # run this file ever had; locally the suite was green over a database that
+    # had silently accumulated dozens of these organizations.
+    #
+    # Children before parents: every FK in the thread is RESTRICT by design.
+    # The GUC is re-set because `safety.*` FORCES row-level security, which
+    # binds the owner too -- without it these DELETEs match nothing and still
+    # report success.
+    owner_session.rollback()
+    owner_session.begin()
+    owner_session.execute(
+        text("SELECT set_config('app.current_org', :o, true)"), {"o": str(org_id)}
+    )
+    for statement in (
+        "DELETE FROM safety.safety_alerts WHERE organization_id = :o",
+        "DELETE FROM safety.safety_reviews WHERE organization_id = :o",
+        "DELETE FROM safety.storage_rules WHERE organization_id = :o",
+        "DELETE FROM safety.incompatibility_rules WHERE organization_id = :o",
+        "DELETE FROM safety.chemical_components WHERE organization_id = :o",
+        "DELETE FROM safety.hazard_classifications WHERE organization_id = :o",
+        "DELETE FROM safety.sds_sections WHERE organization_id = :o",
+        "DELETE FROM safety.sds_versions WHERE organization_id = :o",
+        "DELETE FROM materials.material_documents WHERE organization_id = :o",
+        "DELETE FROM materials.materials WHERE organization_id = :o",
+        "DELETE FROM core.member_roles WHERE member_id IN "
+        "  (SELECT id FROM core.organization_members WHERE organization_id = :o)",
+        "DELETE FROM core.organization_members WHERE organization_id = :o",
+        "DELETE FROM core.users WHERE id = :u",
+        "DELETE FROM core.organizations WHERE id = :o",
+    ):
+        owner_session.execute(text(statement), {"o": org_id, "u": user_id})
+    owner_session.commit()
 
 
 def _make_document(
