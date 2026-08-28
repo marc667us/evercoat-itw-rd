@@ -1,5 +1,111 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION 2026-08-28 (LATE) — PHASE 3 FINISHED, AND THE FIX MADE A HOLE REACHABLE
+
+Tip **`4effbe6`** on branch **`slice7-material-safety-data`** (3 commits ahead of
+`master`, plus today's earlier three). Migration **057 / `p1000`**, both trees.
+
+- apps/api **889 / 0 / 11** local · apps/web **218** vitest
+- ruff, ruff format, mypy, `tsc`, ESLint all clean
+- ▶ **LIVE SUITE ON THE DEPLOYED DEMO: 967 passed / 0 failed / 0 skipped** —
+  api-live **900** + e2e **67**, run as **two phases** against the same build.
+  Playwright collected 67 specs and passed 67, so nothing was refused.
+
+🔴 **THE DEMO HOSTNAME CHANGED TODAY AND MEMORY'S WAS STALE.** It is now
+`https://garcia-ottawa-financial-fame.trycloudflare.com`. The old one answered
+**000**. Read the current one out of `tmp/demo/cloudflared.err.log`, never from a
+note — a quick tunnel mints a new hostname every restart.
+
+🔴 **`/health/ready` WAS 200 OVER A STALE BUILD.** All three checks reported ok
+while the deployed API served **7 of the 11** competitor operations. The tell was
+`/openapi.json`, not the health check. **Check the thing you changed.**
+
+### What this session did
+
+Phase 3's schema shipped this morning (`dcb0c06`, `e4f52e0`, `4e32a54`); its
+**vertical** was unfinished and uncommitted.
+
+**Two of 056's four tables had a writer route and nothing that could press it.**
+`competitors.samples` and `competitors.benchmarks` had no GET, no client
+function and no control — writable only by something never built, readable by
+nothing. Added both readers, both routes, the clients, hooks and screen panels.
+
+**The server had always accepted `sample_id` on evidence and nothing ever sent
+it**, so every `manual_observation` — the entire third entry mode — was recorded
+unattributable.
+
+### 🔴 AND WIRING THAT FIELD MADE A DORMANT SCHEMA HOLE LIVE
+
+056 bound `source_document_id` to the competitor product with a three-column key
+and wrote the reason beside it: *"a label uploaded for product A could be cited
+as evidence for product B and every other constraint would still hold."* True of
+samples verbatim — and `composition_evidence_sample_fk` was left
+`(sample_id, organization_id)`.
+
+It was harmless **only because no client had ever sent the field**. Closed by
+057, which asserts the resulting constraint definition rather than that the DDL
+ran. Found by the Supervisor, on the commit that made it reachable.
+
+> **NEW LESSON: ASK WHAT A CHANGE MAKES REACHABLE, NOT ONLY WHAT IT CHANGES.**
+> Wiring a client to an existing field is the first time that field's
+> constraints carry any weight.
+
+### Two reviewers, 15 findings, 2 overlaps — the 22nd session running
+
+Codex **VERDICT: FAIL** (1 P1, 3 P2); Supervisor 11 (3 HIGH, 4 MEDIUM, 4 LOW).
+Full adjudication in `reviews/adjudication-c98420a-competitors-2026-08-28.md`.
+
+- **A WRITE GATED ON A READ PERMISSION** — `POST /benchmarks` required only
+  `test.view`. Now `material.edit` **and** `test.view`.
+- **`POST /evidence/{id}/grade` HAD NO CALLER** — the third instance of the very
+  defect this session set out to remove, beside the two I fixed. **A client
+  function is not a caller.**
+- **EVERY WORKSPACE WRITE FAILED SILENTLY** — the only alert was bound to a
+  different mutation instance on the parent, hiding the **503 raised when no
+  malware verdict could be obtained**.
+- **`verify_evidence` had no `guarded_write` and no `except DBAPIError`** — two
+  of 056's guards escaped as a 500. `_translate` already had branches for both
+  and **both were unreachable**.
+- **`_translate` returned raw PostgreSQL text** for four constraints.
+- **A GUARD THAT PASSED BECAUSE IT COULD NOT SEE** — my cross-tenant test looped
+  over four tables while the fixture wrote into one.
+
+### Falsified by breaking the DATABASE, not the code
+
+| Broken on purpose | Result | Restored |
+|---|---|---|
+| `DROP TRIGGER material_documents_supersedes_same_owner` | 2 red, incl. the SDS-stays-submittable assertion | ✅ |
+| `ALTER TABLE competitors.samples DISABLE ROW LEVEL SECURITY` | 2 red, incl. the cross-tenant loop | ✅ `force=true` re-asserted |
+
+### ⚠️ THINGS THE NEXT SESSION NEEDS
+
+- 🔴 **`alembic upgrade head` NEEDS `MIGRATION_DATABASE_URL` WITH THE POSTGRES
+  SUPERUSER ON THIS HOST.** `alembic_version` is owned by `postgres`; both
+  `evercoat_app` and `evercoat_owner` are refused on it. Password
+  `dev-superuser-pw` (container env).
+- **Rebuild the demo by hand, never via `demo-up.ps1`, unless a new hostname is
+  acceptable** — that script restarts cloudflared. Kill the **:3000** listener
+  first or `next build` stalls forever holding `.next-demo`. Script kept at
+  `scratchpad/redeploy_demo.ps1` pattern: stop 3000 + 18000, start uvicorn,
+  build with `NEXT_PUBLIC_*` pointed at the CURRENT tunnel, start standalone.
+- **I112 filed** — the competitor vertical has 23 DB tests and **not one route
+  or service test**, which is exactly why three Supervisor findings were green.
+
+### ▶ NEXT, in order
+
+1. **I112** — route/service coverage for the competitor vertical.
+   `apps/api/tests/test_knowledge_routes.py` is the precedent.
+2. **Phase 4 — the research / formulation vertical** (`research` tables →
+   investigation → finding → approval → experiment proposal → the **existing**
+   Formulations `revise_version` → Knowledge promotion). Migration 058.
+3. **Slice 7's messaging surface (I12)** — still **0 of 5 endpoints pressable**,
+   no notifications screen. The last MVP-1 slice with unbuilt browser surface.
+4. **I110** (SECURITY.md states a CSP that does not exist) · **I111** (`next
+   build` rewrites `tsconfig.json`) · **I76/I77** (`MAX_DISTANCE = 0.74` must be
+   re-derived) · **I56/I58** (FORCE RLS cutover, carrying the owed measurement).
+5. **D1 — deploy API + Keycloak on/after 2026-09-01.** 🔴 Do NOT delete
+   `autoworkshop-postgres` early; its app data is unarchived.
+
 ## ▶▶ SESSION 2026-08-27 (LATE) — THE REVIEW FIXES, AND THE FIXES' OWN DEFECTS
 
 Tip **`91926ca`**. apps/api **846 / 0 / 11** (857 collected), apps/web **211**

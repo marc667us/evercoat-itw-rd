@@ -181,6 +181,60 @@ import {
   type Analytics,
   type TestResultsReport,
 } from "./analysis";
+import {
+  acknowledgeAlert,
+  createInterpretation,
+  fetchComparableRevisions,
+  fetchInterpretableDocuments,
+  fetchMaterialInterpretations,
+  fetchPendingInterpretations,
+  openSafetyReview,
+  raiseAlerts,
+  fetchSafetyAlerts,
+  fetchSafetyPosition,
+  reviewInterpretation,
+  type ComparableRevision,
+  type InterpretableDocument,
+  type InterpretationRequest,
+  type MaterialInterpretation,
+  type PendingInterpretation,
+  type SafetyAlert,
+  type SafetyPosition,
+} from "./material-safety";
+import {
+  useAuth,
+  type OrganizationChoice,
+} from "@/components/providers/auth-provider";
+import {
+  fetchCompetitorBenchmarks,
+  fetchCompetitorDocuments,
+  fetchCompetitorProducts,
+  fetchCompetitorSamples,
+  fetchCompositionMatrix,
+  gradeCompetitorEvidence,
+  recordCompetitorBenchmark,
+  recordCompetitorEvidence,
+  registerCompetitorProduct,
+  registerCompetitorSample,
+  uploadCompetitorDocument,
+  type BenchmarkRequest,
+  type CompetitorBenchmark,
+  type CompetitorDocument,
+  type CompetitorProduct,
+  type CompetitorSample,
+  type CompositionMatrix,
+  type EvidenceRequest as CompetitorEvidenceRequest,
+  type ProductRequest,
+  // Aliased: laboratory.ts already exports a SampleRequest, and that one is a
+  // BATCH sample of our own. Two different things with one name in one file.
+  type SampleRequest as CompetitorSampleRequest,
+} from "./competitors";
+import {
+  dashboardForRoles,
+  fetchRoleDashboard,
+  type DashboardRole,
+  type RoleDashboard,
+} from "./dashboards";
 import { fetchProjects, type Project } from "./projects";
 import { useSession } from "./session";
 import { fetchMyWork, type Task } from "./tasks";
@@ -2230,6 +2284,465 @@ export function useAdminActions(): {
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
     lastAction: mutation.data?.label ?? null,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Material Safety Data & Research Center
+//
+// Written in FULL, never abbreviated. `MSD` in this codebase is the Material
+// Science & Development Assistant -- a different capability with its own
+// tables, permission and conversations. Nothing here contains `msd`.
+// ---------------------------------------------------------------------------
+
+/** Safety alerts this caller can reach. Live or nothing -- see `LiveOnly`. */
+export function useSafetyAlerts<TShown = SafetyAlert[]>(
+  project: (live: SafetyAlert[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("safety-alerts", project, fetchSafetyAlerts);
+}
+
+/** Interpretations awaiting technical review -- the compliance queue. */
+export function usePendingInterpretations<TShown = PendingInterpretation[]>(
+  project: (live: PendingInterpretation[]) => TShown = (live) =>
+    live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("safety-pending", project, fetchPendingInterpretations);
+}
+
+/**
+ * The safety position for one material.
+ *
+ * 🔴 `data.current` IS NULLABLE AND THE PAGE MUST SAY SO. Null means no
+ * interpreted SDS that `materials.usable_documents` still returns -- none on
+ * file, or the one on file expired, was superseded, or failed the scanner.
+ * Rendering that as an empty panel would let "no hazard data" read as "no
+ * hazards".
+ */
+export function useSafetyPosition(materialId: string): LiveOnly<SafetyPosition> {
+  return useLiveOnlyRecord("safety-position", materialId, (credentials, signal) =>
+    fetchSafetyPosition(credentials, materialId, signal),
+  );
+}
+
+/**
+ * The two write actions on the Material Safety Data screen.
+ *
+ * One hook rather than two, because they invalidate the same queries and a
+ * screen showing both wants one `isPending`. `lastAction` names which one
+ * happened, so the confirmation can be specific rather than "done".
+ */
+export function useSafetyActions(): {
+  readonly acknowledge: (alertId: string) => void;
+  readonly review: (sdsVersionId: string, accept: boolean) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | { readonly kind: "acknowledge"; readonly alertId: string }
+        | { readonly kind: "review"; readonly sdsVersionId: string; readonly accept: boolean },
+    ) => {
+      if (job.kind === "acknowledge") {
+        await acknowledgeAlert(credentials(), job.alertId);
+        return "acknowledged";
+      }
+      const result = await reviewInterpretation(
+        credentials(),
+        job.sdsVersionId,
+        job.accept,
+      );
+      return result.review_state;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["safety-alerts"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-pending"] });
+      // A confirmed interpretation changes what the material screen shows.
+      void queryClient.invalidateQueries({ queryKey: ["safety-position"] });
+    },
+  });
+
+  return {
+    acknowledge: (alertId) => mutation.mutate({ kind: "acknowledge", alertId }),
+    review: (sdsVersionId, accept) =>
+      mutation.mutate({ kind: "review", sdsVersionId, accept }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+
+/** Usable Safety Data Sheets nobody has read yet — what the record form offers. */
+export function useInterpretableDocuments<TShown = InterpretableDocument[]>(
+  project: (live: InterpretableDocument[]) => TShown = (live) =>
+    live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("safety-candidates", project, fetchInterpretableDocuments);
+}
+
+/** Every reading recorded for a material, history included. */
+export function useMaterialInterpretations(
+  materialId: string,
+): LiveOnly<MaterialInterpretation[]> {
+  return useLiveOnlyRecord("safety-material-readings", materialId, (credentials, signal) =>
+    fetchMaterialInterpretations(credentials, materialId, signal),
+  );
+}
+
+/**
+ * The three writes that had no browser caller.
+ *
+ * 🔴 THEY SHIP WITH THEIR CONTROLS, IN THE SAME COMMIT. `POST /interpretations`,
+ * `POST .../alerts` and `POST .../safety-reviews` existed, were tested, and no
+ * person could press anything that called them — "a route with no caller is the
+ * same defect as a table with no writer", which this project has counted 23
+ * instances of. Codex found it in review.
+ *
+ * `lastResult` carries the shape each one returns, because they are not
+ * interchangeable: raising alerts can legitimately return NONE (nothing
+ * substantive changed), and a screen that said "done" would hide that.
+ */
+export function useSafetyWrites(): {
+  readonly record: (request: InterpretationRequest, after?: () => void) => void;
+  readonly raise: (sdsVersionId: string, previousVersionId: string) => void;
+  readonly openReview: (
+    sdsVersionId: string,
+    projectId: string,
+    reason: string,
+    after?: () => void,
+  ) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastResult:
+    | { readonly kind: "recorded"; readonly id: string }
+    | { readonly kind: "alerts"; readonly count: number }
+    | { readonly kind: "review"; readonly id: string }
+    | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | { readonly kind: "record"; readonly request: InterpretationRequest; readonly after?: () => void }
+        | { readonly kind: "raise"; readonly sdsVersionId: string; readonly previousVersionId: string }
+        | {
+            readonly kind: "review";
+            readonly sdsVersionId: string;
+            readonly projectId: string;
+            readonly reason: string;
+            readonly after?: () => void;
+          },
+    ) => {
+      if (job.kind === "record") {
+        const created = await createInterpretation(credentials(), job.request);
+        return { kind: "recorded" as const, id: created.id };
+      }
+      if (job.kind === "raise") {
+        const raised = await raiseAlerts(
+          credentials(),
+          job.sdsVersionId,
+          job.previousVersionId,
+        );
+        return { kind: "alerts" as const, count: raised.length };
+      }
+      const opened = await openSafetyReview(
+        credentials(),
+        job.sdsVersionId,
+        job.projectId,
+        job.reason,
+      );
+      return { kind: "review" as const, id: opened.id };
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["safety-alerts"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-pending"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-candidates"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-position"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-material-readings"] });
+      // 🔴 THE FORM IS CLEARED ON SUCCESS, AND ONLY ON SUCCESS. The same
+      // reasoning as `useOpenInvestigation`: nothing acknowledged the create,
+      // so a user who saw no confirmation pressed the button again and hit a
+      // uniqueness refusal that reads as though the FIRST attempt had failed.
+      if (job.kind === "record" || job.kind === "review") job.after?.();
+    },
+  });
+
+  return {
+    record: (request, after) => mutation.mutate({ kind: "record", request, after }),
+    raise: (sdsVersionId, previousVersionId) =>
+      mutation.mutate({ kind: "raise", sdsVersionId, previousVersionId }),
+    openReview: (sdsVersionId, projectId, reason, after) =>
+      mutation.mutate({ kind: "review", sdsVersionId, projectId, reason, after }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastResult: mutation.data ?? null,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+/** Materials whose newest reading has a predecessor — what "raise alerts" offers. */
+export function useComparableRevisions<TShown = ComparableRevision[]>(
+  project: (live: ComparableRevision[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("safety-comparable", project, fetchComparableRevisions);
+}
+
+// ---------------------------------------------------------------------------
+// Role dashboards — the endpoint that had no browser caller
+// ---------------------------------------------------------------------------
+
+/**
+ * Which dashboard this caller should see, from the roles their membership
+ * carries. `null` means they hold no role that has one.
+ *
+ * Reads the ACTIVE organization's roles, not the first in the list: membership
+ * is per-tenant, and picking the first has already been a real defect in this
+ * provider once — it moved a chemist's writes into the wrong tenant.
+ */
+export function useDashboardRole(): DashboardRole | null {
+  const session = useSession();
+  const { organizations } = useAuth();
+  if (session.status !== "authenticated") return null;
+  const active = organizations.find(
+    (org: OrganizationChoice) => org.organizationId === session.credentials.organizationId,
+  );
+  return dashboardForRoles(active?.roles ?? []);
+}
+
+/**
+ * One role's dashboard, from source records.
+ *
+ * 🔴 THIS IS THE CALLER `GET /api/dashboards/{role}` NEVER HAD. The endpoint,
+ * four builders, the analysis conductor and a db test all existed; nothing in
+ * the browser asked for any of it, so every signed-in person saw one fixed
+ * screen. Signed in as the director, you got the chemist's.
+ *
+ * `enabled` waits for a role: requesting `/api/dashboards/null` would be a 404
+ * dressed up as an outage.
+ */
+export function useRoleDashboard(role: DashboardRole | null): LiveOnly<RoleDashboard> {
+  return useLiveOnlyRecord("role-dashboard", role ?? "", (credentials, signal) =>
+    fetchRoleDashboard(credentials, role ?? "", signal),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Competitor intelligence
+// ---------------------------------------------------------------------------
+
+export function useCompetitorProducts<TShown = CompetitorProduct[]>(
+  project: (live: CompetitorProduct[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("competitor-products", project, fetchCompetitorProducts);
+}
+
+/** The Composition Evidence Matrix for one product. */
+export function useCompositionMatrix(productId: string): LiveOnly<CompositionMatrix> {
+  return useLiveOnlyRecord("competitor-composition", productId, (credentials, signal) =>
+    fetchCompositionMatrix(credentials, productId, signal),
+  );
+}
+
+/** Labels, photographs and literature on file for one product. */
+export function useCompetitorDocuments(productId: string): LiveOnly<CompetitorDocument[]> {
+  return useLiveOnlyRecord("competitor-documents", productId, (credentials, signal) =>
+    fetchCompetitorDocuments(credentials, productId, signal),
+  );
+}
+
+/**
+ * Physical samples held for one competitor product.
+ *
+ * 🔴 THE LIST EXISTS SO A CLAIM CAN CITE ONE. `manual_observation` means a
+ * person read a tin; the matrix stores WHICH tin in `sample_id`, and until
+ * this hook existed no screen could offer the choice, so every observation
+ * was recorded unattributable.
+ */
+export function useCompetitorSamples(productId: string): LiveOnly<CompetitorSample[]> {
+  return useLiveOnlyRecord("competitor-samples", productId, (credentials, signal) =>
+    fetchCompetitorSamples(credentials, productId, signal),
+  );
+}
+
+/** Measured comparisons recorded against one competitor product. */
+export function useCompetitorBenchmarks(productId: string): LiveOnly<CompetitorBenchmark[]> {
+  return useLiveOnlyRecord("competitor-benchmarks", productId, (credentials, signal) =>
+    fetchCompetitorBenchmarks(credentials, productId, signal),
+  );
+}
+
+/**
+ * Every write in competitor intelligence, including the file upload.
+ *
+ * 🔴 THE UPLOAD IS IN THE SAME HOOK AS THE REST, so the screen has one
+ * `isPending` and one error. A separate upload hook would let a form show
+ * "saved" while a file was still in flight.
+ */
+export function useCompetitorWrites(): {
+  readonly registerProduct: (request: ProductRequest, after?: () => void) => void;
+  readonly upload: (
+    productId: string,
+    file: File,
+    documentType: string,
+    title: string,
+    after?: () => void,
+  ) => void;
+  readonly recordEvidence: (
+    productId: string,
+    request: CompetitorEvidenceRequest,
+    after?: () => void,
+  ) => void;
+  readonly grade: (evidenceId: string, confidence: string) => void;
+  readonly registerSample: (
+    productId: string,
+    request: CompetitorSampleRequest,
+    after?: () => void,
+  ) => void;
+  readonly recordBenchmark: (
+    productId: string,
+    request: BenchmarkRequest,
+    after?: () => void,
+  ) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | { readonly kind: "product"; readonly request: ProductRequest; readonly after?: () => void }
+        | {
+            readonly kind: "upload";
+            readonly productId: string;
+            readonly file: File;
+            readonly documentType: string;
+            readonly title: string;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "evidence";
+            readonly productId: string;
+            readonly request: CompetitorEvidenceRequest;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "sample";
+            readonly productId: string;
+            readonly request: CompetitorSampleRequest;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "benchmark";
+            readonly productId: string;
+            readonly request: BenchmarkRequest;
+            readonly after?: () => void;
+          }
+        | { readonly kind: "grade"; readonly evidenceId: string; readonly confidence: string },
+    ) => {
+      if (job.kind === "product") {
+        await registerCompetitorProduct(credentials(), job.request);
+        return "product registered";
+      }
+      if (job.kind === "upload") {
+        await uploadCompetitorDocument(
+          credentials(),
+          job.productId,
+          job.file,
+          job.documentType,
+          job.title,
+        );
+        return "uploaded";
+      }
+      if (job.kind === "evidence") {
+        await recordCompetitorEvidence(credentials(), job.productId, job.request);
+        return "evidence recorded";
+      }
+      if (job.kind === "sample") {
+        await registerCompetitorSample(credentials(), job.productId, job.request);
+        return "sample registered";
+      }
+      if (job.kind === "benchmark") {
+        await recordCompetitorBenchmark(credentials(), job.productId, job.request);
+        return "benchmark recorded";
+      }
+      const graded = await gradeCompetitorEvidence(
+        credentials(),
+        job.evidenceId,
+        job.confidence,
+      );
+      return graded.confidence;
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["competitor-products"] });
+      void queryClient.invalidateQueries({ queryKey: ["competitor-composition"] });
+      void queryClient.invalidateQueries({ queryKey: ["competitor-documents"] });
+      // A new sample changes what an observation may cite, so the sample list
+      // is invalidated by EVERY write here, not only by "sample".
+      void queryClient.invalidateQueries({ queryKey: ["competitor-samples"] });
+      void queryClient.invalidateQueries({ queryKey: ["competitor-benchmarks"] });
+      if (job.kind !== "grade") job.after?.();
+    },
+  });
+
+  return {
+    registerProduct: (request, after) => mutation.mutate({ kind: "product", request, after }),
+    upload: (productId, file, documentType, title, after) =>
+      mutation.mutate({ kind: "upload", productId, file, documentType, title, after }),
+    recordEvidence: (productId, request, after) =>
+      mutation.mutate({ kind: "evidence", productId, request, after }),
+    grade: (evidenceId, confidence) =>
+      mutation.mutate({ kind: "grade", evidenceId, confidence }),
+    registerSample: (productId, request, after) =>
+      mutation.mutate({ kind: "sample", productId, request, after }),
+    recordBenchmark: (productId, request, after) =>
+      mutation.mutate({ kind: "benchmark", productId, request, after }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
     unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
   };
 }

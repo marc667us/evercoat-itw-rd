@@ -17,6 +17,7 @@
 
 import Link from "next/link";
 
+import { RoleDashboard } from "./role-dashboard";
 import { ChartWrapper } from "@/components/ui/chart-wrapper";
 import { trafficLightOption } from "@/components/ui/chart-builders";
 import { DemoBanner } from "@/components/ui/demo-banner";
@@ -48,6 +49,15 @@ export function DashboardView() {
       <DemoBanner />
       <div className="p-6">
         <h1 className="text-xl font-semibold text-slate-900">Dashboard</h1>
+
+        {/* 🔴 THE CALLER'S OWN VIEW, FIRST. Everything below this is derived
+            from the bundled demonstration dataset and is the same for
+            everybody; this section is the only part that knows who is signed
+            in. It was missing entirely, which is why a director saw a
+            chemist's screen. */}
+        <div className="mt-6">
+          <RoleDashboard />
+        </div>
         <p className="mt-1.5 max-w-3xl text-sm text-slate-600">
           Across {PROJECTS.length} active development projects. Every figure below
           is derived from the underlying records — click any of them to reach the
