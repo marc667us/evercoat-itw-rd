@@ -423,10 +423,28 @@ def post_grade(
 def post_benchmark(
     competitor_product_id: uuid.UUID,
     payload: BenchmarkCreate,
-    principal: Principal = Depends(require_permission("test.view")),
+    principal: Principal = Depends(
+        require_permission("material.edit", "test.view", require_all=True)
+    ),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """It cites a test; it does not grade one. Testing owns GREEN/YELLOW/RED."""
+    """It cites a test; it does not grade one. Testing owns GREEN/YELLOW/RED.
+
+    🔴 THIS WAS GATED ON `test.view` ALONE, WHICH IS A READ PERMISSION ON A
+    WRITE ROUTE (Codex P1, 2026-08-28). Anybody who could merely LOOK at tests
+    could author competitor comparisons and gap summaries, and RLS could not
+    stop it: the writer is inside a project they legitimately reach, so the
+    policy passes. A read permission never authorizes a write.
+
+    BOTH, not either. `material.edit` is the authoring right the rest of this
+    module uses; `test.view` is needed because a benchmark cites a test and
+    displays values drawn from it, so an author who cannot see tests would be
+    recording a comparison against something invisible to them.
+
+    Measured: `product_development_chemist` holds both, which is exactly who
+    benchmarks a competitor. `procurement_specialist` holds `material.edit`
+    without `test.view` and is correctly excluded.
+    """
     try:
         result = record_benchmark(
             session,

@@ -94,9 +94,7 @@ def upgrade() -> None:
         )
     ).scalar()
     if unheld:
-        raise RuntimeError(
-            f"SAFETY_REVIEW steps require permissions no role holds: {unheld}"
-        )
+        raise RuntimeError(f"SAFETY_REVIEW steps require permissions no role holds: {unheld}")
 
 
 def downgrade() -> None:
@@ -129,14 +127,8 @@ def downgrade() -> None:
             """
         )
     )
-    op.execute(
-        text("DROP FUNCTION IF EXISTS workflow.provision_safety_review_template(UUID)")
-    )
-    op.execute(
-        text(
-            "DELETE FROM workflow.approval_routes WHERE entity_type = 'safety_review'"
-        )
-    )
+    op.execute(text("DROP FUNCTION IF EXISTS workflow.provision_safety_review_template(UUID)"))
+    op.execute(text("DELETE FROM workflow.approval_routes WHERE entity_type = 'safety_review'"))
     op.execute(
         text(
             """
@@ -180,8 +172,4 @@ def downgrade() -> None:
             """
         )
     )
-    op.execute(
-        text(
-            "DELETE FROM core.permissions WHERE code IN ('safety.approve')"
-        )
-    )
+    op.execute(text("DELETE FROM core.permissions WHERE code IN ('safety.approve')"))

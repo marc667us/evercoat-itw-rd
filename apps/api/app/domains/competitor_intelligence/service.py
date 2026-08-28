@@ -133,6 +133,26 @@ def _translate(exc: DBAPIError) -> CompetitorError:
         return CompetitorError("document-backed evidence must name the document")
     if "composition_evidence_balance_has_no_range" in detail:
         return CompetitorError("'the balance' is not also a concentration range")
+    # 🔴 THESE FOUR FELL THROUGH TO `CompetitorError(detail)`, WHICH RETURNS
+    # THE RAW POSTGRES MESSAGE — schema, table and the constraint expression —
+    # as the response body (Supervisor finding 5, 2026-08-28). Entering a
+    # From of 50 and a To of 10 was enough to disclose it.
+    if "composition_evidence_sample_fk" in detail:
+        return CompetitorStateError(
+            "that sample does not belong to this competitor product. A tin held "
+            "for one product cannot be the source of a claim about another."
+        )
+    if "composition_evidence_laboratory_shape" in detail:
+        return CompetitorError(
+            "a laboratory-backed claim must cite the sample or the test it came from"
+        )
+    if "composition_evidence_range_ordered" in detail:
+        return CompetitorError("the upper concentration cannot be below the lower one")
+    if "composition_evidence_verification_complete" in detail:
+        return CompetitorError(
+            "a verified claim needs both a named verifier and a time, and a claim "
+            "that is not verified may carry neither"
+        )
     if "row-level security" in detail:
         return CompetitorStateError("this record names a project you cannot reach")
     return CompetitorError(detail)
@@ -456,31 +476,49 @@ def verify_evidence(
     as `evercoat_app` is inside the trust boundary. This removes every
     accidental path and makes a deliberate one attributable — the same
     distinction I109/ADR-032 draws.
+
+    🔴 THIS WAS THE ONE WRITE IN THE MODULE WITH NO `guarded_write` AND NO
+    `except DBAPIError` (Supervisor, 2026-08-28). Two of 056's own guards refuse
+    this exact UPDATE — `composition_evidence_verifiable_source` when the claim
+    is an observation or an inference, and the verifier trigger when the named
+    reviewer does not hold the permission — and both escaped as a raw
+    `DBAPIError`. `post_grade` catches `CompetitorError`, so the caller got a
+    500 over an aborted transaction rather than the 409 the design intended.
+
+    The proof it was meant to be translated: `_translate` already carried
+    branches for both refusals, and both were unreachable.
     """
     verified = confidence == "verified"
-    row = (
-        session.execute(
-            text(
-                """
-                UPDATE competitors.composition_evidence
-                   SET confidence  = :confidence,
-                       verified_by = CASE WHEN :verified THEN :reviewer ELSE NULL END,
-                       verified_at = CASE WHEN :verified THEN clock_timestamp() ELSE NULL END
-                 WHERE id = :eid AND organization_id = :org
-                RETURNING id, confidence, verified_at
-                """
-            ),
-            {
-                "eid": evidence_id,
-                "org": organization_id,
-                "confidence": confidence,
-                "verified": verified,
-                "reviewer": reviewer_id,
-            },
-        )
-        .mappings()
-        .one_or_none()
-    )
+    try:
+        with guarded_write(session):
+            row = (
+                session.execute(
+                    text(
+                        """
+                        UPDATE competitors.composition_evidence
+                           SET confidence  = :confidence,
+                               verified_by = CASE WHEN :verified
+                                                  THEN :reviewer ELSE NULL END,
+                               verified_at = CASE WHEN :verified
+                                                  THEN clock_timestamp() ELSE NULL END
+                         WHERE id = :eid AND organization_id = :org
+                        RETURNING id, confidence, verified_at
+                        """
+                    ),
+                    {
+                        "eid": evidence_id,
+                        "org": organization_id,
+                        "confidence": confidence,
+                        "verified": verified,
+                        "reviewer": reviewer_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+    except DBAPIError as exc:
+        raise _translate(exc) from exc
+
     if row is None:
         raise CompetitorNotFoundError("no such evidence that you can reach")
 

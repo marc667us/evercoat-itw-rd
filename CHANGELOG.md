@@ -1,5 +1,87 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-28 (late) — Phase 3 finished: the tables that had no control, and the key that had no product
+
+**`c98420a` + the review fixes.** Migration **057 / `p1000`**, both trees.
+apps/api **866 → 889 / 0 / 11**; apps/web **218** vitest; ruff, ruff format,
+mypy, `tsc` and ESLint all clean.
+
+Earlier today `dcb0c06`, `e4f52e0` and `4e32a54` shipped the safety schema and
+the competitor register. Phase 3's **vertical** was unfinished: the services and
+screen were uncommitted, and two of 056's four tables had a writer route with
+nothing that could press it.
+
+🔴 **`competitors.samples` AND `competitors.benchmarks` HAD A WRITER AND NO
+READER.** No GET, no client function, no control — writable only by something
+that was never built, readable by nothing. The defect class this project has
+counted 23+ instances of, and a breach of the plan's own §10 rule that every
+table gets its writer **and** its control in the same phase.
+
+🔴 **THE SERVER HAD ALWAYS ACCEPTED `sample_id` ON EVIDENCE AND NOTHING SENT
+IT** — so `manual_observation`, the whole point of the third entry mode, was
+recorded unattributable every time.
+
+🔴 **AND ADDING THAT PICKER MADE A DORMANT SCHEMA HOLE LIVE.**
+`composition_evidence_sample_fk` was `(sample_id, organization_id)` while the
+document key beside it was product-scoped — and 056 had written the reason next
+to that one in as many words: *"a label uploaded for product A could be cited as
+evidence for product B and every other constraint would still hold."* True of
+samples verbatim. **Latent only because no client had ever sent the field.**
+Closed by 057, which asserts the resulting constraint definition rather than
+that the DDL ran. Found by the Supervisor, on the commit that made it reachable.
+
+> **A NEW LESSON: ASK WHAT A CHANGE MAKES REACHABLE, NOT ONLY WHAT IT CHANGES.**
+> Wiring a client to an existing field is not a client-side change — it is the
+> first time that field's constraints carry any weight.
+
+**TWO REVIEWERS, 15 FINDINGS, 2 OVERLAPS.** Codex 4 (VERDICT: FAIL), the
+Supervisor 11. The 22nd consecutive session in which neither alone sufficed.
+Full adjudication: `reviews/adjudication-c98420a-competitors-2026-08-28.md`.
+
+- **A WRITE WAS GATED ON A READ PERMISSION.** `POST /benchmarks` required only
+  `test.view`. Now `material.edit` **and** `test.view`. Measured:
+  `product_development_chemist` holds both; `procurement_specialist` holds
+  `material.edit` without `test.view` and is correctly excluded.
+- **`POST /evidence/{id}/grade` HAD NO CALLER** — the third instance of the very
+  defect this commit set out to remove, sitting beside the two I fixed. Every
+  claim stayed `possible` forever, four of five confidence branches could never
+  render, and `compliance.review_sds` had no browser path. **A client function
+  is not a caller.**
+- **EVERY WORKSPACE WRITE FAILED SILENTLY.** The page's only alert was bound to
+  a *different* mutation instance on the parent component — hiding, among
+  others, the **503 raised when no malware verdict could be obtained**, the one
+  status the upload route insists must never read as success.
+- **`verify_evidence` was the only write with no `guarded_write` and no
+  `except DBAPIError`**, so two of 056's own guards escaped as a 500 over an
+  aborted transaction. The proof it was meant to be caught: `_translate` already
+  carried branches for both refusals and **both were unreachable**.
+- **`_translate` returned raw PostgreSQL text** — schema, table and constraint
+  expression — as the response body for four constraints. From=50, To=10 was
+  enough.
+- **A GUARD THAT PASSED BECAUSE IT COULD NOT SEE.** My own cross-tenant test
+  looped over four tables while the fixture created rows in one, so three
+  counted zero whatever their policies did. Codex found it. Fixed, then
+  **falsified: disabling RLS on `competitors.samples` now turns it red.**
+- Also: `laboratory` was a menu option the database refused every time; the
+  project 403 rendered as an empty menu and a dead button; the file input kept
+  its filename and would not accept the same file twice; `is_balance` was
+  rendered by the matrix and settable by nothing.
+
+**FALSIFIED BY BREAKING THE DATABASE, NOT THE CODE.** Dropping
+`material_documents_supersedes_same_owner` turns two tests red including the one
+asserting the SDS stays submittable; disabling RLS on `competitors.samples`
+turns two more red. Both restored and re-measured.
+
+**THREE THINGS THE TESTS SAID AND REASONING HAD WRONG:** `core.roles` has no
+`organization_id` (the membership binds the tenant); a `BEFORE INSERT` trigger
+runs before row CHECKs, so a constraint was unreachable until the verifier held
+the permission; and triggers fire in **name** order, which makes 056's
+`material_id` branch unreachable defence-in-depth while its
+`competitor_product_id` branch is the load-bearing one.
+
+**Filed I112** — the vertical has 23 database tests and not one route or service
+test, which is exactly why three of the Supervisor's findings were green.
+
 ## 2026-08-27 (late) — the review fixes, and the eleven defects they carried
 
 **`722df3d`, `0ea7709`, `91926ca`.** apps/api **846 / 0 / 11** (857 collected);

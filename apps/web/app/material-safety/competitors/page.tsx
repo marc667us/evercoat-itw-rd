@@ -111,7 +111,23 @@ function concentration(row: EvidenceRow): string {
   return `${low ?? high}%`;
 }
 
-function MatrixRow({ row }: { row: EvidenceRow }) {
+const CONFIDENCE_ORDER: readonly EvidenceRow["confidence"][] = [
+  "unknown",
+  "possible",
+  "probable",
+  "supported",
+  "verified",
+];
+
+function MatrixRow({
+  row,
+  onGrade,
+  isPending,
+}: {
+  row: EvidenceRow;
+  onGrade: (evidenceId: string, confidence: string) => void;
+  isPending: boolean;
+}) {
   const confidence = CONFIDENCE[row.confidence];
   const source = EVIDENCE_SOURCES.find((s) => s.id === row.evidence_source);
   return (
@@ -139,6 +155,41 @@ function MatrixRow({ row }: { row: EvidenceRow }) {
       {row.rationale !== null && (
         <p className="mt-1 text-xs text-slate-700">{row.rationale}</p>
       )}
+
+      {/* 🔴 THE REVIEW CONTROL. `POST /evidence/{id}/grade` HAD NO CALLER AT
+          ALL (Supervisor, 2026-08-28): the client function and the hook both
+          existed and nothing rendered either, so every claim stayed `possible`
+          forever, four of the five CONFIDENCE branches above could never
+          appear, and `compliance.review_sds` -- the permission this slice
+          exists to give an enforcement point -- had no browser path.
+
+          Shown to everybody on purpose. §6: frontend permission checks are
+          cosmetic and the server re-enforces; the database additionally
+          refuses unless the named verifier actually holds the permission. */}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <label className="text-xs text-slate-600" htmlFor={`grade-${row.id}`}>
+          Confidence
+        </label>
+        <select
+          id={`grade-${row.id}`}
+          className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-900"
+          value={row.confidence}
+          disabled={isPending}
+          onChange={(event) => onGrade(row.id, event.target.value)}
+        >
+          {CONFIDENCE_ORDER.map((level) => (
+            <option key={level} value={level}>
+              {CONFIDENCE[level].label}
+            </option>
+          ))}
+        </select>
+        {row.confidence !== "verified" && (
+          <span className="text-[11px] text-slate-500">
+            Verified needs a document or laboratory source and a reviewer holding
+            compliance.review_sds.
+          </span>
+        )}
+      </div>
     </li>
   );
 }
@@ -155,6 +206,11 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
   const writes = useCompetitorWrites();
 
   const [file, setFile] = useState<File | null>(null);
+  // 🔴 REMOUNTS THE FILE INPUT AFTER A SUCCESSFUL UPLOAD. An uncontrolled
+  // `<input type="file">` keeps displaying the chosen filename, and
+  // re-selecting the SAME file fires no `change` event -- so a user whose
+  // upload failed could not retry it without picking a different file first.
+  const [uploadNonce, setUploadNonce] = useState(0);
   const [documentType, setDocumentType] = useState("label");
   const [docTitle, setDocTitle] = useState("");
 
@@ -162,6 +218,7 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
   const [cas, setCas] = useState("");
   const [low, setLow] = useState("");
   const [high, setHigh] = useState("");
+  const [isBalance, setIsBalance] = useState(false);
   const [evidenceSource, setEvidenceSource] = useState("manual_observation");
   const [grade, setGrade] = useState("C");
   const [sourceDocumentId, setSourceDocumentId] = useState("");
@@ -181,10 +238,20 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
   const [benchGap, setBenchGap] = useState("");
 
   const needsDocument = evidenceSource === "document";
-  // An observation was made ON something. Until this screen could name the
-  // tin, every `manual_observation` was recorded with a null `sample_id`
-  // that the server had always accepted and no client had ever sent.
-  const isObservation = evidenceSource === "manual_observation";
+  // 🔴 BOTH SOURCES MUST CITE A SAMPLE, AND ONE OF THEM COULD NOT BE WRITTEN
+  // AT ALL (Codex P2, 2026-08-28).
+  //
+  // `composition_evidence_laboratory_shape` requires a sample OR a test on
+  // every `laboratory` row. This form has no test selector and was not
+  // sending a sample either, so choosing "Our own laboratory result" produced
+  // a request the DATABASE REFUSED every time — an option on the menu that
+  // could never succeed.
+  //
+  // And an observation with no sample is the unattributable row this screen
+  // was changed to eliminate. Offering the citation but not requiring it left
+  // the default doing exactly what it always did.
+  const needsSample =
+    evidenceSource === "manual_observation" || evidenceSource === "laboratory";
   const docs = documents.data ?? [];
   const tins = samples.data ?? [];
   const comparisons = benchmarks.data ?? [];
@@ -192,6 +259,23 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
 
   return (
     <div className="grid gap-6">
+      {/* 🔴 THIS COMPONENT'S OWN `useCompetitorWrites()` HAD NO ERROR OUTPUT
+          (Supervisor, 2026-08-28). The page's only alert is bound to the
+          SEPARATE mutation instance that registers products, so upload,
+          sample, evidence, grade and benchmark all failed in silence: the
+          button simply re-enabled. That hid a duplicate sample reference, a
+          constraint refusal, and worst of all the 503 the upload route raises
+          when NO MALWARE VERDICT COULD BE OBTAINED -- the one status the API
+          docstring insists must never read as success. */}
+      {writes.error !== null && (
+        <p
+          role="alert"
+          className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
+        >
+          {serverMessage(writes.error)}
+        </p>
+      )}
+
       <section aria-labelledby="upload-heading">
         <h3 id="upload-heading" className="text-sm font-semibold text-slate-900">
           Upload a label or a photograph
@@ -238,6 +322,7 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
               The file
             </label>
             <input
+              key={uploadNonce}
               id="doc-file"
               type="file"
               className={`${INPUT} file:mr-3 file:rounded file:border-0 file:bg-slate-100 file:px-3 file:py-1 file:text-sm`}
@@ -254,6 +339,7 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
                 writes.upload(product.id, file, documentType, docTitle.trim(), () => {
                   setFile(null);
                   setDocTitle("");
+                  setUploadNonce((n) => n + 1);
                 });
               }}
             >
@@ -511,10 +597,10 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
             </div>
           )}
 
-          {isObservation && (
+          {needsSample && (
             <div className="sm:col-span-2">
               <label className={LABEL} htmlFor="ev-sample">
-                Which sample did you read
+                Which sample {evidenceSource === "laboratory" ? "was tested" : "did you read"}
               </label>
               <select
                 id="ev-sample"
@@ -522,10 +608,11 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
                 value={sampleId}
                 onChange={(event) => setSampleId(event.target.value)}
               >
+                {/* No "not recorded" option: the row is refused without one. */}
                 <option value="">
                   {tins.length === 0
-                    ? "No samples registered yet"
-                    : "Not recorded against a sample"}
+                    ? "Register a sample above first"
+                    : "Choose the sample"}
                 </option>
                 {tins.map((tin) => (
                   <option key={tin.id} value={tin.id}>
@@ -549,6 +636,26 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
             />
           </div>
           <div className="sm:col-span-2">
+            {/* "The balance" is a real disclosure and is not a number. The
+                matrix has always rendered it and no control ever set it. */}
+            <label className="flex items-center gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                checked={isBalance}
+                onChange={(event) => {
+                  setIsBalance(event.target.checked);
+                  if (event.target.checked) {
+                    // The constraint forbids a range alongside it, so the form
+                    // clears the range rather than sending a refused row.
+                    setLow("");
+                    setHigh("");
+                  }
+                }}
+              />
+              This component is stated as &ldquo;the balance&rdquo;, not a percentage
+            </label>
+          </div>
+          <div className="sm:col-span-2">
             <label className={LABEL} htmlFor="ev-rationale">
               What you saw, or what you reasoned from
             </label>
@@ -569,6 +676,9 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
                 writes.isPending ||
                 component.trim() === "" ||
                 (needsDocument && sourceDocumentId === "") ||
+                // Refused by the database without it, so the form refuses too
+                // rather than sending a request that cannot succeed.
+                (needsSample && sampleId === "") ||
                 /* An observation or an inference must say what it rests on --
                    the database refuses it otherwise, so the form should too
                    rather than sending a request that cannot succeed. */
@@ -583,16 +693,18 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
                     evidence_source: evidenceSource,
                     evidence_grade: grade,
                     ...(cas.trim() ? { cas_number: cas.trim() } : {}),
-                    ...(low.trim() ? { concentration_low: low.trim() } : {}),
-                    ...(high.trim() ? { concentration_high: high.trim() } : {}),
+                    ...(isBalance ? { is_balance: true } : {}),
+                    ...(!isBalance && low.trim() ? { concentration_low: low.trim() } : {}),
+                    ...(!isBalance && high.trim() ? { concentration_high: high.trim() } : {}),
                     ...(needsDocument ? { source_document_id: sourceDocumentId } : {}),
-                    ...(isObservation && sampleId !== "" ? { sample_id: sampleId } : {}),
+                    ...(needsSample ? { sample_id: sampleId } : {}),
                     ...(locator.trim() ? { source_locator: locator.trim() } : {}),
                     ...(rationale.trim() ? { rationale: rationale.trim() } : {}),
                   },
                   () => {
                     setComponent("");
                     setSampleId("");
+                    setIsBalance(false);
                     setCas("");
                     setLow("");
                     setHigh("");
@@ -643,7 +755,12 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
             ) : (
               <ul className="mt-3 grid gap-2">
                 {matrix.data.rows.map((row) => (
-                  <MatrixRow key={row.id} row={row} />
+                  <MatrixRow
+                    key={row.id}
+                    row={row}
+                    onGrade={writes.grade}
+                    isPending={writes.isPending}
+                  />
                 ))}
               </ul>
             )}
@@ -665,6 +782,16 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
             <label className={LABEL} htmlFor="bm-project">
               Project
             </label>
+            {/* A caller with `material.view` but not `project.view` gets a 403
+                here. Unsurfaced, that rendered as an empty menu beside a
+                permanently disabled button -- a working feature reading as a
+                broken one. */}
+            {projectList.error !== null && (
+              <p className="mt-1 text-xs text-red-800">
+                The project list could not be loaded, so a comparison cannot be
+                recorded: {serverMessage(projectList.error)}
+              </p>
+            )}
             <select
               id="bm-project"
               className={INPUT}

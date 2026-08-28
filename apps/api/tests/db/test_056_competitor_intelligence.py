@@ -114,9 +114,50 @@ def competitor_fixture(owner_session: Session) -> dict[str, uuid.UUID]:
     label_a = _make_document(
         owner_session, org_id, user_id, suffix, "label", competitor_product_id=product_a
     )
+
+    # 🔴 ONE ROW IN EVERY COMPETITOR TABLE, NOT ONLY IN `products`.
+    #
+    # The cross-tenant test loops over all four tables. With rows in `products`
+    # alone, the other three counted zero because there was NOTHING TO SEE --
+    # a guard that passes when it cannot see, which is worse than one that
+    # cannot fail. Codex P2, 2026-08-28, and it is right: the loop would have
+    # reported green over three tables whose policies could expose every row.
+    sample_id = owner_session.execute(
+        text(
+            "INSERT INTO competitors.samples "
+            "(organization_id, competitor_product_id, sample_reference, registered_by) "
+            "VALUES (:o, :p, :ref, :u) RETURNING id"
+        ),
+        {"o": org_id, "p": product_a, "ref": f"SAMP-{suffix}", "u": user_id},
+    ).scalar_one()
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO competitors.composition_evidence
+                (organization_id, competitor_product_id, component_name,
+                 evidence_source, evidence_grade, source_document_id,
+                 source_locator, recorded_by)
+            VALUES (:o, :p, 'Filler', 'document', 'B', :d, 'Section 3', :u)
+            """
+        ),
+        {"o": org_id, "p": product_a, "d": label_a, "u": user_id},
+    )
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO competitors.benchmarks
+                (organization_id, competitor_product_id, project_id, attribute,
+                 gap_summary, recorded_by)
+            VALUES (:o, :p, :prj, 'Sand-through time',
+                    'Theirs sands about four minutes sooner at 20 C.', :u)
+            """
+        ),
+        {"o": org_id, "p": product_a, "prj": project_id, "u": user_id},
+    )
     owner_session.flush()
 
     return {
+        "sample_id": sample_id,
         "org_id": org_id,
         "user_id": user_id,
         "member_id": member_id,
@@ -129,9 +170,7 @@ def competitor_fixture(owner_session: Session) -> dict[str, uuid.UUID]:
     }
 
 
-def _make_product(
-    session: Session, org_id: uuid.UUID, user_id: uuid.UUID, name: str
-) -> uuid.UUID:
+def _make_product(session: Session, org_id: uuid.UUID, user_id: uuid.UUID, name: str) -> uuid.UUID:
     return session.execute(  # type: ignore[no-any-return]
         text(
             "INSERT INTO competitors.products "
@@ -334,8 +373,7 @@ def test_a_scanned_label_cannot_be_re_pointed_at_another_product(
     with pytest.raises(DBAPIError) as caught:
         owner_session.execute(
             text(
-                "UPDATE materials.material_documents SET competitor_product_id = :b "
-                "WHERE id = :d"
+                "UPDATE materials.material_documents SET competitor_product_id = :b WHERE id = :d"
             ),
             {"b": fx["product_b"], "d": fx["label_a"]},
         )
@@ -426,6 +464,54 @@ def test_a_label_for_product_a_cannot_back_a_claim_about_product_b(
     assert "composition_evidence_document_fk" in str(caught.value)
 
 
+def test_a_sample_of_product_a_cannot_back_a_claim_about_product_b(
+    owner_session: Session, competitor_fixture
+) -> None:
+    """🔴 MIGRATION 057 — THE HOLE THE DOCUMENT KEY CLOSED AND THE SAMPLE KEY DID NOT.
+
+    056 bound `source_document_id` to the product and left
+    `composition_evidence_sample_fk` tenant-scoped, so product A's tin could be
+    recorded as the physical source of a claim about product B. It was latent
+    only because no client had ever sent `sample_id`; adding the sample picker
+    made it reachable from a browser, which is what turned a dormant schema gap
+    into a live one.
+    """
+    fx = competitor_fixture
+    with pytest.raises(IntegrityError) as caught:
+        owner_session.execute(
+            text(
+                """
+                INSERT INTO competitors.composition_evidence
+                    (organization_id, competitor_product_id, component_name,
+                     evidence_source, evidence_grade, sample_id, recorded_by)
+                VALUES (:o, :b, 'Talc', 'laboratory', 'A', :s, :u)
+                """
+            ),
+            {"o": fx["org_id"], "b": fx["product_b"], "s": fx["sample_id"], "u": fx["user_id"]},
+        )
+    assert "composition_evidence_sample_fk" in str(caught.value)
+
+
+def test_the_sample_foreign_key_constrains_the_product(owner_session: Session) -> None:
+    """🔴 ASSERT THE RESULTING PRIVILEGE, NEVER THE STATEMENT.
+
+    A two-column key would leave the cross-product citation open while the
+    migration log read exactly like a fix. This reads the constraint back out
+    of `pg_constraint`.
+    """
+    definition = owner_session.execute(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            " WHERE conrelid = 'competitors.composition_evidence'::regclass "
+            "   AND conname = 'composition_evidence_sample_fk'"
+        )
+    ).scalar_one_or_none()
+    assert definition is not None, "composition_evidence_sample_fk is missing"
+    assert "competitor_product_id" in definition, (
+        f"the sample foreign key does not constrain the product: {definition}"
+    )
+
+
 def test_the_unique_key_the_composite_foreign_key_needs_exists(
     owner_session: Session, competitor_fixture
 ) -> None:
@@ -488,9 +574,7 @@ def test_a_verifier_and_a_time_without_verified_is_also_refused(
     assert "composition_evidence_verification_complete" in str(caught.value)
 
 
-def test_an_observation_can_never_be_verified(
-    owner_session: Session, competitor_fixture
-) -> None:
+def test_an_observation_can_never_be_verified(owner_session: Session, competitor_fixture) -> None:
     """T2a. There is nothing anybody else can re-check, so the grade is unearnable.
 
     A person reading the back of a tin is making an honest observation. What
@@ -516,6 +600,56 @@ def test_an_observation_can_never_be_verified(
     assert "composition_evidence_verifiable_source" in str(caught.value)
 
 
+def test_a_laboratory_claim_must_cite_a_sample_or_a_test(
+    owner_session: Session, competitor_fixture
+) -> None:
+    """🔴 THE SHAPE THAT MADE A MENU OPTION UNWRITABLE.
+
+    `composition_evidence_laboratory_shape` requires a sample or a test on
+    every `laboratory` row. The screen offered "Our own laboratory result"
+    while sending neither, so every such submission was refused by the
+    database -- an option nobody could use, and nothing measured it.
+
+    Codex read this as "an uncited laboratory claim can be created and later
+    verified". Measured, it is the opposite: the row cannot be created at all.
+    The finding was right that the path was broken and wrong about which way.
+    """
+    fx = competitor_fixture
+    with pytest.raises(IntegrityError) as caught:
+        owner_session.execute(
+            text(
+                """
+                INSERT INTO competitors.composition_evidence
+                    (organization_id, competitor_product_id, component_name,
+                     evidence_source, evidence_grade, recorded_by)
+                VALUES (:o, :p, 'Talc', 'laboratory', 'A', :u)
+                """
+            ),
+            {"o": fx["org_id"], "p": fx["product_a"], "u": fx["user_id"]},
+        )
+    assert "composition_evidence_laboratory_shape" in str(caught.value)
+
+
+def test_a_laboratory_claim_citing_a_sample_is_accepted(
+    owner_session: Session, competitor_fixture
+) -> None:
+    """The other direction: with the sample the screen now sends, it is legal."""
+    fx = competitor_fixture
+    claim_id = owner_session.execute(
+        text(
+            """
+            INSERT INTO competitors.composition_evidence
+                (organization_id, competitor_product_id, component_name,
+                 evidence_source, evidence_grade, sample_id, recorded_by)
+            VALUES (:o, :p, 'Talc', 'laboratory', 'A', :s, :u)
+            RETURNING id
+            """
+        ),
+        {"o": fx["org_id"], "p": fx["product_a"], "s": fx["sample_id"], "u": fx["user_id"]},
+    ).scalar_one()
+    assert claim_id is not None
+
+
 def test_the_named_verifier_must_actually_hold_the_permission(
     owner_session: Session, competitor_fixture
 ) -> None:
@@ -538,9 +672,7 @@ def test_the_named_verifier_must_actually_hold_the_permission(
     assert "compliance.review_sds" in str(caught.value)
 
 
-def test_a_holder_of_review_sds_can_verify(
-    owner_session: Session, competitor_fixture
-) -> None:
+def test_a_holder_of_review_sds_can_verify(owner_session: Session, competitor_fixture) -> None:
     """🔴 FALSIFIES THE TRIGGER THE OTHER WAY.
 
     Without this the refusal above would also pass if the trigger refused
@@ -605,7 +737,9 @@ def test_another_organization_reaches_none_of_it(
         "competitors.benchmarks",
     ):
         reachable = app_session.execute(
-            text(f"SELECT count(*) FROM {table} WHERE organization_id = :o"),
+            # Suppressed deliberately: `table` comes from the tuple literal
+            # above, never from input, and an identifier cannot be bound.
+            text(f"SELECT count(*) FROM {table} WHERE organization_id = :o"),  # noqa: S608
             {"o": fx["org_id"]},
         ).scalar_one()
         assert reachable == 0, f"another organization reached {reachable} rows of {table}"
@@ -628,11 +762,23 @@ def test_the_owning_organization_does_reach_its_own_product(
     app_session.execute(
         text("SELECT set_config('app.current_user_id', :u, true)"), {"u": str(fx["user_id"])}
     )
-    reachable = app_session.execute(
-        text("SELECT count(*) FROM competitors.products WHERE organization_id = :o"),
-        {"o": fx["org_id"]},
-    ).scalar_one()
-    assert reachable == 2, f"the owning organization reached {reachable} of its 2 products"
+    # 🔴 EVERY TABLE THE NEGATIVE TEST LOOPS OVER, OR THE ZEROS THERE PROVE
+    # NOTHING. Checking only `products` left three tables whose zero could
+    # equally have meant "empty" as "correctly hidden".
+    expected = {
+        "competitors.products": 2,
+        "competitors.samples": 1,
+        "competitors.composition_evidence": 1,
+        "competitors.benchmarks": 1,
+    }
+    for table, count in expected.items():
+        reachable = app_session.execute(
+            text(f"SELECT count(*) FROM {table} WHERE organization_id = :o"),  # noqa: S608
+            {"o": fx["org_id"]},
+        ).scalar_one()
+        assert reachable == count, (
+            f"the owning organization reached {reachable} of its {count} rows in {table}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +811,9 @@ def test_usable_documents_kept_security_invoker(owner_session: Session) -> None:
             " WHERE n.nspname = 'materials' AND c.relname = 'usable_documents'"
         )
     ).scalar_one()
-    assert options is not None and any(
-        "security_invoker=true" in str(opt) for opt in options
-    ), f"usable_documents lost security_invoker; reloptions = {options}"
+    # Existence first, then the property of it: asserting a property of a
+    # missing thing reports the wrong failure.
+    assert options is not None, "usable_documents has no reloptions at all"
+    assert any("security_invoker=true" in str(opt) for opt in options), (
+        f"usable_documents lost security_invoker; reloptions = {options}"
+    )
