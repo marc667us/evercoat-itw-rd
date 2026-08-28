@@ -494,9 +494,7 @@ def test_every_organization_has_a_decidable_safety_template(owner_session: Sessi
     assert unheld is None, f"SAFETY_REVIEW steps require permissions no role holds: {unheld}"
 
 
-def test_segregation_of_duties_is_satisfiable(
-    owner_session: Session, safety_fixture
-) -> None:
+def test_segregation_of_duties_is_satisfiable(owner_session: Session, safety_fixture) -> None:
     """🔴 THE RULE THAT WOULD HAVE MADE THE ROUTE UNCOMPLETABLE.
 
     Step 2 must be decided by somebody who did not decide step 1. If both
