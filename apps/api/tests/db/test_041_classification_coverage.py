@@ -61,6 +61,15 @@ DEFERRED: dict[str, str] = {
     "laboratory.samples": "I69 -- a sample is a physical piece of the formula",
     "messaging.messages": "I69 -- free text routinely quotes compositions",
     "ai.msd_turns": "I69 -- MSD answers carry evidence packs verbatim",
+    "competitors.benchmarks": (
+        "I69 -- a benchmark names one of OUR formula versions beside a "
+        "competitor's measured value, so it discloses that the version exists "
+        "and how it performs. It is NOT labelled today because it holds no "
+        "recipe text and carries a NOT NULL project_id under FORCE RLS (056), "
+        "so a non-member of a restricted project reaches none of it. Deferred "
+        "rather than decided: the label needs the same inheritance question "
+        "041 asks of the rest of the subtree."
+    ),
     "safety.safety_alerts": (
         "I69 -- an alert names a formula version affected by a material's "
         "SDS revision, which is composition information: it says that "

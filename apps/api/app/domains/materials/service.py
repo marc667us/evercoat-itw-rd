@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import datetime as dt
 import io
+import re
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
@@ -1069,10 +1070,37 @@ def link_supplier(
 # ---------------------------------------------------------------------------
 
 
+def _permitted_document_types(session: Session) -> set[str]:
+    """The document types the DATABASE accepts, read from its own CHECK.
+
+    🔴 READ, NOT REPEATED. `material_documents_document_type_check` is the
+    authority; a Python tuple beside it is a second copy that drifts the moment
+    a migration widens the constraint -- which 056 did, adding `label`,
+    `product_image`, `literature` and `patent`. The copy would have gone on
+    refusing all four, and the symptom would have been a schema that permits a
+    competitor label and a writer that cannot write one.
+    """
+    definition = session.execute(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'material_documents_document_type_check'"
+        )
+    ).scalar_one_or_none()
+    if not definition:
+        # Fail loud rather than silently permitting everything: a missing
+        # constraint is a schema problem, not a licence.
+        raise MaterialInvalidError(
+            "material_documents_document_type_check is missing; the permitted "
+            "document types cannot be established"
+        )
+    return set(re.findall(r"'([a-zA-Z_]+)'::text", definition))
+
+
 def store_document(
     session: Session,
     *,
-    material_id: uuid.UUID,
+    material_id: uuid.UUID | None = None,
+    competitor_product_id: uuid.UUID | None = None,
     organization_id: uuid.UUID,
     actor_id: uuid.UUID,
     spec: DocumentInput,
@@ -1111,8 +1139,33 @@ def store_document(
     INSTREAM wants the content and the checksum must describe what was stored,
     so a bounded buffer is the honest trade at this size.
     """
-    if spec.document_type not in ("TDS", "SDS", "CoA", "regulatory", "other"):
-        raise MaterialInvalidError(f"'{spec.document_type}' is not a document type")
+    # 🔴 EXACTLY ONE OWNER, CHECKED BEFORE ANY BYTES ARE STORED.
+    #
+    # 056 lets a controlled document belong to a material OR to a competitor
+    # product, because §14 forbids a second document repository and a
+    # competitor's label needs the same checksum, scan verdict, expiry and
+    # supersession rules an SDS gets. The database enforces exactly-one-owner;
+    # this refuses early so a rejected upload never reaches object storage.
+    if (material_id is None) == (competitor_product_id is None):
+        raise MaterialInvalidError(
+            "a document belongs to exactly one owner: a material or a "
+            "competitor product, never both and never neither"
+        )
+
+    # 🔴 THE ACCEPTED TYPES ARE READ FROM THE DATABASE'S OWN CHECK.
+    #
+    # This was a Python tuple repeating what `material_documents_document_type_check`
+    # already says. 056 added `label`, `product_image`, `literature` and
+    # `patent` to the constraint, and the literal here would have gone on
+    # refusing all four -- a schema that permits a competitor label and a
+    # writer that cannot write one. Two literals in two files cannot be
+    # type-checked into agreement, so there is now one.
+    permitted = _permitted_document_types(session)
+    if spec.document_type not in permitted:
+        raise MaterialInvalidError(
+            f"'{spec.document_type}' is not a document type. "
+            f"Permitted: {', '.join(sorted(permitted))}"
+        )
 
     # 1. What is it, really?
     # Deliberately NOT wrapped in MaterialInvalidError. That would map to 422
@@ -1142,22 +1195,40 @@ def store_document(
                 text(
                     """
                     INSERT INTO materials.material_documents
-                        (organization_id, material_id, document_type, title, storage_key,
+                        (organization_id, material_id, competitor_product_id,
+                         document_type, title, storage_key,
                          content_type, byte_size, checksum_sha256, issued_on, expires_on,
                          supersedes_id, uploaded_by, original_filename,
                          status, scan_status, scanner_name, scanner_version, scanned_at)
-                    SELECT :org, m.id, :dtype, :title, :key,
-                           :content_type, :size, :checksum, :issued, :expires,
-                           :supersedes, :actor, :original,
+                    -- 🔴 STILL AN `INSERT ... SELECT`, AND STILL FOR THE SAME
+                    -- REASON. The owner row is read under the caller's RLS, so
+                    -- an owner they cannot see yields NO SOURCE ROW and no
+                    -- document -- rather than a row referencing something they
+                    -- were never allowed to know exists. The UNION covers the
+                    -- two owners without weakening that: exactly one branch can
+                    -- ever produce a row, because exactly one id is non-null.
+                    SELECT CAST(:org AS UUID), m.id, NULL::uuid, :dtype, :title, :key,
+                           :content_type, CAST(:size AS BIGINT), :checksum,
+                           CAST(:issued AS DATE), CAST(:expires AS DATE),
+                           CAST(:supersedes AS UUID), CAST(:actor AS UUID), :original,
                            'approved', 'clean', :scanner, :scanner_version, now()
                     FROM materials.materials m
                     WHERE m.id = :mid AND m.organization_id = :org
+                    UNION ALL
+                    SELECT CAST(:org AS UUID), NULL::uuid, cp.id, :dtype, :title, :key,
+                           :content_type, CAST(:size AS BIGINT), :checksum,
+                           CAST(:issued AS DATE), CAST(:expires AS DATE),
+                           CAST(:supersedes AS UUID), CAST(:actor AS UUID), :original,
+                           'approved', 'clean', :scanner, :scanner_version, now()
+                    FROM competitors.products cp
+                    WHERE cp.id = :cpid AND cp.organization_id = :org
                     RETURNING id
                     """
                 ),
                 {
                     "org": organization_id,
                     "mid": material_id,
+                    "cpid": competitor_product_id,
                     "dtype": spec.document_type,
                     "title": spec.title,
                     "key": stored.key,
@@ -1190,7 +1261,11 @@ def store_document(
         # object no row references is invisible to every quota, retention and
         # deletion path in the system (I49).
         store.delete(stored.key)
-        raise MaterialNotFoundError("no such material in this organization")
+        raise MaterialNotFoundError(
+            "no such material in this organization"
+            if material_id is not None
+            else "no such competitor product in this organization"
+        )
 
     write_audit(
         session,

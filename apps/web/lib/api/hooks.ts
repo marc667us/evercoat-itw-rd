@@ -201,6 +201,16 @@ import {
   type SafetyAlert,
   type SafetyPosition,
 } from "./material-safety";
+import {
+  useAuth,
+  type OrganizationChoice,
+} from "@/components/providers/auth-provider";
+import {
+  dashboardForRoles,
+  fetchRoleDashboard,
+  type DashboardRole,
+  type RoleDashboard,
+} from "./dashboards";
 import { fetchProjects, type Project } from "./projects";
 import { useSession } from "./session";
 import { fetchMyWork, type Task } from "./tasks";
@@ -2482,4 +2492,43 @@ export function useComparableRevisions<TShown = ComparableRevision[]>(
   project: (live: ComparableRevision[]) => TShown = (live) => live as unknown as TShown,
 ): LiveOnly<TShown> {
   return useLiveOnlyList("safety-comparable", project, fetchComparableRevisions);
+}
+
+// ---------------------------------------------------------------------------
+// Role dashboards — the endpoint that had no browser caller
+// ---------------------------------------------------------------------------
+
+/**
+ * Which dashboard this caller should see, from the roles their membership
+ * carries. `null` means they hold no role that has one.
+ *
+ * Reads the ACTIVE organization's roles, not the first in the list: membership
+ * is per-tenant, and picking the first has already been a real defect in this
+ * provider once — it moved a chemist's writes into the wrong tenant.
+ */
+export function useDashboardRole(): DashboardRole | null {
+  const session = useSession();
+  const { organizations } = useAuth();
+  if (session.status !== "authenticated") return null;
+  const active = organizations.find(
+    (org: OrganizationChoice) => org.organizationId === session.credentials.organizationId,
+  );
+  return dashboardForRoles(active?.roles ?? []);
+}
+
+/**
+ * One role's dashboard, from source records.
+ *
+ * 🔴 THIS IS THE CALLER `GET /api/dashboards/{role}` NEVER HAD. The endpoint,
+ * four builders, the analysis conductor and a db test all existed; nothing in
+ * the browser asked for any of it, so every signed-in person saw one fixed
+ * screen. Signed in as the director, you got the chemist's.
+ *
+ * `enabled` waits for a role: requesting `/api/dashboards/null` would be a 404
+ * dressed up as an outage.
+ */
+export function useRoleDashboard(role: DashboardRole | null): LiveOnly<RoleDashboard> {
+  return useLiveOnlyRecord("role-dashboard", role ?? "", (credentials, signal) =>
+    fetchRoleDashboard(credentials, role ?? "", signal),
+  );
 }
