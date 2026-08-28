@@ -200,6 +200,47 @@ CREATE TRIGGER sds_versions_document_must_be_usable
 
 
 -- ---------------------------------------------------------------------
+-- The identity of an interpretation is immutable
+-- ---------------------------------------------------------------------
+--
+-- The column grants above stop `evercoat_app` rewriting these. This stops
+-- everyone else, including the owner and any future migration that widens a
+-- grant without thinking about the trigger. `document_id` and `material_id`
+-- are what S1a validated at insert; letting them move afterwards would make
+-- that validation a formality.
+--
+-- Same shape and same reasoning as 038's `deny_document_evidence_rewrite`:
+-- re-pointing a record at different evidence is superseding it, and
+-- supersession creates a new row.
+CREATE OR REPLACE FUNCTION safety.deny_interpretation_repoint()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path TO 'safety', 'pg_temp'
+AS $no_repoint$
+BEGIN
+    IF NEW.document_id IS DISTINCT FROM OLD.document_id THEN
+        RAISE EXCEPTION
+            'safety.sds_versions.document_id is write-once (% -> %). An '
+            'interpretation belongs to the sheet it was read from; record a '
+            'new one against the new document.', OLD.document_id, NEW.document_id;
+    END IF;
+    IF NEW.material_id IS DISTINCT FROM OLD.material_id THEN
+        RAISE EXCEPTION
+            'safety.sds_versions.material_id is write-once (% -> %). Re-filing '
+            'hazard data against a different substance is not an edit.',
+            OLD.material_id, NEW.material_id;
+    END IF;
+    RETURN NEW;
+END
+$no_repoint$;
+
+DROP TRIGGER IF EXISTS sds_versions_identity_is_write_once ON safety.sds_versions;
+CREATE TRIGGER sds_versions_identity_is_write_once
+    BEFORE UPDATE ON safety.sds_versions
+    FOR EACH ROW EXECUTE FUNCTION safety.deny_interpretation_repoint();
+
+
+-- ---------------------------------------------------------------------
 -- The 16 standard sections, as text
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS safety.sds_sections (
@@ -447,6 +488,14 @@ CREATE TABLE IF NOT EXISTS safety.safety_alerts (
         REFERENCES formulations.formula_versions (id, organization_id) ON DELETE RESTRICT,
     CONSTRAINT safety_alerts_batch_fk FOREIGN KEY (batch_id, organization_id)
         REFERENCES laboratory.batches (id, organization_id) ON DELETE RESTRICT,
+    -- 🔴 ONE ALERT PER REVISION PER PROJECT. Raising alerts was not
+    -- idempotent: the "Compare and raise alerts" control stays enabled after
+    -- success and nothing in the list it reads from changes, so a second press
+    -- created a duplicate row per project AND fired a second actionable
+    -- notification at every project lead. A lead who is told twice learns to
+    -- read the alert less carefully, which is the opposite of the point.
+    -- Found by the Supervisor review.
+    CONSTRAINT safety_alerts_one_per_project UNIQUE (organization_id, sds_version_id, project_id),
     CONSTRAINT safety_alerts_hits_something CHECK (
         material_id IS NOT NULL OR formula_version_id IS NOT NULL OR batch_id IS NOT NULL
     ),
@@ -652,17 +701,42 @@ ALTER TABLE safety.incompatibility_rules   OWNER TO evercoat_owner;
 ALTER TABLE safety.safety_reviews          OWNER TO evercoat_owner;
 ALTER TABLE safety.safety_alerts           OWNER TO evercoat_owner;
 ALTER FUNCTION safety.sds_version_needs_a_usable_document() OWNER TO evercoat_owner;
+ALTER FUNCTION safety.deny_interpretation_repoint() OWNER TO evercoat_owner;
 
 GRANT USAGE ON SCHEMA safety TO evercoat_app, evercoat_report;
 
-GRANT SELECT, INSERT, UPDATE ON safety.sds_versions           TO evercoat_app;
-GRANT SELECT, INSERT, UPDATE ON safety.sds_sections           TO evercoat_app;
-GRANT SELECT, INSERT, UPDATE ON safety.hazard_classifications TO evercoat_app;
-GRANT SELECT, INSERT, UPDATE ON safety.chemical_components    TO evercoat_app;
-GRANT SELECT, INSERT, UPDATE ON safety.storage_rules          TO evercoat_app;
-GRANT SELECT, INSERT, UPDATE ON safety.incompatibility_rules  TO evercoat_app;
-GRANT SELECT, INSERT, UPDATE ON safety.safety_reviews         TO evercoat_app;
-GRANT SELECT, INSERT, UPDATE ON safety.safety_alerts          TO evercoat_app;
+-- 🔴 UPDATE IS GRANTED PER COLUMN, NOT PER TABLE.
+--
+-- The first version granted table-level UPDATE on all eight, which handed
+-- `evercoat_app` the ability to rewrite the very columns the S1a trigger
+-- exists to protect. A `BEFORE INSERT` trigger says nothing about UPDATE, so
+-- `UPDATE safety.sds_versions SET document_id = <an expired CoA>` would have
+-- defeated every S1a invariant after the fact -- the composite FKs still hold,
+-- so nothing raises -- and `current_safety_position` would then render hazard
+-- data for the wrong substance as the current position.
+--
+-- ⚠️ ISSUED INSTEAD OF THE TABLE-LEVEL GRANT, NEVER AFTER IT. 047 and 053 both
+-- record the same lesson: **a REVOKE against a broader grant does nothing**, so
+-- narrowing has to be the grant that is written, not a correction applied to
+-- one. Assert the resulting PRIVILEGE, never the statement.
+--
+-- Six of the eight are INSERT-only because nothing updates them: a reading is
+-- a reading, and a correction is a new document.
+GRANT SELECT, INSERT ON safety.sds_versions           TO evercoat_app;
+GRANT SELECT, INSERT ON safety.sds_sections           TO evercoat_app;
+GRANT SELECT, INSERT ON safety.hazard_classifications TO evercoat_app;
+GRANT SELECT, INSERT ON safety.chemical_components    TO evercoat_app;
+GRANT SELECT, INSERT ON safety.storage_rules          TO evercoat_app;
+GRANT SELECT, INSERT ON safety.incompatibility_rules  TO evercoat_app;
+GRANT SELECT, INSERT ON safety.safety_reviews         TO evercoat_app;
+GRANT SELECT, INSERT ON safety.safety_alerts          TO evercoat_app;
+
+-- The only two updates the application performs: a reviewer's verdict on a
+-- transcription, and a reader acknowledging an alert.
+GRANT UPDATE (review_state, reviewed_by, reviewed_at)
+    ON safety.sds_versions TO evercoat_app;
+GRANT UPDATE (acknowledged_by, acknowledged_at)
+    ON safety.safety_alerts TO evercoat_app;
 
 -- 🔴 NO DELETE, ANYWHERE. CLAUDE.md §5: never cascade-delete R&D history;
 -- retire with a status. An interpretation of a superseded sheet is exactly

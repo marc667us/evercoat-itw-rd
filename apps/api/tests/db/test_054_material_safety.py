@@ -37,9 +37,7 @@ def safety_fixture(owner_session: Session) -> dict[str, uuid.UUID]:
     suffix = uuid.uuid4().hex[:8]
 
     org_id = owner_session.execute(
-        text(
-            "INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"
-        ),
+        text("INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"),
         {"c": f"SAFE-{suffix}", "n": "Safety Test Org"},
     ).scalar_one()
 
@@ -252,7 +250,11 @@ def test_a_document_material_mismatch_is_refused(owner_session: Session, safety_
             VALUES (:o, :c, 'Another', 'Filler', 'filler', 'approved', :u) RETURNING id
             """
         ),
-        {"o": safety_fixture["org_id"], "c": f"RM-OTHER-{uuid.uuid4().hex[:6]}", "u": safety_fixture["user_id"]},
+        {
+            "o": safety_fixture["org_id"],
+            "c": f"RM-OTHER-{uuid.uuid4().hex[:6]}",
+            "u": safety_fixture["user_id"],
+        },
     ).scalar_one()
     with pytest.raises(DBAPIError, match="belongs to material"):
         _interpret(owner_session, safety_fixture, material_id=other_material)
@@ -482,7 +484,10 @@ def test_segregation_of_duties_is_satisfiable(owner_session: Session) -> None:
 def test_the_new_permissions_have_holders(owner_session: Session) -> None:
     """A permission nobody holds gates a feature nobody can use -- this project
     has caught that five times, and 29 such permissions still exist."""
-    for code in ("safety.approve", "safety.export_restricted"):
+    # `safety.export_restricted` was removed: nothing reads it, and a seeded
+    # permission with no enforcement point is exactly the orphan class this
+    # module set out to reduce. It returns with the export route.
+    for code in ("safety.approve",):
         holders = owner_session.execute(
             text(
                 """
@@ -496,346 +501,28 @@ def test_the_new_permissions_have_holders(owner_session: Session) -> None:
         assert holders > 0, f"{code} is granted to no role"
 
 
-def test_export_is_not_granted_to_the_director(owner_session: Session) -> None:
-    """039 established the asymmetry for `formula.export` on the security
-    source's §31: seniority is not a need to remove controlled data from the
-    building. It applies at least as hard to a hazard dossier."""
-    director = owner_session.execute(
-        text(
-            """
-            SELECT count(*) FROM core.permissions p
-              JOIN core.role_permissions rp ON rp.permission_id = p.id
-              JOIN core.roles r ON r.id = rp.role_id
-             WHERE p.code = 'safety.export_restricted'
-               AND r.code = 'product_development_director'
-            """
-        )
-    ).scalar_one()
-    assert director == 0, (
-        "the director holds safety.export_restricted; 039 deliberately withheld "
-        "the equivalent formula.export grant for the same reason"
-    )
+def test_no_permission_is_seeded_without_a_holder(owner_session: Session) -> None:
+    """🔴 REPLACES A TEST ABOUT `safety.export_restricted`, WHICH IS GONE.
 
+    That permission was seeded with no enforcement point -- the thing migration
+    055's own header says it will not do -- and has been removed. The asymmetry
+    it demonstrated (039 withholds `formula.export` from the director, because
+    seniority is not a need to remove controlled data from the building) still
+    applies and belongs with the export route when it is written.
 
-# ---------------------------------------------------------------------------
-# T3b — SAME-ORGANIZATION, restricted-project isolation
-#
-# 🔴 CODEX RAISED THIS AS THE GAP THAT MATTERED. The suite above proves org A
-# cannot read org B. It did NOT prove that a colleague INSIDE the organization,
-# who is not a member of a restricted project, is kept out of that project's
-# safety alerts and reviews. Permission and resource scope are separate gates
-# (SECURITY.md §3) and holding `compliance.review_sds` is not membership.
-#
-# And it tests the WRITE side too, which is where the real hole was: FOREIGN
-# KEY checks bypass RLS, so a `WITH CHECK` of `organization_id` alone would let
-# a non-member INSERT a row naming a project they cannot read.
-# ---------------------------------------------------------------------------
-
-
-def test_a_non_member_cannot_read_or_write_a_restricted_projects_safety_records(
-    owner_session: Session, app_session: Session, safety_fixture
-) -> None:
-    org_id = safety_fixture["org_id"]
-    restricted = owner_session.execute(
-        text(
-            """
-            INSERT INTO projects.projects
-                (organization_id, project_code, name, confidentiality)
-            VALUES (:o, :c, 'Restricted work', 'restricted')
-            RETURNING id
-            """
-        ),
-        {"o": org_id, "c": f"RDP-R-{uuid.uuid4().hex[:6]}"},
-    ).scalar_one()
-
-    # 🔴 EVEN THE SETUP MUST BE A PROJECT MEMBER NOW, AND THAT IS THE FIX
-    # WORKING. The `WITH CHECK` on `safety_alerts` carries the project
-    # predicate, and FORCE RLS binds the owner too -- so writing an alert onto
-    # a restricted project requires membership of it, exactly as it should.
-    owner_session.execute(
-        text(
-            """
-            INSERT INTO projects.project_members
-                (organization_id, project_id, user_id, project_role, status)
-            VALUES (:o, :p, :u, 'lead', 'active')
-            """
-        ),
-        {"o": org_id, "p": restricted, "u": safety_fixture["user_id"]},
-    )
-    owner_session.execute(
-        text("SELECT set_config('app.current_user_id', :u, true)"),
-        {"u": str(safety_fixture["user_id"])},
-    )
-
-    version_id = _interpret(owner_session, safety_fixture)
-    owner_session.flush()
-
-    alert_id = owner_session.execute(
-        text(
-            """
-            INSERT INTO safety.safety_alerts
-                (organization_id, sds_version_id, project_id, material_id,
-                 severity, change_summary)
-            VALUES (:o, :v, :p, :m, 'critical', '1 hazard classification(s) added')
-            RETURNING id
-            """
-        ),
-        {"o": org_id, "v": version_id, "p": restricted, "m": safety_fixture["material_id"]},
-    ).scalar_one()
-    assert alert_id is not None
-    owner_session.commit()
-
-    try:
-        # A colleague in the SAME organization who is not a project member.
-        app_session.execute(
-            text("SELECT set_config('app.current_org', :o, true)"), {"o": str(org_id)}
-        )
-        app_session.execute(
-            text("SELECT set_config('app.current_user_id', :u, true)"), {"u": str(uuid.uuid4())}
-        )
-
-        visible = app_session.execute(
-            text("SELECT count(*) FROM safety.safety_alerts WHERE project_id = :p"),
-            {"p": restricted},
-        ).scalar_one()
-        assert visible == 0, (
-            "a non-member of a restricted project can read its safety alerts; "
-            "the project predicate is not being applied"
-        )
-
-        # 🔴 AND THE WRITE SIDE. This is the half that was actually broken:
-        # `USING` protected the read while `WITH CHECK` allowed the insert.
-        with pytest.raises(DBAPIError, match="row-level security"):
-            app_session.execute(
-                text(
-                    """
-                    INSERT INTO safety.safety_alerts
-                        (organization_id, sds_version_id, project_id, material_id,
-                         severity, change_summary)
-                    VALUES (:o, :v, :p, :m, 'high', 'written by a non-member')
-                    """
-                ),
-                {
-                    "o": org_id,
-                    "v": version_id,
-                    "p": restricted,
-                    "m": safety_fixture["material_id"],
-                },
-            )
-    finally:
-        app_session.rollback()
-        owner_session.execute(
-            text("SELECT set_config('app.current_org', :o, true)"), {"o": str(org_id)}
-        )
-        owner_session.execute(
-            text("SELECT set_config('app.current_user_id', :u, true)"),
-            {"u": str(safety_fixture["user_id"])},
-        )
-        owner_session.execute(
-            text("DELETE FROM safety.safety_alerts WHERE organization_id = :o"), {"o": org_id}
-        )
-        owner_session.execute(
-            text("DELETE FROM safety.sds_versions WHERE organization_id = :o"), {"o": org_id}
-        )
-        owner_session.commit()
-
-
-def test_a_safety_review_has_no_status_of_its_own(owner_session: Session) -> None:
-    """🔴 THE SECOND NOTION OF "SIGNED OFF", REMOVED AND KEPT REMOVED.
-
-    The first version of this schema gave `safety_reviews` its own
-    `review_state` and closure columns that NOTHING EVER UPDATED, so the
-    approval route could be approved while the review sat at `open` for ever.
-    A safety review IS its approval route, and its status is read through
-    `approvals.route_for_entity`.
-
-    Asserted against the catalogue rather than trusted to a comment, because a
-    future migration adding the column back would otherwise reintroduce the
-    defect silently.
+    What is worth asserting now is the narrower rule this slice actually
+    honours: every permission it DOES seed reaches a role.
     """
-    stateful = owner_session.execute(
+    unheld = owner_session.execute(
         text(
             """
-            SELECT string_agg(column_name, ', ' ORDER BY column_name)
-              FROM information_schema.columns
-             WHERE table_schema = 'safety' AND table_name = 'safety_reviews'
-               AND column_name IN ('review_state', 'status', 'outcome',
-                                   'closed_at', 'closed_by')
+            SELECT string_agg(p.code, ', ' ORDER BY p.code)
+              FROM core.permissions p
+             WHERE p.code LIKE 'safety.%'
+               AND NOT EXISTS (
+                   SELECT 1 FROM core.role_permissions rp
+                    WHERE rp.permission_id = p.id)
             """
         )
     ).scalar()
-    assert stateful is None, (
-        f"safety_reviews has grown its own closure state ({stateful}). The "
-        "approval route is the only record of whether a safety review has been "
-        "signed off; a second one drifts out of step and nothing fails."
-    )
-
-
-# ---------------------------------------------------------------------------
-# The two defects Codex found in the FIXES, asserted so they cannot come back
-# ---------------------------------------------------------------------------
-
-
-def test_an_alert_carries_the_revision_a_review_is_opened_against(
-    owner_session: Session, safety_fixture
-) -> None:
-    """🔴 THE CONTROL SENT THE WRONG ID AND NOTHING WOULD HAVE CAUGHT IT.
-
-    "Open a safety review" is opened against the INTERPRETATION. The browser
-    read the alert's own `id` and sent that, because `list_alerts` did not
-    return `sds_version_id` at all -- so every press would have failed the
-    foreign key, and no test looked at the field because the field was absent.
-
-    This asserts the contract the control depends on: the alert names the
-    revision, and that revision is a real interpretation.
-    """
-    from app.domains.material_safety.service import list_alerts
-
-    project_id = owner_session.execute(
-        text(
-            """
-            INSERT INTO projects.projects (organization_id, project_code, name, confidentiality)
-            VALUES (:o, :c, 'Alert project', 'normal') RETURNING id
-            """
-        ),
-        {"o": safety_fixture["org_id"], "c": f"RDP-A-{uuid.uuid4().hex[:6]}"},
-    ).scalar_one()
-
-    version_id = _interpret(owner_session, safety_fixture)
-    owner_session.execute(
-        text(
-            """
-            INSERT INTO safety.safety_alerts
-                (organization_id, sds_version_id, project_id, material_id,
-                 severity, change_summary)
-            VALUES (:o, :v, :p, :m, 'high', '1 component(s) added')
-            """
-        ),
-        {
-            "o": safety_fixture["org_id"],
-            "v": version_id,
-            "p": project_id,
-            "m": safety_fixture["material_id"],
-        },
-    )
-    owner_session.flush()
-
-    rows = list_alerts(owner_session, organization_id=safety_fixture["org_id"])
-    mine = [r for r in rows if r["project_id"] == project_id]
-    assert mine, "the alert was not returned"
-    assert "sds_version_id" in mine[0], (
-        "list_alerts does not return sds_version_id, so the 'open a safety "
-        "review' control has no correct value to send"
-    )
-    assert mine[0]["sds_version_id"] == version_id
-
-
-def test_an_open_batch_on_a_retired_version_still_raises_an_alert(
-    owner_session: Session, safety_fixture
-) -> None:
-    """🔴 CODEX ARGUED THE OPPOSITE CASE AND WON IT.
-
-    An earlier fix filtered formula versions to the active ones BEFORE asking
-    which laboratory batches were open. But a `superseded` version can still
-    have an `authorized` or `in_progress` batch: somebody is physically making
-    that material right now. Retiring a RECIPE is not proof that PHYSICAL WORK
-    stopped, and hiding that batch is precisely the exposure a safety alert
-    exists to surface.
-
-    So the version filter applies to the "which formulas" answer, and the batch
-    lookup runs across every version. This test fails if that is ever undone.
-    """
-    from app.domains.material_safety.service import impact_of_revision
-
-    org = safety_fixture["org_id"]
-    user = safety_fixture["user_id"]
-    suffix = uuid.uuid4().hex[:6]
-
-    project_id = owner_session.execute(
-        text(
-            """
-            INSERT INTO projects.projects (organization_id, project_code, name, confidentiality)
-            VALUES (:o, :c, 'Retired recipe project', 'normal') RETURNING id
-            """
-        ),
-        {"o": org, "c": f"RDP-S-{suffix}"},
-    ).scalar_one()
-
-    formula_id = owner_session.execute(
-        text(
-            """
-            INSERT INTO formulations.formulas
-                (organization_id, project_id, formula_code, name, owner_user_id, created_by)
-            VALUES (:o, :p, :c, 'Retired formula', :u, :u) RETURNING id
-            """
-        ),
-        {"o": org, "p": project_id, "c": f"FRM-{suffix}", "u": user},
-    ).scalar_one()
-
-    # 🔴 CREATED AS A DRAFT, THEN RETIRED. CLAUDE.md §8 freezes the
-    # composition of a non-draft version -- "the composition of version X is
-    # frozen (status superseded); clone it to a new draft version" -- so the
-    # component has to go in before the status moves. The end state is what
-    # this test is about: a SUPERSEDED version that still contains the
-    # material.
-    version_id = owner_session.execute(
-        text(
-            """
-            INSERT INTO formulations.formula_versions
-                (organization_id, project_id, formula_id, version_number, version_code,
-                 status, created_by)
-            VALUES (:o, :p, :f, 1, :vc, 'draft', :u) RETURNING id
-            """
-        ),
-        {"o": org, "p": project_id, "f": formula_id, "vc": f"{suffix}-v1", "u": user},
-    ).scalar_one()
-
-    owner_session.execute(
-        text(
-            """
-            INSERT INTO formulations.formula_components
-                (organization_id, project_id, formula_version_id, material_id,
-                 percentage, display_order)
-            VALUES (:o, :p, :v, :m, 10.0, 1)
-            """
-        ),
-        {"o": org, "p": project_id, "v": version_id, "m": safety_fixture["material_id"]},
-    )
-
-    # NOW retire it. The recipe is history; the batch below is not.
-    owner_session.execute(
-        text(
-            "UPDATE formulations.formula_versions SET status = 'superseded' WHERE id = :v"
-        ),
-        {"v": version_id},
-    )
-
-    # ...and a batch that is still being made.
-    owner_session.execute(
-        text(
-            """
-            INSERT INTO laboratory.batches
-                (organization_id, project_id, formula_version_id, batch_number,
-                 planned_quantity_kg, status, authorized_by, authorized_at, created_by)
-            VALUES (:o, :p, :v, :b, 5.0, 'in_progress', :u, now(), :u)
-            """
-        ),
-        {"o": org, "p": project_id, "v": version_id, "b": f"LB-{suffix}", "u": user},
-    )
-
-    sds_version = _interpret(owner_session, safety_fixture)
-    owner_session.flush()
-
-    impact = impact_of_revision(
-        owner_session, organization_id=org, sds_version_id=sds_version
-    )
-
-    assert any(b["formula_version_id"] == version_id for b in impact["open_batches"]), (
-        "an in-progress batch on a superseded formula version is not reported. "
-        "Somebody is physically making that material and would not be told the "
-        "safety data sheet changed."
-    )
-    assert project_id in impact["projects"], (
-        "the project with the live batch is not in the alert set, so no alert "
-        "would be raised for it"
-    )
+    assert unheld is None, f"safety permissions granted to no role: {unheld}"

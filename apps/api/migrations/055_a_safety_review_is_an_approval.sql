@@ -67,18 +67,45 @@ BEGIN;
 -- ---------------------------------------------------------------------
 -- PART 1 — the two genuinely new permissions
 -- ---------------------------------------------------------------------
+-- 🔴 `safety.export_restricted` WAS HERE AND HAS BEEN REMOVED.
+--
+-- This migration's own header says: *"Seeding a permission whose enforcement
+-- point does not exist yet is precisely how the 29 orphans accumulated, and
+-- adding to that pile while writing the migration that fixes part of it would
+-- be absurd."* It then seeded and granted `safety.export_restricted`, which
+-- nothing in `apps/api/app` or `apps/web` reads. Absurd, as predicted, and
+-- found by the security review.
+--
+-- It belongs in the migration that ships the export route, so that whoever
+-- writes that route has to decide again who may remove a hazard dossier from
+-- the building -- rather than inheriting an already-granted permission.
+--
+-- `safety.approve` stays: it has a real enforcement point in the SAFETY_REVIEW
+-- template's step 2, and the dual grant is what makes the segregation rule
+-- satisfiable.
 INSERT INTO core.permissions (code, domain, description) VALUES
     ('safety.approve', 'compliance',
      'Approve a safety review, closing the assessment of an SDS revision''s '
      'impact. Separate from compliance.review_sds because reviewing a change '
      'and signing it off are different acts, and §9 requires the second to be '
-     'performable by somebody who did not perform the first.'),
-    ('safety.export_restricted', 'compliance',
-     'Export restricted safety data out of the application. Separate from '
-     'reading it on screen, for the reason 039 gives for formula.export: '
-     'reading a hazard dossier and removing it from the building are '
-     'different acts, and every export is audited.')
+     'performable by somebody who did not perform the first.')
 ON CONFLICT (code) DO NOTHING;
+
+-- 🔴 AND IT IS WITHDRAWN FROM DATABASES THAT ALREADY HAVE IT.
+--
+-- An earlier version of THIS migration seeded `safety.export_restricted`, and
+-- that version was committed. So a database built from that commit carries a
+-- granted permission that nothing reads, and simply deleting the INSERT above
+-- would leave it there for ever -- the orphan would survive the fix for the
+-- orphan.
+--
+-- Written as a corrective DELETE rather than left to the downgrade, because a
+-- downgrade is not something a deployed database runs. Grants first: a
+-- permission row cannot go while `role_permissions` still references it.
+DELETE FROM core.role_permissions rp
+ USING core.permissions p
+ WHERE p.id = rp.permission_id AND p.code = 'safety.export_restricted';
+DELETE FROM core.permissions WHERE code = 'safety.export_restricted';
 
 -- `core._grant` is 039's helper; reused rather than re-declared.
 CREATE OR REPLACE FUNCTION core._grant(p_role TEXT, VARIADIC p_perms TEXT[])
@@ -98,14 +125,6 @@ $grant$;
 SELECT core._grant('qa_compliance_officer',   'safety.approve');
 SELECT core._grant('product_development_lead','safety.approve');
 
--- 🔴 EXPORT IS NARROWER, AND THE DIRECTOR DOES NOT GET IT.
--- 039 established this asymmetry for `formula.export` on the security
--- source's §31 — *"The Director should not automatically receive edit
--- access merely because the Director has high organizational rank"* — and
--- it applies at least as hard to removing a hazard dossier. Seniority is
--- not a need to export.
-SELECT core._grant('qa_compliance_officer',    'safety.export_restricted');
-SELECT core._grant('product_development_lead', 'safety.export_restricted');
 
 
 -- ---------------------------------------------------------------------
@@ -181,7 +200,10 @@ CREATE OR REPLACE FUNCTION workflow.provision_safety_review_template(p_org UUID)
     RETURNS VOID
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path TO 'pg_catalog', 'public'
+    -- `pg_temp` LAST: 013's rule. Every reference in the body is
+    -- schema-qualified so nothing is shadowable today, but a definer
+    -- function that omits it is one careless edit from being so.
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
 AS $safety_tpl$
 DECLARE
     tpl UUID;
@@ -217,6 +239,18 @@ BEGIN
 END
 $safety_tpl$;
 
+-- 🔴 EXECUTE IS TAKEN AWAY FROM PUBLIC FIRST.
+--
+-- `CREATE FUNCTION` grants EXECUTE to PUBLIC by default. This one is
+-- SECURITY DEFINER and takes an organization id as an argument, so left as
+-- created, ANY role -- `evercoat_app`, `evercoat_report`, `evercoat_worker` --
+-- could call it for ANOTHER TENANT'S id and write approval templates into that
+-- tenant's workflow configuration with RLS entirely out of the loop.
+--
+-- Ten migrations in this repository already do this (024, 027, 035, 044, 045,
+-- 048-053) and this one did not. Found by the security review.
+REVOKE ALL ON FUNCTION workflow.provision_safety_review_template(UUID) FROM PUBLIC;
+
 -- 🔴 THE OWNER IS DELIBERATELY NOT CHANGED.
 --
 -- A SECURITY DEFINER function executes with its OWNER's privileges, so
@@ -234,9 +268,36 @@ SELECT workflow.provision_safety_review_template(o.id) FROM core.organizations o
 -- And every organization created from now on. The existing trigger function
 -- is extended rather than replaced, so the six templates it already
 -- provisions keep being provisioned in exactly the same way.
+-- 🔴 THE TRIGGER FUNCTION BECOMES `SECURITY DEFINER`, AND THAT IS FORCED BY
+-- THE REVOKE ABOVE.
+--
+-- 030 created it as SECURITY INVOKER, so its body runs with the privileges of
+-- whoever inserted the organization. That worked only because
+-- `provision_approval_templates` was executable by PUBLIC. Revoking PUBLIC
+-- EXECUTE on the safety function -- which is what closes the cross-tenant write
+-- path -- therefore broke organization creation outright: 712 errors,
+-- "permission denied for function provision_safety_review_template", every one
+-- of them from this PERFORM.
+--
+-- The alternative was to grant EXECUTE back to `evercoat_app`, which would have
+-- reopened the exact hole: the function takes an organization id as an
+-- ARGUMENT, so any role that can call it can write approval templates into any
+-- tenant with RLS out of the loop.
+--
+-- As a definer function owned by the migration runner, the trigger can call
+-- what it needs while no ordinary role can call the safety function directly.
+-- The privilege follows the TRIGGER PATH rather than the caller -- the same
+-- move I109/ADR-032 made for sign-in, and for the same reason: a check inside
+-- a function cannot authorize a caller the function cannot identify.
+--
+-- ⚠️ A DELIBERATE CHANGE TO 030's FUNCTION, RECORDED HERE RATHER THAN MADE
+-- QUIETLY. It runs on INSERT to `core.organizations` only, and its whole body
+-- is two PERFORMs of fixed, id-parameterised provisioning.
 CREATE OR REPLACE FUNCTION workflow.provision_templates_on_new_org()
     RETURNS TRIGGER
     LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
 AS $on_new_org$
 BEGIN
     PERFORM workflow.provision_approval_templates(NEW.id);
@@ -244,6 +305,9 @@ BEGIN
     RETURN NEW;
 END
 $on_new_org$;
+
+-- It is a trigger function: nothing should call it by hand either.
+REVOKE ALL ON FUNCTION workflow.provision_templates_on_new_org() FROM PUBLIC;
 
 
 -- ---------------------------------------------------------------------

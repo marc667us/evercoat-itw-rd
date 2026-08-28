@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import text
@@ -144,6 +145,32 @@ def _translate(exc: DBAPIError) -> MaterialSafetyError:
     return MaterialSafetyError(detail)
 
 
+def _decimal_strings(row: Any) -> dict[str, Any]:
+    """Every `Decimal` in the row as a string; everything else untouched.
+
+    🔴 WITHOUT THIS, `NUMERIC` LEAVES THE API AS A FLOAT.
+
+    FastAPI's `jsonable_encoder` maps `Decimal` to **float**, so a
+    `NUMERIC(7,4)` concentration of 10.0000 arrives as `10.0` -- CLAUDE.md §5
+    forbids float on a controlled record, the stored scale is lost, and the
+    client's `z.string()` throws `Expected string, received number`, taking the
+    whole screen down for any material that has a disclosed concentration.
+
+    That is I84, and this module reintroduced it: `formulations`, `laboratory`
+    and `testing` each carry this helper and apply it at 36 call sites between
+    them, and this one applied it at none. The live suite passed anyway because
+    the demonstration database holds no interpreted sheets yet, so the field
+    was never populated -- a path no test had exercised.
+
+    Duplicated here rather than imported for the same reason the other three
+    duplicate it: importing across domain services is the cross-domain
+    dependency §0.3 forbids. If a fourth copy appears, promote it to `core`.
+    """
+    return {
+        key: (str(value) if isinstance(value, Decimal) else value) for key, value in row.items()
+    }
+
+
 # ---------------------------------------------------------------------------
 # Inputs
 # ---------------------------------------------------------------------------
@@ -216,6 +243,20 @@ def interpret_sds(
     domain error, so a route can answer 422 instead of leaking a PL/pgSQL
     exception to a browser.
 
+    🔴 THE PARENT AND ITS CHILDREN ARE IN **ONE** SAVEPOINT.
+
+    They were in two. Savepoint A had already released by the time B rolled
+    back, so a caller that caught the refusal and committed its own work left
+    an `sds_versions` row with no sections, hazards or components -- holding
+    `sds_versions_document_key`, which made that sheet permanently
+    un-interpretable ("this document has already been interpreted"). Over HTTP
+    the request rollback hid it; `guarded_write` exists precisely so a §12
+    composing caller CAN continue after catching a refusal, which is when it
+    would have bitten. Found by the Supervisor review.
+
+    One sheet is one reading: a partial interpretation is not a state this
+    schema should be able to hold.
+
     ⚠️ THE INTERPRETATION LANDS AS `pending_review`. The specification is
     explicit: *"Where a document cannot be reliably interpreted automatically,
     the information shall remain pending technical review rather than being
@@ -250,18 +291,7 @@ def interpret_sds(
                     "actor": actor_id,
                 },
             ).scalar_one()
-    except DBAPIError as exc:
-        raise _translate(exc) from exc
 
-    # 🔴 THE CHILD ROWS ARE INSIDE THE SAME BOUNDARY, AND WERE NOT.
-    #
-    # Codex found that only the parent INSERT was guarded, so a duplicate
-    # `section_number` or a concentration the CHECK refuses reached
-    # PostgreSQL with nobody listening -- an unhandled 500 on input the API
-    # had accepted as well-formed. A partial interpretation is also not a
-    # thing this schema should be able to hold: one sheet is one reading.
-    try:
-        with guarded_write(session):
             for section in spec.sections:
                 session.execute(
                     text(
@@ -471,7 +501,7 @@ def current_safety_position(
             ).mappings()
         ]
         components = [
-            dict(r)
+            _decimal_strings(r)
             for r in session.execute(
                 text(
                     """
@@ -487,7 +517,7 @@ def current_safety_position(
         ]
 
     storage = [
-        dict(r)
+        _decimal_strings(r)
         for r in session.execute(
             text(
                 """
@@ -750,7 +780,7 @@ def compare_revisions(
         # Keyed on CAS where there is one -- a manufacturer may rename a
         # component between revisions without changing the substance, and a
         # name-keyed diff would report that as one removal and one addition.
-        return {(r["cas_number"] or r["component_name"]): dict(r) for r in rows}
+        return {(r["cas_number"] or r["component_name"]): _decimal_strings(r) for r in rows}
 
     def _hazards(version_id: uuid.UUID) -> dict[str, dict[str, Any]]:
         rows = session.execute(
@@ -789,6 +819,35 @@ def compare_revisions(
         )
     ]
 
+    # 🔴 A HAZARD THAT STAYS BUT GETS WORSE IS A CHANGE, AND IT WAS BEING
+    # REPORTED AS "no substantive change".
+    #
+    # The diff below compares key SETS only, and the key is `hazard_code or
+    # hazard_class`. So a revision that keeps H317 while moving it from
+    # Category 2 / Warning to **Category 1A / Danger** produced five empty
+    # lists, `_summarise` said "no substantive change", no alert was raised,
+    # and the screen told the reviewer nothing had happened -- about a hazard
+    # SEVERITY INCREASE, which is the single most important thing this module
+    # exists to surface. Components already had an attribute diff; hazards had
+    # none. Found by the Supervisor review.
+    escalations = [
+        {
+            "key": key,
+            "hazard_class": after_hazards[key]["hazard_class"],
+            "hazard_code": after_hazards[key]["hazard_code"],
+            "previous_category": before_hazards[key]["hazard_category"],
+            "current_category": after_hazards[key]["hazard_category"],
+            "previous_signal_word": before_hazards[key]["signal_word"],
+            "current_signal_word": after_hazards[key]["signal_word"],
+        }
+        for key in before_hazards.keys() & after_hazards.keys()
+        if (
+            before_hazards[key]["hazard_category"] != after_hazards[key]["hazard_category"]
+            or before_hazards[key]["signal_word"] != after_hazards[key]["signal_word"]
+            or before_hazards[key]["statement"] != after_hazards[key]["statement"]
+        )
+    ]
+
     return {
         "material_id": seen[current_version_id],
         "components_added": [
@@ -802,6 +861,7 @@ def compare_revisions(
         "hazards_removed": [
             before_hazards[k] for k in before_hazards.keys() - after_hazards.keys()
         ],
+        "hazards_changed": escalations,
     }
 
 
@@ -819,6 +879,9 @@ def _summarise(change: dict[str, Any]) -> str:
         ("concentration range(s) changed", "concentrations_changed"),
         ("hazard classification(s) added", "hazards_added"),
         ("hazard classification(s) removed", "hazards_removed"),
+        # Separate from added/removed because "H317 became Danger" is not
+        # "H317 appeared", and a reviewer needs to know which.
+        ("hazard classification(s) changed in severity", "hazards_changed"),
     ):
         count = len(change[key])
         if count:
@@ -987,7 +1050,10 @@ def raise_alerts_for_revision(
     if summary == "no substantive change":
         return []
 
-    hazards_added = len(change["hazards_added"])
+    # 🔴 AN ESCALATION IS AS CRITICAL AS AN ADDITION. A sheet moving an
+    # existing hazard to a higher category is exactly as urgent as one
+    # naming a new hazard; grading it merely "high" would bury it.
+    hazards_added = len(change["hazards_added"]) + len(change["hazards_changed"])
     severity = (
         "critical"
         if hazards_added

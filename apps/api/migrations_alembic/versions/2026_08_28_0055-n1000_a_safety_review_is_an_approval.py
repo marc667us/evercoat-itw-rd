@@ -12,8 +12,11 @@ nothing in `apps/api/app` -- one of 29 permissions measured in that state. This
 migration does not mint `safety.review` beside it, because a synonym for a fact
 the catalogue already carries is the defect this project keeps finding.
 
-Two permissions are genuinely new, because two acts have no existing holder:
-`safety.approve` and `safety.export_restricted`. Nothing for research,
+ONE permission is genuinely new: `safety.approve`, which has a real
+enforcement point in the SAFETY_REVIEW template's step 2.
+`safety.export_restricted` was seeded here and has been REMOVED -- nothing
+reads it, and this migration's own header forbids adding to the orphan pile
+it exists partly to drain. It belongs with the export route. Nothing for research,
 competitors or experiments -- those belong to the phases that build their
 enforcement points, and adding to the orphan pile inside the migration that
 starts draining it would be self-defeating.
@@ -173,13 +176,12 @@ def downgrade() -> None:
             DELETE FROM core.role_permissions rp
              USING core.permissions p
              WHERE p.id = rp.permission_id
-               AND p.code IN ('safety.approve', 'safety.export_restricted')
+               AND p.code IN ('safety.approve')
             """
         )
     )
     op.execute(
         text(
-            "DELETE FROM core.permissions "
-            "WHERE code IN ('safety.approve', 'safety.export_restricted')"
+            "DELETE FROM core.permissions WHERE code IN ('safety.approve')"
         )
     )
