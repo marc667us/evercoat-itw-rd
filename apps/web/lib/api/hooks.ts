@@ -206,6 +206,30 @@ import {
   type OrganizationChoice,
 } from "@/components/providers/auth-provider";
 import {
+  fetchCompetitorBenchmarks,
+  fetchCompetitorDocuments,
+  fetchCompetitorProducts,
+  fetchCompetitorSamples,
+  fetchCompositionMatrix,
+  gradeCompetitorEvidence,
+  recordCompetitorBenchmark,
+  recordCompetitorEvidence,
+  registerCompetitorProduct,
+  registerCompetitorSample,
+  uploadCompetitorDocument,
+  type BenchmarkRequest,
+  type CompetitorBenchmark,
+  type CompetitorDocument,
+  type CompetitorProduct,
+  type CompetitorSample,
+  type CompositionMatrix,
+  type EvidenceRequest as CompetitorEvidenceRequest,
+  type ProductRequest,
+  // Aliased: laboratory.ts already exports a SampleRequest, and that one is a
+  // BATCH sample of our own. Two different things with one name in one file.
+  type SampleRequest as CompetitorSampleRequest,
+} from "./competitors";
+import {
   dashboardForRoles,
   fetchRoleDashboard,
   type DashboardRole,
@@ -2531,4 +2555,194 @@ export function useRoleDashboard(role: DashboardRole | null): LiveOnly<RoleDashb
   return useLiveOnlyRecord("role-dashboard", role ?? "", (credentials, signal) =>
     fetchRoleDashboard(credentials, role ?? "", signal),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Competitor intelligence
+// ---------------------------------------------------------------------------
+
+export function useCompetitorProducts<TShown = CompetitorProduct[]>(
+  project: (live: CompetitorProduct[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("competitor-products", project, fetchCompetitorProducts);
+}
+
+/** The Composition Evidence Matrix for one product. */
+export function useCompositionMatrix(productId: string): LiveOnly<CompositionMatrix> {
+  return useLiveOnlyRecord("competitor-composition", productId, (credentials, signal) =>
+    fetchCompositionMatrix(credentials, productId, signal),
+  );
+}
+
+/** Labels, photographs and literature on file for one product. */
+export function useCompetitorDocuments(productId: string): LiveOnly<CompetitorDocument[]> {
+  return useLiveOnlyRecord("competitor-documents", productId, (credentials, signal) =>
+    fetchCompetitorDocuments(credentials, productId, signal),
+  );
+}
+
+/**
+ * Physical samples held for one competitor product.
+ *
+ * 🔴 THE LIST EXISTS SO A CLAIM CAN CITE ONE. `manual_observation` means a
+ * person read a tin; the matrix stores WHICH tin in `sample_id`, and until
+ * this hook existed no screen could offer the choice, so every observation
+ * was recorded unattributable.
+ */
+export function useCompetitorSamples(productId: string): LiveOnly<CompetitorSample[]> {
+  return useLiveOnlyRecord("competitor-samples", productId, (credentials, signal) =>
+    fetchCompetitorSamples(credentials, productId, signal),
+  );
+}
+
+/** Measured comparisons recorded against one competitor product. */
+export function useCompetitorBenchmarks(productId: string): LiveOnly<CompetitorBenchmark[]> {
+  return useLiveOnlyRecord("competitor-benchmarks", productId, (credentials, signal) =>
+    fetchCompetitorBenchmarks(credentials, productId, signal),
+  );
+}
+
+/**
+ * Every write in competitor intelligence, including the file upload.
+ *
+ * 🔴 THE UPLOAD IS IN THE SAME HOOK AS THE REST, so the screen has one
+ * `isPending` and one error. A separate upload hook would let a form show
+ * "saved" while a file was still in flight.
+ */
+export function useCompetitorWrites(): {
+  readonly registerProduct: (request: ProductRequest, after?: () => void) => void;
+  readonly upload: (
+    productId: string,
+    file: File,
+    documentType: string,
+    title: string,
+    after?: () => void,
+  ) => void;
+  readonly recordEvidence: (
+    productId: string,
+    request: CompetitorEvidenceRequest,
+    after?: () => void,
+  ) => void;
+  readonly grade: (evidenceId: string, confidence: string) => void;
+  readonly registerSample: (
+    productId: string,
+    request: CompetitorSampleRequest,
+    after?: () => void,
+  ) => void;
+  readonly recordBenchmark: (
+    productId: string,
+    request: BenchmarkRequest,
+    after?: () => void,
+  ) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | { readonly kind: "product"; readonly request: ProductRequest; readonly after?: () => void }
+        | {
+            readonly kind: "upload";
+            readonly productId: string;
+            readonly file: File;
+            readonly documentType: string;
+            readonly title: string;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "evidence";
+            readonly productId: string;
+            readonly request: CompetitorEvidenceRequest;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "sample";
+            readonly productId: string;
+            readonly request: CompetitorSampleRequest;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "benchmark";
+            readonly productId: string;
+            readonly request: BenchmarkRequest;
+            readonly after?: () => void;
+          }
+        | { readonly kind: "grade"; readonly evidenceId: string; readonly confidence: string },
+    ) => {
+      if (job.kind === "product") {
+        await registerCompetitorProduct(credentials(), job.request);
+        return "product registered";
+      }
+      if (job.kind === "upload") {
+        await uploadCompetitorDocument(
+          credentials(),
+          job.productId,
+          job.file,
+          job.documentType,
+          job.title,
+        );
+        return "uploaded";
+      }
+      if (job.kind === "evidence") {
+        await recordCompetitorEvidence(credentials(), job.productId, job.request);
+        return "evidence recorded";
+      }
+      if (job.kind === "sample") {
+        await registerCompetitorSample(credentials(), job.productId, job.request);
+        return "sample registered";
+      }
+      if (job.kind === "benchmark") {
+        await recordCompetitorBenchmark(credentials(), job.productId, job.request);
+        return "benchmark recorded";
+      }
+      const graded = await gradeCompetitorEvidence(
+        credentials(),
+        job.evidenceId,
+        job.confidence,
+      );
+      return graded.confidence;
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["competitor-products"] });
+      void queryClient.invalidateQueries({ queryKey: ["competitor-composition"] });
+      void queryClient.invalidateQueries({ queryKey: ["competitor-documents"] });
+      // A new sample changes what an observation may cite, so the sample list
+      // is invalidated by EVERY write here, not only by "sample".
+      void queryClient.invalidateQueries({ queryKey: ["competitor-samples"] });
+      void queryClient.invalidateQueries({ queryKey: ["competitor-benchmarks"] });
+      if (job.kind !== "grade") job.after?.();
+    },
+  });
+
+  return {
+    registerProduct: (request, after) => mutation.mutate({ kind: "product", request, after }),
+    upload: (productId, file, documentType, title, after) =>
+      mutation.mutate({ kind: "upload", productId, file, documentType, title, after }),
+    recordEvidence: (productId, request, after) =>
+      mutation.mutate({ kind: "evidence", productId, request, after }),
+    grade: (evidenceId, confidence) =>
+      mutation.mutate({ kind: "grade", evidenceId, confidence }),
+    registerSample: (productId, request, after) =>
+      mutation.mutate({ kind: "sample", productId, request, after }),
+    recordBenchmark: (productId, request, after) =>
+      mutation.mutate({ kind: "benchmark", productId, request, after }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
 }

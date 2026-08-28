@@ -23,6 +23,7 @@ from app.api.admin import router as admin_router
 from app.api.admin_reference_data import router as admin_reference_data_router
 from app.api.admin_stage_gates import router as admin_stage_gates_router
 from app.api.analysis import router as analysis_router
+from app.api.competitors import router as competitors_router
 from app.api.dashboards import router as dashboards_router
 from app.api.failures import approvals_router
 from app.api.failures import router as failures_router
@@ -299,6 +300,10 @@ def create_app() -> FastAPI:
     application.include_router(
         material_safety_router, prefix="/api/material-safety", tags=["material-safety"]
     )
+    # Competitor intelligence. Its label upload delegates to the materials
+    # document writer rather than storing anything itself -- §14 forbids a
+    # second document repository, and the register is one table.
+    application.include_router(competitors_router, prefix="/api/competitors", tags=["competitors"])
 
     if settings.metrics_enabled:
 

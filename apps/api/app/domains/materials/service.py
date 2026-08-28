@@ -86,6 +86,7 @@ __all__ = [
     "create_supplier",
     "get_material",
     "link_supplier",
+    "list_competitor_documents",
     "list_material_documents",
     "list_materials",
     "list_suppliers",
@@ -1288,6 +1289,32 @@ def store_document(
         ),
     )
     return document_id
+
+
+def list_competitor_documents(
+    session: Session, *, competitor_product_id: uuid.UUID, organization_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """The document register for one competitor product, newest first.
+
+    Beside `list_material_documents` rather than inside it: the two take
+    different owners and a single function with two optional arguments would
+    have a branch nobody reads. They share the TABLE, which is the thing §14
+    cares about; sharing the query would save four lines and cost the caller
+    clarity about which owner it is asking for.
+    """
+    rows = session.execute(
+        text(
+            """
+            SELECT id, document_type, title, storage_key, content_type, byte_size,
+                   checksum_sha256, issued_on, expires_on, supersedes_id, created_at
+            FROM materials.material_documents
+            WHERE competitor_product_id = :cpid AND organization_id = :org
+            ORDER BY document_type, issued_on DESC NULLS LAST, created_at DESC
+            """
+        ),
+        {"cpid": competitor_product_id, "org": organization_id},
+    ).mappings()
+    return [dict(r) for r in rows]
 
 
 def list_material_documents(

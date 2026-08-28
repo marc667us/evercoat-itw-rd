@@ -94,6 +94,7 @@ const PAGES = [
   // live suite on 2026-08-27, which is why
   // `lib/accessibility-coverage.test.ts` now asserts uniqueness too.
   { name: "material safety data", path: "/material-safety" },
+  { name: "competitor intelligence", path: "/material-safety/competitors" },
   { name: "reports", path: "/reports" },
   // The workspace routes, with no record named. That is a REAL state — it is
   // what a bookmarked link without its query string renders — and it is the

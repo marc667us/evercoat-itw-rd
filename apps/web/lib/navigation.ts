@@ -119,6 +119,16 @@ export const NAVIGATION: readonly NavGroup[] = [
         permission: "material.view",
         slice: 7,
       },
+      // Competitor intelligence sits under the Center it belongs to, and is
+      // reachable in its own right: the operator went looking for "where do I
+      // load the picture of the label" and there was nowhere to go.
+      {
+        id: "competitors",
+        label: "Competitor Intelligence",
+        href: "/material-safety/competitors",
+        permission: "material.view",
+        slice: 7,
+      },
       { id: "knowledge", label: "Knowledge Library", href: "/knowledge", permission: "knowledge.view", slice: 8 },
     ],
   },
@@ -323,6 +333,7 @@ export const BUILT_AHEAD: ReadonlySet<string> = new Set([
   // `page.tsx` and `navigation.test.ts` reads the filesystem and would fail
   // the build for putting a live link in front of a 404.
   "material-safety",
+  "competitors",
 ]);
 
 export function isAvailable(item: NavItem): boolean {
