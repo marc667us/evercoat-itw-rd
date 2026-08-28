@@ -87,6 +87,13 @@ const PAGES = [
   // mechanism.
   { name: "analytics", path: "/analytics" },
   { name: "knowledge", path: "/knowledge" },
+  // The Material Safety Data & Research Center (slice 7, 2026-08-28).
+  // The name is unique and stays unique: a DUPLICATE test title makes
+  // Playwright refuse the ENTIRE run -- not one failure, zero tests
+  // executed and nothing in the output looking red. That took out a whole
+  // live suite on 2026-08-27, which is why
+  // `lib/accessibility-coverage.test.ts` now asserts uniqueness too.
+  { name: "material safety data", path: "/material-safety" },
   { name: "reports", path: "/reports" },
   // The workspace routes, with no record named. That is a REAL state — it is
   // what a bookmarked link without its query string renders — and it is the

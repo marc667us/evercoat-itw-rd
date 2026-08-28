@@ -30,6 +30,7 @@ from app.api.formulations import router as formulations_router
 from app.api.health import router as health_router
 from app.api.knowledge import router as knowledge_router
 from app.api.laboratory import router as laboratory_router
+from app.api.material_safety import router as material_safety_router
 from app.api.materials import router as materials_router
 from app.api.materials import suppliers_router
 from app.api.me import router as me_router
@@ -287,6 +288,17 @@ def create_app() -> FastAPI:
     # violation `tests/test_agent_topology.py` fails the build for.
     application.include_router(knowledge_router, prefix="/api/knowledge", tags=["knowledge"])
     application.include_router(msd_router, prefix="/api/msd", tags=["msd"])
+    # 🔴 THE MATERIAL SAFETY DATA & RESEARCH CENTER, NAMED IN FULL.
+    #
+    # Not `/api/msd`, and nothing here contains `msd`. In this codebase MSD
+    # means the Material Science & Development Assistant -- a different
+    # capability with its own tables, permission and conversations -- and the
+    # specification for this one writes "Material Safety Data" out in full all
+    # 48 times it uses it. Two things that both abbreviate to MSD would make
+    # authorization, audit and stored conversations ambiguous forever.
+    application.include_router(
+        material_safety_router, prefix="/api/material-safety", tags=["material-safety"]
+    )
 
     if settings.metrics_enabled:
 

@@ -181,6 +181,26 @@ import {
   type Analytics,
   type TestResultsReport,
 } from "./analysis";
+import {
+  acknowledgeAlert,
+  createInterpretation,
+  fetchComparableRevisions,
+  fetchInterpretableDocuments,
+  fetchMaterialInterpretations,
+  fetchPendingInterpretations,
+  openSafetyReview,
+  raiseAlerts,
+  fetchSafetyAlerts,
+  fetchSafetyPosition,
+  reviewInterpretation,
+  type ComparableRevision,
+  type InterpretableDocument,
+  type InterpretationRequest,
+  type MaterialInterpretation,
+  type PendingInterpretation,
+  type SafetyAlert,
+  type SafetyPosition,
+} from "./material-safety";
 import { fetchProjects, type Project } from "./projects";
 import { useSession } from "./session";
 import { fetchMyWork, type Task } from "./tasks";
@@ -2232,4 +2252,234 @@ export function useAdminActions(): {
     lastAction: mutation.data?.label ?? null,
     unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Material Safety Data & Research Center
+//
+// Written in FULL, never abbreviated. `MSD` in this codebase is the Material
+// Science & Development Assistant -- a different capability with its own
+// tables, permission and conversations. Nothing here contains `msd`.
+// ---------------------------------------------------------------------------
+
+/** Safety alerts this caller can reach. Live or nothing -- see `LiveOnly`. */
+export function useSafetyAlerts<TShown = SafetyAlert[]>(
+  project: (live: SafetyAlert[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("safety-alerts", project, fetchSafetyAlerts);
+}
+
+/** Interpretations awaiting technical review -- the compliance queue. */
+export function usePendingInterpretations<TShown = PendingInterpretation[]>(
+  project: (live: PendingInterpretation[]) => TShown = (live) =>
+    live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("safety-pending", project, fetchPendingInterpretations);
+}
+
+/**
+ * The safety position for one material.
+ *
+ * 🔴 `data.current` IS NULLABLE AND THE PAGE MUST SAY SO. Null means no
+ * interpreted SDS that `materials.usable_documents` still returns -- none on
+ * file, or the one on file expired, was superseded, or failed the scanner.
+ * Rendering that as an empty panel would let "no hazard data" read as "no
+ * hazards".
+ */
+export function useSafetyPosition(materialId: string): LiveOnly<SafetyPosition> {
+  return useLiveOnlyRecord("safety-position", materialId, (credentials, signal) =>
+    fetchSafetyPosition(credentials, materialId, signal),
+  );
+}
+
+/**
+ * The two write actions on the Material Safety Data screen.
+ *
+ * One hook rather than two, because they invalidate the same queries and a
+ * screen showing both wants one `isPending`. `lastAction` names which one
+ * happened, so the confirmation can be specific rather than "done".
+ */
+export function useSafetyActions(): {
+  readonly acknowledge: (alertId: string) => void;
+  readonly review: (sdsVersionId: string, accept: boolean) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | { readonly kind: "acknowledge"; readonly alertId: string }
+        | { readonly kind: "review"; readonly sdsVersionId: string; readonly accept: boolean },
+    ) => {
+      if (job.kind === "acknowledge") {
+        await acknowledgeAlert(credentials(), job.alertId);
+        return "acknowledged";
+      }
+      const result = await reviewInterpretation(
+        credentials(),
+        job.sdsVersionId,
+        job.accept,
+      );
+      return result.review_state;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["safety-alerts"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-pending"] });
+      // A confirmed interpretation changes what the material screen shows.
+      void queryClient.invalidateQueries({ queryKey: ["safety-position"] });
+    },
+  });
+
+  return {
+    acknowledge: (alertId) => mutation.mutate({ kind: "acknowledge", alertId }),
+    review: (sdsVersionId, accept) =>
+      mutation.mutate({ kind: "review", sdsVersionId, accept }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+
+/** Usable Safety Data Sheets nobody has read yet — what the record form offers. */
+export function useInterpretableDocuments<TShown = InterpretableDocument[]>(
+  project: (live: InterpretableDocument[]) => TShown = (live) =>
+    live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("safety-candidates", project, fetchInterpretableDocuments);
+}
+
+/** Every reading recorded for a material, history included. */
+export function useMaterialInterpretations(
+  materialId: string,
+): LiveOnly<MaterialInterpretation[]> {
+  return useLiveOnlyRecord("safety-material-readings", materialId, (credentials, signal) =>
+    fetchMaterialInterpretations(credentials, materialId, signal),
+  );
+}
+
+/**
+ * The three writes that had no browser caller.
+ *
+ * 🔴 THEY SHIP WITH THEIR CONTROLS, IN THE SAME COMMIT. `POST /interpretations`,
+ * `POST .../alerts` and `POST .../safety-reviews` existed, were tested, and no
+ * person could press anything that called them — "a route with no caller is the
+ * same defect as a table with no writer", which this project has counted 23
+ * instances of. Codex found it in review.
+ *
+ * `lastResult` carries the shape each one returns, because they are not
+ * interchangeable: raising alerts can legitimately return NONE (nothing
+ * substantive changed), and a screen that said "done" would hide that.
+ */
+export function useSafetyWrites(): {
+  readonly record: (request: InterpretationRequest, after?: () => void) => void;
+  readonly raise: (sdsVersionId: string, previousVersionId: string) => void;
+  readonly openReview: (
+    sdsVersionId: string,
+    projectId: string,
+    reason: string,
+    after?: () => void,
+  ) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastResult:
+    | { readonly kind: "recorded"; readonly id: string }
+    | { readonly kind: "alerts"; readonly count: number }
+    | { readonly kind: "review"; readonly id: string }
+    | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured
+        ? new ApiNoSessionError(resolved.reason)
+        : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | { readonly kind: "record"; readonly request: InterpretationRequest; readonly after?: () => void }
+        | { readonly kind: "raise"; readonly sdsVersionId: string; readonly previousVersionId: string }
+        | {
+            readonly kind: "review";
+            readonly sdsVersionId: string;
+            readonly projectId: string;
+            readonly reason: string;
+            readonly after?: () => void;
+          },
+    ) => {
+      if (job.kind === "record") {
+        const created = await createInterpretation(credentials(), job.request);
+        return { kind: "recorded" as const, id: created.id };
+      }
+      if (job.kind === "raise") {
+        const raised = await raiseAlerts(
+          credentials(),
+          job.sdsVersionId,
+          job.previousVersionId,
+        );
+        return { kind: "alerts" as const, count: raised.length };
+      }
+      const opened = await openSafetyReview(
+        credentials(),
+        job.sdsVersionId,
+        job.projectId,
+        job.reason,
+      );
+      return { kind: "review" as const, id: opened.id };
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["safety-alerts"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-pending"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-candidates"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-position"] });
+      void queryClient.invalidateQueries({ queryKey: ["safety-material-readings"] });
+      // 🔴 THE FORM IS CLEARED ON SUCCESS, AND ONLY ON SUCCESS. The same
+      // reasoning as `useOpenInvestigation`: nothing acknowledged the create,
+      // so a user who saw no confirmation pressed the button again and hit a
+      // uniqueness refusal that reads as though the FIRST attempt had failed.
+      if (job.kind === "record" || job.kind === "review") job.after?.();
+    },
+  });
+
+  return {
+    record: (request, after) => mutation.mutate({ kind: "record", request, after }),
+    raise: (sdsVersionId, previousVersionId) =>
+      mutation.mutate({ kind: "raise", sdsVersionId, previousVersionId }),
+    openReview: (sdsVersionId, projectId, reason, after) =>
+      mutation.mutate({ kind: "review", sdsVersionId, projectId, reason, after }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastResult: mutation.data ?? null,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+/** Materials whose newest reading has a predecessor — what "raise alerts" offers. */
+export function useComparableRevisions<TShown = ComparableRevision[]>(
+  project: (live: ComparableRevision[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("safety-comparable", project, fetchComparableRevisions);
 }

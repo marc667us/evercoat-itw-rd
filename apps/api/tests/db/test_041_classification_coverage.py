@@ -61,6 +61,15 @@ DEFERRED: dict[str, str] = {
     "laboratory.samples": "I69 -- a sample is a physical piece of the formula",
     "messaging.messages": "I69 -- free text routinely quotes compositions",
     "ai.msd_turns": "I69 -- MSD answers carry evidence packs verbatim",
+    "safety.safety_alerts": (
+        "I69 -- an alert names a formula version affected by a material's "
+        "SDS revision, which is composition information: it says that "
+        "version X contains material Y. It is NOT labelled today because "
+        "the alert carries no recipe text and is already scoped by the "
+        "project predicate under FORCE RLS (054), so a non-member reaches "
+        "none of it. Deferred rather than decided: a label here needs the "
+        "same inheritance question 041 asks of the rest of the subtree."
+    ),
 }
 
 

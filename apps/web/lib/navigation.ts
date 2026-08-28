@@ -90,10 +90,35 @@ export const NAVIGATION: readonly NavGroup[] = [
   },
   {
     id: "resources",
-    label: "Resources",
+    // Renamed from "Resources" by the Material Safety Data & Research Center
+    // specification §3, which is explicit about where the destination goes:
+    // "RESOURCES & RESEARCH -- Materials, Suppliers, Material Safety Data &
+    // Research Center, Knowledge Library". The group id is UNCHANGED, because
+    // ids are contract and labels are copy.
+    label: "Resources & Research",
     items: [
       { id: "materials", label: "Materials", href: "/materials", permission: "material.view", slice: 3 },
       { id: "suppliers", label: "Suppliers", href: "/suppliers", permission: "material.view", slice: 3 },
+      // 🔴 THE LABEL IS THE FULL NAME AND IS NEVER SHORTENED.
+      //
+      // "MSD" in this product is the Material Science & Development Assistant
+      // -- a different capability with its own tables, permission and stored
+      // conversations. The specification writes this one out in full all 48
+      // times it uses it. A sidebar reading "MSD" twice would be unusable, and
+      // `accessibility-coverage.test.ts` would not catch it because both would
+      // be real routes.
+      //
+      // Gated on `material.view`: safety data is information ABOUT a material,
+      // and the roles that may look at a material are the ones that need to
+      // know what its sheet says. Minting a `safety.view` nobody holds is the
+      // defect this project has caught five times.
+      {
+        id: "material-safety",
+        label: "Material Safety Data & Research Center",
+        href: "/material-safety",
+        permission: "material.view",
+        slice: 7,
+      },
       { id: "knowledge", label: "Knowledge Library", href: "/knowledge", permission: "knowledge.view", slice: 8 },
     ],
   },
@@ -281,6 +306,23 @@ export const BUILT_AHEAD: ReadonlySet<string> = new Set([
   // renders inert.
   "failures",
   "approvals",
+  // Slice 7, built 2026-08-28 — the Material Safety Data & Research Center.
+  //
+  // 🔴 IT IS HERE BECAUSE `compliance.review_sds` HAD NO ENFORCEMENT POINT.
+  // The permission has been seeded since migration 002, described as "Review
+  // SDS and safety documentation", granted to the QA compliance officer, and
+  // read by nothing in the application — one of 29 measured in that state.
+  // The screen behind this entry is the first place in the product's history
+  // that reads it. Leaving the destination disabled would have kept a
+  // permission, eight tables, ten routes and an approval template reachable by
+  // nobody, which is the "route with no caller" defect this project has
+  // counted 23 instances of.
+  //
+  // ⚠️ Analytics is also slice 7 and is already here; Messages and
+  // Notifications are slice 7 and stay DISABLED, because they have no
+  // `page.tsx` and `navigation.test.ts` reads the filesystem and would fail
+  // the build for putting a live link in front of a 404.
+  "material-safety",
 ]);
 
 export function isAvailable(item: NavItem): boolean {

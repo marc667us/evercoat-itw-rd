@@ -532,6 +532,7 @@ def route_for_entity(
     organization_id: uuid.UUID,
     entity_type: str,
     entity_id: uuid.UUID,
+    include_closed: bool = False,
 ) -> dict[str, Any] | None:
     """The open route for a record, or None.
 
@@ -539,16 +540,36 @@ def route_for_entity(
     is an ordinary state, not a fault — a test still in execution has
     nothing to approve.
     """
+    # 🔴 `include_closed` EXISTS BECAUSE "NO OPEN ROUTE" AND "NEVER OPENED" ARE
+    # DIFFERENT ANSWERS, AND THIS RETURNED None FOR BOTH.
+    #
+    # Codex found it through the safety module: once a route is approved,
+    # rejected or cancelled it stops being open, so a caller asking "where did
+    # this review get to?" was told exactly what a caller asking about a record
+    # with no route at all was told. A decided review reading as "not started"
+    # is the wrong answer to give about a safety assessment.
+    #
+    # The default is unchanged, so every existing caller keeps the semantics it
+    # was written against: `open_route` still refuses a second OPEN route, and
+    # the queue still shows only what is live.
     row = (
         session.execute(
             text(
                 """
                 SELECT id FROM workflow.approval_routes
                 WHERE organization_id = :org AND entity_type = :etype
-                  AND entity_id = :eid AND status = 'open'
+                  AND entity_id = :eid
+                  AND (:include_closed OR status = 'open')
+                ORDER BY (status = 'open') DESC, opened_at DESC
+                LIMIT 1
                 """
             ),
-            {"org": organization_id, "etype": entity_type, "eid": entity_id},
+            {
+                "org": organization_id,
+                "etype": entity_type,
+                "eid": entity_id,
+                "include_closed": include_closed,
+            },
         )
         .mappings()
         .one_or_none()

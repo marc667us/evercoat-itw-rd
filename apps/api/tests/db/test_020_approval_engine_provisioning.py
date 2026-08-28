@@ -41,6 +41,13 @@ EXPECTED_TEMPLATES = {
     "VALIDATION_CONFIRMATION",
     "QUALIFICATION_CONFIRMATION",
     "RELEASE_CRITICAL",
+    # Migration 055. A safety review is an approval, not a second workflow
+    # engine, so it is provisioned by the same trigger as the other six --
+    # and this set is what proves a new tenant actually receives it. The
+    # first draft of 055 back-filled existing organizations only, and this
+    # assertion is the one that would have stayed green while every future
+    # tenant got a Safety Review control that raised "no active template".
+    "SAFETY_REVIEW",
 }
 
 # Every value `testing.tests.authority_level` permits. A level with no active
