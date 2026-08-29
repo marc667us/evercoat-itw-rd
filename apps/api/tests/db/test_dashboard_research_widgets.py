@@ -41,6 +41,13 @@ pytestmark = pytest.mark.db
 ALL_PERMISSIONS = frozenset(
     {
         "research.view",
+        # 🔴 `material.view` AND `test.view` ARE HERE BECAUSE THE PANELS READ
+        # OTHER MODULES' ROWS. Codex found the safety-alert, competitor and
+        # research-linked-test panels ungated or under-gated — a dashboard that
+        # is a softer door to the same data than the endpoint owning it. The
+        # gate tests below assert the refusals; this set is the "holds
+        # everything" case those refusals are measured against.
+        "material.view",
         "compliance.review_sds",
         "test.view",
         "test.review",
@@ -186,6 +193,116 @@ def _alert(session: Session, fx: dict[str, Any], severity: str) -> uuid.UUID:
             "sev": severity,
         },
     ).scalar_one()
+
+
+def _cited_test(
+    session: Session, fx: dict[str, Any], investigation: uuid.UUID, stance: str
+) -> uuid.UUID:
+    """A test, and one evidence card in `investigation` that cites it.
+
+    The digital thread means a test cannot exist on its own: it needs a method,
+    a sample, a batch, a version and a formula. Building all six here rather
+    than in each test keeps the assertions about the WIDGET.
+    """
+    tag = uuid.uuid4().hex[:6]
+    formula = session.execute(
+        text(
+            "INSERT INTO formulations.formulas (organization_id, project_id,"
+            " formula_code, name, owner_user_id, created_by)"
+            " VALUES (:o, :p, :c, 'Cited formula', :u, :u) RETURNING id"
+        ),
+        {"o": fx["org"], "p": fx["project"], "c": f"F-C{tag}", "u": fx["user"]},
+    ).scalar_one()
+    version = session.execute(
+        text(
+            "INSERT INTO formulations.formula_versions (organization_id, project_id,"
+            " formula_id, version_number, version_code, status, created_by)"
+            " VALUES (:o, :p, :f, 1, :c, 'draft', :u) RETURNING id"
+        ),
+        {
+            "o": fx["org"],
+            "p": fx["project"],
+            "f": formula,
+            "c": f"F-C{tag}-V1",
+            "u": fx["user"],
+        },
+    ).scalar_one()
+    batch = session.execute(
+        text(
+            "INSERT INTO laboratory.batches (organization_id, project_id,"
+            " formula_version_id, batch_number, planned_quantity_kg, status, created_by)"
+            " VALUES (:o, :p, :v, :b, 2.5, 'draft', :u) RETURNING id"
+        ),
+        {
+            "o": fx["org"],
+            "p": fx["project"],
+            "v": version,
+            "b": f"LB-C{tag}",
+            "u": fx["user"],
+        },
+    ).scalar_one()
+    sample = session.execute(
+        text(
+            "INSERT INTO laboratory.samples (organization_id, project_id, batch_id,"
+            " sample_number, taken_by) VALUES (:o, :p, :b, :s, :u) RETURNING id"
+        ),
+        {
+            "o": fx["org"],
+            "p": fx["project"],
+            "b": batch,
+            "s": f"SA-C{tag}",
+            "u": fx["user"],
+        },
+    ).scalar_one()
+    method = session.execute(
+        text(
+            "INSERT INTO testing.test_methods (organization_id, method_code, name,"
+            " property_measured, canonical_unit, created_by)"
+            " VALUES (:o, :c, 'Sand-through time', 'sanding', 'minutes', :u)"
+            " RETURNING id"
+        ),
+        {"o": fx["org"], "c": f"TM-C{tag}", "u": fx["user"]},
+    ).scalar_one()
+    test_id = session.execute(
+        text(
+            "INSERT INTO testing.tests (organization_id, project_id, sample_id,"
+            " method_id, test_number, test_purpose, authority_level, created_by)"
+            " VALUES (:o, :p, :s, :m, :n, 'screening', 'preliminary', :u) RETURNING id"
+        ),
+        {
+            "o": fx["org"],
+            "p": fx["project"],
+            "s": sample,
+            "m": method,
+            "n": f"T-C{tag}",
+            "u": fx["user"],
+        },
+    ).scalar_one()
+
+    source = session.execute(
+        text(
+            "INSERT INTO research.sources (organization_id, investigation_id,"
+            " source_kind, evidence_grade, title, recorded_by)"
+            " VALUES (:o, :i, 'laboratory', 'A', 'Our own result', :u) RETURNING id"
+        ),
+        {"o": fx["org"], "i": investigation, "u": fx["user"]},
+    ).scalar_one()
+    session.execute(
+        text(
+            "INSERT INTO research.evidence (organization_id, investigation_id,"
+            " source_id, test_id, stance, summary, recorded_by)"
+            " VALUES (:o, :i, :s, :t, :st, 'The result is relevant.', :u)"
+        ),
+        {
+            "o": fx["org"],
+            "i": investigation,
+            "s": source,
+            "t": test_id,
+            "st": stance,
+            "u": fx["user"],
+        },
+    )
+    return test_id  # type: ignore[no-any-return]
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +521,11 @@ def test_a_test_cited_by_evidence_reaches_the_engineer(
     )
     after = _panels(engineer_dashboard, fx, owner_session)["research_linked_tests"]
     assert [r["id"] for r in after["rows"]] == [test_id]
-    assert after["rows"][0]["stance"] == "supports"
+    # The panel aggregates per TEST now (Codex P2: `DISTINCT` over a select
+    # list carrying the investigation and the stance was not one row per
+    # test), so the stance arrives as the set of stances it was cited with.
+    assert after["rows"][0]["stances"] == ["supports"]
+    assert after["rows"][0]["citation_count"] == 1
 
 
 def test_the_engineers_process_issue_panel_says_it_does_not_exist(
@@ -574,3 +695,139 @@ def test_the_director_research_portfolio_is_refused_without_research_view(
     panel = panels["research_portfolio"]
     assert panel["available"] is False
     assert "research.view" in panel["reason"]
+
+
+# ---------------------------------------------------------------------------
+# The gates Codex found missing — refused, not empty
+# ---------------------------------------------------------------------------
+
+
+def test_the_safety_alert_panels_are_refused_without_material_view(
+    owner_session: Session, fx: dict[str, Any]
+) -> None:
+    """🔴 THE DASHBOARD MUST NOT BE A SOFTER DOOR THAN THE ROUTE.
+
+    `GET /api/material-safety/alerts` requires `material.view`. All three alert
+    panels returned the same rows to anybody who could load a dashboard.
+
+    ⚠️ AND THE REFUSAL IS THE POINT, NOT JUST THE GATE. Returning an empty
+    `_panel` to a caller without the permission would say "no safety alerts" —
+    a false all-clear — where `_forbidden` says "not yours to act on".
+    """
+    _alert(owner_session, fx, "critical")
+    without = frozenset(ALL_PERMISSIONS - {"material.view"})
+
+    chemist = _panels(chemist_dashboard, fx, owner_session, permissions=without)
+    assert chemist["material_alerts"]["available"] is False
+    assert "material.view" in chemist["material_alerts"]["reason"]
+
+    lead = _panels(lead_dashboard, fx, owner_session, permissions=without)
+    assert lead["critical_safety_alerts"]["available"] is False
+    assert "material.view" in lead["critical_safety_alerts"]["reason"]
+
+    director = _panels(director_dashboard, fx, owner_session, permissions=without)
+    assert director["critical_material_risks"]["available"] is False
+    assert "material.view" in director["critical_material_risks"]["reason"]
+
+    # The other direction: with the permission, the alert is actually there.
+    held = _panels(chemist_dashboard, fx, owner_session)
+    assert held["material_alerts"]["count"] == 1
+
+
+def test_competitor_intelligence_needs_both_permissions_it_reads(
+    owner_session: Session, fx: dict[str, Any]
+) -> None:
+    """It lists products (`material.view`) AND counts benchmarks (`test.view`)."""
+    owner_session.execute(
+        text(
+            "INSERT INTO competitors.products (organization_id, manufacturer,"
+            " product_name, registered_by) VALUES (:o, 'Rival', :n, :u)"
+        ),
+        {"o": fx["org"], "n": f"Gate rival {fx['suffix']}", "u": fx["user"]},
+    )
+    for missing in ("material.view", "test.view"):
+        panels = _panels(
+            director_dashboard,
+            fx,
+            owner_session,
+            permissions=frozenset(ALL_PERMISSIONS - {missing}),
+        )
+        panel = panels["competitor_intelligence"]
+        assert panel["available"] is False, f"not refused when {missing} is absent"
+        assert missing in panel["reason"]
+
+    assert _panels(director_dashboard, fx, owner_session)["competitor_intelligence"]["count"] >= 1
+
+
+def test_research_linked_tests_needs_test_view_as_well(
+    owner_session: Session, fx: dict[str, Any]
+) -> None:
+    """🔴 IT RETURNS `testing.tests` ROWS, WHOSE ROUTES REQUIRE `test.view`.
+
+    Gated on `research.view` alone, a research-only caller could read test
+    numbers, execution state and calculated results through the dashboard.
+    """
+    panels = _panels(
+        engineer_dashboard,
+        fx,
+        owner_session,
+        permissions=frozenset(ALL_PERMISSIONS - {"test.view"}),
+    )
+    panel = panels["research_linked_tests"]
+    assert panel["available"] is False
+    assert "test.view" in panel["reason"]
+
+
+def test_a_test_cited_twice_is_counted_once(owner_session: Session, fx: dict[str, Any]) -> None:
+    """🔴 `SELECT DISTINCT` DID NOT DO WHAT IT LOOKED LIKE (Codex P2).
+
+    The select list carried the investigation and the stance, so a test cited by
+    two investigations produced two "distinct" rows — and §11 says a dashboard
+    count is of items needing ACTION, so a double-counted test is a wrong
+    answer, not a cosmetic one. The original test cited each test once and
+    therefore could not have seen it.
+    """
+    second = owner_session.execute(
+        text(
+            """
+            INSERT INTO research.investigations
+                (organization_id, project_id, investigation_code, title,
+                 research_question, owner_user_id, opened_by)
+            VALUES (:o, :p, :c, 'Second workspace', 'Also about this test?', :u, :u)
+            RETURNING id
+            """
+        ),
+        {
+            "o": fx["org"],
+            "p": fx["project"],
+            "c": f"RES-2W-{fx['suffix']}",
+            "u": fx["user"],
+        },
+    ).scalar_one()
+
+    test_id = _cited_test(owner_session, fx, fx["investigation"], "supports")
+    # The SAME test, cited by a DIFFERENT investigation with a DIFFERENT stance
+    # -- the two columns that made `DISTINCT` useless.
+    source2 = owner_session.execute(
+        text(
+            "INSERT INTO research.sources (organization_id, investigation_id,"
+            " source_kind, evidence_grade, title, recorded_by)"
+            " VALUES (:o, :i, 'laboratory', 'A', 'Same result, other workspace', :u)"
+            " RETURNING id"
+        ),
+        {"o": fx["org"], "i": second, "u": fx["user"]},
+    ).scalar_one()
+    owner_session.execute(
+        text(
+            "INSERT INTO research.evidence (organization_id, investigation_id,"
+            " source_id, test_id, stance, summary, recorded_by)"
+            " VALUES (:o, :i, :s, :t, 'contradicts', 'Reads the other way.', :u)"
+        ),
+        {"o": fx["org"], "i": second, "s": source2, "t": test_id, "u": fx["user"]},
+    )
+
+    panel = _panels(engineer_dashboard, fx, owner_session)["research_linked_tests"]
+    assert panel["count"] == 1, f"the test was counted {panel['count']} times"
+    row = panel["rows"][0]
+    assert row["citation_count"] == 2
+    assert sorted(row["stances"]) == ["contradicts", "supports"]

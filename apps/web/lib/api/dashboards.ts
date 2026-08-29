@@ -47,6 +47,11 @@ export const dashboardPanelSchema = z.object({
   // round trip. Kept loose on purpose rather than enumerated wrongly.
   rows: z.array(z.record(z.string(), z.unknown())).default([]),
   count: z.number().nullable().optional(),
+  // 🔴 THE SERVER SAYS WHEN A COUNT IS CAPPED AND THE SCREEN MUST SAY SO TOO.
+  // `_panel(..., truncated_at=50)` sets this when the query hit its LIMIT.
+  // Dropping it renders "50" as an exact backlog — the understatement the
+  // server-side mechanism exists to prevent, undone one layer up. Codex P2.
+  truncated: z.boolean().optional(),
 });
 
 export type DashboardPanel = z.infer<typeof dashboardPanelSchema>;
@@ -74,6 +79,25 @@ export type DashboardPanel = z.infer<typeof dashboardPanelSchema>;
  * is not returned here. It qualifies every panel, which is why the server puts
  * it at the top level.
  */
+export function incompleteVisibilityOf(data: unknown): { reason: string }[] {
+  // 🔴 THE LEAD'S CAVEAT, WHICH THE SCREEN WAS THROWING AWAY.
+  //
+  // A lead who leads a restricted project they are not a MEMBER of cannot see
+  // its risks, milestones or research. The server says so at the TOP LEVEL,
+  // deliberately, because it qualifies EVERY panel — and `role-dashboard.tsx`
+  // rendered it nowhere, so six shortened panels were presented as complete.
+  // That is the false all-clear the server field exists to prevent, recreated
+  // by the component that was supposed to show it. Codex P2.
+  if (data === null || typeof data !== "object") return [];
+  const raw = (data as Record<string, unknown>).incomplete_visibility;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((row) => {
+    if (row === null || typeof row !== "object") return [];
+    const reason = (row as Record<string, unknown>).reason;
+    return typeof reason === "string" ? [{ reason }] : [];
+  });
+}
+
 export function panelsOf(data: unknown): [string, DashboardPanel][] {
   if (data === null || typeof data !== "object") return [];
   const nested = (data as Record<string, unknown>).panels;

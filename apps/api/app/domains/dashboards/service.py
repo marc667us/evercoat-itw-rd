@@ -419,24 +419,45 @@ def chemist_dashboard(
         else None
     )
 
-    # Unacknowledged only: an alert somebody has already read is not an action.
-    material_alerts = _rows(
-        session,
-        """
-        SELECT a.id, a.severity, a.change_summary, a.created_at, a.project_id,
-               a.material_id, m.material_code, m.name AS material_name
-          FROM safety.safety_alerts a
-          -- LEFT, because 054 gave the alert TYPED targets rather than a
-          -- polymorphic pointer: it may name a formula version or a batch
-          -- instead of a material, and an inner join would drop exactly those.
-          LEFT JOIN materials.materials m ON m.id = a.material_id
-                                        AND m.organization_id = a.organization_id
-         WHERE a.organization_id = :org
-           AND a.acknowledged_at IS NULL
-         ORDER BY a.created_at DESC
-         LIMIT 50
-        """,
-        p,
+    # 🔴 GATED ON `material.view`, AND IT WAS NOT (Codex P1).
+    #
+    # `GET /api/material-safety/alerts` requires `material.view`. This panel
+    # returned the same rows to anybody who could load a dashboard — a SOFTER
+    # DOOR to the same data than the endpoint that owns it, which is the I104
+    # shape. RLS still scoped the rows, so the leak was bounded; the defect is
+    # that authorization was decided in two places and one of them said yes.
+    #
+    # ⚠️ AND THE `_forbidden` MATTERS AS MUCH AS THE GATE. Without it a caller
+    # lacking the permission saw an EMPTY actionable queue — "no safety alerts"
+    # — which is a false all-clear rather than a refusal.
+    material_alerts = (
+        _rows(
+            session,
+            """
+            SELECT a.id, a.severity, a.change_summary, a.created_at, a.project_id,
+                   a.material_id, m.material_code, m.name AS material_name
+              FROM safety.safety_alerts a
+              -- LEFT, because 054 gave the alert TYPED targets rather than a
+              -- polymorphic pointer: it may name a formula version or a batch
+              -- instead of a material, and an inner join would drop exactly
+              -- those.
+              LEFT JOIN materials.materials m ON m.id = a.material_id
+                                            AND m.organization_id = a.organization_id
+             WHERE a.organization_id = :org
+               AND a.acknowledged_at IS NULL
+             -- 🔴 SEVERITY FIRST, THEN RECENCY. Ordering by time alone put a
+             -- fresh `informational` above an older `critical` (Codex P2) --
+             -- the lead and director panels already did this and the chemist's
+             -- did not, which is the drift a shared vocabulary invites.
+             ORDER BY CASE a.severity
+                        WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
+                      a.created_at DESC
+             LIMIT 50
+            """,
+            p,
+        )
+        if "material.view" in held_permissions
+        else None
     )
 
     return {
@@ -463,7 +484,11 @@ def chemist_dashboard(
                 if proposals is not None
                 else _forbidden("research.view")
             ),
-            "material_alerts": _panel(material_alerts, truncated_at=50),
+            "material_alerts": (
+                _panel(material_alerts, truncated_at=50)
+                if material_alerts is not None
+                else _forbidden("material.view")
+            ),
         },
     }
 
@@ -574,14 +599,30 @@ def engineer_dashboard(
     # project that also has an investigation) would put unrelated work under a
     # heading that claims a connection.
     # -----------------------------------------------------------------
+    # 🔴 BOTH PERMISSIONS, AND `research.view` ALONE WAS A BYPASS (Codex P1).
+    #
+    # The panel returns test numbers, execution state, calculated results and
+    # execution times — `testing.tests` rows, whose own routes require
+    # `test.view`. Gating on `research.view` alone let a research-only caller
+    # read testing data through the dashboard. The panel is the INTERSECTION of
+    # two modules, so it needs the permission of both.
+    #
+    # 🔴 AND `SELECT DISTINCT` DID NOT DO WHAT IT LOOKED LIKE (Codex P2). The
+    # select list carried the investigation and the stance, so a test cited by
+    # two investigations — or twice with different stances — produced two
+    # "distinct" rows and INFLATED an actionable count. §11 says these counts
+    # are of items needing action, so a double-counted test is a wrong answer,
+    # not a cosmetic one. Aggregated per TEST instead, with the citations
+    # collected: one row per test, and the panel can still say who cited it.
     research_tests = (
         _rows(
             session,
             """
-            SELECT DISTINCT t.id, t.test_number, t.calculated_result,
-                   t.execution_status, t.project_id, t.executed_at,
-                   i.investigation_code, i.title AS investigation_title,
-                   e.stance
+            SELECT t.id, t.test_number, t.calculated_result, t.execution_status,
+                   t.project_id, t.executed_at,
+                   count(*) AS citation_count,
+                   array_agg(DISTINCT i.investigation_code) AS investigation_codes,
+                   array_agg(DISTINCT e.stance) AS stances
               FROM research.evidence e
               JOIN testing.tests t          ON t.id = e.test_id
                                            AND t.organization_id = e.organization_id
@@ -589,12 +630,14 @@ def engineer_dashboard(
                                            AND i.organization_id = e.organization_id
              WHERE e.organization_id = :org
                AND e.test_id IS NOT NULL
+             GROUP BY t.id, t.test_number, t.calculated_result, t.execution_status,
+                      t.project_id, t.executed_at
              ORDER BY t.executed_at DESC NULLS LAST
              LIMIT 50
             """,
             p,
         )
-        if "research.view" in held_permissions
+        if {"research.view", "test.view"} <= held_permissions
         else None
     )
 
@@ -644,7 +687,7 @@ def engineer_dashboard(
             "research_linked_tests": (
                 _panel(research_tests, truncated_at=50)
                 if research_tests is not None
-                else _forbidden("research.view")
+                else _forbidden("research.view and test.view")
             ),
             # 🔴 NOT APPROXIMATED. See `_NOT_YET["safety_process_issues"]`.
             "safety_process_issues": _unavailable("safety_process_issues"),
@@ -892,22 +935,27 @@ def lead_dashboard(
     # `informational` is left out deliberately: a panel headed critical that
     # lists everything teaches a lead to ignore it, which is worse than not
     # having the panel at all.
-    critical_alerts = _rows(
-        session,
-        """
-        SELECT a.id, a.severity, a.change_summary, a.created_at, a.project_id,
-               a.material_id, m.material_code, m.name AS material_name
-          FROM safety.safety_alerts a
-          LEFT JOIN materials.materials m ON m.id = a.material_id
-                                        AND m.organization_id = a.organization_id
-         WHERE a.organization_id = :org
-           AND a.severity IN ('critical', 'high')
-           AND a.acknowledged_at IS NULL
-         ORDER BY CASE a.severity WHEN 'critical' THEN 0 ELSE 1 END,
-                  a.created_at DESC
-         LIMIT 50
-        """,
-        p,
+    # 🔴 GATED, for the reason the chemist's panel is. Codex P1.
+    critical_alerts = (
+        _rows(
+            session,
+            """
+            SELECT a.id, a.severity, a.change_summary, a.created_at, a.project_id,
+                   a.material_id, m.material_code, m.name AS material_name
+              FROM safety.safety_alerts a
+              LEFT JOIN materials.materials m ON m.id = a.material_id
+                                            AND m.organization_id = a.organization_id
+             WHERE a.organization_id = :org
+               AND a.severity IN ('critical', 'high')
+               AND a.acknowledged_at IS NULL
+             ORDER BY CASE a.severity WHEN 'critical' THEN 0 ELSE 1 END,
+                      a.created_at DESC
+             LIMIT 50
+            """,
+            p,
+        )
+        if "material.view" in held_permissions
+        else None
     )
 
     gaps = (
@@ -981,7 +1029,11 @@ def lead_dashboard(
                 if research_pipeline is not None
                 else _forbidden("research.view")
             ),
-            "critical_safety_alerts": _panel(critical_alerts, truncated_at=50),
+            "critical_safety_alerts": (
+                _panel(critical_alerts, truncated_at=50)
+                if critical_alerts is not None
+                else _forbidden("material.view")
+            ),
             "knowledge_gaps": (
                 _panel(gaps, truncated_at=50) if gaps is not None else _forbidden("research.view")
             ),
@@ -1109,23 +1161,35 @@ def director_dashboard(
     # -----------------------------------------------------------------
     # §27's director widgets (Phase 5).
     # -----------------------------------------------------------------
-    competitors = _rows(
-        session,
-        """
-        SELECT cp.id, cp.manufacturer, cp.product_name, cp.market_segment,
-               cp.project_id, cp.created_at,
-               (SELECT count(*) FROM competitors.composition_evidence ce
-                 WHERE ce.competitor_product_id = cp.id
-                   AND ce.organization_id = cp.organization_id) AS evidence_count,
-               (SELECT count(*) FROM competitors.benchmarks b
-                 WHERE b.competitor_product_id = cp.id
-                   AND b.organization_id = cp.organization_id) AS benchmark_count
-          FROM competitors.products cp
-         WHERE cp.organization_id = :org
-         ORDER BY cp.created_at DESC
-         LIMIT 50
-        """,
-        p,
+    # 🔴 GATED ON BOTH, AND IT WAS GATED ON NEITHER (Codex P1).
+    #
+    # The panel lists competitor products — `material.view` on their own routes
+    # — and counts their BENCHMARKS, which `GET /api/competitors/{id}/benchmarks`
+    # gates on `test.view`. Ungated, the director dashboard was a softer door to
+    # both. Requiring the intersection is right for a panel that shows the
+    # intersection; a director holds both, and anybody who does not should be
+    # refused rather than shown a partial answer with no way to know it.
+    competitors = (
+        _rows(
+            session,
+            """
+            SELECT cp.id, cp.manufacturer, cp.product_name, cp.market_segment,
+                   cp.project_id, cp.created_at,
+                   (SELECT count(*) FROM competitors.composition_evidence ce
+                     WHERE ce.competitor_product_id = cp.id
+                       AND ce.organization_id = cp.organization_id) AS evidence_count,
+                   (SELECT count(*) FROM competitors.benchmarks b
+                     WHERE b.competitor_product_id = cp.id
+                       AND b.organization_id = cp.organization_id) AS benchmark_count
+              FROM competitors.products cp
+             WHERE cp.organization_id = :org
+             ORDER BY cp.created_at DESC
+             LIMIT 50
+            """,
+            p,
+        )
+        if {"material.view", "test.view"} <= held_permissions
+        else None
     )
 
     technology = (
@@ -1151,22 +1215,27 @@ def director_dashboard(
     # two definitions that can drift into disagreeing about which alerts
     # matter. Restricted to alerts that name a MATERIAL, because the panel is
     # material risks — an alert about a formula version belongs elsewhere.
-    material_risks = _rows(
-        session,
-        """
-        SELECT a.id, a.severity, a.change_summary, a.created_at, a.project_id,
-               a.material_id, m.material_code, m.name AS material_name
-          FROM safety.safety_alerts a
-          JOIN materials.materials m ON m.id = a.material_id
-                                    AND m.organization_id = a.organization_id
-         WHERE a.organization_id = :org
-           AND a.severity IN ('critical', 'high')
-           AND a.acknowledged_at IS NULL
-         ORDER BY CASE a.severity WHEN 'critical' THEN 0 ELSE 1 END,
-                  a.created_at DESC
-         LIMIT 50
-        """,
-        p,
+    # 🔴 GATED, like its two siblings. Codex P1.
+    material_risks = (
+        _rows(
+            session,
+            """
+            SELECT a.id, a.severity, a.change_summary, a.created_at, a.project_id,
+                   a.material_id, m.material_code, m.name AS material_name
+              FROM safety.safety_alerts a
+              JOIN materials.materials m ON m.id = a.material_id
+                                        AND m.organization_id = a.organization_id
+             WHERE a.organization_id = :org
+               AND a.severity IN ('critical', 'high')
+               AND a.acknowledged_at IS NULL
+             ORDER BY CASE a.severity WHEN 'critical' THEN 0 ELSE 1 END,
+                      a.created_at DESC
+             LIMIT 50
+            """,
+            p,
+        )
+        if "material.view" in held_permissions
+        else None
     )
 
     research_portfolio = (
@@ -1206,7 +1275,11 @@ def director_dashboard(
             "pilot_qualification_pipeline": _unavailable("pilot_qualification_pipeline"),
             "products_awaiting_release": _unavailable("products_awaiting_release"),
             # §27's four director widgets (Phase 5).
-            "competitor_intelligence": _panel(competitors, truncated_at=50),
+            "competitor_intelligence": (
+                _panel(competitors, truncated_at=50)
+                if competitors is not None
+                else _forbidden("material.view and test.view")
+            ),
             # 🔴 `technology_opportunities` IS `innovation_pipeline` FILTERED,
             # NOT A SECOND SOURCE. §27 asks the director for both; answering
             # them from two different tables would let the same portfolio give
@@ -1217,7 +1290,11 @@ def director_dashboard(
                 if technology is not None
                 else _forbidden("opportunity.view")
             ),
-            "critical_material_risks": _panel(material_risks, truncated_at=50),
+            "critical_material_risks": (
+                _panel(material_risks, truncated_at=50)
+                if material_risks is not None
+                else _forbidden("material.view")
+            ),
             "research_portfolio": (
                 _panel(research_portfolio, truncated_at=50)
                 if research_portfolio is not None

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { panelsOf } from "./dashboards";
+import { incompleteVisibilityOf, panelsOf } from "./dashboards";
 
 /**
  * 🔴 THE ROLE DASHBOARD RENDERED NOTHING, FOR EVERY ROLE, AND NOTHING CAUGHT IT.
@@ -127,5 +127,51 @@ describe("panelsOf", () => {
       },
     };
     expect(panelsOf(mixed).map(([name]) => name)).toEqual(["good"]);
+  });
+
+  it("🔴 carries `truncated`, so a capped count can be rendered as capped", () => {
+    // The server sets it when a panel's query hit its LIMIT. Dropping it here
+    // is what let the renderer show "50" as an exact backlog.
+    const capped = panelsOf({
+      role: "lead",
+      panels: {
+        pending_approvals: {
+          available: true,
+          reason: null,
+          rows: [],
+          count: 50,
+          truncated: true,
+        },
+      },
+    });
+    expect(capped[0]?.[1].truncated).toBe(true);
+  });
+});
+
+describe("incompleteVisibilityOf", () => {
+  it("🔴 returns the caveat the screen was throwing away", () => {
+    // A lead who leads a restricted project they are not a MEMBER of gets
+    // SHORT panels, not empty ones — and without this they read as a clean
+    // bill of health.
+    const lead = {
+      role: "lead",
+      incomplete_visibility: [
+        { id: "p1", reason: "you lead this restricted project but are not a member of it" },
+        { id: "p2", reason: "same again" },
+      ],
+      panels: {},
+    };
+    expect(incompleteVisibilityOf(lead).map((r) => r.reason)).toEqual([
+      "you lead this restricted project but are not a member of it",
+      "same again",
+    ]);
+  });
+
+  it("is empty for the roles that do not have one, and for a failed request", () => {
+    expect(incompleteVisibilityOf({ role: "chemist", panels: {} })).toEqual([]);
+    expect(incompleteVisibilityOf(undefined)).toEqual([]);
+    expect(incompleteVisibilityOf({ incomplete_visibility: "not an array" })).toEqual([]);
+    // A row with no readable reason is dropped rather than rendered blank.
+    expect(incompleteVisibilityOf({ incomplete_visibility: [{ id: "p1" }] })).toEqual([]);
   });
 });

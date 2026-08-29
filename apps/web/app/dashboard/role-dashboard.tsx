@@ -31,7 +31,11 @@
  */
 
 import { useDashboardRole, useRoleDashboard } from "@/lib/api/hooks";
-import { panelsOf, type DashboardPanel } from "@/lib/api/dashboards";
+import {
+  incompleteVisibilityOf,
+  panelsOf,
+  type DashboardPanel,
+} from "@/lib/api/dashboards";
 import { serverMessage } from "@/lib/api/client";
 
 /** Panel keys are snake_case; a heading is not. */
@@ -53,8 +57,20 @@ function Panel({ name, panel }: { name: string; panel: DashboardPanel }) {
       <div className="flex flex-wrap items-baseline gap-2">
         <h3 className="flex-1 text-sm font-semibold text-slate-900">{words(name)}</h3>
         {panel.available && typeof panel.count === "number" && (
-          <span className="rounded border border-slate-300 px-1.5 py-0.5 text-xs font-medium tabular-nums text-slate-700">
+          /* 🔴 `50+` WHEN THE SERVER SAYS THE QUERY HIT ITS LIMIT. Rendering a
+             capped count as an exact one understates a backlog with nothing to
+             say it did — which is the whole reason `truncated` is on the wire.
+             The title carries the long form for a screen reader. */
+          <span
+            className="rounded border border-slate-300 px-1.5 py-0.5 text-xs font-medium tabular-nums text-slate-700"
+            title={
+              panel.truncated
+                ? `At least ${panel.count}; the query stopped at its limit.`
+                : undefined
+            }
+          >
             {panel.count}
+            {panel.truncated ? "+" : ""}
           </span>
         )}
       </div>
@@ -129,6 +145,7 @@ export function RoleDashboard() {
   // panel lives — so this component rendered "returned no panels" for every
   // role while the server was sending 21 of them. See `panelsOf`'s comment.
   const panels = panelsOf(data);
+  const incomplete = incompleteVisibilityOf(data);
 
   return (
     <section aria-labelledby="role-dashboard-heading" className="mb-6">
@@ -141,6 +158,29 @@ export function RoleDashboard() {
             the same one. */}
         <span className="text-xs text-slate-600">from your source records</span>
       </div>
+
+      {/* 🔴 THE CAVEAT SITS ABOVE EVERY PANEL, BECAUSE IT QUALIFIES ALL OF THEM.
+          A lead who leads a restricted project they are not a MEMBER of cannot
+          see its risks, milestones or research — so those panels are SHORT, not
+          empty, and without this they read as a clean bill of health. The
+          server has always sent it at the top level for exactly this reason;
+          the screen dropped it, which recreated the false all-clear the field
+          exists to prevent. Codex found it. */}
+      {incomplete.length > 0 && (
+        <div role="note" className="mt-2 rounded border border-amber-300 bg-amber-200 p-3">
+          <p className="text-xs font-semibold text-amber-900">
+            The panels below are incomplete for {incomplete.length}{" "}
+            {incomplete.length === 1 ? "project" : "projects"}.
+          </p>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {incomplete.map((row, index) => (
+              <li key={index} className="text-xs text-amber-900">
+                {row.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {error !== null ? (
         <p role="alert" className="mt-2 text-sm text-red-900">
