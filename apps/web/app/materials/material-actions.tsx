@@ -261,6 +261,40 @@ export function MaterialActions({
     </div>
   );
 }
+/**
+ * Which record the edit form is holding -- the user's unsaved edits, the record
+ * that arrived, or nothing yet.
+ *
+ * 🔴 A PURE FUNCTION BECAUSE THE FIRST VERSION OF THIS RULE WAS WRONG IN A WAY
+ * THAT LOOKED FINE ON SCREEN.
+ *
+ * It adopted the fetched record whenever the record's id changed, and held the
+ * previous draft otherwise. Choosing a different material in the picker changes
+ * `materialId` immediately, but the new record is a new query key, so
+ * `detail.data` is `undefined` for as long as that request takes. In that gap
+ * the form went on showing the PREVIOUS material's name, description and
+ * quantities -- under the newly-chosen material's heading and code -- and
+ * pressing Save would have written one material's data onto another. The PUT
+ * replaces the row, so that is not a partial update; it is a substitution.
+ *
+ * The fix is to key the answer on `materialId` and not on what arrived: a
+ * record is only shown while it BELONGS to the material currently chosen.
+ *
+ * ⚠️ UNSAVED EDITS SURVIVE A ROUND TRIP THROUGH ANOTHER MATERIAL, by design --
+ * `held` is returned whenever it is still the right material, so A → B → A
+ * comes back to A's edits rather than silently discarding typing. What it must
+ * never do is show them under B.
+ */
+export function heldMaterialDraft(
+  materialId: string,
+  loaded: MaterialDetail | undefined,
+  held: MaterialDetail | null,
+): MaterialDetail | null {
+  if (held !== null && held.id === materialId) return held;
+  if (loaded !== undefined && loaded.id === materialId) return loaded;
+  return null;
+}
+
 /** A blank input clears the column, so "" and undefined are the same request. */
 function orUndefined(value: string): string | undefined {
   return value.trim() === "" ? undefined : value.trim();
@@ -299,17 +333,14 @@ function EditMaterial({
   const detail = useMaterial(materialId);
   const writes = useMaterialWrites(materialId);
 
-  // `null` until the record arrives, so the inputs are not created empty and
-  // then repopulated -- which would discard anything typed in the gap, and
-  // briefly show a form full of blanks that reads as a material with no data
-  // recorded rather than one still loading.
-  const [draft, setDraft] = useState<MaterialDetail | null>(null);
-  const [loadedId, setLoadedId] = useState<string | null>(null);
-  const loaded = detail.data;
-  if (loaded !== undefined && loadedId !== loaded.id) {
-    setLoadedId(loaded.id);
-    setDraft(loaded);
-  }
+  // Only what the person has TYPED lives in state; what the form shows is
+  // derived, so there is no moment where the two can disagree. `null` until
+  // the record arrives, so the inputs are not created empty and then
+  // repopulated -- which would discard anything typed in the gap, and briefly
+  // show a form full of blanks that reads as a material with no data recorded
+  // rather than one still loading.
+  const [edited, setEdited] = useState<MaterialDetail | null>(null);
+  const draft = heldMaterialDraft(materialId, detail.data, edited);
 
   if (detail.error !== null) {
     return (
@@ -336,7 +367,7 @@ function EditMaterial({
   const current = draft;
 
   const set = <K extends keyof MaterialDetail>(key: K, value: MaterialDetail[K]) =>
-    setDraft((held) => (held === null ? held : { ...held, [key]: value }));
+    setEdited({ ...current, [key]: value });
 
   const textOf = (key: keyof MaterialDetail): string => {
     const value = current[key];
