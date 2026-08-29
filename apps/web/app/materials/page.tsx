@@ -27,6 +27,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
 import { useCreateMaterial, useMaterials } from "@/lib/api/hooks";
 import { MATERIAL_ROLES, type Material } from "@/lib/api/materials";
+import { MaterialActions } from "./material-actions";
 import {
   MATERIALS,
   materialStatus,
@@ -218,6 +219,15 @@ export default function MaterialsPage() {
           }
         />
       )}
+
+      {/* 🔴 A PANEL RATHER THAN AN EXPANDING ROW. `TechnicalDataGrid` is the
+          shared grid for every technical table in the product and has no
+          row-expansion; teaching it one to serve a single screen is the
+          "rebuild infrastructure per module" §12 forbids, in reverse. Picking
+          the material here costs one select and touches nothing shared. */}
+      <div className="mt-6">
+        <ManageMaterialPanel />
+      </div>
     </DataPage>
   );
 }
@@ -413,5 +423,65 @@ function NewMaterialForm() {
         A Safety Data Sheet is required for this material
       </label>
     </CreateForm>
+  );
+}
+
+
+/**
+ * Act on one material: its status ladder and its suppliers.
+ *
+ * Both endpoints existed with no control anywhere in the application, and two
+ * roles held the permissions — procurement and the chemist for
+ * `supplier.manage`, QA for `material.restrict`. They could not do the thing
+ * their permission named.
+ */
+function ManageMaterialPanel() {
+  // 🔴 IT FETCHES ITS OWN ROWS RATHER THAN TAKING THE GRID'S.
+  //
+  // The grid is fed `MaterialRow`, a DISPLAY shape with no `id` — deliberately,
+  // because it merges live and demonstration rows. The status and supplier
+  // endpoints are addressed by id, so this needs the live records. React Query
+  // dedupes by key, so asking again costs no request.
+  const live = useMaterials<Material[]>([], (rows) => rows);
+  const materials = live.data ?? [];
+  const [selected, setSelected] = useState("");
+  const material = materials.find((row) => row.id === selected);
+
+  return (
+    <section
+      aria-labelledby="manage-material"
+      className="rounded border border-slate-200 bg-white p-4"
+    >
+      <h3 id="manage-material" className="text-sm font-semibold text-slate-900">
+        Manage a material
+      </h3>
+      <label className={`${CREATE_LABEL} mt-2 max-w-md`}>
+        Material
+        <select
+          className={CREATE_INPUT}
+          value={selected}
+          onChange={(event) => setSelected(event.target.value)}
+        >
+          <option value="">
+            {materials.length === 0 ? "No materials to manage" : "Choose a material…"}
+          </option>
+          {materials.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.material_code} — {row.name} ({row.status})
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {material !== undefined && (
+        <div className="mt-4 border-t border-slate-200 pt-4">
+          <MaterialActions
+            materialId={material.id}
+            materialCode={material.material_code}
+            status={material.status}
+          />
+        </div>
+      )}
+    </section>
   );
 }

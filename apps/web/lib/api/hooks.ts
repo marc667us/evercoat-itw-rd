@@ -173,11 +173,15 @@ import {
 } from "./formulations";
 import {
   fetchMaterials,
-  fetchSuppliers,
   type Material,
-  type Supplier,
+  changeMaterialStatus,
   createMaterial,
+  fetchSuppliers,
+  linkSupplier,
   type MaterialCreateRequest,
+  type MaterialStatusRequest,
+  type Supplier,
+  type SupplierLinkRequest,
 } from "./materials";
 import {
   fetchAnalytics,
@@ -1692,6 +1696,63 @@ export function useSetComposition(versionId: string): {
     saved: mutation.data ?? null,
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+/**
+ * Move a material along its status ladder, or link a supplier to it.
+ *
+ * 🔴 ONE HOOK FOR BOTH, because both change what the materials list says and
+ * both belong to the same row. Two hooks would give the row two pending states
+ * and two places to render an error.
+ */
+export function useMaterialWrites(materialId: string): {
+  readonly changeStatus: (request: MaterialStatusRequest, after?: () => void) => void;
+  readonly linkSupplier: (request: SupplierLinkRequest, after?: () => void) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured ? new ApiNoSessionError(resolved.reason) : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | { kind: "status"; request: MaterialStatusRequest; after?: () => void }
+        | { kind: "supplier"; request: SupplierLinkRequest; after?: () => void },
+    ) => {
+      if (job.kind === "status") {
+        const changed = await changeMaterialStatus(credentials(), materialId, job.request);
+        return `Status is now ${changed.status}.`;
+      }
+      await linkSupplier(credentials(), materialId, job.request);
+      return "Supplier linked.";
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["materials"] });
+      // A restricted material hard-blocks every formula that uses it, so the
+      // formula list's answer changes too. Leaving it stale is how a blocked
+      // submission looks like a bug in Formulations.
+      void queryClient.invalidateQueries({ queryKey: ["formulations-formulas"] });
+      void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
+      job.after?.();
+    },
+  });
+
+  return {
+    changeStatus: (request, after) => mutation.mutate({ kind: "status", request, after }),
+    linkSupplier: (request, after) => mutation.mutate({ kind: "supplier", request, after }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
   };
 }
 

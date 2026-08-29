@@ -162,3 +162,105 @@ export function createMaterial(
       z.object({ id: z.string(), material_code: z.string() }).passthrough().parse(payload),
   );
 }
+
+/**
+ * Which status a material may move to, and what that move requires.
+ *
+ * 🔴 THIS IS A MIRROR OF `TRANSITION_PERMISSION` IN
+ * `apps/api/app/domains/materials/service.py`, AND `materials.drift.test.ts`
+ * READS THE PYTHON TO PROVE IT.
+ *
+ * Two literals in two files cannot be type-checked into agreement. The server
+ * resolves the permission per TRANSITION — not per endpoint — because "whoever
+ * may make any status change may make every status change" was the defect the
+ * table exists to prevent: QA holds `material.restrict` and must not thereby
+ * be able to promote a material to `preferred`.
+ *
+ * ⚠️ THE SERVER DECIDES. This exists so the screen can offer only the moves a
+ * person can actually make, instead of listing five and refusing four.
+ */
+export const MATERIAL_TRANSITIONS: Readonly<
+  Record<string, ReadonlyArray<{ to: string; permission: string }>>
+> = {
+  development: [
+    { to: "approved", permission: "material.approve_lab" },
+    { to: "restricted", permission: "material.restrict" },
+    { to: "obsolete", permission: "material.restrict" },
+  ],
+  approved: [
+    { to: "preferred", permission: "material.approve_production" },
+    { to: "development", permission: "material.edit" },
+    { to: "restricted", permission: "material.restrict" },
+    { to: "obsolete", permission: "material.restrict" },
+  ],
+  preferred: [
+    // Demotion one rung at a time — never `preferred` straight to
+    // `development`, because reversing two decisions in one action hides
+    // which of them was actually reversed.
+    { to: "approved", permission: "material.approve_lab" },
+    { to: "restricted", permission: "material.restrict" },
+    { to: "obsolete", permission: "material.restrict" },
+  ],
+  restricted: [
+    { to: "development", permission: "material.restrict" },
+    { to: "obsolete", permission: "material.restrict" },
+  ],
+  obsolete: [{ to: "development", permission: "material.edit" }],
+};
+
+export interface MaterialStatusRequest {
+  readonly status: string;
+  /** Required by the service AND a CHECK constraint when moving to restricted. */
+  readonly restriction_reason?: string;
+  readonly reason: string;
+}
+
+export function changeMaterialStatus(
+  credentials: ApiCredentials,
+  materialId: string,
+  request: MaterialStatusRequest,
+): Promise<{ status: string }> {
+  return apiRequest(
+    {
+      path: `/api/materials/${materialId}/status`,
+      method: "POST",
+      credentials,
+      body: request,
+    },
+    (payload) => z.object({ status: z.string() }).passthrough().parse(payload),
+  );
+}
+
+export interface SupplierLinkRequest {
+  readonly supplier_id: string;
+  readonly supplier_part_code?: string;
+  /**
+   * 🔴 `undefined` MEANS "LEAVE IT ALONE", NOT `false`.
+   *
+   * The endpoint is an UPSERT, and the API's own comment records that a plain
+   * boolean defaulting to false "silently demoted the primary supplier
+   * whenever somebody edited a lead time". So the form sends the flag only
+   * when somebody actually set it.
+   */
+  readonly is_primary?: boolean;
+  readonly lead_time_days?: number;
+  readonly quoted_price_per_kg?: string;
+  readonly currency?: string;
+  readonly notes?: string;
+}
+
+export function linkSupplier(
+  credentials: ApiCredentials,
+  materialId: string,
+  request: SupplierLinkRequest,
+): Promise<{ id: string }> {
+  return apiRequest(
+    {
+      path: `/api/materials/${materialId}/suppliers`,
+      method: "POST",
+      credentials,
+      body: request,
+    },
+    (payload) => z.object({ id: z.string() }).passthrough().parse(payload),
+  );
+}
