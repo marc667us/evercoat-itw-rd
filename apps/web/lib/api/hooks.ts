@@ -168,6 +168,8 @@ import {
   type VersionDecisionRequest,
   type VersionEvaluation,
   type WeighUp,
+  setComposition,
+  type ComponentLineRequest,
 } from "./formulations";
 import {
   fetchMaterials,
@@ -1639,6 +1641,55 @@ export function useCreateTest(): {
   return {
     create: (request, after) => mutation.mutate({ request, after }),
     created: mutation.data ?? null,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+/**
+ * Write a draft version's composition.
+ *
+ * 🔴 IT INVALIDATES THE VERSION *AND* ITS EVALUATION.
+ *
+ * Total percentage, theoretical density, binder/filler ratio, cost and VOC are
+ * all DERIVED from the components (§4 keeps that derivation on the server), so
+ * a saved composition changes every one of them. Invalidating only the version
+ * would leave the evaluation panel showing figures computed from the previous
+ * composition — numbers that look authoritative and describe a formula that no
+ * longer exists.
+ */
+export function useSetComposition(versionId: string): {
+  readonly save: (components: readonly ComponentLineRequest[], after?: () => void) => void;
+  readonly saved: { total_percentage: string } | null;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (job: {
+      components: readonly ComponentLineRequest[];
+      after?: () => void;
+    }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return setComposition(resolved.credentials, versionId, job.components);
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["formula-version", versionId] });
+      void queryClient.invalidateQueries({ queryKey: ["formula-evaluation", versionId] });
+      void queryClient.invalidateQueries({ queryKey: ["formulations-formulas"] });
+      job.after?.();
+    },
+  });
+
+  return {
+    save: (components, after) => mutation.mutate({ components, after }),
+    saved: mutation.data ?? null,
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
   };

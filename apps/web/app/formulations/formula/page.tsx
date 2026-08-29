@@ -54,6 +54,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
+import { CompositionEditor } from "./composition-editor";
 import { serverMessage } from "@/lib/api/client";
 import { Absent } from "@/components/ui/record-link";
 import { StatusBadge, type StatusBadgeInput } from "@/components/ui/status-badge";
@@ -723,6 +724,15 @@ function FormulaWorkspace({
         <h2 className="text-sm font-semibold text-slate-900">
           Composition — {components.length} components
         </h2>
+        {/* 🔴 THE EDITOR SITS UNDER THE TABLE THAT SHOWS THE RESULT. Until
+            today this page could display a composition and offered no way to
+            enter one — the write route had existed since Slice 3 with no
+            caller anywhere in the application. */}
+        <CompositionEditor
+          versionId={version.id}
+          status={version.status}
+          existing={components}
+        />
         <div className="mt-2 overflow-x-auto">
           <table className="w-full min-w-[44rem] text-left text-sm">
             <thead>

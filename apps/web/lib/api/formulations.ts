@@ -656,3 +656,49 @@ export function createFormula(
     (payload) => z.object({ id: z.string() }).passthrough().parse(payload),
   );
 }
+
+/**
+ * One line of a composition, on its way to the server.
+ *
+ * 🔴 `percentage` IS A STRING AND MUST STAY ONE.
+ *
+ * `NUMERIC(9,4)` in PostgreSQL, `Decimal` in Pydantic. The API's own comment
+ * says declaring it `float` "would undo the whole Decimal discipline at the one
+ * point where a number enters the system" — and this is that point. A
+ * `Number()` here would round 33.3333 before the server ever saw it, on a
+ * controlled formulation percentage, which `CLAUDE.md` §5 calls a defect in as
+ * many words.
+ */
+export interface ComponentLineRequest {
+  readonly material_id: string;
+  readonly percentage: string;
+  readonly role_override?: string;
+  readonly display_order?: number;
+  readonly notes?: string;
+}
+
+/**
+ * Replace a draft version's composition.
+ *
+ * 🔴 THE WHOLE COMPOSITION, NOT A PATCH — and the server says why: a formula is
+ * a set of lines that must total 100%, so every intermediate state of a partial
+ * update is invalid. Sending all of it makes the write atomic and idempotent.
+ * A client that sent one changed line would be asking the server to hold an
+ * invalid formula between two requests.
+ */
+export function setComposition(
+  credentials: ApiCredentials,
+  versionId: string,
+  components: readonly ComponentLineRequest[],
+): Promise<{ total_percentage: string }> {
+  return apiRequest(
+    {
+      path: `/api/formulations/versions/${versionId}/components`,
+      method: "PUT",
+      credentials,
+      body: { components },
+    },
+    (payload) =>
+      z.object({ total_percentage: z.string() }).passthrough().parse(payload),
+  );
+}
