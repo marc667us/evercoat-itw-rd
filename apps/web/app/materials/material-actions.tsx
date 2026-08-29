@@ -31,8 +31,13 @@ import { useState } from "react";
 
 import { CREATE_INPUT, CREATE_LABEL } from "@/components/ui/create-form";
 import { serverMessage } from "@/lib/api/client";
-import { useMaterialWrites, useSuppliers } from "@/lib/api/hooks";
-import { MATERIAL_TRANSITIONS, type Supplier } from "@/lib/api/materials";
+import { useMaterial, useMaterialWrites, useSuppliers } from "@/lib/api/hooks";
+import {
+  MATERIAL_ROLES,
+  MATERIAL_TRANSITIONS,
+  type MaterialDetail,
+  type Supplier,
+} from "@/lib/api/materials";
 import { permits, usePermissions } from "@/lib/permissions";
 
 export function MaterialActions({
@@ -63,14 +68,16 @@ export function MaterialActions({
     permits(permissions, move.permission),
   );
   const maySupplier = permits(permissions, "supplier.manage");
+  const mayEdit = permits(permissions, "material.edit");
   const supplierRows = suppliers.data ?? [];
   const needsRestrictionReason = target === "restricted";
 
-  if (moves.length === 0 && !maySupplier) {
+  if (moves.length === 0 && !maySupplier && !mayEdit) {
     return (
       <p className="text-xs text-slate-600">
         Your roles hold none of the permissions that change {materialCode} — its
-        status ladder and its suppliers are both someone else&rsquo;s to manage.
+        data, its status ladder and its suppliers are all someone else&rsquo;s to
+        manage.
       </p>
     );
   }
@@ -239,6 +246,8 @@ export function MaterialActions({
         </form>
       )}
 
+      {mayEdit && <EditMaterial materialId={materialId} materialCode={materialCode} />}
+
       {writes.error !== null && (
         <p role="alert" className="text-sm text-rose-700">
           {serverMessage(writes.error)}
@@ -250,5 +259,245 @@ export function MaterialActions({
         </p>
       )}
     </div>
+  );
+}
+/** A blank input clears the column, so "" and undefined are the same request. */
+function orUndefined(value: string): string | undefined {
+  return value.trim() === "" ? undefined : value.trim();
+}
+
+/**
+ * Edit a material's data.
+ *
+ * 🔴 `PUT /api/materials/{id}` HAD NO CLIENT AT ALL. Not an ungated control --
+ * no request function, no hook, nothing. `material.edit` is held by the
+ * procurement specialist and the chemist, and neither could correct a typo in
+ * a material name through the product. The role audit reported the permission
+ * as held-with-no-control, and this was why.
+ *
+ * 🔴 IT LOADS FROM THE DETAIL ENDPOINT, AND THAT IS NOT A PREFERENCE.
+ *
+ * The PUT replaces the whole editable row -- the service sets every column in
+ * one UPDATE -- and `GET /api/materials` does not return `description`,
+ * `notes`, `epoxy_equivalent_weight` or `amine_hydrogen_equivalent_weight`.
+ * A form built from the grid rows already in memory would have looked correct,
+ * saved successfully, and erased all four every time anybody fixed a name.
+ *
+ * ⚠️ THE CODE AND THE STATUS ARE NOT HERE. `material_code` is echoed back
+ * because the server's schema requires the field and `update_material` then
+ * ignores it -- the code is the identity formula components point at. Status
+ * is a separately-permissioned decision and lives in the ladder above; folding
+ * it in would let `material.edit` promote a material to `preferred`.
+ */
+function EditMaterial({
+  materialId,
+  materialCode,
+}: {
+  readonly materialId: string;
+  readonly materialCode: string;
+}) {
+  const detail = useMaterial(materialId);
+  const writes = useMaterialWrites(materialId);
+
+  // `null` until the record arrives, so the inputs are not created empty and
+  // then repopulated -- which would discard anything typed in the gap, and
+  // briefly show a form full of blanks that reads as a material with no data
+  // recorded rather than one still loading.
+  const [draft, setDraft] = useState<MaterialDetail | null>(null);
+  const [loadedId, setLoadedId] = useState<string | null>(null);
+  const loaded = detail.data;
+  if (loaded !== undefined && loadedId !== loaded.id) {
+    setLoadedId(loaded.id);
+    setDraft(loaded);
+  }
+
+  if (detail.error !== null) {
+    return (
+      <div>
+        <h4 className="text-sm font-semibold text-slate-900">Edit this material</h4>
+        <p role="alert" className="mt-1 text-sm text-rose-700">
+          {serverMessage(detail.error)}
+        </p>
+      </div>
+    );
+  }
+
+  if (draft === null) {
+    return (
+      <div>
+        <h4 className="text-sm font-semibold text-slate-900">Edit this material</h4>
+        <p className="mt-1 text-sm text-slate-600">
+          {detail.isLoading ? "Loading this material…" : "Nothing to edit."}
+        </p>
+      </div>
+    );
+  }
+
+  const current = draft;
+
+  const set = <K extends keyof MaterialDetail>(key: K, value: MaterialDetail[K]) =>
+    setDraft((held) => (held === null ? held : { ...held, [key]: value }));
+
+  const textOf = (key: keyof MaterialDetail): string => {
+    const value = current[key];
+    return typeof value === "string" ? value : "";
+  };
+
+  const field = (
+    label: string,
+    key: keyof MaterialDetail,
+    hint?: string,
+  ) => (
+    <label className={CREATE_LABEL}>
+      {label}
+      <input
+        className={CREATE_INPUT}
+        inputMode="decimal"
+        value={textOf(key)}
+        onChange={(event) => set(key, event.target.value as MaterialDetail[typeof key])}
+      />
+      {hint !== undefined && (
+        <span className="mt-1 block text-[11px] font-normal text-slate-600">{hint}</span>
+      )}
+    </label>
+  );
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        writes.edit({
+          // Echoed, not edited. See the note above.
+          material_code: materialCode,
+          name: current.name.trim(),
+          category: current.category.trim(),
+          role: current.role,
+          description: orUndefined(textOf("description")),
+          cas_number: orUndefined(textOf("cas_number")),
+          density_g_cm3: orUndefined(textOf("density_g_cm3")),
+          solids_fraction: orUndefined(textOf("solids_fraction")),
+          voc_fraction: orUndefined(textOf("voc_fraction")),
+          cost_per_kg: orUndefined(textOf("cost_per_kg")),
+          epoxy_equivalent_weight: orUndefined(textOf("epoxy_equivalent_weight")),
+          amine_hydrogen_equivalent_weight: orUndefined(
+            textOf("amine_hydrogen_equivalent_weight"),
+          ),
+          hazard_summary: orUndefined(textOf("hazard_summary")),
+          requires_sds: current.requires_sds,
+          notes: orUndefined(textOf("notes")),
+        });
+      }}
+    >
+      <h4 className="text-sm font-semibold text-slate-900">Edit this material</h4>
+      <p className="mt-1 text-xs text-slate-600">
+        {/* Said plainly because the endpoint really does replace the row: an
+            emptied field is a cleared field, not an untouched one. */}
+        Every field here is saved together. Emptying one <strong>clears</strong> it
+        rather than leaving it as it was. The code <code>{materialCode}</code> and the
+        status are not editable here.
+      </p>
+
+      <div className="mt-2 grid gap-3 sm:grid-cols-2">
+        <label className={CREATE_LABEL}>
+          Name
+          <input
+            className={CREATE_INPUT}
+            required
+            value={current.name}
+            onChange={(event) => set("name", event.target.value)}
+          />
+        </label>
+        <label className={CREATE_LABEL}>
+          Category
+          <input
+            className={CREATE_INPUT}
+            required
+            value={current.category}
+            onChange={(event) => set("category", event.target.value)}
+          />
+        </label>
+        <label className={CREATE_LABEL}>
+          Role
+          <select
+            className={CREATE_INPUT}
+            value={current.role}
+            onChange={(event) => set("role", event.target.value)}
+          >
+            {/* The server's own pattern, mirrored. Free text here would be a
+                422 the person only sees after filling the rest in. */}
+            {MATERIAL_ROLES.map((role) => (
+              <option key={role} value={role}>
+                {role}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className={CREATE_LABEL}>
+          CAS number
+          <input
+            className={CREATE_INPUT}
+            value={textOf("cas_number")}
+            onChange={(event) => set("cas_number", event.target.value)}
+          />
+        </label>
+        {field("Density (g/cm³)", "density_g_cm3")}
+        {field("Cost per kg", "cost_per_kg")}
+        {/* Fractions, not percentages: the engine consumes the fraction, and a
+            browser that divided by 100 would be doing arithmetic on a
+            controlled quantity. CLAUDE.md §5. */}
+        {field("Solids fraction (0–1)", "solids_fraction", "A fraction, not a percentage — 0.65, not 65.")}
+        {field("VOC fraction (0–1)", "voc_fraction", "A fraction, not a percentage.")}
+        {field("Epoxy equivalent weight", "epoxy_equivalent_weight")}
+        {field("Amine hydrogen equivalent weight", "amine_hydrogen_equivalent_weight")}
+      </div>
+
+      <div className="mt-3 grid gap-3">
+        <label className={CREATE_LABEL}>
+          Description
+          <textarea
+            className={CREATE_INPUT}
+            rows={2}
+            value={textOf("description")}
+            onChange={(event) => set("description", event.target.value)}
+          />
+        </label>
+        <label className={CREATE_LABEL}>
+          Hazard summary
+          <textarea
+            className={CREATE_INPUT}
+            rows={2}
+            value={textOf("hazard_summary")}
+            onChange={(event) => set("hazard_summary", event.target.value)}
+          />
+        </label>
+        <label className={CREATE_LABEL}>
+          Notes
+          <textarea
+            className={CREATE_INPUT}
+            rows={2}
+            value={textOf("notes")}
+            onChange={(event) => set("notes", event.target.value)}
+          />
+        </label>
+        <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+          <input
+            type="checkbox"
+            checked={current.requires_sds}
+            onChange={(event) => set("requires_sds", event.target.checked)}
+          />
+          A Safety Data Sheet is required for this material
+        </label>
+      </div>
+
+      <button
+        type="submit"
+        className="mt-3 rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+        disabled={
+          writes.isPending || current.name.trim() === "" || current.category.trim() === ""
+        }
+      >
+        {writes.isPending ? "Saving…" : "Save changes"}
+      </button>
+    </form>
   );
 }

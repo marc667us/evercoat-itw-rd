@@ -187,9 +187,13 @@ import {
   type Material,
   changeMaterialStatus,
   createMaterial,
+  fetchMaterial,
   fetchSuppliers,
   linkSupplier,
+  updateMaterial,
   type MaterialCreateRequest,
+  type MaterialDetail,
+  type MaterialEditRequest,
   type MaterialStatusRequest,
   type Supplier,
   type SupplierLinkRequest,
@@ -1711,15 +1715,36 @@ export function useSetComposition(versionId: string): {
 }
 
 /**
- * Move a material along its status ladder, or link a supplier to it.
+ * ONE material, with the fields the grid leaves out.
  *
- * 🔴 ONE HOOK FOR BOTH, because both change what the materials list says and
- * both belong to the same row. Two hooks would give the row two pending states
- * and two places to render an error.
+ * 🔴 THE EDIT FORM CANNOT LOAD FROM THE LIST. `PUT /api/materials/{id}` writes
+ * every editable column, and `GET /api/materials` omits four of them
+ * (`description`, `notes`, and both equivalent weights) — so a form prefilled
+ * from the grid would have blanked all four on every save. `lib/api/materials.ts`
+ * carries the same note beside the schema.
+ */
+export function useMaterial(materialId: string): LiveOnly<MaterialDetail> {
+  return useLiveOnlyRecord("materials-material", materialId, (credentials, signal) =>
+    fetchMaterial(credentials, materialId, signal),
+  );
+}
+
+/**
+ * Edit a material, move it along its status ladder, or link a supplier to it.
+ *
+ * 🔴 ONE HOOK FOR ALL THREE, because all three change what the materials list
+ * says and all three belong to the same row. Three hooks would give the row
+ * three pending states and three places to render an error.
+ *
+ * ⚠️ THEY HAVE DIFFERENT PERMISSIONS AND THE CALLER CHECKS THEM.
+ * `material.edit` edits, `supplier.manage` links, and the status ladder
+ * resolves its permission PER TRANSITION. Bundling the requests into one hook
+ * does not bundle the authorization.
  */
 export function useMaterialWrites(materialId: string): {
   readonly changeStatus: (request: MaterialStatusRequest, after?: () => void) => void;
   readonly linkSupplier: (request: SupplierLinkRequest, after?: () => void) => void;
+  readonly edit: (request: MaterialEditRequest, after?: () => void) => void;
   readonly isPending: boolean;
   readonly error: Error | null;
   readonly lastAction: string | null;
@@ -1738,11 +1763,16 @@ export function useMaterialWrites(materialId: string): {
     mutationFn: async (
       job:
         | { kind: "status"; request: MaterialStatusRequest; after?: () => void }
-        | { kind: "supplier"; request: SupplierLinkRequest; after?: () => void },
+        | { kind: "supplier"; request: SupplierLinkRequest; after?: () => void }
+        | { kind: "edit"; request: MaterialEditRequest; after?: () => void },
     ) => {
       if (job.kind === "status") {
         const changed = await changeMaterialStatus(credentials(), materialId, job.request);
         return `Status is now ${changed.status}.`;
+      }
+      if (job.kind === "edit") {
+        await updateMaterial(credentials(), materialId, job.request);
+        return "Material saved.";
       }
       await linkSupplier(credentials(), materialId, job.request);
       return "Supplier linked.";
@@ -1754,6 +1784,10 @@ export function useMaterialWrites(materialId: string): {
       // submission looks like a bug in Formulations.
       void queryClient.invalidateQueries({ queryKey: ["formulations-formulas"] });
       void queryClient.invalidateQueries({ queryKey: ["suppliers"] });
+      // The edit form loads from the DETAIL endpoint, which has its own key.
+      // Without this the grid updates and the form the person is looking at
+      // keeps showing what they just replaced.
+      void queryClient.invalidateQueries({ queryKey: ["materials-material", materialId] });
       job.after?.();
     },
   });
@@ -1761,6 +1795,7 @@ export function useMaterialWrites(materialId: string): {
   return {
     changeStatus: (request, after) => mutation.mutate({ kind: "status", request, after }),
     linkSupplier: (request, after) => mutation.mutate({ kind: "supplier", request, after }),
+    edit: (request, after) => mutation.mutate({ kind: "edit", request, after }),
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
     lastAction: mutation.data ?? null,

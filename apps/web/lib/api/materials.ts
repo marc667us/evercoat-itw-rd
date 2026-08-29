@@ -264,3 +264,107 @@ export function linkSupplier(
     (payload) => z.object({ id: z.string() }).passthrough().parse(payload),
   );
 }
+/**
+ * ONE material, with every editable field on it.
+ *
+ * 🔴 THIS EXISTS BECAUSE THE LIST IS NOT ENOUGH TO EDIT FROM, AND EDITING
+ * FROM THE LIST WOULD HAVE DESTROYED DATA.
+ *
+ * `PUT /api/materials/{id}` is a complete replacement — the service sets
+ * every editable column in one UPDATE, so a field absent from the request
+ * is not "left alone", it is written to null. `GET /api/materials` does
+ * not return `description`, `notes`, `epoxy_equivalent_weight` or
+ * `amine_hydrogen_equivalent_weight`; a form prefilled from the grid would
+ * therefore have silently erased all four every time anybody corrected a
+ * material's name.
+ *
+ * The detail endpoint returns all of them, so the form loads from here.
+ * That is the whole reason this schema is separate rather than
+ * `materialSchema.extend(...)` on the list shape.
+ */
+export const materialDetailSchema = z.object({
+  id: z.string(),
+  material_code: z.string(),
+  name: z.string(),
+  category: z.string(),
+  role: z.string(),
+  status: z.string(),
+  description: z.string().nullable(),
+  cas_number: z.string().nullable(),
+  density_g_cm3: quantity,
+  solids_fraction: quantity,
+  voc_fraction: quantity,
+  cost_per_kg: quantity,
+  epoxy_equivalent_weight: quantity,
+  amine_hydrogen_equivalent_weight: quantity,
+  hazard_summary: z.string().nullable(),
+  requires_sds: z.boolean(),
+  restriction_reason: z.string().nullable(),
+  notes: z.string().nullable(),
+  updated_at: z.string().nullable(),
+});
+
+export type MaterialDetail = z.infer<typeof materialDetailSchema>;
+
+export function fetchMaterial(
+  credentials: ApiCredentials,
+  materialId: string,
+  signal?: AbortSignal,
+): Promise<MaterialDetail> {
+  return apiRequest(
+    { path: `/api/materials/${materialId}`, credentials, signal },
+    // `.passthrough()` on purpose: the endpoint also attaches `suppliers`
+    // and `created_at`, which this screen does not read and must not
+    // reject. Parsing is here to catch a RENAMED field, not an extra one.
+    (payload) => materialDetailSchema.passthrough().parse(payload),
+  );
+}
+
+/**
+ * The complete editable state of a material.
+ *
+ * ⚠️ `material_code` IS SENT AND IS NOT EDITABLE. The server's `MaterialCreate`
+ * schema requires the field, and `update_material` then ignores it — the code
+ * is the identity every formula component points at through a foreign key.
+ * So the form shows it, read-only, and echoes back what it was given. Offering
+ * it as an input would be a control whose effect is nothing.
+ *
+ * `status` is absent for the same class of reason and a stronger one: it is a
+ * separately-permissioned decision, and folding it in here would let anybody
+ * holding `material.edit` promote a material to `preferred` without holding
+ * `material.approve_production`. The status ladder above is where that lives.
+ */
+export interface MaterialEditRequest {
+  readonly material_code: string;
+  readonly name: string;
+  readonly category: string;
+  readonly role: string;
+  readonly description?: string;
+  readonly cas_number?: string;
+  readonly density_g_cm3?: string;
+  readonly solids_fraction?: string;
+  readonly voc_fraction?: string;
+  readonly cost_per_kg?: string;
+  readonly epoxy_equivalent_weight?: string;
+  readonly amine_hydrogen_equivalent_weight?: string;
+  readonly hazard_summary?: string;
+  readonly requires_sds?: boolean;
+  readonly notes?: string;
+}
+
+export function updateMaterial(
+  credentials: ApiCredentials,
+  materialId: string,
+  request: MaterialEditRequest,
+): Promise<{ id: string; material_code: string }> {
+  return apiRequest(
+    {
+      path: `/api/materials/${materialId}`,
+      method: "PUT",
+      credentials,
+      body: request,
+    },
+    (payload) =>
+      z.object({ id: z.string(), material_code: z.string() }).passthrough().parse(payload),
+  );
+}
