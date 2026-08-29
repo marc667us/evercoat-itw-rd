@@ -64,14 +64,52 @@ foreach ($c in @("evercoat-postgres", "evercoat-demo-caddy", "evercoat-demo-keyc
 # 🔴 KILL THE OLD LISTENER FIRST. An API left running from a previous session
 # serves STALE CODE -- twice on this project, presenting as 404s for routes
 # that plainly exist.
+#
+# 🔴 BUT NAME THE PROCESS BEFORE KILLING IT. THIS BLOCK KILLED explorer.exe.
+#
+# It used to take `.OwningProcess` from `Get-NetTCPConnection` and hand it
+# straight to `Stop-Process -Force`, without ever asking what that process was.
+# A PID is not a durable handle: the TCP table can name a process that has
+# already exited, and Windows recycles PIDs aggressively. Measured 2026-08-29 --
+# this reported "stopping stale listener on 18000 (pid 1744)", and what died
+# was the Windows shell. The taskbar and every desktop icon went with it, on a
+# machine where nothing about the demo had gone wrong.
+#
+# `-Force` on an unverified PID is the whole defect. The port is a hint about
+# WHICH process to stop, never proof of WHAT it is. So: resolve the PID to a
+# real process, check its name against the three things this script is entitled
+# to stop, and refuse anything else loudly rather than guessing. A stale
+# listener that survives is a visible problem the operator can act on; a
+# force-killed shell is not.
+$ourProcesses = @("node", "python", "uvicorn", "next-server")
 foreach ($port in @(3000, 18000)) {
     $owner = (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
               Select-Object -First 1).OwningProcess
-    if ($owner) {
-        Write-Host "  stopping stale listener on $port (pid $owner)"
-        try { Stop-Process -Id $owner -Force -ErrorAction Stop } catch { }
-        Start-Sleep -Seconds 2
+    if (-not $owner) { continue }
+
+    # Resolve BEFORE stopping. If the PID no longer exists the table was stale
+    # and there is nothing to kill -- which is the case that used to kill
+    # whatever had inherited the number.
+    $proc = Get-Process -Id $owner -ErrorAction SilentlyContinue
+    if (-not $proc) {
+        Write-Host "  port $port names pid $owner, which no longer exists (stale entry) -- nothing to stop"
+        continue
     }
+
+    if ($ourProcesses -notcontains $proc.ProcessName) {
+        Write-Warning (
+            "  REFUSING to stop pid $owner on port $port -- it is " +
+            "'$($proc.ProcessName)', not one of this stack's own processes " +
+            "($($ourProcesses -join ', ')). Stop it yourself if that is really " +
+            "what is holding the port. This check exists because an earlier " +
+            "version of this line force-killed explorer.exe."
+        )
+        continue
+    }
+
+    Write-Host "  stopping stale listener on $port (pid $owner, $($proc.ProcessName))"
+    try { Stop-Process -Id $owner -Force -ErrorAction Stop } catch { }
+    Start-Sleep -Seconds 2
 }
 
 # -------------------------------------------------------------------- tunnel
