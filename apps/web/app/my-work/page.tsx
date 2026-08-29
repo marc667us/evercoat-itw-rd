@@ -36,11 +36,16 @@ import {
   CREATE_LABEL,
 } from "@/components/ui/create-form";
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
-import { TASK_PRIORITIES } from "@/lib/api/tasks";
+import { serverMessage } from "@/lib/api/client";
+import { ASSIGNABLE_ROLES, TASK_PRIORITIES } from "@/lib/api/tasks";
+
+const ROW_BUTTON =
+  "rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-800 " +
+  "hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400";
 import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
-import { useCreateTask, useMyWork } from "@/lib/api/hooks";
+import { useCreateTask, useMyWork, useTaskWrites } from "@/lib/api/hooks";
 import type { Task } from "@/lib/api/tasks";
 import { DEMO_VIEWER, tasksAssignedTo, type DemoTask } from "@/lib/demo/dataset";
 
@@ -119,6 +124,8 @@ export default function MyWorkPage() {
   const { data, source, sourceReason, isLoading, error } = useMyWork(demoRows, (live) =>
     live.map(fromApi),
   );
+  const writes = useTaskWrites();
+  const live = source === "live";
 
   const columns = useMemo<ColumnDef<TaskRow, unknown>[]>(
     () => [
@@ -200,8 +207,46 @@ export default function MyWorkPage() {
           </span>
         ),
       },
+      {
+        id: "actions",
+        header: "",
+        /* 🔴 THE PAGE PROMISED THIS AND DID NOT HAVE IT. The heading below
+           already read *"Claiming one makes it yours and removes it from
+           everyone else's queue"* while `POST /tasks/{id}/claim` had no client
+           anywhere in the application — prose stating a rule the product did
+           not implement. `/complete` was the same.
+
+           ⚠️ DISABLED OVER DEMONSTRATION ROWS. Their ids are `demo-0`, `demo-1`
+           — a React key for a bundled fixture, not a task the API knows. Left
+           live, these buttons would send a 404 for a row that looks exactly
+           like every other row. */
+        cell: ({ row }) =>
+          row.original.status === "done" ? (
+            <span className="text-xs text-slate-500">Done</span>
+          ) : row.original.claimed ? (
+            <button
+              type="button"
+              className={ROW_BUTTON}
+              disabled={!live || writes.isPending}
+              title={live ? undefined : "Demonstration row — not a task the API knows"}
+              onClick={() => writes.complete(row.original.id)}
+            >
+              Complete
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={ROW_BUTTON}
+              disabled={!live || writes.isPending}
+              title={live ? undefined : "Demonstration row — not a task the API knows"}
+              onClick={() => writes.claim(row.original.id)}
+            >
+              Claim
+            </button>
+          ),
+      },
     ],
-    [],
+    [live, writes],
   );
 
   const rows = data ?? [];
@@ -221,6 +266,23 @@ export default function MyWorkPage() {
       <div className="mb-4">
         <RaiseTaskForm />
       </div>
+
+      {writes.error !== null && (
+        <p
+          role="alert"
+          className="mb-4 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
+        >
+          {serverMessage(writes.error)}
+        </p>
+      )}
+      {writes.error === null && writes.lastAction !== null && (
+        <p
+          role="status"
+          className="mb-4 rounded border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-800"
+        >
+          {writes.lastAction}
+        </p>
+      )}
 
       {error !== null ? (
         <DataSourceError error={error} />
@@ -262,20 +324,36 @@ export default function MyWorkPage() {
 /**
  * Raise a task.
  *
- * ⚠️ WITH NO ASSIGNEE FIELD, AND THAT IS A STATED LIMIT RATHER THAN AN
- * OVERSIGHT. `assigned_user_id` takes a UUID, and no endpoint yet lists the
- * organization's people for a non-administrator to choose from — the same gap
- * that still makes adding a project member ask for a UUID. Offering a raw
- * identifier box would be a control nobody can use without a database; a task
- * raised unassigned is a real, useful state, and it appears in the queue.
+ * 🔴 THIS FORM HAD NO ASSIGNEE FIELD AND THEREFORE HAD NEVER RAISED A TASK.
  *
- * The moment a people-picker endpoint exists, this is the first place to use
- * it.
+ * The comment here used to record that as a deliberate limit, on the grounds
+ * that `assigned_user_id` takes a UUID and no endpoint lists the
+ * organization's people for a non-administrator — and it closed by saying *"a
+ * task raised unassigned is a real, useful state, and it appears in the
+ * queue"*.
+ *
+ * That last sentence was not true. `create_task` opens with:
+ *
+ *     if data.assigned_user_id is None and not data.assigned_role:
+ *         raise TaskStateError("a task needs an owner: give it an assigned
+ *                              user or an assigned role")
+ *
+ * and a CHECK constraint backs it. So every press of this form returned 409.
+ * A comment asserting a rule the code does not have — and the rule it asserted
+ * was the opposite of the real one.
+ *
+ * ⚠️ THE STATED BLOCKER WAS REAL AND NEVER APPLIED TO ROLES. A role is not a
+ * person: the ten codes are seeded, fixed and not confidential, so addressing
+ * work to one needs no people-picker at all. `my_work` selects
+ * `assigned_user_id = :uid OR (assigned_user_id IS NULL AND assigned_role =
+ * ANY(:roles))`, so a role-addressed task reaches everyone holding that role
+ * until one of them claims it — which is what the Claim control below is for.
  */
 function RaiseTaskForm() {
   const writes = useCreateTask();
   const [title, setTitle] = useState("");
   const [taskType, setTaskType] = useState("review");
+  const [assignedRole, setAssignedRole] = useState<string>("");
   const [priority, setPriority] = useState<string>("medium");
   const [due, setDue] = useState("");
   const [action, setAction] = useState("");
@@ -294,6 +372,9 @@ function RaiseTaskForm() {
             task_type: taskType,
             title,
             priority,
+            // Required by the server, and by a CHECK constraint. The form
+            // cannot submit without it -- see the `required` on the select.
+            assigned_role: assignedRole,
             due_date: due === "" ? undefined : due,
             required_action: action === "" ? undefined : action,
           },
@@ -301,6 +382,7 @@ function RaiseTaskForm() {
             setTitle("");
             setDue("");
             setAction("");
+            setAssignedRole("");
           },
         )
       }
@@ -337,6 +419,27 @@ function RaiseTaskForm() {
             </option>
           ))}
         </select>
+      </label>
+      <label className={CREATE_LABEL}>
+        Assign to
+        <select
+          className={CREATE_INPUT}
+          required
+          value={assignedRole}
+          onChange={(event) => setAssignedRole(event.target.value)}
+        >
+          {/* No "unassigned" option, because the server has no such state.
+              Offering one would put the 409 back. */}
+          <option value="">Choose a role…</option>
+          {ASSIGNABLE_ROLES.map((role) => (
+            <option key={role.code} value={role.code}>
+              {role.label}
+            </option>
+          ))}
+        </select>
+        <span className="mt-1 block text-[11px] font-normal text-slate-600">
+          Everyone holding this role sees the task until one of them claims it.
+        </span>
       </label>
       <label className={CREATE_LABEL}>
         Due date

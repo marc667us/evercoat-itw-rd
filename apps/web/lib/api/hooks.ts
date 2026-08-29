@@ -308,6 +308,8 @@ import {
 } from "./projects";
 import { useSession } from "./session";
 import {
+  claimTask,
+  completeTask,
   createTask,
   fetchMyWork,
   type Task,
@@ -1591,6 +1593,70 @@ export function useCreateProject(): {
 }
 
 /** Raise a task. Invalidates My Work, which is where it will appear. */
+/**
+ * The second half of a task's life: claim it, finish it, or hand it on.
+ *
+ * 🔴 ALL THREE ROUTES HAD NO CLIENT AND NO CONTROL. A task could be raised and
+ * then never picked up, completed or reassigned through the browser. The
+ * queue on `/my-work` showed role-addressed work nobody could take.
+ *
+ * ⚠️ NEITHER CARRIES A PERMISSION, AND THAT IS THE ROUTE'S OWN DESIGN: what you
+ * may claim is already bounded by what the queue shows you, and `my_work`
+ * filters that by your roles. `reassign` IS gated (`project.edit`) and is not
+ * here -- moving somebody else's work needs a people picker, and the client
+ * ships with the control rather than before it. See `lib/api/tasks.ts`.
+ */
+export function useTaskWrites(): {
+  readonly claim: (taskId: string, after?: () => void) => void;
+  readonly complete: (taskId: string, outcomeNote?: string, after?: () => void) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured ? new ApiNoSessionError(resolved.reason) : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | { kind: "claim"; taskId: string; after?: () => void }
+        | { kind: "complete"; taskId: string; outcomeNote?: string; after?: () => void },
+    ) => {
+      if (job.kind === "claim") {
+        await claimTask(credentials(), job.taskId);
+        return "Task claimed. It is yours now.";
+      }
+      await completeTask(credentials(), job.taskId, job.outcomeNote);
+      return "Task completed.";
+    },
+    onSuccess: (_data, job) => {
+      // The queue is the only cached view of these rows. `GET /tasks/counts`
+      // has no client yet, so there is no second key to invalidate -- and
+      // naming a key nothing registers would have been an invalidation that
+      // silently does nothing, which is the same defect as a gate on a path
+      // no caller takes.
+      void queryClient.invalidateQueries({ queryKey: ["my-work"] });
+      job.after?.();
+    },
+  });
+
+  return {
+    claim: (taskId, after) => mutation.mutate({ kind: "claim", taskId, after }),
+    complete: (taskId, outcomeNote, after) =>
+      mutation.mutate({ kind: "complete", taskId, outcomeNote, after }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+  };
+}
+
 export function useCreateTask(): {
   readonly create: (request: TaskCreateRequest, after?: () => void) => void;
   readonly isPending: boolean;
