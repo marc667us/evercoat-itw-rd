@@ -1,5 +1,44 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-29 (part 2) — Phase 5 §27, and the forms nobody could reach
+
+`b093726` · `21af227` · `d36aa80` · `c1f46f7` · `dbbd80b` · `0bfc812`.
+apps/api **939 → 956**, apps/web **218 → 232**.
+
+**Phase 5 §27**: fifteen widgets across the four existing role dashboards —
+§27's own rule is "do not create another disconnected dashboard system".
+And then the discovery that **the role dashboard rendered no panels at all**,
+for every role: the component walked the response's top-level keys and skipped
+`panels`, the one key holding all twenty-one of them. The API suite asserts the
+RESPONSE; the component had no test.
+
+**Demonstration data** for the Research Center and Competitor Intelligence,
+written through the PRODUCTION SERVICES — fifteen write paths driven end to
+end, because a seed that bypasses them proves the screens render and nothing
+else.
+
+🔴 **THE COMPOSITION EDITOR.** You could create a formula and never say what
+was in it: `PUT /versions/{id}/components` had existed since Slice 3 with no
+client function, no hook and no control. Every derived figure on the version
+page was computing over nothing. Found by the owner asking which form a chemist
+uses — not by any audit, because the audits asked which routes have a caller.
+
+**Create forms** for materials, projects, testing and My Work, on one shared
+shell that refuses to render a form the server would refuse. **Material status
+ladder** (offered per transition, mirrored with a drift test that reads the
+Python) and **supplier link**. **Innovation wired to the API** for the first
+time — it had rendered a static array, so `opportunity.create` and
+`opportunity.decide` were permissions two roles held with nothing to press.
+**The Research Center's controls gated**, which ESLint helped find.
+
+### What a role audit is for
+
+For every role, does it have a control for every write permission it HOLDS —
+the inverse of "a permission with no enforcement point". Seven gaps for the
+chemist, four for the lead, four for the engineer, three for procurement, in
+three different kinds. ⚠️ `msd.use` is held by **8 of 10 roles** and there is
+no MSD screen: reported, not built.
+
 ## 2026-08-29 — Phase 4: research becomes an experiment
 
 **`e0b2394` + `ef160b3`.** Migration **058 / q1000**, both trees. apps/api

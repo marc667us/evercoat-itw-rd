@@ -1,5 +1,75 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ 2026-08-29 (part 2) — PHASE 5 §27, DEMO DATA, AND EVERY MISSING FORM
+
+Tip **`0bfc812`** on `master`. Working tree clean, pushed.
+
+- apps/api **956 / 0 / 11** · apps/web **232** vitest
+- ruff, ruff format, mypy, `tsc`, ESLint all clean
+- Migration head **`q1000`** (058). No migration added in part 2.
+
+### 🔴 DO THESE THREE THINGS FIRST
+
+1. **CHECK CI ON `0bfc812`** — it was queued at session close.
+   `gh run list --limit 3 --json status,conclusion,headSha`, compare headSha.
+2. **RUN THE LIVE SUITE.** Nothing since `21af227` has been run against the
+   deployed site. Rebuild web + restart the `:18000` listener **without
+   touching cloudflared** (that keeps the hostname), then
+   `./scripts/live-suite.sh <url> full` and report **three numbers**.
+   Last measured: **1024 / 0 / 0**.
+3. **THE SUPERVISOR HAS NOT REVIEWED `b093726`..`0bfc812`.** Codex reviewed
+   `b093726` and its 7 findings are fixed in `21af227`; everything after has
+   had **no review by either gate**.
+
+### What part 2 shipped
+
+| Commit | |
+|---|---|
+| `b093726` | Phase 5 §27 — 15 role-dashboard widgets |
+| `21af227` | Codex's 7 findings + the research/competitor demo seed |
+| `d36aa80` | Create forms: materials, projects, testing, my-work |
+| `c1f46f7` | **The composition editor** |
+| `dbbd80b` | Material status ladder + supplier link |
+| `0bfc812` | Innovation wired + Research Center controls gated |
+
+### 🔴 THE FIND THAT MATTERED
+
+**You could not enter a formula's composition.**
+`PUT /api/formulations/versions/{id}/components` had existed since Slice 3 with
+no client function, no hook and no control anywhere. The formula page DISPLAYED
+a composition and offered no way to enter one — so total percentage, density,
+binder/filler ratio, cost and VOC were all computing over nothing.
+
+No audit found it, because every audit asked *which routes have a caller*
+rather than *which form does a chemist use to do their job*. The owner's
+question found it.
+
+### 🔴 THE ROLE AUDIT IS THE TOOL WORTH KEEPING
+
+For every role, does it have a CONTROL for every write permission it HOLDS? The
+inverse of "a permission with no enforcement point". It reads the database, the
+API source and the web source — nothing hand-kept — and found 7 gaps for the
+chemist, 4 for the lead, 4 for the engineer, 3 for procurement, in three
+different KINDS: controls that existed but were not permission-gated; no
+control at all; and one whole missing screen.
+
+⚠️ **`msd.use` is held by 8 of 10 roles and there is no MSD page.** A feature,
+not a form — reported rather than built silently.
+
+### Other lessons worth carrying
+
+- **The role dashboard rendered NOTHING, for every role**, until `b093726`: the
+  component walked the response's top-level keys and skipped `panels`, the one
+  key holding all 21 of them.
+- **`safety_alerts.severity` is `critical | high | informational`** — a
+  "critical" panel filtering on `= high` HID every critical alert.
+- **ESLint caught an authorization gap**: two research buttons had an extra
+  condition so the bulk gating pass missed them, and their unused `may` named
+  both.
+- 🔴 **Editing a CRLF file from Python: open with `newline=""` BOTH ways.**
+  `read_text`/`write_text` converted `scripts/live-suite.sh` and bash refused
+  it; nothing in the diff looked wrong.
+
 ## ▶▶ SESSION 2026-08-29 — PHASE 4, AND 17 REVIEW FINDINGS ON IT
 
 Tip **`ef160b3`** on **`master`**. Migration **058 / `q1000`**, both trees.
