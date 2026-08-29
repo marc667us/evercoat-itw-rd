@@ -12,12 +12,17 @@ parses this file so a route added later cannot quietly skip the gate.
 🔴 ACCEPTING A PROPOSAL REQUIRES THE FORMULA PERMISSIONS TOO.
 
 `POST /proposals/{id}/accept` produces a formula version through
-`formulations.revise_version` — the same service `/formulations/.../revise`
-calls, which is gated on `formula.clone` AND `formula.modify_draft`. If this
-route required only `experiment.accept`, it would be a second door to a
-controlled act with a weaker lock, which is exactly the shape of the
-authorization bypass found on 2026-08-26 (I104). All three are required
-together.
+`formulations.revise_version` — the same service `POST /formulations/versions/
+{id}/revision` calls, which is gated on **`formula.clone`**. Both are required
+here, together, so the same controlled act carries the same lock by either
+door.
+
+⚠️ AN EARLIER VERSION OF THIS PARAGRAPH SAID `formula.clone` AND
+`formula.modify_draft`, AND THAT WAS FALSE. `post_revision` requires only
+`formula.clone`; the two-permission gate belongs to `post_observed_effect`, a
+different route further down the same file. Codex measured it. The claim is
+corrected rather than the code bent to fit it — a comment asserting a rule that
+does not exist is a defect this project has a standing note about.
 
 🔴 A FINDING'S APPROVAL STATUS IS READ FROM THE ROUTE, NOT FROM A COLUMN.
 
@@ -757,20 +762,24 @@ def post_accept_proposal(
     proposal_id: uuid.UUID,
     payload: ProposalAccept,
     principal: Principal = Depends(
-        require_permission(
-            "experiment.accept", "formula.clone", "formula.modify_draft", require_all=True
-        )
+        require_permission("experiment.accept", "formula.clone", require_all=True)
     ),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """🔴 THREE PERMISSIONS, ALL OF THEM, AND THAT IS THE POINT.
+    """🔴 BOTH PERMISSIONS, AND THE SECOND ONE IS THE FORMULA'S OWN.
 
     This produces a formula version through the same service
-    `/formulations/versions/{id}/revise` calls, which requires `formula.clone`
-    and `formula.modify_draft`. Requiring only `experiment.accept` here would
-    make this a second door to a controlled act with a weaker lock. §20 gives
-    the DECISION to the chemist; it does not give them a way round the formula
-    gate, and a chemist holds all three anyway.
+    `POST /formulations/versions/{id}/revision` calls, which is gated on
+    `formula.clone`. Requiring only `experiment.accept` would make this a
+    second door to a controlled act with a weaker lock — the I104 shape.
+
+    🔴 AND MEASURING THE HOLDERS CHANGED A GRANT. `formula.clone` is held by
+    `product_development_chemist` ALONE, so migration 058's first draft — which
+    followed the plan and granted `experiment.accept` to the lead as well —
+    gave the lead a permission they could never use: this route would refuse
+    them on `formula.clone` every time. The holder set of an act must be a
+    subset of the holder set of what the act DOES, so the grant was withdrawn
+    rather than the gate weakened. §20 agrees: the Chemist decides.
     """
     try:
         result = accept_experiment_proposal(

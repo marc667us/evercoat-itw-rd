@@ -123,8 +123,14 @@ CREATE TABLE IF NOT EXISTS research.investigations (
     -- §7's "Approval Status: Draft / Reviewed / Approved" is the status of
     -- the FINDINGS, which carry their own approval route. The workspace's
     -- own lifecycle is whether work is happening in it.
+    -- 🔴 `on_hold` WAS HERE AND NOTHING COULD WRITE IT (Codex P2, 058's
+    -- own review). An accepted value no production path can reach is the same
+    -- defect as a table with no writer -- which this migration's header says in
+    -- as many words about `experiment_proposal`, and then committed three times
+    -- over in its own CHECKs. Removed rather than given a control: pausing a
+    -- workspace is a feature, and a feature belongs to a phase.
     status             TEXT NOT NULL DEFAULT 'active'
-        CHECK (status IN ('active', 'on_hold', 'closed')),
+        CHECK (status IN ('active', 'closed')),
     -- §19's thread. Typed columns, never a polymorphic (entity_type, id)
     -- pair -- Codex P1-8, and the reason 054 was written the way it was.
     formula_version_id UUID,
@@ -355,8 +361,10 @@ CREATE TABLE IF NOT EXISTS research.findings (
     -- `approvals.route_for_entity`, exactly as `safety_review_status` reads
     -- it. This column carries only the states the research module itself
     -- writes.
+    -- `withdrawn` removed for the same reason: no route retracts a submitted
+    -- finding, so the value could only ever arrive through direct SQL.
     status           TEXT NOT NULL DEFAULT 'draft'
-        CHECK (status IN ('draft', 'submitted', 'withdrawn')),
+        CHECK (status IN ('draft', 'submitted')),
     author_id        UUID NOT NULL REFERENCES core.users (id) ON DELETE RESTRICT,
     -- Set by `promote_finding`, which is `knowledge.promote`'s first
     -- enforcement point. NULL means it has not been promoted; a value is
@@ -483,8 +491,31 @@ CREATE TABLE IF NOT EXISTS research.experiment_proposals (
     risks                TEXT,
     confidence           TEXT NOT NULL
         CHECK (confidence IN ('high', 'moderate', 'low', 'unknown')),
+    -- `withdrawn` removed: accept and reject are the only decisions the
+    -- vertical offers, and §20 gives the decision to the chemist rather than
+    -- to the proposer.
     status               TEXT NOT NULL DEFAULT 'proposed'
-        CHECK (status IN ('proposed', 'accepted', 'rejected', 'withdrawn')),
+        CHECK (status IN ('proposed', 'accepted', 'rejected')),
+    -- 🔴 THE PROJECT, DENORMALISED FROM THE INVESTIGATION BY A TRIGGER.
+    --
+    -- Codex P1 against the first version of this table: acceptance bound the
+    -- revised formula version to the ORGANIZATION and nothing else, so a
+    -- proposal from project A could revise a formula in project B and the
+    -- digital thread would record A's research as the driver of B's formula.
+    -- The composite key that stops it needs a project on THIS row, and
+    -- `formulations.formula_versions` already carries
+    -- `UNIQUE (id, project_id, organization_id)` for exactly this.
+    --
+    -- ⚠️ NULL IS THE ORGANIZATION-WIDE CASE AND IT IS NOT A HOLE. §1.2 makes
+    -- an investigation's project nullable on purpose, and a foreign key with a
+    -- NULL column passes trivially (MATCH SIMPLE) -- which is the right answer:
+    -- research belonging to the whole organization may be applied to any
+    -- project the CALLER can reach, and RLS on `formula_versions` is what
+    -- decides that. A project-scoped proposal is bound; an org-wide one is not.
+    --
+    -- The trigger below copies it, so a client cannot declare a project its
+    -- investigation does not have.
+    project_id           UUID,
     -- The formula version the acceptance produced. NEVER inserted here;
     -- always the id `formulations.revise_version` returned.
     resulting_formula_version_id UUID,
@@ -499,7 +530,7 @@ CREATE TABLE IF NOT EXISTS research.experiment_proposals (
     -- Both directions, so a decision cannot be half-recorded and a proposal
     -- cannot carry a decider while still claiming to be open.
     CONSTRAINT experiment_proposals_decision_complete CHECK (
-        (status IN ('accepted', 'rejected', 'withdrawn'))
+        (status IN ('accepted', 'rejected'))
         = (decided_by IS NOT NULL AND decided_at IS NOT NULL)
     ),
     -- 🔴 ACCEPTANCE *IS* THE FORMULA VERSION. Not "usually accompanied by"
@@ -516,9 +547,29 @@ CREATE TABLE IF NOT EXISTS research.experiment_proposals (
         FOREIGN KEY (hypothesis_id, investigation_id, organization_id)
         REFERENCES research.hypotheses (id, investigation_id, organization_id)
         ON DELETE RESTRICT,
-    CONSTRAINT experiment_proposals_version_fk
+    -- \U0001f534 TWO FOREIGN KEYS ON ONE COLUMN, AND THE SECOND IS NOT REDUNDANT.
+    --
+    -- A composite foreign key is MATCH SIMPLE by default: if ANY referencing
+    -- column is NULL the WHOLE constraint is skipped. `project_id` is NULL for
+    -- every organization-wide investigation -- \u00a71.2's deliberate case -- so
+    -- the three-column key alone would leave those proposals with NO tenant
+    -- binding at all, and `resulting_formula_version_id` could name a version
+    -- in ANOTHER ORGANIZATION with nothing to refuse it. The Supervisor caught
+    -- that the wider key had silently replaced the narrower one.
+    --
+    -- So both are declared. The two-column key always applies and binds the
+    -- tenant; the three-column key applies only when a project is present and
+    -- binds the project as well. Together: org-wide research may revise any
+    -- version in ITS OWN organization that the caller can reach, and
+    -- project-scoped research may revise only its own project's.
+    CONSTRAINT experiment_proposals_version_org_fk
         FOREIGN KEY (resulting_formula_version_id, organization_id)
-        REFERENCES formulations.formula_versions (id, organization_id) ON DELETE RESTRICT
+        REFERENCES formulations.formula_versions (id, organization_id)
+        ON DELETE RESTRICT,
+    CONSTRAINT experiment_proposals_version_fk
+        FOREIGN KEY (resulting_formula_version_id, project_id, organization_id)
+        REFERENCES formulations.formula_versions (id, project_id, organization_id)
+        ON DELETE RESTRICT
 );
 
 
@@ -754,6 +805,8 @@ CREATE INDEX IF NOT EXISTS knowledge_gaps_investigation_idx
     ON research.knowledge_gaps (organization_id, investigation_id);
 CREATE INDEX IF NOT EXISTS experiment_proposals_investigation_idx
     ON research.experiment_proposals (organization_id, investigation_id);
+CREATE INDEX IF NOT EXISTS experiment_proposals_project_idx
+    ON research.experiment_proposals (organization_id, project_id);
 CREATE INDEX IF NOT EXISTS experiment_proposals_status_idx
     ON research.experiment_proposals (organization_id, status);
 CREATE INDEX IF NOT EXISTS experiment_proposals_version_idx
@@ -825,6 +878,43 @@ GRANT SELECT ON ALL TABLES IN SCHEMA research TO evercoat_report;
 
 
 -- ---------------------------------------------------------------------
+-- A proposal's project comes from its investigation, not from its author
+-- ---------------------------------------------------------------------
+--
+-- The composite key above is only worth having if `project_id` is TRUE. A
+-- client that could set it freely could declare NULL on a project-scoped
+-- investigation and buy back the cross-project revision the key exists to
+-- refuse. So it is copied, on INSERT and on UPDATE, from the investigation.
+--
+-- ⚠️ SECURITY INVOKER. It reads a row the caller can already reach -- the
+-- INSERT's own `WITH CHECK` policy has already required that -- so a definer
+-- here would add reach without adding safety. 047's rule: scope-explicit.
+CREATE OR REPLACE FUNCTION research.proposal_project_follows_the_investigation()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+AS $proposal_project$
+BEGIN
+    SELECT i.project_id INTO NEW.project_id
+      FROM research.investigations i
+     WHERE i.id = NEW.investigation_id
+       AND i.organization_id = NEW.organization_id;
+    RETURN NEW;
+END
+$proposal_project$;
+
+REVOKE ALL ON FUNCTION research.proposal_project_follows_the_investigation() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS experiment_proposals_project_is_inherited
+    ON research.experiment_proposals;
+CREATE TRIGGER experiment_proposals_project_is_inherited
+    BEFORE INSERT OR UPDATE ON research.experiment_proposals
+    FOR EACH ROW
+    EXECUTE FUNCTION research.proposal_project_follows_the_investigation();
+
+
+-- ---------------------------------------------------------------------
 -- A promotion may only follow an approval — and the approval is the ROUTE
 -- ---------------------------------------------------------------------
 --
@@ -862,7 +952,11 @@ BEGIN
     END IF;
     -- Unchanged promotions pass straight through: an UPDATE that touches some
     -- other column must not have to re-satisfy a rule it is not affecting.
-    IF OLD.promoted_document_id IS NOT DISTINCT FROM NEW.promoted_document_id THEN
+    --
+    -- \U0001f534 `TG_OP = 'UPDATE'` IS CHECKED FIRST BECAUSE `OLD` DOES NOT EXIST
+    -- ON INSERT. See the trigger declaration: this fires on INSERT too now.
+    IF TG_OP = 'UPDATE'
+       AND OLD.promoted_document_id IS NOT DISTINCT FROM NEW.promoted_document_id THEN
         RETURN NEW;
     END IF;
 
@@ -885,9 +979,20 @@ $promotion$;
 
 REVOKE ALL ON FUNCTION research.promotion_requires_an_approved_route() FROM PUBLIC;
 
+-- \U0001f534 INSERT **AND** UPDATE, AND THE FIRST VERSION HAD ONLY UPDATE.
+--
+-- The comment above claimed the rule "holds for direct SQL too". It did not:
+-- `evercoat_app` holds TABLE-LEVEL INSERT on `research.findings`, so
+-- `INSERT ... (promoted_document_id, promoted_at)` wrote a promoted finding
+-- with no approved route anywhere, satisfied `findings_promotion_complete` by
+-- supplying both columns, and fired no trigger at all. The test exercised
+-- UPDATE only, so it was green.
+--
+-- This project's own name for the shape: *a rule enforced on UPDATE only*.
+-- Found by the Supervisor on this commit.
 DROP TRIGGER IF EXISTS findings_promotion_follows_approval ON research.findings;
 CREATE TRIGGER findings_promotion_follows_approval
-    BEFORE UPDATE ON research.findings
+    BEFORE INSERT OR UPDATE ON research.findings
     FOR EACH ROW
     EXECUTE FUNCTION research.promotion_requires_an_approved_route();
 
@@ -966,9 +1071,23 @@ SELECT core._grant('product_development_chemist',  'research.view', 'research.cr
                                                    'experiment.propose', 'experiment.accept');
 SELECT core._grant('product_development_engineer', 'research.view', 'research.create',
                                                    'experiment.propose');
+-- 🔴 THE LEAD DOES NOT GET `experiment.accept`, AND THE PLAN SAID THEY
+-- SHOULD. Recorded as a correction rather than followed.
+--
+-- §1.2's table reads "experiment:propose / accept -> chemist and lead only".
+-- But accepting a proposal IS a formula revision -- it calls
+-- `formulations.revise_version` -- and `POST /formulations/.../revise` is gated
+-- on `formula.clone`, which was MEASURED and is held by
+-- `product_development_chemist` ALONE. So a lead granted `experiment.accept`
+-- could never complete the act: the route would refuse them on the formula
+-- permission every time. A permission whose holder cannot use it is the same
+-- defect as a permission with no holder, one step further along.
+--
+-- The holder set of an act must be a subset of the holder set of what the act
+-- DOES. §20 agrees -- "The Chemist decides whether it becomes an actual
+-- experiment" -- so the chemist keeps it and the lead does not.
 SELECT core._grant('product_development_lead',     'research.view', 'research.create',
-                                                   'research.review', 'research.approve',
-                                                   'experiment.accept');
+                                                   'research.review', 'research.approve');
 SELECT core._grant('product_development_director', 'research.view', 'research.approve');
 SELECT core._grant('qa_compliance_officer',        'research.view', 'research.review');
 
@@ -1043,10 +1162,22 @@ BEGIN
             'did not perform the review. An approved finding is prioritized '
             'when answering future technical questions.',
             'research', TRUE)
-    ON CONFLICT (organization_id, template_code) DO NOTHING
+    -- 🔴 REACTIVATE, DO NOT SKIP. `DO NOTHING` was here and it made this
+    -- migration NON-RE-RUNNABLE: the downgrade RETIRES a template it cannot
+    -- delete (a surviving route snapshots it), so a second upgrade found the
+    -- row present, did nothing, and left the organization with an INACTIVE
+    -- template -- `open_route('research')` raising for it for ever. The
+    -- revision's own assertion caught it, which is what that assertion is for.
+    ON CONFLICT (organization_id, template_code) DO UPDATE
+        SET is_active = TRUE, authority_level = 'research'
     RETURNING id INTO tpl;
 
-    IF tpl IS NOT NULL THEN
+    -- ⚠️ AND THE STEPS ARE INSERTED ONLY IF THERE ARE NONE. With the
+    -- upsert above, `tpl` is now non-NULL on EVERY call, so the old
+    -- `IF tpl IS NOT NULL` guard would have duplicated the two steps on every
+    -- re-run -- turning one defect into a worse one.
+    IF NOT EXISTS (SELECT 1 FROM workflow.approval_template_steps s
+                    WHERE s.template_id = tpl) THEN
         INSERT INTO workflow.approval_template_steps
             (organization_id, template_id, step_number, parallel_group,
              permission_required, step_label, is_mandatory, must_differ_from_group)

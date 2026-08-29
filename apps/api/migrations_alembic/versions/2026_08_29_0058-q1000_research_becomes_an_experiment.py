@@ -207,6 +207,23 @@ def upgrade() -> None:
     ).scalar_one_or_none()
     if unique_def is None:
         raise RuntimeError("formula_version_drivers_unique is missing after 058")
+    version_fk = bind.execute(
+        text(
+            """
+            SELECT pg_get_constraintdef(oid)
+              FROM pg_constraint
+             WHERE conrelid = 'research.experiment_proposals'::regclass
+               AND conname = 'experiment_proposals_version_fk'
+            """
+        )
+    ).scalar_one_or_none()
+    if version_fk is None or "project_id" not in version_fk:
+        raise RuntimeError(
+            "experiment_proposals_version_fk does not carry the project: "
+            f"{version_fk}. A proposal from one project could revise another "
+            "project's formula and record it as authorised by this research."
+        )
+
     if "experiment_proposal_id" not in unique_def:
         raise RuntimeError(
             "formula_version_drivers_unique does not carry experiment_proposal_id: "
@@ -262,6 +279,23 @@ def downgrade() -> None:
             ALTER TABLE formulations.formula_version_drivers
                 ADD CONSTRAINT formula_version_drivers_unique
                 UNIQUE (formula_version_id, driver_type, failure_id, requirement_id);
+            -- 🔴 THE ROWS COME FIRST, OR `ADD CONSTRAINT` ABORTS.
+            --
+            -- `ADD CONSTRAINT ... CHECK` VALIDATES EXISTING ROWS. Any accepted
+            -- proposal that produced a revision left a `driver_type='research'`
+            -- row, so re-adding the narrower CHECK over it fails and the whole
+            -- downgrade rolls back. Found by the Supervisor.
+            --
+            -- Reclassified rather than deleted: the driver is §2's record of
+            -- WHY a formula version exists, and deleting it would break the
+            -- digital thread of a version that still exists. `other` is the
+            -- honest remaining answer once the research vertical is gone, and
+            -- the reason text still names the proposal in prose.
+            UPDATE formulations.formula_version_drivers
+               SET driver_type = 'other',
+                   reason = reason || ' (was a research driver; the research '
+                                      'vertical was removed by downgrading 058)'
+             WHERE driver_type = 'research';
             ALTER TABLE formulations.formula_version_drivers
                 DROP CONSTRAINT IF EXISTS formula_version_drivers_driver_type_check;
             ALTER TABLE formulations.formula_version_drivers
@@ -273,23 +307,47 @@ def downgrade() -> None:
             ALTER TABLE formulations.formula_version_drivers
                 DROP COLUMN IF EXISTS experiment_proposal_id;
 
-            DELETE FROM workflow.approval_route_steps s
-             USING workflow.approval_routes r
-             WHERE s.route_id = r.id AND r.entity_type = 'research_finding';
-            DELETE FROM workflow.approval_routes WHERE entity_type = 'research_finding';
+            -- 🔴 DECIDED APPROVAL HISTORY IS NOT REMOVED, AND THIS DOWNGRADE
+            -- WOULD NOT RUN IF IT TRIED.
+            --
+            -- The first version of this function deleted the routes and their
+            -- steps, and PostgreSQL refused outright:
+            -- `workflow.approval_route_steps is append-only; DELETE is not
+            -- permitted` -- `audit.deny_mutation`, unconditional, so not even
+            -- the migration runner may remove a signature. §9 requires an
+            -- approval decision to be permanent, and a downgrade is not an
+            -- exception to that.
+            --
+            -- So the routes stay, and BECAUSE they stay the entity_type CHECK
+            -- CANNOT be narrowed back: `research_finding` rows would violate
+            -- it and the ALTER would fail. The value remains accepted, with
+            -- nothing able to write it once the schema is gone -- which is a
+            -- deliberate, stated residue rather than a silent one.
+            --
+            -- 🔴 AND THE TEMPLATE CANNOT SIMPLY BE DELETED EITHER --
+            -- measured, after the second attempt failed:
+            -- `approval_routes_template_fk` still references it from the routes
+            -- that must survive. A route SNAPSHOTS its template, so the
+            -- template is part of the record of how a decision was made.
+            --
+            -- So a template with a surviving route is RETIRED rather than
+            -- removed: deactivated so no new route can open against it, and its
+            -- `authority_level` cleared so the CHECK below can be narrowed
+            -- back. One with no route is deleted outright.
             DELETE FROM workflow.approval_template_steps s
              USING workflow.approval_templates t
-             WHERE s.template_id = t.id AND t.template_code = 'RESEARCH_FINDING';
-            DELETE FROM workflow.approval_templates WHERE template_code = 'RESEARCH_FINDING';
-
-            ALTER TABLE workflow.approval_routes
-                DROP CONSTRAINT IF EXISTS approval_routes_entity_type_check;
-            ALTER TABLE workflow.approval_routes
-                ADD CONSTRAINT approval_routes_entity_type_check CHECK (
-                    entity_type IN ('test', 'formula_version', 'validation',
-                                    'pilot', 'qualification', 'product_release',
-                                    'safety_review')
-                );
+             WHERE s.template_id = t.id AND t.template_code = 'RESEARCH_FINDING'
+               AND NOT EXISTS (SELECT 1 FROM workflow.approval_routes r
+                                WHERE r.template_id = t.id);
+            DELETE FROM workflow.approval_templates t
+             WHERE t.template_code = 'RESEARCH_FINDING'
+               AND NOT EXISTS (SELECT 1 FROM workflow.approval_routes r
+                                WHERE r.template_id = t.id);
+            UPDATE workflow.approval_templates
+               SET is_active = FALSE, authority_level = NULL
+             WHERE template_code = 'RESEARCH_FINDING';
+            -- Safe to narrow: `authority_level` lives on TEMPLATES, which the
+            -- DELETE above removed, not on the routes that must survive.
             ALTER TABLE workflow.approval_templates
                 DROP CONSTRAINT IF EXISTS approval_templates_authority_level_check;
             ALTER TABLE workflow.approval_templates
@@ -314,6 +372,15 @@ def downgrade() -> None:
             REVOKE ALL ON FUNCTION workflow.provision_templates_on_new_org() FROM PUBLIC;
             DROP FUNCTION IF EXISTS workflow.provision_research_finding_template(UUID);
 
+            -- 🔴 THE SCHEMA GOES FIRST, OR THE DOCUMENT DELETE IS REFUSED.
+            --
+            -- `research.findings.findings_document_fk` is ON DELETE RESTRICT,
+            -- so a promoted finding PINS the knowledge document it produced.
+            -- Deleting the documents while `research` still exists aborts the
+            -- downgrade. The Supervisor found the ordering; dropping the schema
+            -- first removes the referencing side, and then the documents go.
+            DROP SCHEMA IF EXISTS research CASCADE;
+
             DELETE FROM knowledge.chunks c
              USING knowledge.documents d
              WHERE c.document_id = d.id AND d.source = 'research_finding';
@@ -325,8 +392,6 @@ def downgrade() -> None:
                     source IN ('internal_note', 'material_document', 'standard',
                                'procedure', 'external')
                 );
-
-            DROP SCHEMA IF EXISTS research CASCADE;
 
             DELETE FROM core.role_permissions rp
              USING core.permissions p

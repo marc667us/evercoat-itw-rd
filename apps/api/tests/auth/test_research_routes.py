@@ -19,7 +19,7 @@ own source, so a write route added next month is covered whether or not anybody
 remembers this file exists. Its sibling
 `test_accepting_a_proposal_requires_the_formula_permissions_too` is the specific
 case: accepting a proposal produces a formula version through the same service
-`/formulations/.../revise` uses, so requiring only `experiment.accept` would be
+`/formulations/.../revision` uses, so requiring only `experiment.accept` would be
 a second door to a controlled act with a weaker lock — the I104 shape.
 """
 
@@ -227,15 +227,25 @@ def test_no_write_route_is_gated_only_on_a_view_permission() -> None:
     )
 
 
-def test_accepting_a_proposal_requires_the_formula_permissions_too() -> None:
+def test_accepting_a_proposal_carries_the_formula_permission_too() -> None:
     """🔴 THE SPECIFIC CASE, AND THE ONE MOST LIKELY TO BE 'SIMPLIFIED' AWAY.
 
     `POST /proposals/{id}/accept` calls `formulations.revise_version`, which
-    `/formulations/versions/{id}/revise` gates on `formula.clone` AND
-    `formula.modify_draft`. Dropping either from this route would leave a
-    second door to a controlled act with a weaker lock, and nothing else in
-    the suite would notice: the route would still work, for the person testing
-    it, who holds all three.
+    `POST /formulations/versions/{id}/revision` gates on **`formula.clone`**.
+    Dropping it here would leave a second door to a controlled act with a
+    weaker lock, and nothing else in the suite would notice: the route would
+    still work for the person testing it, who holds both.
+
+    ⚠️ AN EARLIER VERSION OF THIS TEST DEMANDED `formula.modify_draft` AS WELL,
+    ON THE STRENGTH OF A COMMENT RATHER THAN A MEASUREMENT. `post_revision`
+    requires only `formula.clone`; the two-permission gate belongs to
+    `post_observed_effect`, a different route in the same file. So the test
+    asserted a rule that did not exist, and would have kept the route stricter
+    than the act it guards for no reason anybody could have reconstructed.
+
+    🔴 IT ASSERTS THE GATE MATCHES `post_revision`, RATHER THAN NAMING A LIST.
+    A list here is a second copy of the formula module's authorization
+    decision, and the copy that drifts is the one nobody reads.
     """
     accept = [
         perms
@@ -244,11 +254,25 @@ def test_accepting_a_proposal_requires_the_formula_permissions_too() -> None:
     ]
     assert accept, "the accept route was not found; has its path changed?"
     codes = set(re.findall(r'"([a-z_]+\.[a-z_]+)"', accept[0]))
-    assert {"experiment.accept", "formula.clone", "formula.modify_draft"} <= codes, codes
+    assert "experiment.accept" in codes, codes
     assert "require_all=True" in accept[0], (
-        "the accept route names the three permissions but does not require ALL "
+        "the accept route names several permissions but does not require ALL "
         "of them, so holding any one is enough — which is the same hole with "
         "an extra step"
+    )
+
+    revise = re.search(
+        r"@router\.post\(\s*\n?\s*\"/versions/\{version_id\}/revision\".*?"
+        r"require_permission\(([^)]*)\)",
+        (API_ROOT / "app" / "api" / "formulations.py").read_text(encoding="utf-8"),
+        re.S,
+    )
+    assert revise, "the ordinary revision route was not found in formulations.py"
+    revise_codes = set(re.findall(r'"([a-z_]+\.[a-z_]+)"', revise.group(1)))
+    assert revise_codes <= codes, (
+        f"accepting a proposal requires {sorted(codes)} but the ordinary "
+        f"revision route requires {sorted(revise_codes)}. The same controlled "
+        "act must not have a weaker lock by one door than by the other."
     )
 
 

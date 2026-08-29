@@ -53,6 +53,7 @@ from app.core.audit import AuditEvent, write_audit
 from app.core.db import guarded_write
 from app.core.embedding import EmbeddingPort
 from app.core.notifications import notify
+from app.core.tenancy import require_active_member
 from app.domains.approvals.service import ApprovalError, open_route, route_for_entity
 from app.domains.formulations.service import RevisionInput, revise_version
 from app.domains.knowledge.service import ingest_document
@@ -220,7 +221,23 @@ def _translate(exc: DBAPIError) -> ResearchError:
         return ResearchError("a decision needs both a named decider and a time")
     if "investigations_closure_complete" in detail:
         return ResearchError("a closed workspace is closed at a time; an open one is not")
-    if "sources_investigation_fk" in detail or "questions_investigation_fk" in detail:
+    if "knowledge_gaps_question_fk" in detail:
+        return ResearchStateError(
+            "that question belongs to a different investigation, so a gap here cannot point at it"
+        )
+    if "experiment_proposals_version_fk" in detail:
+        return ResearchStateError(
+            "that formula version does not belong to this investigation's "
+            "project. Research scoped to one project revises that project's "
+            "formulas; organization-wide research may revise any you can reach."
+        )
+    # \U0001f534 EVERY `*_investigation_fk`, NOT THE TWO I HAPPENED TO WRITE.
+    # Codex found `knowledge_gaps_question_fk` unnamed while the module's own
+    # header claimed every provocable constraint was named. Matching the
+    # SUFFIX covers the five siblings that were missing for the same reason,
+    # and `test_every_constraint_has_a_message` walks `pg_constraint` so a
+    # ninth table cannot reintroduce the gap.
+    if "_investigation_fk" in detail:
         return ResearchNotFoundError("no such investigation in this organization")
     if "investigations_project_fk" in detail:
         return ResearchNotFoundError("no such project in this organization")
@@ -282,6 +299,15 @@ def open_investigation(
 ) -> dict[str, Any]:
     """Open a Research Workspace (§7).
 
+    🔴 `lpad` TRUNCATES ON THE RIGHT, WHICH IS WHY THE WIDTH IS A `GREATEST`.
+
+    `lpad('1000', 3, '0')` is `'100'` -- measured, not reasoned about. A fixed
+    width does not merely stop padding once the number outgrows it: it returns
+    a DIFFERENT number, colliding with one already issued, and the unique
+    constraint then refuses every later attempt for that organization and year.
+    Codes would become permanently un-allocatable and nothing about the code
+    would look wrong. Found by the Supervisor reviewing this commit.
+
     🔴 THE CODE IS ALLOCATED INSIDE THE INSERT, NOT READ AND THEN WRITTEN.
 
     `RES-2026-0041` is per organization and per year. Selecting the maximum
@@ -295,6 +321,27 @@ def open_investigation(
     than into a project belongs to the organization, and NULL says so.
     """
     owner = spec.owner_user_id or actor_id
+    # \U0001f534 A NAMED OWNER IS CHECKED; THE CALLER IS NOT.
+    #
+    # `owner_user_id` comes straight off the request body and
+    # `research.investigations.owner_user_id` is a plain
+    # `REFERENCES core.users (id)` -- NOT tenant-scoped, because referential
+    # integrity bypasses RLS even under FORCE. Without this, a caller could
+    # name a user from ANOTHER organization as the owner and `notify()` below
+    # would then address a notification to them. That is the C1/C2 defect
+    # `app/core/tenancy.py` exists for, and the Supervisor found it here.
+    #
+    # The tell was already in the route: `post_investigation` catches
+    # `CrossTenantReferenceError` and nothing in the call path could raise it
+    # -- a handler for an exception that could not occur, standing in for the
+    # check that was missing.
+    if spec.owner_user_id is not None and spec.owner_user_id != actor_id:
+        require_active_member(
+            session,
+            user_id=spec.owner_user_id,
+            organization_id=organization_id,
+            role_description="research owner",
+        )
     try:
         with guarded_write(session):
             row = (
@@ -307,18 +354,19 @@ def open_investigation(
                              material_id, test_id, failure_id, owner_user_id, opened_by)
                         SELECT :org, :project,
                                'RES-' || to_char(clock_timestamp(), 'YYYY') || '-' ||
-                               lpad((
+                               lpad(seq.n::TEXT, GREATEST(4, length(seq.n::TEXT)), '0'),
+                               :title, :question, :strategy, :version, :material,
+                               :test, :failure, :owner, :actor
+                          FROM (
                                    SELECT COALESCE(max(
                                        NULLIF(regexp_replace(i.investigation_code,
-                                                             '^RES-\\d{4}-', ''), '')::INT
-                                   ), 0) + 1
+                                                             '^RES-\d{4}-', ''), '')::INT
+                                   ), 0) + 1 AS n
                                      FROM research.investigations i
                                     WHERE i.organization_id = :org
                                       AND i.investigation_code LIKE
                                           'RES-' || to_char(clock_timestamp(), 'YYYY') || '-%'
-                               )::TEXT, 4, '0'),
-                               :title, :question, :strategy, :version, :material,
-                               :test, :failure, :owner, :actor
+                               ) AS seq
                         RETURNING id, investigation_code
                         """
                     ),
@@ -775,16 +823,18 @@ def record_finding(
                             (organization_id, investigation_id, finding_code, subject,
                              statement, applicability, limitations, confidence, author_id)
                         SELECT :org, :iid,
-                               'RF-' || lpad((
+                               'RF-' || lpad(seq.n::TEXT,
+                                             GREATEST(4, length(seq.n::TEXT)), '0'),
+                               :subject, :statement, :applicability, :limitations,
+                               :confidence, :actor
+                          FROM (
                                    SELECT COALESCE(max(
                                        NULLIF(regexp_replace(f.finding_code, '^RF-', ''),
                                               '')::INT
-                                   ), 0) + 1
+                                   ), 0) + 1 AS n
                                      FROM research.findings f
                                     WHERE f.organization_id = :org
-                               )::TEXT, 4, '0'),
-                               :subject, :statement, :applicability, :limitations,
-                               :confidence, :actor
+                               ) AS seq
                         RETURNING id, finding_code
                         """
                     ),
@@ -1360,18 +1410,19 @@ def propose_experiment(
                              risks, confidence, proposed_by)
                         SELECT :org, :iid, :hypothesis,
                                'EXP-' || to_char(clock_timestamp(), 'YYYY') || '-' ||
-                               lpad((
+                               lpad(seq.n::TEXT, GREATEST(3, length(seq.n::TEXT)), '0'),
+                               :objective, :basis, :variables, :controlled,
+                               :direction, :tests, :risks, :confidence, :actor
+                          FROM (
                                    SELECT COALESCE(max(
                                        NULLIF(regexp_replace(x.proposal_code,
-                                                             '^EXP-\\d{4}-', ''), '')::INT
-                                   ), 0) + 1
+                                                             '^EXP-\d{4}-', ''), '')::INT
+                                   ), 0) + 1 AS n
                                      FROM research.experiment_proposals x
                                     WHERE x.organization_id = :org
                                       AND x.proposal_code LIKE
                                           'EXP-' || to_char(clock_timestamp(), 'YYYY') || '-%'
-                               )::TEXT, 3, '0'),
-                               :objective, :basis, :variables, :controlled,
-                               :direction, :tests, :risks, :confidence, :actor
+                               ) AS seq
                         RETURNING id, proposal_code
                         """
                     ),
@@ -1460,17 +1511,36 @@ def list_proposals(
 def _load_open_proposal(
     session: Session, *, proposal_id: uuid.UUID, organization_id: uuid.UUID
 ) -> dict[str, Any]:
+    """The proposal, LOCKED, or a refusal.
+
+    \U0001f534 `FOR UPDATE OF x` IS THE POINT OF THIS FUNCTION, NOT THE SELECT.
+
+    Codex P1 against the first version: the read checked `status = 'proposed'`
+    and the write later said `WHERE status = 'proposed'` without checking how
+    many rows it touched. Two chemists accepting the same proposal at once
+    would each have passed the read, each have called `revise_version` -- so
+    TWO formula versions exist, both claiming this proposal as their driver --
+    and only one UPDATE would land. The loser still wrote an audit event, still
+    notified, and still returned success for a revision the proposal does not
+    record.
+
+    A row lock makes the second caller wait and then read `accepted`, so the
+    refusal happens BEFORE anything is cloned. `OF x` locks the proposal only:
+    locking the joined investigation as well would serialise every acceptance
+    in a workspace against every other.
+    """
     row = (
         session.execute(
             text(
                 """
                 SELECT x.id, x.proposal_code, x.objective, x.expected_direction,
-                       x.status, x.proposed_by, x.investigation_id,
+                       x.status, x.proposed_by, x.investigation_id, x.project_id,
                        i.investigation_code
                   FROM research.experiment_proposals x
                   JOIN research.investigations i
                     ON i.id = x.investigation_id AND i.organization_id = x.organization_id
                  WHERE x.id = :pid AND x.organization_id = :org
+                   FOR UPDATE OF x
                 """
             ),
             {"pid": proposal_id, "org": organization_id},
@@ -1534,7 +1604,7 @@ def accept_experiment_proposal(
 
     try:
         with guarded_write(session):
-            session.execute(
+            decided = session.execute(
                 text(
                     """
                     UPDATE research.experiment_proposals
@@ -1544,6 +1614,7 @@ def accept_experiment_proposal(
                            decided_at = clock_timestamp(),
                            decision_note = :note
                      WHERE id = :pid AND organization_id = :org AND status = 'proposed'
+                    RETURNING id
                     """
                 ),
                 {
@@ -1553,9 +1624,18 @@ def accept_experiment_proposal(
                     "pid": proposal_id,
                     "org": organization_id,
                 },
-            )
+            ).scalar_one_or_none()
     except DBAPIError as exc:
         raise _translate(exc) from exc
+    # \U0001f534 A CONDITIONAL UPDATE THAT MATCHES NOTHING REPORTS SUCCESS.
+    # The row lock above should make this unreachable; asserting it anyway is
+    # what turns "should" into "did", and a silent no-op here would leave a
+    # formula version cloned with no proposal recording it.
+    if decided is None:
+        raise ResearchStateError(
+            "that proposal was decided by somebody else while this acceptance "
+            "was in flight; nothing has been recorded against it"
+        )
 
     write_audit(
         session,
@@ -1612,7 +1692,7 @@ def reject_experiment_proposal(
 
     try:
         with guarded_write(session):
-            session.execute(
+            decided = session.execute(
                 text(
                     """
                     UPDATE research.experiment_proposals
@@ -1621,6 +1701,7 @@ def reject_experiment_proposal(
                            decided_at = clock_timestamp(),
                            decision_note = :note
                      WHERE id = :pid AND organization_id = :org AND status = 'proposed'
+                    RETURNING id
                     """
                 ),
                 {
@@ -1629,9 +1710,13 @@ def reject_experiment_proposal(
                     "pid": proposal_id,
                     "org": organization_id,
                 },
-            )
+            ).scalar_one_or_none()
     except DBAPIError as exc:
         raise _translate(exc) from exc
+    if decided is None:
+        raise ResearchStateError(
+            "that proposal was decided by somebody else while this rejection was in flight"
+        )
 
     write_audit(
         session,

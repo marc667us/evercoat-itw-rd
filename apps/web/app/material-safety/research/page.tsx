@@ -40,6 +40,7 @@ import {
   useResearchFindings,
   useResearchGaps,
   useResearchHypotheses,
+  useKnowledgeDocuments,
   useResearchQuestions,
   useResearchSources,
   useResearchWrites,
@@ -107,7 +108,13 @@ function approvalLabel(finding: Finding): { icon: string; text: string; classNam
     return { icon: "✎", text: "Draft — not submitted", className: "bg-slate-100 text-slate-700" };
   }
   if (finding.approval_status === "approved") {
-    return { icon: "✓", text: "Approved", className: "bg-emerald-200 text-emerald-900" };
+    // 🔴 NOT GREEN, AND CODEX WAS RIGHT TO CATCH IT. §29: "Never use green PASS
+    // for an AI recommendation. Green should remain reserved for validated /
+    // approved TECHNICAL results." An approved finding is a reviewed
+    // conclusion, not a test that passed, and this file's own header says so —
+    // then painted it emerald anyway. Slate reads as "settled" without
+    // borrowing Testing's meaning.
+    return { icon: "✓", text: "Approved", className: "bg-slate-800 text-white" };
   }
   if (finding.approval_status === "rejected") {
     return { icon: "✕", text: "Rejected", className: "bg-rose-200 text-rose-900" };
@@ -306,12 +313,27 @@ function QuestionsPanel({ investigationId }: { investigationId: string }) {
 
 function SourcesPanel({ investigationId }: { investigationId: string }) {
   const sources = useResearchSources(investigationId);
+  // 🔴 THE DOCUMENT PICKER EXISTS BECAUSE THE MENU OPTION DID.
+  //
+  // "A document on file" was offered and the form sent no `document_id`, so
+  // choosing it was refused EVERY time by `sources_document_shape` — a menu
+  // option nobody could use, which is precisely the defect the Supervisor
+  // found on the competitor evidence form in Phase 3 and found again here.
+  // `needsDocument` is now READ rather than merely declared.
+  // The hook returns the PAGE (documents / total / limit), not a bare
+  // array -- the knowledge list is paginated and I78 records that it
+  // truncates at 100 silently. The projector takes the rows.
+  const documents = useKnowledgeDocuments((live) => live.documents);
   const writes = useResearchWrites();
   const [title, setTitle] = useState("");
   const [kind, setKind] = useState<string>(RESEARCH_SOURCE_KINDS[3].id);
   const [grade, setGrade] = useState<string>("B");
   const [locator, setLocator] = useState("");
+  const [documentId, setDocumentId] = useState("");
   const rows = sources.data ?? [];
+  const documentRows = documents.data ?? [];
+  const needsDocument =
+    RESEARCH_SOURCE_KINDS.find((option) => option.id === kind)?.needsDocument ?? false;
 
   return (
     <section className={PANEL}>
@@ -351,10 +373,12 @@ function SourcesPanel({ investigationId }: { investigationId: string }) {
               evidence_grade: grade,
               title,
               source_locator: locator === "" ? undefined : locator,
+              document_id: documentId === "" ? undefined : documentId,
             },
             () => {
               setTitle("");
               setLocator("");
+              setDocumentId("");
             },
           );
         }}
@@ -404,10 +428,37 @@ function SourcesPanel({ investigationId }: { investigationId: string }) {
             ))}
           </select>
         </label>
+        {needsDocument && (
+          <label className={`${LABEL} sm:col-span-2`}>
+            Which document
+            <select
+              className={INPUT}
+              required
+              value={documentId}
+              onChange={(event) => setDocumentId(event.target.value)}
+            >
+              <option value="">Choose a document…</option>
+              {documentRows.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {row.title}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <div className="sm:col-span-2">
-          <button type="submit" className={BUTTON} disabled={writes.isPending}>
+          <button
+            type="submit"
+            className={BUTTON}
+            disabled={writes.isPending || (needsDocument && documentRows.length === 0)}
+          >
             Record source
           </button>
+          {needsDocument && documentRows.length === 0 && (
+            <span className="ml-2 text-xs text-slate-600">
+              There are no documents in the Knowledge Library to cite yet.
+            </span>
+          )}
         </div>
       </form>
       <Feedback writes={writes} />
@@ -1097,10 +1148,24 @@ function ProposalsRegister() {
               )}
               {row.status === "proposed" && (
                 <div className="mt-3">
+                  {/* 🔴 OPENING A DIFFERENT PROPOSAL CLEARS THE FORM.
+                      Without this, the four fields are shared across every row:
+                      after accepting proposal A, opening B showed A's version
+                      id already filled and the Accept button already enabled,
+                      and one click revised the WRONG formula version — recorded
+                      in `formula_version_drivers` as authorised by B's
+                      research. Found by the Supervisor. */}
                   <button
                     type="button"
                     className={SECONDARY}
-                    onClick={() => setOpenId(openId === row.id ? null : row.id)}
+                    onClick={() => {
+                      const next = openId === row.id ? null : row.id;
+                      setOpenId(next);
+                      setVersionId("");
+                      setReason("");
+                      setHypothesis("");
+                      setNote("");
+                    }}
                   >
                     {openId === row.id ? "Cancel" : "Decide"}
                   </button>

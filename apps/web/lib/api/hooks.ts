@@ -2793,11 +2793,22 @@ export function useCompetitorWrites(): {
 /* -------------------------------------------------------------------------
  * The Research Center
  *
- * 🔴 ONE WRITE HOOK FOR THE WHOLE VERTICAL, so a screen has ONE `isPending`
- * and ONE error. Splitting it would let a panel show "saved" while a sibling
- * write was still in flight — the reason `useCompetitorWrites` is shaped this
- * way, and the same reason applies here where a single workspace page carries
- * six forms.
+ * 🔴 ONE WRITE HOOK, AND WHAT THAT DOES AND DOES NOT GUARANTEE.
+ *
+ * `useResearchWrites` covers every write in the vertical, so any component
+ * that calls it gets one `isPending` and one error for all of them, and the
+ * invalidations stay in one place instead of being restated per form.
+ *
+ * ⚠️ IT DOES NOT MAKE THE WHOLE SCREEN SHARE ONE PENDING STATE, AND AN EARLIER
+ * VERSION OF THIS COMMENT CLAIMED IT DID. `research/page.tsx` calls this hook
+ * in eleven components, each getting its OWN `useMutation` — so a panel can
+ * show "saved" while a sibling write is still in flight, which is exactly what
+ * the old wording said was prevented. That is deliberate: per-panel feedback is
+ * what a page of independent forms wants, and one shared spinner would grey out
+ * six forms because a seventh was saving. The claim is corrected rather than
+ * the components restructured to fit it — a comment asserting a rule that does
+ * not exist is a defect this project has a standing note about, and the
+ * Supervisor found this one.
  * ---------------------------------------------------------------------- */
 
 /** Research workspaces this caller can reach. */

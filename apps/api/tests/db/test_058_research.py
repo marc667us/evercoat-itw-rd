@@ -923,3 +923,334 @@ def test_submitting_a_finding_opens_a_route_and_promotion_follows_it(
     assert route["segregated"] == 1
 
     owner_session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# The two P1 blockers Codex found on this migration's first version
+# ---------------------------------------------------------------------------
+
+
+def test_a_proposals_project_is_inherited_and_cannot_be_declared(
+    owner_session: Session, research_fixture: dict[str, Any]
+) -> None:
+    """\U0001f534 A CLIENT MUST NOT BE ABLE TO CHOOSE ITS OWN PROJECT.
+
+    The three-column foreign key that stops a project-A proposal revising a
+    project-B formula is only worth having if `project_id` is TRUE. Declaring
+    NULL on a project-scoped investigation would buy back exactly the
+    cross-project revision the key exists to refuse, so a trigger overwrites
+    whatever is supplied.
+
+    Both directions: a project-scoped investigation yields the project, and an
+    organization-wide one yields NULL -- which is the case that must stay NULL,
+    because a NULL makes the foreign key pass trivially and that is the design.
+    """
+    org_id = research_fixture["org_id"]
+    _as(owner_session, org_id, research_fixture["user_id"])
+
+    def _propose(investigation: uuid.UUID, code: str, declared: uuid.UUID | None) -> uuid.UUID:
+        return owner_session.execute(  # type: ignore[no-any-return]
+            text(
+                """
+                INSERT INTO research.experiment_proposals
+                    (organization_id, investigation_id, project_id, proposal_code,
+                     objective, basis, variables, expected_direction, required_tests,
+                     confidence, proposed_by)
+                VALUES (:o, :i, :declared, :c, 'Objective', 'Basis', 'Variables',
+                        'Direction', 'Tests', 'moderate', :u)
+                RETURNING project_id
+                """
+            ),
+            {
+                "o": org_id,
+                "i": investigation,
+                "declared": declared,
+                "c": code,
+                "u": research_fixture["user_id"],
+            },
+        ).scalar_one()
+
+    # Declaring NOTHING on a project-scoped workspace still yields the project.
+    assert (
+        _propose(research_fixture["restricted_inv"], f"EXP-A-{research_fixture['suffix']}", None)
+        == research_fixture["restricted_project"]
+    )
+    # Declaring a DIFFERENT project is overwritten, not honoured.
+    assert (
+        _propose(
+            research_fixture["restricted_inv"],
+            f"EXP-B-{research_fixture['suffix']}",
+            research_fixture["normal_project"],
+        )
+        == research_fixture["restricted_project"]
+    )
+    # And an organization-wide workspace yields NULL even when a project is
+    # declared -- the half that keeps org-wide research usable.
+    assert (
+        _propose(
+            research_fixture["orgwide_inv"],
+            f"EXP-C-{research_fixture['suffix']}",
+            research_fixture["normal_project"],
+        )
+        is None
+    )
+    owner_session.rollback()
+
+
+def test_a_proposal_cannot_record_another_projects_formula_version(
+    owner_session: Session, research_fixture: dict[str, Any]
+) -> None:
+    """\U0001f534 CODEX P1: THE FOREIGN KEY WAS ONE COLUMN TOO SHORT.
+
+    With `(resulting_formula_version_id, organization_id)` the caller could
+    supply any version they could see, so a proposal from project A could
+    revise a formula in project B while the digital thread recorded A's
+    research as the driver. Migration 057 closed exactly this shape for
+    competitors; this is the same defect in a new table, found by review before
+    it shipped anywhere.
+
+    Both directions, because a key that refuses everything is not a key.
+    """
+    org_id = research_fixture["org_id"]
+    _as(owner_session, org_id, research_fixture["user_id"])
+
+    def _version(project: uuid.UUID, tag: str) -> uuid.UUID:
+        formula_id = owner_session.execute(
+            text(
+                """
+                INSERT INTO formulations.formulas
+                    (organization_id, project_id, formula_code, name, owner_user_id,
+                     created_by)
+                VALUES (:o, :p, :c, 'Cross-project formula', :u, :u) RETURNING id
+                """
+            ),
+            {
+                "o": org_id,
+                "p": project,
+                "c": f"F{tag}-{research_fixture['suffix']}",
+                "u": research_fixture["user_id"],
+            },
+        ).scalar_one()
+        return owner_session.execute(  # type: ignore[no-any-return]
+            text(
+                """
+                INSERT INTO formulations.formula_versions
+                    (organization_id, project_id, formula_id, version_number,
+                     version_code, status, created_by)
+                VALUES (:o, :p, :f, 1, :c, 'draft', :u) RETURNING id
+                """
+            ),
+            {
+                "o": org_id,
+                "p": project,
+                "f": formula_id,
+                "c": f"F{tag}-{research_fixture['suffix']}-V1",
+                "u": research_fixture["user_id"],
+            },
+        ).scalar_one()
+
+    same = _version(research_fixture["restricted_project"], "SAME")
+    other = _version(research_fixture["normal_project"], "OTHER")
+
+    # The proposal belongs to the RESTRICTED project's investigation.
+    proposal = research_fixture["proposal_id"]
+
+    accepted = owner_session.execute(
+        text(
+            """
+            UPDATE research.experiment_proposals
+               SET status = 'accepted', resulting_formula_version_id = :v,
+                   decided_by = :u, decided_at = clock_timestamp()
+             WHERE id = :p AND organization_id = :o
+            RETURNING id
+            """
+        ),
+        {"v": same, "u": research_fixture["user_id"], "p": proposal, "o": org_id},
+    ).scalar_one_or_none()
+    assert accepted is not None, "a version in the proposal's OWN project was refused"
+
+    with pytest.raises(IntegrityError) as caught:
+        owner_session.execute(
+            text(
+                """
+                UPDATE research.experiment_proposals
+                   SET resulting_formula_version_id = :v
+                 WHERE id = :p AND organization_id = :o
+                """
+            ),
+            {"v": other, "p": proposal, "o": org_id},
+        )
+    assert "experiment_proposals_version_fk" in str(caught.value.orig)
+    owner_session.rollback()
+
+
+def test_a_second_acceptance_is_refused_rather_than_silently_ignored(
+    owner_session: Session, research_fixture: dict[str, Any]
+) -> None:
+    """\U0001f534 CODEX P1: THE CONDITIONAL UPDATE MATCHED NOTHING AND SAID NOTHING.
+
+    `accept_experiment_proposal` reads the proposal, calls `revise_version`,
+    then writes `WHERE status = 'proposed'`. Without a row lock two callers
+    both passed the read and both cloned a formula version; without a rowcount
+    check the loser still wrote an audit event, still notified, and still
+    returned success for a revision the proposal does not record.
+
+    The lock makes the second caller wait and read `accepted`, so the refusal
+    now happens BEFORE anything is cloned -- which is what this asserts, from
+    the service rather than from SQL.
+    """
+    from app.domains.research.service import ResearchStateError, accept_experiment_proposal
+
+    org_id = research_fixture["org_id"]
+    _as(owner_session, org_id, research_fixture["user_id"])
+
+    formula_id = owner_session.execute(
+        text(
+            """
+            INSERT INTO formulations.formulas
+                (organization_id, project_id, formula_code, name, owner_user_id, created_by)
+            VALUES (:o, :p, :c, 'Race formula', :u, :u) RETURNING id
+            """
+        ),
+        {
+            "o": org_id,
+            "p": research_fixture["restricted_project"],
+            "c": f"FRACE-{research_fixture['suffix']}",
+            "u": research_fixture["user_id"],
+        },
+    ).scalar_one()
+    version_id = owner_session.execute(
+        text(
+            """
+            INSERT INTO formulations.formula_versions
+                (organization_id, project_id, formula_id, version_number, version_code,
+                 status, created_by)
+            VALUES (:o, :p, :f, 1, :c, 'draft', :u) RETURNING id
+            """
+        ),
+        {
+            "o": org_id,
+            "p": research_fixture["restricted_project"],
+            "f": formula_id,
+            "c": f"FRACE-{research_fixture['suffix']}-V1",
+            "u": research_fixture["user_id"],
+        },
+    ).scalar_one()
+
+    first = accept_experiment_proposal(
+        session=owner_session,
+        proposal_id=research_fixture["proposal_id"],
+        organization_id=org_id,
+        actor_id=research_fixture["user_id"],
+        version_id=version_id,
+        change_reason="Raise microsphere loading by 2%",
+        technical_hypothesis="Shorter sand-through time at equal density",
+    )
+    assert first["status"] == "accepted"
+    assert first["version_code"] is not None
+
+    # \U0001f534 THE SECOND ACCEPTANCE MUST REFUSE **BEFORE** CLONING ANYTHING.
+    versions_before = owner_session.execute(
+        text("SELECT count(*) FROM formulations.formula_versions WHERE formula_id = :f"),
+        {"f": formula_id},
+    ).scalar_one()
+    with pytest.raises(ResearchStateError) as caught:
+        accept_experiment_proposal(
+            session=owner_session,
+            proposal_id=research_fixture["proposal_id"],
+            organization_id=org_id,
+            actor_id=research_fixture["user_id"],
+            version_id=version_id,
+            change_reason="Again",
+            technical_hypothesis="Again",
+        )
+    assert "already accepted" in str(caught.value) or "decided" in str(caught.value)
+    versions_after = owner_session.execute(
+        text("SELECT count(*) FROM formulations.formula_versions WHERE formula_id = :f"),
+        {"f": formula_id},
+    ).scalar_one()
+    assert versions_after == versions_before, (
+        "the refused acceptance still cloned a formula version -- the refusal "
+        "happens after the clone, which is the defect it was meant to close"
+    )
+    owner_session.rollback()
+
+
+def test_a_promoted_finding_cannot_be_inserted_past_the_trigger(
+    owner_session: Session, research_fixture: dict[str, Any]
+) -> None:
+    """🔴 THE HOLE THE FIRST VERSION OF THIS GUARD LEFT WIDE OPEN.
+
+    `findings_promotion_follows_approval` was `BEFORE UPDATE` only, while the
+    comment above it claimed the rule "holds for direct SQL too". It did not:
+    `evercoat_app` holds TABLE-LEVEL INSERT on `research.findings`, so a single
+    INSERT carrying `promoted_document_id` and `promoted_at` wrote a promoted
+    finding with no approved route anywhere, satisfied
+    `findings_promotion_complete` by supplying both, and fired no trigger.
+
+    The suite was green because it only ever exercised UPDATE. This project's
+    own name for the shape is *a rule enforced on UPDATE only*, and the
+    Supervisor found it here.
+    """
+    org_id = research_fixture["org_id"]
+    # The refusal below ends in a rollback, which would otherwise discard the
+    # FIXTURE's own uncommitted investigation -- and the second half would then
+    # fail on the RLS policy's EXISTS rather than on the guard it measures.
+    owner_session.commit()
+    _as(owner_session, org_id, research_fixture["user_id"])
+
+    document_id = owner_session.execute(
+        text(
+            "INSERT INTO knowledge.documents (organization_id, title, source, ingested_by) "
+            "VALUES (:o, 'Smuggled promotion', 'research_finding', :u) RETURNING id"
+        ),
+        {"o": org_id, "u": research_fixture["user_id"]},
+    ).scalar_one()
+
+    with pytest.raises(DBAPIError) as caught:
+        owner_session.execute(
+            text(
+                """
+                INSERT INTO research.findings
+                    (organization_id, investigation_id, finding_code, subject, statement,
+                     applicability, confidence, author_id, promoted_document_id,
+                     promoted_at)
+                VALUES (:o, :i, :c, 'Straight to the register',
+                        'Nobody reviewed this.', 'Everything', 'high', :u, :d,
+                        clock_timestamp())
+                """
+            ),
+            {
+                "o": org_id,
+                "i": research_fixture["restricted_inv"],
+                "c": f"RF-INS-{research_fixture['suffix']}",
+                "u": research_fixture["user_id"],
+                "d": document_id,
+            },
+        )
+    assert "no approved approval route" in str(caught.value.orig)
+    owner_session.rollback()
+
+    # The other direction: an ordinary INSERT with NO promotion still works, so
+    # the trigger is shown to distinguish rather than to block every insert.
+    _as(owner_session, org_id, research_fixture["user_id"])
+    ordinary = owner_session.execute(
+        text(
+            """
+            INSERT INTO research.findings
+                (organization_id, investigation_id, finding_code, subject, statement,
+                 applicability, confidence, author_id)
+            VALUES (:o, :i, :c, 'An ordinary draft', 'Something measured.',
+                    'Filler family', 'low', :u)
+            RETURNING id
+            """
+        ),
+        {
+            "o": org_id,
+            "i": research_fixture["restricted_inv"],
+            "c": f"RF-OK-{research_fixture['suffix']}",
+            "u": research_fixture["user_id"],
+        },
+    ).scalar_one()
+    assert ordinary is not None
+    owner_session.rollback()
