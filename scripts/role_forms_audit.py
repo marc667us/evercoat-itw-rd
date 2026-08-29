@@ -94,7 +94,14 @@ def write_gates() -> dict[str, set[str]]:
             perms = re.search(r"require_permission\(([^)]*)\)", body, re.DOTALL)
             if not perms:
                 continue
-            route = re.match(r'\s*"([^"]*)"', block)
+            # 🔴 THE PATH IS AFTER THE OPENING PAREN, NOT AT THE START.
+            # `re.split(r"\n@router\.", ...)` strips the `@router.` prefix, so a
+            # block begins `post("/{id}/evidence", …`. Matching `\s*"` against
+            # that could never succeed -- `\s*` matches empty and the next
+            # character is `p` -- so every label degraded to the bare module
+            # name, and the report printed `competitors, competitors,
+            # competitors` where it meant to print three paths.
+            route = re.match(r'\w+\(\s*"([^"]*)"', block)
             label = f"{path.stem}{route.group(1) if route else ''}"
             for code in re.findall(r'"([a-z_]+\.[a-z_]+)"', perms.group(1)):
                 gates.setdefault(code, set()).add(label)
@@ -102,13 +109,30 @@ def write_gates() -> dict[str, set[str]]:
 
 
 def controls() -> str:
-    """Every `.tsx` under `app/` and `components/` -- where a control lives."""
-    return "\n".join(
+    """Every `.tsx` under `app/` and `components/`, with the comments stripped.
+
+    🔴 THE COMMENTS HAD TO GO, AND LEAVING THEM IN WAS THE LIKELIEST WAY FOR
+    THIS TOOL TO REPORT A CLEAN RUN OVER A REAL GAP.
+
+    These screens document their permissions heavily -- the competitors page
+    quotes `require_permission("material.edit", "test.view", ...)` in a block
+    comment explaining its mirror. A permission quoted in prose kept the code
+    "covered" whatever happened to the control, so deleting a button would not
+    have moved the count. Codex found it.
+
+    Stripping is textual and therefore imperfect: a `//` inside a string
+    literal takes the rest of that line with it. That direction is the safe
+    one -- it can only REMOVE evidence of a control and over-report a gap,
+    which is a false alarm rather than a false clean bill of health.
+    """
+    source = "\n".join(
         p.read_text(encoding="utf-8", errors="ignore")
         for directory in ("app", "components")
         for p in (WEB / directory).rglob("*.tsx")
         if ".test." not in p.name
     )
+    source = re.sub(r"/\*.*?\*/", " ", source, flags=re.DOTALL)
+    return re.sub(r"//[^\n]*", " ", source)
 
 
 def main() -> int:

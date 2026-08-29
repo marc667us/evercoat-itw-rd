@@ -60,7 +60,18 @@ function mirroredCodes(screen: string): Set<string> {
   const source = readFileSync(screen, "utf8");
   const start = source.indexOf("const MAY = {");
   expect(start, `no MAY block in ${screen} — has it been renamed?`).toBeGreaterThan(-1);
-  const literal = source.slice(start, source.indexOf("} as const;", start));
+  // 🔴 THE TERMINATOR IS ASSERTED BEFORE IT IS USED. `indexOf` returns -1 when
+  // it is not found, and `slice(start, -1)` then quietly yields the whole rest
+  // of the file -- so the "mirror" would be harvested from every quoted `x.y`
+  // string on the screen (route paths, test ids, other permission codes), and
+  // the size guard below would still be satisfied. `} as const satisfies …`,
+  // or a reflow, is enough to trigger it. Both reviewers found this.
+  const end = source.indexOf("} as const;", start);
+  expect(
+    end,
+    `the MAY block in ${screen} does not end with "} as const;"`,
+  ).toBeGreaterThan(start);
+  const literal = source.slice(start, end);
   return new Set(literal.match(/"[a-z_]+\.[a-z_]+"/g)?.map((q) => q.slice(1, -1)) ?? []);
 }
 

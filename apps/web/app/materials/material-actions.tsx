@@ -397,26 +397,41 @@ function EditMaterial({
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        writes.edit({
-          // Echoed, not edited. See the note above.
+        // 🔴 THE SNAPSHOT IS DROPPED ON SUCCESS, OR THE NEXT SAVE RE-SENDS IT.
+        //
+        // Both reviewers found this independently. `heldMaterialDraft` prefers
+        // what was typed over what arrived, which is right while editing and
+        // wrong once saved: the refetch `useMaterialWrites` triggers would land
+        // and be ignored, leaving a pre-save snapshot in the form. Because the
+        // PUT REPLACES the row, pressing Save a second time then writes that
+        // stale snapshot over anything a colleague changed in between -- a lost
+        // update, with nothing on screen to say it happened.
+        //
+        // Clearing it shows the saved record again, and makes the invalidation
+        // in `useMaterialWrites` mean what its comment claims.
+        writes.edit(
+          {
+            // Echoed, not edited. See the note above.
           material_code: materialCode,
-          name: current.name.trim(),
-          category: current.category.trim(),
-          role: current.role,
-          description: orUndefined(textOf("description")),
-          cas_number: orUndefined(textOf("cas_number")),
-          density_g_cm3: orUndefined(textOf("density_g_cm3")),
-          solids_fraction: orUndefined(textOf("solids_fraction")),
-          voc_fraction: orUndefined(textOf("voc_fraction")),
-          cost_per_kg: orUndefined(textOf("cost_per_kg")),
-          epoxy_equivalent_weight: orUndefined(textOf("epoxy_equivalent_weight")),
-          amine_hydrogen_equivalent_weight: orUndefined(
-            textOf("amine_hydrogen_equivalent_weight"),
-          ),
-          hazard_summary: orUndefined(textOf("hazard_summary")),
-          requires_sds: current.requires_sds,
-          notes: orUndefined(textOf("notes")),
-        });
+            name: current.name.trim(),
+            category: current.category.trim(),
+            role: current.role,
+            description: orUndefined(textOf("description")),
+            cas_number: orUndefined(textOf("cas_number")),
+            density_g_cm3: orUndefined(textOf("density_g_cm3")),
+            solids_fraction: orUndefined(textOf("solids_fraction")),
+            voc_fraction: orUndefined(textOf("voc_fraction")),
+            cost_per_kg: orUndefined(textOf("cost_per_kg")),
+            epoxy_equivalent_weight: orUndefined(textOf("epoxy_equivalent_weight")),
+            amine_hydrogen_equivalent_weight: orUndefined(
+              textOf("amine_hydrogen_equivalent_weight"),
+            ),
+            hazard_summary: orUndefined(textOf("hazard_summary")),
+            requires_sds: current.requires_sds,
+            notes: orUndefined(textOf("notes")),
+          },
+          () => setEdited(null),
+        );
       }}
     >
       <h4 className="text-sm font-semibold text-slate-900">Edit this material</h4>

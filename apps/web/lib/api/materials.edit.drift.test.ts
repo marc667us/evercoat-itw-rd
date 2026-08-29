@@ -24,13 +24,16 @@ import { materialDetailSchema, materialSchema } from "./materials";
  * `amine_hydrogen_equivalent_weight`, and prefilling from the grid rows
  * already in memory would have blanked all four on every save.
  *
- * So this reads the Python and asserts the three links in that chain:
+ * So this reads the Python and the form and asserts every link in that chain:
  *
  *   1. every column the UPDATE writes is one the detail SELECT returns,
  *      so the form can load it;
  *   2. every one of those is a field of `materialDetailSchema`, so the form
  *      actually parses and holds it;
- *   3. the LIST schema is not the one to build the form from — recorded as a
+ *   3. every one of those is a field the form SUBMITS — the hop both reviewers
+ *      pointed out was claimed here and never asserted, and the one where a
+ *      column can be loaded, shown, and still left out of the request;
+ *   4. the LIST schema is not the one to build the form from — recorded as a
  *      fact about the two shapes rather than as a rule about the future.
  *
  * ⚠️ IT PARSES SQL OUT OF A PYTHON STRING, WHICH IS BRITTLE ON PURPOSE, and
@@ -100,6 +103,36 @@ function detailColumns(): Set<string> {
   );
 }
 
+const FORM = join(__dirname, "..", "..", "app", "materials", "material-actions.tsx");
+
+/**
+ * The field names the edit form actually puts in the request body.
+ *
+ * 🔴 THE THIRD LINK, WHICH THIS FILE'S HEADER CLAIMED AND DID NOT ASSERT.
+ *
+ * Both reviewers made the same point: proving `UPDATE columns ⊆ detail SELECT
+ * ⊆ schema keys` leaves the last hop unchecked. A column could reach the
+ * schema, be shown by the form, and still be left OUT of the submitted object
+ * -- and because the PUT replaces the row, every save would then write it
+ * null. That is the exact failure the file exists to prevent, and three green
+ * tests would have sat over it.
+ */
+function submittedFields(): Set<string> {
+  const source = readFileSync(FORM, "utf8");
+  const start = source.indexOf("writes.edit(");
+  expect(start, "no call to writes.edit in the form — has it been renamed?").toBeGreaterThan(
+    -1,
+  );
+  const end = source.indexOf("() => setEdited(null)", start);
+  expect(end, "the writes.edit call does not end the way this parser expects").toBeGreaterThan(
+    start,
+  );
+  const body = source.slice(start, end);
+  return new Set(
+    [...body.matchAll(/^\s{12}(\w+):/gm)].flatMap((m) => (m[1] === undefined ? [] : [m[1]])),
+  );
+}
+
 describe("the material edit contract", () => {
   it("finds the SQL it is meant to be checking", () => {
     // The guard on the guard. Both of these would be empty if the Python were
@@ -130,6 +163,25 @@ describe("the material edit contract", () => {
       missing,
       "materialDetailSchema is missing a column the PUT replaces — the edit " +
         "form cannot show it, so saving would write it null",
+    ).toEqual([]);
+  });
+
+  it("finds the fields the form submits", () => {
+    // The guard on the guard, again: an empty set would make the assertion
+    // below pass by comparing nothing.
+    const fields = submittedFields();
+    expect(fields.size).toBeGreaterThan(10);
+    expect(fields.has("name")).toBe(true);
+  });
+
+  it("submits every column the update replaces", () => {
+    const fields = submittedFields();
+    const missing = [...writtenColumns()].filter((column) => !fields.has(column));
+    expect(
+      missing,
+      "the form does not send a column the PUT replaces — the server defaults " +
+        "it to None and the save writes it null, which is the silent data loss " +
+        "this whole file exists to prevent",
     ).toEqual([]);
   });
 

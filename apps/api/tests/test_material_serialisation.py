@@ -31,7 +31,11 @@ from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 
-from app.domains.materials.service import _QUANTITY_KEYS, _with_percentages
+from app.domains.materials.service import (
+    _QUANTITY_KEYS,
+    _stringify_quantities,
+    _with_percentages,
+)
 
 
 def _row(**overrides: Any) -> dict[str, Any]:
@@ -120,3 +124,40 @@ def test_the_quantity_list_covers_every_numeric_the_row_can_carry() -> None:
         "the quantity list and this test disagree. If a NUMERIC column was "
         "added, add it to BOTH; if one was removed, remove it from both."
     )
+
+
+# ---------------------------------------------------------------------------
+# 🔴 THE HELPER WAS RIGHT AND A CALLER STILL SHIPPED FLOATS.
+#
+# Everything above tests `_with_percentages`, and `_with_percentages` has been
+# correct since the day it was fixed. `get_material` -- the detail endpoint the
+# material edit form loads from -- assembled its response by hand and called
+# neither helper. It returned raw `Decimal`s, FastAPI encoded them as floats,
+# and every material carrying a density, cost or fraction failed the client's
+# parse. Testing the helper cannot see that: the defect is a caller that does
+# not use it.
+#
+# ⚠️ THE FIRST VERSION OF THAT TEST COULD NOT FAIL, AND WAS DELETED.
+#
+# It scraped the service source and asserted `_with_percentages` appeared
+# somewhere in `get_material`. Reverting the fix left the helper's name in the
+# NEXT line -- the one handling the nested supplier rows -- so it went on
+# passing over the broken code. The same went for the `update_material` check,
+# which read the LAST `return` in the body and so read the wrong one.
+#
+# The replacements live in `tests/db/test_015_material_row_contract.py` and
+# CALL the functions against a real database, because what is being asserted
+# is what the function RETURNS, and only the function can answer that.
+# ---------------------------------------------------------------------------
+
+
+def test_the_quantity_stringifier_is_reachable_on_its_own() -> None:
+    """`_stringify_quantities` exists so a row can be fixed WITHOUT the
+    percentages -- a supplier row carries `quoted_price_per_kg` and no
+    fractions, and running the percentage half over it would attach
+    `solids_percent: null` to a supplier."""
+    supplier = {"supplier_code": "SUP-1", "quoted_price_per_kg": Decimal("12.3400")}
+    encoded = jsonable_encoder(_stringify_quantities(dict(supplier)))
+    assert encoded["quoted_price_per_kg"] == "12.3400"
+    assert not isinstance(encoded["quoted_price_per_kg"], float)
+    assert "solids_percent" not in encoded

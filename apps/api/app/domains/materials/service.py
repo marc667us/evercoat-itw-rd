@@ -518,7 +518,19 @@ def update_material(
             reason="material data edited",
         ),
     )
-    return dict(row)
+    # 🔴 NOT `dict(row)`. The RETURNING clause carries `prev_name`, `prev_role`,
+    # `prev_density` and `prev_cost` because the audit record needs the state
+    # this UPDATE replaced -- captured in the same statement so no other
+    # transaction can move the row in between. They are scaffolding for the
+    # audit write above, and returning them put four internal fields into the
+    # HTTP response, two of them raw `Decimal`s that FastAPI encodes as floats.
+    # The caller is told what it changed, not how the change was recorded.
+    return {
+        "id": row["id"],
+        "material_code": row["material_code"],
+        "name": row["name"],
+        "status": row["status"],
+    }
 
 
 def set_material_status(
@@ -765,8 +777,11 @@ def get_material(
         {"mid": material_id, "org": organization_id},
     ).mappings()
 
-    result = dict(row)
-    result["suppliers"] = [dict(s) for s in suppliers]
+    # Both halves, and the suppliers too: `quoted_price_per_kg` is a NUMERIC
+    # and is in `_QUANTITY_KEYS`, so a nested row goes out as a float unless it
+    # is stringified as well.
+    result = _with_percentages(dict(row))
+    result["suppliers"] = [_stringify_quantities(dict(s)) for s in suppliers]
     return result
 
 
@@ -1406,6 +1421,25 @@ def _with_percentages(row: dict[str, Any]) -> dict[str, Any]:
     # Nothing caught it because the end-to-end test STUBS this response
     # with the shape the client wants. A test that supplies its own
     # contract cannot detect a contract mismatch. Codex found it.
+    return _stringify_quantities(row)
+
+
+def _stringify_quantities(row: dict[str, Any]) -> dict[str, Any]:
+    """Every NUMERIC in the row, as a string.
+
+    Split out of :func:`_with_percentages` because a row can need this WITHOUT
+    needing the derived percentages: a `material_suppliers` row carries
+    `quoted_price_per_kg` and no fractions, and running the percentage half
+    over it would attach `solids_percent: null` to a supplier.
+
+    🔴 THE SPLIT IS ALSO THE FIX FOR A SECOND INSTANCE OF THE SAME DEFECT.
+    `get_material` -- the detail endpoint the edit form loads from -- built its
+    response by hand and called neither helper, so it returned raw `Decimal`s
+    and FastAPI encoded them as floats. Every material with a density, cost or
+    fraction failed the client's parse, and the scale was lost on the wire
+    exactly as `_with_percentages` documents. The list path had been fixed; the
+    detail path had never gone through it.
+    """
     for quantity_key in _QUANTITY_KEYS:
         if quantity_key in row:
             row[quantity_key] = _num(row[quantity_key])

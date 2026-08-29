@@ -348,7 +348,20 @@ export interface MaterialEditRequest {
   readonly epoxy_equivalent_weight?: string;
   readonly amine_hydrogen_equivalent_weight?: string;
   readonly hazard_summary?: string;
-  readonly requires_sds?: boolean;
+  /**
+   * 🔴 REQUIRED, UNLIKE EVERY OTHER FIELD HERE, BECAUSE OMITTING IT IS NOT
+   * "CLEAR IT" -- IT IS `true`.
+   *
+   * The server declares `requires_sds: bool = True`, so a caller that leaves
+   * it out silently turns the Safety Data Sheet requirement back ON for a
+   * material somebody deliberately exempted -- and the formula-submission gate
+   * reads this column, so that blocks submissions. Every other optional here
+   * defaults to `None`, which IS the clear the form intends; this one defaults
+   * to the opposite of an omission's meaning, so the type refuses to let a
+   * caller omit it. `MaterialCreateRequest` leaves it optional on purpose: at
+   * creation the server's `True` is the intended default rather than a flip.
+   */
+  readonly requires_sds: boolean;
   readonly notes?: string;
 }
 

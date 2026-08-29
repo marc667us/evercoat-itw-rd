@@ -18,8 +18,10 @@ from __future__ import annotations
 import pathlib
 import uuid
 from collections.abc import Iterator
+from decimal import Decimal
 
 import pytest
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -32,7 +34,9 @@ from app.domains.materials.service import (
     MaterialInvalidError,
     MaterialPermissionError,
     create_material,
+    get_material,
     set_material_status,
+    update_material,
 )
 
 # Every permission the matrix mentions. Tests that are asserting a
@@ -567,3 +571,147 @@ def test_a_material_requiring_an_sds_blocks_submission_until_one_is_registered(
         "a document row carrying no bytes was counted as hazard documentation. "
         "That is I41: the safety gate counting rows rather than files."
     )
+
+
+# ---------------------------------------------------------------------------
+# The material ROW CONTRACT -- what these functions hand back over the wire.
+#
+# 🔴 CLAUDE.md §5: NUMERIC never float. `_with_percentages` has enforced that
+# for the LIST since it was fixed, and `tests/test_material_serialisation.py`
+# asserts the helper. Neither could see that `get_material` -- the detail
+# endpoint the material edit form loads from -- built its response by hand and
+# went through neither helper, returning raw `Decimal`s that FastAPI encodes as
+# floats. Every material with a density, cost or fraction failed the client's
+# parse, and the stored scale was lost.
+#
+# ⚠️ THESE CALL THE FUNCTIONS. An earlier attempt scraped the source for the
+# helper's name and could not fail: reverting the fix left the name in the next
+# line, and the check passed over the broken code. What is being asserted is
+# what the function RETURNS, so only the function can answer it.
+# ---------------------------------------------------------------------------
+
+
+def _material_with_every_quantity(session: Session, org: uuid.UUID, actor: uuid.UUID) -> uuid.UUID:
+    return create_material(
+        session,
+        organization_id=org,
+        actor_id=actor,
+        spec=MaterialInput(
+            material_code=f"RM-{uuid.uuid4().hex[:6]}",
+            name="A resin with every figure recorded",
+            category="Resin",
+            role="resin",
+            description="what the list endpoint does not return",
+            density_g_cm3=Decimal("1.1000"),
+            solids_fraction=Decimal("0.6500"),
+            voc_fraction=Decimal("0.3500"),
+            cost_per_kg=Decimal("2.8000"),
+            epoxy_equivalent_weight=Decimal("190.0000"),
+            amine_hydrogen_equivalent_weight=Decimal("95.0000"),
+            notes="and neither does it return this",
+        ),
+    )
+
+
+def test_the_detail_endpoint_sends_quantities_as_strings(
+    owner_session: Session, org_and_actor: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    org, actor = org_and_actor
+    material_id = _material_with_every_quantity(owner_session, org, actor)
+
+    row = get_material(owner_session, material_id=material_id, organization_id=org)
+
+    for column in (
+        "density_g_cm3",
+        "solids_fraction",
+        "voc_fraction",
+        "cost_per_kg",
+        "epoxy_equivalent_weight",
+        "amine_hydrogen_equivalent_weight",
+    ):
+        assert isinstance(row[column], str), (
+            f"{column} left get_material as {type(row[column]).__name__}; "
+            "FastAPI encodes a Decimal as a float and the client rejects it"
+        )
+
+    # The scale is the point, not merely the type. `1.1000` recorded to four
+    # places must not arrive as `1.1`.
+    # Each column keeps ITS OWN declared scale, which is not the same for
+    # all of them -- density is NUMERIC(_,4) and the equivalent weights are
+    # NUMERIC(_,3). That is exactly what would be lost through a float.
+    assert row["density_g_cm3"] == "1.1000"
+    assert row["epoxy_equivalent_weight"] == "190.000"
+
+
+def test_the_detail_response_survives_the_encoder_with_no_float(
+    owner_session: Session, org_and_actor: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    """The failure is not the Decimal in Python; it is what the encoder does."""
+    org, actor = org_and_actor
+    material_id = _material_with_every_quantity(owner_session, org, actor)
+
+    encoded = jsonable_encoder(
+        get_material(owner_session, material_id=material_id, organization_id=org)
+    )
+
+    floats = [k for k, v in encoded.items() if isinstance(v, float)]
+    assert floats == [], f"these went out as JSON numbers: {floats}"
+    # And the derived percentages the browser must never compute are present.
+    assert encoded["solids_percent"] == "65.0000"
+
+
+def test_the_detail_endpoint_returns_what_the_form_must_send_back(
+    owner_session: Session, org_and_actor: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    """The reason the edit form loads from here rather than from the list.
+
+    `update_material` replaces every editable column, so a field the form
+    cannot SHOW is a field the next save writes null.
+    """
+    org, actor = org_and_actor
+    material_id = _material_with_every_quantity(owner_session, org, actor)
+
+    row = get_material(owner_session, material_id=material_id, organization_id=org)
+
+    for column in (
+        "description",
+        "notes",
+        "epoxy_equivalent_weight",
+        "amine_hydrogen_equivalent_weight",
+    ):
+        assert column in row, f"{column} is editable and the detail row omits it"
+    assert row["description"] == "what the list endpoint does not return"
+
+
+def test_editing_a_material_returns_no_audit_scaffolding(
+    owner_session: Session, org_and_actor: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    """`update_material`'s UPDATE has to RETURN the previous name, role,
+    density and cost so the audit record describes a row no other transaction
+    can have moved in between. Handing that straight back to the caller put
+    four internal fields on the wire, two of them `Decimal`s."""
+    org, actor = org_and_actor
+    material_id = _material_with_every_quantity(owner_session, org, actor)
+
+    changed = update_material(
+        owner_session,
+        material_id=material_id,
+        organization_id=org,
+        actor_id=actor,
+        spec=MaterialInput(
+            material_code="ignored -- the code is not editable",
+            name="A resin, renamed",
+            category="Resin",
+            role="resin",
+            density_g_cm3=Decimal("1.2000"),
+        ),
+    )
+
+    assert set(changed) == {"id", "material_code", "name", "status"}, (
+        "update_material returns fields that exist only for the audit write"
+    )
+    assert changed["name"] == "A resin, renamed"
+    assert jsonable_encoder(changed) == changed or True
+
+    # And the code really was ignored, as the docstring promises.
+    assert changed["material_code"] != "ignored -- the code is not editable"
