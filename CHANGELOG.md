@@ -1,5 +1,30 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-29 — I112: the routes finally have tests, and each one was falsified
+
+**`b06a4d7`.** apps/api **889 → 902 passed / 0 failed / 11 skipped**.
+
+`test_056` has 23 cases and every one is a DATABASE case. That is precisely why
+three real defects were green: a 500 where a 409 was intended, an evidence
+source the database refused every time, and raw PostgreSQL text — schema, table,
+constraint expression — returned as a response body. **All three are route- or
+service-level behaviours and invisible from SQL by construction.**
+
+13 new cases drive the real app through FastAPI's dependency graph with real
+tokens. Each of the three fixes was **reverted in the source to prove the test
+detects it**, then restored — the `verify_evidence` revert reproduced the
+original 500 with its `CheckViolation` traceback exactly.
+
+🔴 **THE PERMISSION GUARD IS STRUCTURAL, NOT A LIST OF ROUTES.** It parses every
+`@router.post` with its own handler and fails when a write route's permissions
+all end in `.view`. A write route added next month is covered without anybody
+remembering the file exists — which matters, because the defect it encodes was
+found by a reviewer reading a diff, and reviewers do not read every diff.
+
+The fixture commits, because the route runs on its own connection, and therefore
+tears down explicitly. Measured: `RT-` orgs 26 before and 26 after, competitor
+products 0 before and 0 after.
+
 ## 2026-08-28 (late) — Phase 3 finished: the tables that had no control, and the key that had no product
 
 **`c98420a` + the review fixes.** Migration **057 / `p1000`**, both trees.
