@@ -1,5 +1,63 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-29 — Phase 4: research becomes an experiment
+
+**`e0b2394` + `ef160b3`.** Migration **058 / q1000**, both trees. apps/api
+**902 → 939 passed / 0 failed / 11 skipped**. apps/web **218**.
+
+The `research` schema's **eight tables**, their six permissions, the finding
+approval route, and the ONE point where research joins the formula world: an
+accepted experiment proposal records the version `formulations.revise_version`
+returned. Nothing in the module inserts a formula version and there is no
+second path that does.
+
+**§19's loop is now pressable end to end** — question → investigation →
+evidence → finding → hypothesis → proposal → chemist review → formula
+candidate. `/material-safety/research` carries a control for every one of the
+15 write routes, and `knowledge.promote` — seeded since migration 002 and read
+by nothing for the product's whole history — has its **first enforcement
+point**. 29 orphaned permissions → 28.
+
+### Three defects found in the design by measuring, before review
+
+1. **`findings.status` was going to carry `approved`/`rejected` that nothing
+   would ever write.** The approval engine settles a route and has no entity
+   callback — measured in `_settle_route`. That is the defect Codex found on
+   `safety_reviews` in Phase 2. The approval IS the route now, and because it
+   lives in another table the promotion guard **could not be a CHECK**: it is a
+   SECURITY INVOKER trigger that reads the route.
+2. **`knowledge.documents_source_check` did not accept `research_finding`** —
+   every promotion would have been refused at runtime, and no test written
+   against the service would have caught it, because the service is correct.
+3. **`formula_version_drivers_unique` is NULLS DISTINCT** — adding
+   `experiment_proposal_id` without adding it to the key would have let one
+   proposal drive the same version any number of times.
+
+### And 17 more from the two reviewers, only ONE of them overlapping
+
+**Codex 6 (2 P1), Supervisor 11 (2 HIGH)** — the 23rd consecutive session in
+which neither alone was enough. The blockers: proposal acceptance was raceable
+and cloned a version per caller; acceptance did not bind the version to the
+proposal's project; `owner_user_id` was written from the request body with no
+tenant check; and the promotion trigger was **BEFORE UPDATE only** while its
+own comment claimed it held against direct SQL — `evercoat_app` holds
+table-level INSERT, so one INSERT walked past it.
+
+🔴 **`lpad` TRUNCATES ON THE RIGHT.** `lpad('1000', 3, '0')` is `'100'`. The
+1000th proposal in an organization-year would have collided with the 100th and
+every retry would recompute the same value — codes permanently un-allocatable,
+nothing about the code looking wrong.
+
+🔴 **Two comments asserted rules that do not exist.** The ordinary revision
+route requires only `formula.clone`, not two permissions — and measuring that
+exposed a lead holding `experiment.accept` who could never have used it. The
+grant was withdrawn rather than the gate weakened: *the holder set of an act
+must be a subset of the holder set of what the act does.*
+
+Falsified by breaking the DATABASE and restoring: FORCE RLS, the promotion
+trigger, and the trigger's INSERT arm. Falsified by breaking the CODE: the
+structural permission guard.
+
 ## 2026-08-29 — I112: the routes finally have tests, and each one was falsified
 
 **`b06a4d7`.** apps/api **889 → 902 passed / 0 failed / 11 skipped**.

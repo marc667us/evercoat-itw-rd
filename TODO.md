@@ -1,5 +1,53 @@
 # TODO — EvercoatITWRD APP
 
+**Updated 2026-08-29. Read `RESUME_HERE.md` first.**
+
+✅ **PHASE 4 CLOSED — the research vertical (`e0b2394` + `ef160b3`, migration
+058 / q1000).** Eight `research` tables, six permissions, 26 routes,
+`/material-safety/research`, and §19's loop pressable end to end.
+`knowledge.promote` has its **first enforcement point** since migration 002 —
+**29 orphaned permissions → 28**. apps/api **939 / 0 / 11**.
+
+🔴 **17 REVIEW FINDINGS, ONE OVERLAP.** Codex 6 (2 P1), Supervisor 11 (2 HIGH).
+Blockers: a raceable acceptance that cloned a version per caller; an acceptance
+that could revise another project's formula; `owner_user_id` written from the
+request body with no tenant check; a promotion trigger enforced on UPDATE only
+while claiming to hold against direct SQL. Plus `lpad` truncating on the right
+(codes would have stuck permanently at 1000 per organization-year) and two
+comments asserting rules that do not exist — one of which made a GRANT wrong:
+`product_development_lead` held `experiment.accept` and could never have used
+it, because `formula.clone` is the chemist's alone.
+
+### ⚠️ WHAT PHASE 4 LEFT OPEN, DELIBERATELY
+
+- **The successful submit has no HTTP test.** `approval_route_steps` is
+  append-only (`audit.deny_mutation`, unconditional), so a committing HTTP test
+  would leak an organization, a project and a route on every run — permanently.
+  The success path is asserted where it can be rolled back, and
+  `test_submitting_is_covered_here_only_by_its_refusal_and_this_says_why`
+  fails if that cover is ever renamed away.
+- **Three `research` tables carry an I69 classification DEFERRAL**, each with
+  its mechanism written down: for `evidence` and `experiment_proposals` the
+  load-bearing thing is the LEFT JOIN's RLS, so an "optimization" that resolves
+  a version code as the owner would turn it into a disclosure and nothing
+  would fail.
+- **No Research Center agent tools** (§17 needs the root orchestrator), no
+  automatic extraction, no patent/literature gateways. §10's non-goals, unchanged.
+
+### ▶ NEXT SESSION, in order
+
+| # | Task | Why now |
+|---|---|---|
+| 1 | **Phase 5 — the cross-cutting phase.** §22 events, §25 contextual entry points, §27 dashboard widgets, §29 global search, §38/§39 the golden scenario. | Phases 1–4 are done and Phase 5 is what makes them findable. The Research Center is currently reachable only from its own sidebar entry. |
+| 2 | 🔴 **I12 — messaging: 0 of 5 endpoints pressable**, no notifications screen. | The last MVP-1 slice with unbuilt browser surface. |
+| 3 | **I110** (SECURITY.md §13 states a CSP that does not exist) · **I111** (`next build` rewrites `tsconfig.json`). | Both are decisions, not cleanups. |
+| 4 | 🔴 **I56 / I58 — FORCE RLS cutover**, carrying the owed measurement on `core.authorization_for_current_session()`. | The four newest schemas are FORCE from birth; the old ones are not. |
+| 5 | **I76 / I77** (`MAX_DISTANCE = 0.74` must be re-derived) · **I78** · **I101**. | |
+| 6 | **D1 — deploy API + Keycloak on/after 2026-09-01.** 🔴 Do NOT delete `autoworkshop-postgres` early. | Needs `AUTH_DATABASE_URL` and its `ALTER ROLE`. |
+
+---
+
+
 **Updated 2026-08-27 (late session). Read `RESUME_HERE.md` first.**
 
 ✅ **Closed 2026-08-27 (late): the 19 review findings on `b84a300`/`ad55d99`, and the 11 the repair itself produced.** 🔴 **The worst was mine and it made the live e2e suite run NOTHING while the task reported exit 0** — a duplicate test title in `accessibility.spec.ts` makes Playwright refuse the entire run, and the shell chain that invoked it ended in `tail`, so the reported exit code was `tail`'s. Also mine: a blank `display_name` returned a null profile, which removed `UserMenu`, **which is the only route in the shell to Sign out**; and the Paper theme's alert grounds measured **1.004:1** against its own page, so every notice fill vanished. The theme now covers all 34 colour tokens the source paints with (was 12), `tailwind.config.ts` imports the palette rather than copying it, a pre-paint script kills the light flash, `/api/me` puts `email`/`display_name` back on the MEMBERSHIP where migration 052 had put them, and the accessibility sweep covers 10 pages it had never seen. **Codex 1 finding, Supervisor 10, none overlapping — the 21st consecutive session in which neither alone was enough.**

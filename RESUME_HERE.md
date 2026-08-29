@@ -1,5 +1,54 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ SESSION 2026-08-29 — PHASE 4, AND 17 REVIEW FINDINGS ON IT
+
+Tip **`ef160b3`** on **`master`**. Migration **058 / `q1000`**, both trees.
+
+- apps/api **939 / 0 / 11** · apps/web **218** vitest
+- ruff, ruff format, mypy, `tsc`, ESLint all clean
+
+**Phase 4 shipped the research vertical**: eight `research` tables, six
+permissions, 26 routes, `/material-safety/research`, and the single join to the
+formula world — an accepted experiment proposal records the version
+`formulations.revise_version` returned. `knowledge.promote` finally has an
+enforcement point (29 orphaned permissions → 28).
+
+### 🔴 WHAT THE REVIEWERS FOUND, AND WHY BOTH WERE NEEDED
+
+**Codex 6 findings (2 P1). Supervisor 11 (2 HIGH). ONE overlapped.** All 17
+upheld after measurement. The four that mattered most:
+
+1. **Acceptance was raceable** — no row lock, no rowcount check, so two callers
+   each cloned a formula version and the loser still returned success.
+2. **Acceptance did not bind the version to the proposal's project** — project A
+   could revise project B's formula and the thread would record A as the driver.
+3. **`owner_user_id` came off the request body with no tenant check.** The tell
+   was already in the route: it caught `CrossTenantReferenceError` and nothing
+   in the call path could raise it.
+4. **The promotion trigger was BEFORE UPDATE only** while its own comment
+   claimed it held against direct SQL. `evercoat_app` has table-level INSERT.
+
+🔴 **`lpad` TRUNCATES ON THE RIGHT** — `lpad('1000', 3, '0')` is `'100'`.
+Three code allocators would have become permanently stuck at 1000 codes per
+organization-year, with nothing looking wrong.
+
+🔴 **A COMMENT CAN MAKE A GRANT WRONG.** The accept route's docstring said the
+ordinary revision endpoint needs two permissions; it needs one. Measuring it
+found `product_development_lead` holding `experiment.accept` and NOT
+`formula.clone` — so a lead could never have accepted anything. The grant was
+withdrawn, not the gate weakened.
+
+### ⚠️ THINGS THIS PHASE LEARNED ABOUT THE APPROVAL ENGINE
+
+- **Approval history cannot be deleted.** `workflow.approval_route_steps` carries
+  `audit.deny_mutation` on DELETE, unconditionally. So a committing HTTP test
+  that opens a route leaks an organization for ever, and 058's DOWNGRADE cannot
+  remove routes either — it retires the template instead, and the provisioning
+  function had to REACTIVATE rather than skip or a second upgrade left tenants
+  with an inactive template.
+- **A finding's approval is the ROUTE, never a column.** There is no approve
+  button on `/material-safety/research`, deliberately.
+
 ## ▶▶ SESSION 2026-08-28 (LATE) — PHASE 3 FINISHED, AND THE FIX MADE A HOLE REACHABLE
 
 Tip **`4effbe6`** on branch **`slice7-material-safety-data`** (3 commits ahead of
