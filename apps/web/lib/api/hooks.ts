@@ -230,6 +230,48 @@ import {
   type SampleRequest as CompetitorSampleRequest,
 } from "./competitors";
 import {
+  acceptProposal,
+  closeInvestigation,
+  decideHypothesis as decideResearchHypothesis,
+  fetchEvidenceCards,
+  fetchFindings,
+  fetchHypotheses,
+  fetchInvestigations,
+  fetchKnowledgeGaps,
+  fetchProposals,
+  fetchResearchQuestions,
+  fetchResearchSources,
+  openInvestigation as openResearchWorkspace,
+  promoteFinding,
+  proposeExperiment,
+  recordEvidenceCard,
+  recordFinding,
+  recordHypothesis as recordResearchHypothesis,
+  recordKnowledgeGap,
+  recordResearchQuestion,
+  recordResearchSource,
+  rejectProposal,
+  resolveKnowledgeGap,
+  settleResearchQuestion,
+  submitFinding,
+  type AcceptProposalRequest,
+  type EvidenceCard,
+  type EvidenceRequest as ResearchEvidenceRequest,
+  type ExperimentProposal,
+  type Finding as ResearchFinding,
+  type Hypothesis,
+  type HypothesisRequest as ResearchHypothesisRequest,
+  type FindingRequest,
+  type GapRequest,
+  type Investigation as ResearchInvestigation,
+  type InvestigationRequest,
+  type KnowledgeGap,
+  type ProposalRequest,
+  type ResearchQuestion,
+  type ResearchSource,
+  type SourceRequest as ResearchSourceRequest,
+} from "./research";
+import {
   dashboardForRoles,
   fetchRoleDashboard,
   type DashboardRole,
@@ -2740,6 +2782,333 @@ export function useCompetitorWrites(): {
       mutation.mutate({ kind: "sample", productId, request, after }),
     recordBenchmark: (productId, request, after) =>
       mutation.mutate({ kind: "benchmark", productId, request, after }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+    unavailable: resolved.ok ? null : resolved.failed ? null : resolved.reason,
+  };
+}
+
+
+/* -------------------------------------------------------------------------
+ * The Research Center
+ *
+ * 🔴 ONE WRITE HOOK FOR THE WHOLE VERTICAL, so a screen has ONE `isPending`
+ * and ONE error. Splitting it would let a panel show "saved" while a sibling
+ * write was still in flight — the reason `useCompetitorWrites` is shaped this
+ * way, and the same reason applies here where a single workspace page carries
+ * six forms.
+ * ---------------------------------------------------------------------- */
+
+/** Research workspaces this caller can reach. */
+export function useInvestigations<TShown = ResearchInvestigation[]>(
+  project: (live: ResearchInvestigation[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("research-investigations", project, fetchInvestigations);
+}
+
+/** The findings register — every finding, with its ROUTE's approval status. */
+export function useResearchFindings<TShown = ResearchFinding[]>(
+  project: (live: ResearchFinding[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("research-findings", project, fetchFindings);
+}
+
+/** Experiment proposals, including the formula version an accepted one made. */
+export function useExperimentProposals<TShown = ExperimentProposal[]>(
+  project: (live: ExperimentProposal[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("research-proposals", project, fetchProposals);
+}
+
+export function useResearchQuestions(investigationId: string): LiveOnly<ResearchQuestion[]> {
+  return useLiveOnlyRecord("research-questions", investigationId, (credentials, signal) =>
+    fetchResearchQuestions(credentials, investigationId, signal),
+  );
+}
+
+export function useResearchSources(investigationId: string): LiveOnly<ResearchSource[]> {
+  return useLiveOnlyRecord("research-sources", investigationId, (credentials, signal) =>
+    fetchResearchSources(credentials, investigationId, signal),
+  );
+}
+
+export function useEvidenceCards(investigationId: string): LiveOnly<EvidenceCard[]> {
+  return useLiveOnlyRecord("research-evidence", investigationId, (credentials, signal) =>
+    fetchEvidenceCards(credentials, investigationId, signal),
+  );
+}
+
+export function useResearchHypotheses(investigationId: string): LiveOnly<Hypothesis[]> {
+  return useLiveOnlyRecord("research-hypotheses", investigationId, (credentials, signal) =>
+    fetchHypotheses(credentials, investigationId, signal),
+  );
+}
+
+export function useResearchGaps(investigationId: string): LiveOnly<KnowledgeGap[]> {
+  return useLiveOnlyRecord("research-gaps", investigationId, (credentials, signal) =>
+    fetchKnowledgeGaps(credentials, investigationId, signal),
+  );
+}
+
+/** Every write in the Research Center. */
+export function useResearchWrites(): {
+  readonly open: (request: InvestigationRequest, after?: () => void) => void;
+  readonly close: (investigationId: string) => void;
+  readonly askQuestion: (
+    investigationId: string,
+    question: string,
+    after?: () => void,
+  ) => void;
+  readonly settleQuestion: (questionId: string, status: string) => void;
+  readonly addSource: (
+    investigationId: string,
+    request: ResearchSourceRequest,
+    after?: () => void,
+  ) => void;
+  readonly addEvidence: (
+    investigationId: string,
+    request: ResearchEvidenceRequest,
+    after?: () => void,
+  ) => void;
+  readonly addHypothesis: (
+    investigationId: string,
+    request: ResearchHypothesisRequest,
+    after?: () => void,
+  ) => void;
+  readonly decideHypothesis: (hypothesisId: string, status: string) => void;
+  readonly addGap: (investigationId: string, request: GapRequest, after?: () => void) => void;
+  readonly resolveGap: (gapId: string) => void;
+  readonly draftFinding: (
+    investigationId: string,
+    request: FindingRequest,
+    after?: () => void,
+  ) => void;
+  readonly submit: (findingId: string) => void;
+  readonly promote: (findingId: string) => void;
+  readonly propose: (
+    investigationId: string,
+    request: ProposalRequest,
+    after?: () => void,
+  ) => void;
+  readonly accept: (
+    proposalId: string,
+    request: AcceptProposalRequest,
+    after?: () => void,
+  ) => void;
+  readonly reject: (proposalId: string, decisionNote: string, after?: () => void) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured ? new ApiNoSessionError(resolved.reason) : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | {
+            readonly kind: "open";
+            readonly request: InvestigationRequest;
+            readonly after?: () => void;
+          }
+        | { readonly kind: "close"; readonly investigationId: string }
+        | {
+            readonly kind: "question";
+            readonly investigationId: string;
+            readonly question: string;
+            readonly after?: () => void;
+          }
+        | { readonly kind: "settle"; readonly questionId: string; readonly status: string }
+        | {
+            readonly kind: "source";
+            readonly investigationId: string;
+            readonly request: ResearchSourceRequest;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "evidence";
+            readonly investigationId: string;
+            readonly request: ResearchEvidenceRequest;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "hypothesis";
+            readonly investigationId: string;
+            readonly request: ResearchHypothesisRequest;
+            readonly after?: () => void;
+          }
+        | { readonly kind: "decide-hypothesis"; readonly hypothesisId: string; readonly status: string }
+        | {
+            readonly kind: "gap";
+            readonly investigationId: string;
+            readonly request: GapRequest;
+            readonly after?: () => void;
+          }
+        | { readonly kind: "resolve-gap"; readonly gapId: string }
+        | {
+            readonly kind: "finding";
+            readonly investigationId: string;
+            readonly request: FindingRequest;
+            readonly after?: () => void;
+          }
+        | { readonly kind: "submit"; readonly findingId: string }
+        | { readonly kind: "promote"; readonly findingId: string }
+        | {
+            readonly kind: "propose";
+            readonly investigationId: string;
+            readonly request: ProposalRequest;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "accept";
+            readonly proposalId: string;
+            readonly request: AcceptProposalRequest;
+            readonly after?: () => void;
+          }
+        | {
+            readonly kind: "reject";
+            readonly proposalId: string;
+            readonly decisionNote: string;
+            readonly after?: () => void;
+          },
+    ) => {
+      if (job.kind === "open") {
+        const opened = await openResearchWorkspace(credentials(), job.request);
+        return `${opened.investigation_code} opened`;
+      }
+      if (job.kind === "close") {
+        await closeInvestigation(credentials(), job.investigationId);
+        return "workspace closed";
+      }
+      if (job.kind === "question") {
+        await recordResearchQuestion(credentials(), job.investigationId, job.question);
+        return "question added";
+      }
+      if (job.kind === "settle") {
+        const settled = await settleResearchQuestion(
+          credentials(),
+          job.questionId,
+          job.status,
+        );
+        return `question ${settled.status}`;
+      }
+      if (job.kind === "source") {
+        await recordResearchSource(credentials(), job.investigationId, job.request);
+        return "source recorded";
+      }
+      if (job.kind === "evidence") {
+        await recordEvidenceCard(credentials(), job.investigationId, job.request);
+        return "evidence recorded";
+      }
+      if (job.kind === "hypothesis") {
+        await recordResearchHypothesis(credentials(), job.investigationId, job.request);
+        return "hypothesis recorded";
+      }
+      if (job.kind === "decide-hypothesis") {
+        const decided = await decideResearchHypothesis(credentials(), job.hypothesisId, job.status);
+        return `hypothesis ${decided.status}`;
+      }
+      if (job.kind === "gap") {
+        await recordKnowledgeGap(credentials(), job.investigationId, job.request);
+        return "knowledge gap recorded";
+      }
+      if (job.kind === "resolve-gap") {
+        await resolveKnowledgeGap(credentials(), job.gapId);
+        return "gap closed";
+      }
+      if (job.kind === "finding") {
+        const drafted = await recordFinding(credentials(), job.investigationId, job.request);
+        return `${drafted.finding_code} drafted`;
+      }
+      if (job.kind === "submit") {
+        await submitFinding(credentials(), job.findingId);
+        return "submitted for approval";
+      }
+      if (job.kind === "promote") {
+        await promoteFinding(credentials(), job.findingId);
+        return "promoted to the Knowledge Library";
+      }
+      if (job.kind === "propose") {
+        const proposed = await proposeExperiment(
+          credentials(),
+          job.investigationId,
+          job.request,
+        );
+        return `${proposed.proposal_code} proposed`;
+      }
+      if (job.kind === "accept") {
+        const accepted = await acceptProposal(credentials(), job.proposalId, job.request);
+        // 🔴 THE VERSION CODE IS THE POINT OF THE MESSAGE. "accepted" alone
+        // would leave the chemist hunting for what it produced; §19's loop only
+        // closes if the person can follow it to the formula.
+        return `accepted — ${accepted.version_code} created`;
+      }
+      await rejectProposal(credentials(), job.proposalId, job.decisionNote);
+      return "proposal rejected";
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["research-investigations"] });
+      void queryClient.invalidateQueries({ queryKey: ["research-questions"] });
+      void queryClient.invalidateQueries({ queryKey: ["research-sources"] });
+      void queryClient.invalidateQueries({ queryKey: ["research-evidence"] });
+      void queryClient.invalidateQueries({ queryKey: ["research-hypotheses"] });
+      void queryClient.invalidateQueries({ queryKey: ["research-gaps"] });
+      void queryClient.invalidateQueries({ queryKey: ["research-findings"] });
+      void queryClient.invalidateQueries({ queryKey: ["research-proposals"] });
+      // Accepting a proposal creates a formula version and submitting a finding
+      // opens an approval route, so both change screens this module does not
+      // own. Not invalidating them would leave `/formulations` and `/approvals`
+      // showing a stale answer to a question this action just changed.
+      if (job.kind === "accept") {
+        void queryClient.invalidateQueries({ queryKey: ["formulations-formulas"] });
+      }
+      if (job.kind === "submit") {
+        void queryClient.invalidateQueries({ queryKey: ["approval-queue"] });
+      }
+      if (job.kind === "promote") {
+        void queryClient.invalidateQueries({ queryKey: ["knowledge-documents"] });
+      }
+      if ("after" in job) job.after?.();
+    },
+  });
+
+  return {
+    open: (request, after) => mutation.mutate({ kind: "open", request, after }),
+    close: (investigationId) => mutation.mutate({ kind: "close", investigationId }),
+    askQuestion: (investigationId, question, after) =>
+      mutation.mutate({ kind: "question", investigationId, question, after }),
+    settleQuestion: (questionId, status) =>
+      mutation.mutate({ kind: "settle", questionId, status }),
+    addSource: (investigationId, request, after) =>
+      mutation.mutate({ kind: "source", investigationId, request, after }),
+    addEvidence: (investigationId, request, after) =>
+      mutation.mutate({ kind: "evidence", investigationId, request, after }),
+    addHypothesis: (investigationId, request, after) =>
+      mutation.mutate({ kind: "hypothesis", investigationId, request, after }),
+    decideHypothesis: (hypothesisId, status) =>
+      mutation.mutate({ kind: "decide-hypothesis", hypothesisId, status }),
+    addGap: (investigationId, request, after) =>
+      mutation.mutate({ kind: "gap", investigationId, request, after }),
+    resolveGap: (gapId) => mutation.mutate({ kind: "resolve-gap", gapId }),
+    draftFinding: (investigationId, request, after) =>
+      mutation.mutate({ kind: "finding", investigationId, request, after }),
+    submit: (findingId) => mutation.mutate({ kind: "submit", findingId }),
+    promote: (findingId) => mutation.mutate({ kind: "promote", findingId }),
+    propose: (investigationId, request, after) =>
+      mutation.mutate({ kind: "propose", investigationId, request, after }),
+    accept: (proposalId, request, after) =>
+      mutation.mutate({ kind: "accept", proposalId, request, after }),
+    reject: (proposalId, decisionNote, after) =>
+      mutation.mutate({ kind: "reject", proposalId, decisionNote, after }),
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
     lastAction: mutation.data ?? null,

@@ -48,6 +48,7 @@ EXPECTED_TEMPLATES = {
     # assertion is the one that would have stayed green while every future
     # tenant got a Safety Review control that raised "no active template".
     "SAFETY_REVIEW",
+    "RESEARCH_FINDING",
 }
 
 # Every value `testing.tests.authority_level` permits. A level with no active

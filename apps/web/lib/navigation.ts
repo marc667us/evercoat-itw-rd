@@ -129,6 +129,21 @@ export const NAVIGATION: readonly NavGroup[] = [
         permission: "material.view",
         slice: 7,
       },
+      // The Research Center sits beside Competitor Intelligence under the
+      // Centre they both belong to.
+      //
+      // 🔴 GATED ON `research.view`, WHICH IS NEW IN MIGRATION 058 AND
+      // GRANTED IN THE SAME MIGRATION to chemist, engineer, lead, director and
+      // QA. Minting a permission nobody holds is the defect this project has
+      // caught five times; the grants and this link ship together, and the
+      // migration asserts every one of the six has a holder before it commits.
+      {
+        id: "research",
+        label: "Research Center",
+        href: "/material-safety/research",
+        permission: "research.view",
+        slice: 7,
+      },
       { id: "knowledge", label: "Knowledge Library", href: "/knowledge", permission: "knowledge.view", slice: 8 },
     ],
   },
@@ -334,6 +349,7 @@ export const BUILT_AHEAD: ReadonlySet<string> = new Set([
   // the build for putting a live link in front of a 404.
   "material-safety",
   "competitors",
+  "research",
 ]);
 
 export function isAvailable(item: NavItem): boolean {

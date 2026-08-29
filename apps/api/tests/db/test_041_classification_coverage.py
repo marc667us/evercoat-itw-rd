@@ -70,6 +70,39 @@ DEFERRED: dict[str, str] = {
         "rather than decided: the label needs the same inheritance question "
         "041 asks of the rest of the subtree."
     ),
+    "research.investigations": (
+        "I69 -- a workspace may name a formula version, a material, a test or a "
+        "failure as its subject, which says that version X is being "
+        "investigated. It holds no recipe text, and no reader returns the "
+        "thread columns: `list_investigations` selects the code, title, "
+        "question, status, project and counts, and none of the four ids. "
+        "\U0001f534 IT IS NOT THE SAME CASE AS `benchmarks` AND `safety_alerts`, "
+        "AND THE DIFFERENCE IS WRITTEN DOWN RATHER THAN GLOSSED: both of those "
+        "carry a NOT NULL project_id, so the project predicate always applies. "
+        "This one's project_id is NULLABLE by design (organization-wide "
+        "research), so an org-wide workspace CAN name a restricted project's "
+        "formula version and every colleague in the tenant can see the "
+        "workspace. What they cannot see is which version, because the id is "
+        "not returned. Deferred on that basis -- and if a reader is ever added "
+        "that returns `formula_version_id`, this entry is the reason it must "
+        "be reconsidered first."
+    ),
+    "research.evidence": (
+        "I69 -- an evidence card may cite a formula version, and "
+        "`list_evidence` DOES return `version_code`. \U0001f534 THE MECHANISM "
+        "THAT MAKES THAT SAFE IS THE LEFT JOIN'S RLS, NOT THE QUERY'S SHAPE: "
+        "the join to `formulations.formula_versions` runs as the caller, so a "
+        "non-member gets NULL for the code rather than the code. Stated here "
+        "because a later 'optimization' that reads the version as the owner, "
+        "or a definer function that pre-resolves it, would silently turn this "
+        "into a disclosure and nothing would fail."
+    ),
+    "research.experiment_proposals": (
+        "I69 -- an accepted proposal names the formula version it produced, "
+        "and `list_proposals` returns `resulting_version_code` through the "
+        "same RLS-bound LEFT JOIN as `research.evidence`. Same decision, same "
+        "load-bearing mechanism, same warning."
+    ),
     "safety.safety_alerts": (
         "I69 -- an alert names a formula version affected by a material's "
         "SDS revision, which is composition information: it says that "

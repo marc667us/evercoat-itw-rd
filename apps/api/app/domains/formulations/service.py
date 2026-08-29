@@ -181,6 +181,9 @@ class RevisionInput:
     # refusal explains itself instead of arriving as a constraint violation.
     driver_failure_id: uuid.UUID | None = None
     driver_requirement_id: uuid.UUID | None = None
+    # Migration 058's eighth driver kind. Required when `driver_type` is
+    # 'research', by the same CHECK that requires the other two.
+    driver_experiment_proposal_id: uuid.UUID | None = None
     expected_effect: str | None = None
     version_code: str | None = None
 
@@ -1287,9 +1290,9 @@ def revise_version(
     if not spec.driver_type:
         raise FormulationError(
             "a revision must say what drove it — one of: failure, requirement, "
-            "optimization, cost, regulatory, customer_request, other. §2 requires a "
-            "revision to show which failure or objective caused it, and a change "
-            "reason explains without linking."
+            "research, optimization, cost, regulatory, customer_request, other. §2 "
+            "requires a revision to show which failure or objective caused it, and a "
+            "change reason explains without linking."
         )
     if spec.driver_type == "failure" and spec.driver_failure_id is None:
         raise FormulationError(
@@ -1299,6 +1302,11 @@ def revise_version(
     if spec.driver_type == "requirement" and spec.driver_requirement_id is None:
         raise FormulationError(
             "a revision driven by a requirement must name the requirement it chases"
+        )
+    if spec.driver_type == "research" and spec.driver_experiment_proposal_id is None:
+        raise FormulationError(
+            "a revision driven by research must name the experiment proposal it came "
+            "from; otherwise the version cannot be traced back to the investigation"
         )
 
     parent = _load_version(session, version_id=version_id, organization_id=organization_id)
@@ -1423,6 +1431,7 @@ def revise_version(
             reason=spec.change_reason,
             failure_id=spec.driver_failure_id,
             requirement_id=spec.driver_requirement_id,
+            experiment_proposal_id=spec.driver_experiment_proposal_id,
         ),
     )
 

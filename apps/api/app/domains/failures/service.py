@@ -124,6 +124,11 @@ class DriverInput:
     reason: str
     failure_id: uuid.UUID | None = None
     requirement_id: uuid.UUID | None = None
+    # Migration 058. A revision produced by accepting an experiment proposal
+    # names that proposal, for the same reason a failure-driven one names the
+    # failure: without it §2's thread records a CATEGORY and loses the LINK,
+    # and `formula_version_drivers_research_is_present` refuses the row.
+    experiment_proposal_id: uuid.UUID | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -847,8 +852,10 @@ def record_driver(
                     """
                     INSERT INTO formulations.formula_version_drivers
                         (organization_id, project_id, formula_version_id, driver_type,
-                         failure_id, requirement_id, reason, recorded_by)
-                    VALUES (:org, :pid, :vid, :dtype, :fid, :rid, :reason, :actor)
+                         failure_id, requirement_id, experiment_proposal_id, reason,
+                         recorded_by)
+                    VALUES (:org, :pid, :vid, :dtype, :fid, :rid, :proposal, :reason,
+                            :actor)
                     RETURNING id
                     """
                 ),
@@ -859,12 +866,19 @@ def record_driver(
                     "dtype": spec.driver_type,
                     "fid": spec.failure_id,
                     "rid": spec.requirement_id,
+                    "proposal": spec.experiment_proposal_id,
                     "reason": spec.reason,
                     "actor": actor_id,
                 },
             ).scalar_one()
     except IntegrityError as exc:
         detail = str(exc.orig)
+        if "research_is_present" in detail:
+            raise FailureStateError(
+                "a research-driven revision must name the experiment proposal it "
+                "came from; otherwise the version cannot be traced back to the "
+                "investigation that produced it"
+            ) from exc
         if "failure_is_present" in detail or "requirement_is_present" in detail:
             raise FailureError(
                 f"a driver of type '{spec.driver_type}' must name the {spec.driver_type} "
