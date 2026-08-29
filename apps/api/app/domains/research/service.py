@@ -360,7 +360,7 @@ def open_investigation(
                           FROM (
                                    SELECT COALESCE(max(
                                        NULLIF(regexp_replace(i.investigation_code,
-                                                             '^RES-\d{4}-', ''), '')::INT
+                                                             '^RES-\\d{4}-', ''), '')::INT
                                    ), 0) + 1 AS n
                                      FROM research.investigations i
                                     WHERE i.organization_id = :org
@@ -1416,7 +1416,7 @@ def propose_experiment(
                           FROM (
                                    SELECT COALESCE(max(
                                        NULLIF(regexp_replace(x.proposal_code,
-                                                             '^EXP-\d{4}-', ''), '')::INT
+                                                             '^EXP-\\d{4}-', ''), '')::INT
                                    ), 0) + 1 AS n
                                      FROM research.experiment_proposals x
                                     WHERE x.organization_id = :org

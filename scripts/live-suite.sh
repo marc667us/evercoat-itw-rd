@@ -156,7 +156,7 @@ case "${PROFILE}" in
         # Add a path here whenever a screen becomes reachable in the sidebar.
         # A route that 404s behind a link the application renders is the exact
         # failure this list exists to catch.
-        MOUNT_PATHS=("/" "/dashboard/" "/admin/" "/knowledge/")
+        MOUNT_PATHS=("/" "/dashboard/" "/admin/" "/knowledge/" "/material-safety/research/")
         RUN_API_SUITE="no"
         ;;
     api)
@@ -166,7 +166,7 @@ case "${PROFILE}" in
         ;;
     full)
         READY_PATH="/health/ready"
-        MOUNT_PATHS=("/" "/health/live" "/docs" "/dashboard/")
+        MOUNT_PATHS=("/" "/health/live" "/docs" "/dashboard/" "/material-safety/research/")
         RUN_API_SUITE="yes"
         ;;
     *)
