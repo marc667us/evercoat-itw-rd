@@ -436,6 +436,11 @@ def test_every_role_returns_every_panel_the_source_names(owner_session: Session)
                 "reformulations",
                 "doe_experiments",
                 "validation_candidates",
+                # §27's chemist widgets (Phase 5).
+                "safety_reviews_required",
+                "research_investigations",
+                "experiment_proposals",
+                "material_alerts",
             },
         ),
         "engineer": (
@@ -447,6 +452,10 @@ def test_every_role_returns_every_panel_the_source_names(owner_session: Session)
                 "scale_up",
                 "process_deviations",
                 "qualification_tasks",
+                # §27's engineer widgets (Phase 5).
+                "research_linked_tests",
+                "safety_process_issues",
+                "benchmark_investigations",
             },
         ),
         "lead": (
@@ -458,6 +467,11 @@ def test_every_role_returns_every_panel_the_source_names(owner_session: Session)
                 "pending_approvals",
                 "risks",
                 "milestones",
+                # §27's lead widgets (Phase 5).
+                "research_pipeline",
+                "critical_safety_alerts",
+                "knowledge_gaps",
+                "experiment_proposal_queue",
             },
         ),
         "director": (
@@ -467,6 +481,11 @@ def test_every_role_returns_every_panel_the_source_names(owner_session: Session)
                 "innovation_pipeline",
                 "critical_risks",
                 "projects_awaiting_approval",
+                # §27's director widgets (Phase 5).
+                "competitor_intelligence",
+                "technology_opportunities",
+                "critical_material_risks",
+                "research_portfolio",
                 "pilot_qualification_pipeline",
                 "products_awaiting_release",
             },

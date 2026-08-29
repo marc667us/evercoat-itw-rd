@@ -31,7 +31,7 @@
  */
 
 import { useDashboardRole, useRoleDashboard } from "@/lib/api/hooks";
-import { dashboardPanelSchema, type DashboardPanel } from "@/lib/api/dashboards";
+import { panelsOf, type DashboardPanel } from "@/lib/api/dashboards";
 import { serverMessage } from "@/lib/api/client";
 
 /** Panel keys are snake_case; a heading is not. */
@@ -124,14 +124,11 @@ export function RoleDashboard() {
     );
   }
 
-  const panels: [string, DashboardPanel][] = [];
-  if (data !== undefined) {
-    for (const [key, value] of Object.entries(data)) {
-      if (key === "role" || key === "panels" || key === "reason") continue;
-      const parsed = dashboardPanelSchema.safeParse(value);
-      if (parsed.success) panels.push([key, parsed.data]);
-    }
-  }
+  // 🔴 `panelsOf`, NOT A TOP-LEVEL WALK. The previous version iterated the
+  // response's top-level keys and SKIPPED `panels` — which is where every
+  // panel lives — so this component rendered "returned no panels" for every
+  // role while the server was sending 21 of them. See `panelsOf`'s comment.
+  const panels = panelsOf(data);
 
   return (
     <section aria-labelledby="role-dashboard-heading" className="mb-6">

@@ -51,6 +51,42 @@ export const dashboardPanelSchema = z.object({
 
 export type DashboardPanel = z.infer<typeof dashboardPanelSchema>;
 
+/**
+ * Pull the panels out of a role-dashboard response.
+ *
+ * 🔴 THE PANELS ARE NESTED UNDER `panels`, AND READING THE TOP LEVEL FINDS
+ * NONE OF THEM.
+ *
+ * The server returns `{"role": "chemist", "panels": {...}}` — measured against
+ * `app/domains/dashboards/service.py`, which is the only thing that builds it.
+ * `role-dashboard.tsx` iterated the TOP-LEVEL entries and explicitly skipped
+ * the key `panels`, so it walked past the one key that held anything and
+ * rendered "this role's dashboard returned no panels" on every role, for every
+ * user, with 21 panels sitting in the response.
+ *
+ * Nothing caught it: the API tests assert the response, and the component had
+ * no test at all. It is the project's own most-repeated shape — a producer with
+ * no reader — one layer up from the database, where it is harder to see.
+ *
+ * Exported rather than inlined so it can be tested against the real shape.
+ *
+ * ⚠️ `incomplete_visibility` (the lead's caveat) is deliberately NOT a panel and
+ * is not returned here. It qualifies every panel, which is why the server puts
+ * it at the top level.
+ */
+export function panelsOf(data: unknown): [string, DashboardPanel][] {
+  if (data === null || typeof data !== "object") return [];
+  const nested = (data as Record<string, unknown>).panels;
+  if (nested === null || typeof nested !== "object") return [];
+
+  const out: [string, DashboardPanel][] = [];
+  for (const [name, value] of Object.entries(nested as Record<string, unknown>)) {
+    const parsed = dashboardPanelSchema.safeParse(value);
+    if (parsed.success) out.push([name, parsed.data]);
+  }
+  return out;
+}
+
 /** The response is an object of named panels; the names differ per role. */
 export const roleDashboardSchema = z.record(z.string(), z.unknown());
 
