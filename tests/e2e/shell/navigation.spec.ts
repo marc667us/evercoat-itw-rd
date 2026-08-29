@@ -93,7 +93,7 @@ test.describe("application shell", () => {
     await expect(notice).toContainText(/synthetic/i);
   });
 
-  test("the demonstration notice is on every page, not just the dashboard", async ({
+  test("the demonstration notice is on every page that shows demonstration data", async ({
     page,
   }) => {
     // A notice that appears on the landing page and nowhere else is worse
@@ -103,7 +103,6 @@ test.describe("application shell", () => {
       "/projects",
       "/my-work",
       "/pipeline",
-      "/innovation",
       "/materials",
       "/suppliers",
       "/formulations",
@@ -114,6 +113,38 @@ test.describe("application shell", () => {
         page.getByRole("note", { name: /demonstration data/i }),
         `no demonstration notice on ${path}`,
       ).toBeVisible();
+    }
+  });
+
+  /**
+   * 🔴 THE OTHER DIRECTION, BECAUSE THE LIST ABOVE USED TO CARRY `/innovation`.
+   *
+   * `/innovation` rendered a static array from `lib/demo/dataset` until it was
+   * wired to the opportunities API, at which point it stopped having a
+   * demonstration notice — correctly, because it no longer has demonstration
+   * data — and the test above went red on a screen that had just been fixed.
+   *
+   * The lesson is the one recorded on `an unbuilt destination is inert` below:
+   * a hand-kept list of screens breaks every time a screen changes category.
+   * Deleting the path would have left it untested, so it moved here and the
+   * assertion inverted. A live-only screen must carry a data-source note —
+   * "Live data" or "No data source" — and must NOT claim demonstration data.
+   * Both halves matter: without the first, a page that rendered no banner at
+   * all would pass.
+   */
+  test("a live-only page says which, and never claims demonstration data", async ({
+    page,
+  }) => {
+    for (const path of ["/innovation"]) {
+      await page.goto(path);
+      await expect(
+        page.getByRole("note", { name: /(data source|no data source) notice/i }),
+        `no data-source notice at all on ${path}`,
+      ).toBeVisible();
+      await expect(
+        page.getByRole("note", { name: /demonstration data/i }),
+        `${path} is live-only and must not claim demonstration data`,
+      ).toHaveCount(0);
     }
   });
 });
