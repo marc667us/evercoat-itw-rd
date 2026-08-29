@@ -75,6 +75,17 @@ import {
   type Risk,
   type RiskRequest,
 } from "./projects";
+import {
+  convertOpportunity,
+  createOpportunity,
+  decideOpportunity,
+  fetchOpportunities,
+  submitOpportunity,
+  type Opportunity,
+  type OpportunityConversionRequest,
+  type OpportunityCreateRequest,
+  type OpportunityDecisionRequest,
+} from "./opportunities";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -1750,6 +1761,118 @@ export function useMaterialWrites(materialId: string): {
   return {
     changeStatus: (request, after) => mutation.mutate({ kind: "status", request, after }),
     linkSupplier: (request, after) => mutation.mutate({ kind: "supplier", request, after }),
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+    lastAction: mutation.data ?? null,
+  };
+}
+
+/** Opportunities this caller can reach. */
+export function useOpportunities<TShown = Opportunity[]>(
+  project: (live: Opportunity[]) => TShown = (live) => live as unknown as TShown,
+): LiveOnly<TShown> {
+  return useLiveOnlyList("opportunities", project, fetchOpportunities);
+}
+
+/**
+ * Every write in the opportunity module.
+ *
+ * 🔴 THE THREE ACTS HAVE THREE DIFFERENT PERMISSIONS, AND THAT IS THE DESIGN.
+ *
+ * `opportunity.create` raises and submits, `opportunity.decide` decides, and
+ * CONVERSION is gated on `project.create` — because creating the project is the
+ * act being authorized. Somebody who may decide but may not create projects
+ * hands over at that point. One hook, three gates, checked by the caller.
+ */
+export function useOpportunityWrites(): {
+  readonly raise: (request: OpportunityCreateRequest, after?: () => void) => void;
+  readonly submit: (opportunityId: string) => void;
+  readonly decide: (
+    opportunityId: string,
+    request: OpportunityDecisionRequest,
+    after?: () => void,
+  ) => void;
+  readonly convert: (
+    opportunityId: string,
+    request: OpportunityConversionRequest,
+    after?: () => void,
+  ) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastAction: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const credentials = () => {
+    if (!resolved.ok) {
+      throw isApiConfigured ? new ApiNoSessionError(resolved.reason) : new ApiNotConfiguredError();
+    }
+    return resolved.credentials;
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (
+      job:
+        | { kind: "raise"; request: OpportunityCreateRequest; after?: () => void }
+        | { kind: "submit"; opportunityId: string }
+        | {
+            kind: "decide";
+            opportunityId: string;
+            request: OpportunityDecisionRequest;
+            after?: () => void;
+          }
+        | {
+            kind: "convert";
+            opportunityId: string;
+            request: OpportunityConversionRequest;
+            after?: () => void;
+          },
+    ) => {
+      if (job.kind === "raise") {
+        const raised = await createOpportunity(credentials(), job.request);
+        return `${raised.opportunity_code} raised.`;
+      }
+      if (job.kind === "submit") {
+        const submitted = await submitOpportunity(credentials(), job.opportunityId);
+        return `Submitted — now ${submitted.status}.`;
+      }
+      if (job.kind === "decide") {
+        const decided = await decideOpportunity(
+          credentials(),
+          job.opportunityId,
+          job.request,
+        );
+        return `Decision recorded: ${decided.decision}.`;
+      }
+      const converted = await convertOpportunity(
+        credentials(),
+        job.opportunityId,
+        job.request,
+      );
+      // 🔴 NAME THE PROJECT IT PRODUCED. §2's thread only helps if a person can
+      // FOLLOW it; "converted" alone leaves them hunting for what it became.
+      return `Converted — project ${converted.project_code} created.`;
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["opportunities"] });
+      if (job.kind === "convert") {
+        // A conversion creates a PROJECT, so the project list and the stage
+        // pipeline both answer differently now.
+        void queryClient.invalidateQueries({ queryKey: ["projects"] });
+        void queryClient.invalidateQueries({ queryKey: ["project-pipeline"] });
+      }
+      if ("after" in job) job.after?.();
+    },
+  });
+
+  return {
+    raise: (request, after) => mutation.mutate({ kind: "raise", request, after }),
+    submit: (opportunityId) => mutation.mutate({ kind: "submit", opportunityId }),
+    decide: (opportunityId, request, after) =>
+      mutation.mutate({ kind: "decide", opportunityId, request, after }),
+    convert: (opportunityId, request, after) =>
+      mutation.mutate({ kind: "convert", opportunityId, request, after }),
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,
     lastAction: mutation.data ?? null,

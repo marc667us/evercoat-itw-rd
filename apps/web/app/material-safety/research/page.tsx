@@ -46,6 +46,7 @@ import {
   useResearchWrites,
 } from "@/lib/api/hooks";
 import type { Project } from "@/lib/api/projects";
+import { permits, usePermissions } from "@/lib/permissions";
 import {
   EVIDENCE_STANCES,
   FINDING_CONFIDENCES,
@@ -54,6 +55,21 @@ import {
   type Finding,
   type Investigation,
 } from "@/lib/api/research";
+
+/**
+ * What each act on this screen requires, mirrored from `app/api/research.py`.
+ *
+ * ⚠️ A MIRROR, AND MIRRORS DRIFT. It is here so the screen can avoid offering a
+ * control the server will refuse — never as the thing that decides.
+ * `tests/auth/test_research_routes.py` asserts the server side; if the two ever
+ * disagree, the server is right and this is the bug.
+ */
+const MAY = {
+  create: "research.create",
+  propose: "experiment.propose",
+  accept: "experiment.accept",
+  promote: "knowledge.promote",
+} as const;
 
 const BUTTON =
   "rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 " +
@@ -151,6 +167,7 @@ function Feedback({
 /* ------------------------------------------------------------------------ */
 
 function OpenWorkspaceForm({ projects }: { projects: readonly Project[] }) {
+  const may = permits(usePermissions(), MAY.create);
   const writes = useResearchWrites();
   const [title, setTitle] = useState("");
   const [question, setQuestion] = useState("");
@@ -232,7 +249,7 @@ function OpenWorkspaceForm({ projects }: { projects: readonly Project[] }) {
         approval: each project&apos;s lead approves for their own work, so the
         approval route needs a project.
       </p>
-      <button type="submit" className={`${BUTTON} mt-3`} disabled={writes.isPending}>
+      <button type="submit" className={`${BUTTON} mt-3`} disabled={writes.isPending || !may}>
         {writes.isPending ? "Opening…" : "Open workspace"}
       </button>
       <Feedback writes={writes} />
@@ -241,6 +258,7 @@ function OpenWorkspaceForm({ projects }: { projects: readonly Project[] }) {
 }
 
 function QuestionsPanel({ investigationId }: { investigationId: string }) {
+  const may = permits(usePermissions(), MAY.create);
   const questions = useResearchQuestions(investigationId);
   const writes = useResearchWrites();
   const [text, setText] = useState("");
@@ -267,7 +285,7 @@ function QuestionsPanel({ investigationId }: { investigationId: string }) {
                   <button
                     type="button"
                     className={SECONDARY}
-                    disabled={writes.isPending}
+                    disabled={writes.isPending || !may}
                     onClick={() => writes.settleQuestion(row.id, "answered")}
                   >
                     Answered
@@ -275,7 +293,7 @@ function QuestionsPanel({ investigationId }: { investigationId: string }) {
                   <button
                     type="button"
                     className={SECONDARY}
-                    disabled={writes.isPending}
+                    disabled={writes.isPending || !may}
                     onClick={() => writes.settleQuestion(row.id, "unanswerable")}
                   >
                     Cannot answer
@@ -302,7 +320,7 @@ function QuestionsPanel({ investigationId }: { investigationId: string }) {
             onChange={(event) => setText(event.target.value)}
           />
         </label>
-        <button type="submit" className={BUTTON} disabled={writes.isPending}>
+        <button type="submit" className={BUTTON} disabled={writes.isPending || !may}>
           Add
         </button>
       </form>
@@ -312,6 +330,7 @@ function QuestionsPanel({ investigationId }: { investigationId: string }) {
 }
 
 function SourcesPanel({ investigationId }: { investigationId: string }) {
+  const may = permits(usePermissions(), MAY.create);
   const sources = useResearchSources(investigationId);
   // 🔴 THE DOCUMENT PICKER EXISTS BECAUSE THE MENU OPTION DID.
   //
@@ -450,7 +469,9 @@ function SourcesPanel({ investigationId }: { investigationId: string }) {
           <button
             type="submit"
             className={BUTTON}
-            disabled={writes.isPending || (needsDocument && documentRows.length === 0)}
+            disabled={
+              writes.isPending || !may || (needsDocument && documentRows.length === 0)
+            }
           >
             Record source
           </button>
@@ -467,6 +488,7 @@ function SourcesPanel({ investigationId }: { investigationId: string }) {
 }
 
 function EvidencePanel({ investigationId }: { investigationId: string }) {
+  const may = permits(usePermissions(), MAY.create);
   const cards = useEvidenceCards(investigationId);
   const questions = useResearchQuestions(investigationId);
   const sources = useResearchSources(investigationId);
@@ -599,7 +621,7 @@ function EvidencePanel({ investigationId }: { investigationId: string }) {
           <button
             type="submit"
             className={BUTTON}
-            disabled={writes.isPending || sourceRows.length === 0}
+            disabled={writes.isPending || !may || sourceRows.length === 0}
           >
             Record evidence
           </button>
@@ -616,6 +638,7 @@ function EvidencePanel({ investigationId }: { investigationId: string }) {
 }
 
 function HypothesesPanel({ investigationId }: { investigationId: string }) {
+  const may = permits(usePermissions(), MAY.create);
   const hypotheses = useResearchHypotheses(investigationId);
   const writes = useResearchWrites();
   const [statement, setStatement] = useState("");
@@ -641,7 +664,7 @@ function HypothesesPanel({ investigationId }: { investigationId: string }) {
                   <button
                     type="button"
                     className={SECONDARY}
-                    disabled={writes.isPending}
+                    disabled={writes.isPending || !may}
                     onClick={() => writes.decideHypothesis(row.id, "supported")}
                   >
                     Supported
@@ -651,7 +674,7 @@ function HypothesesPanel({ investigationId }: { investigationId: string }) {
                   <button
                     type="button"
                     className={SECONDARY}
-                    disabled={writes.isPending}
+                    disabled={writes.isPending || !may}
                     onClick={() => writes.decideHypothesis(row.id, "refuted")}
                   >
                     Refuted
@@ -678,7 +701,7 @@ function HypothesesPanel({ investigationId }: { investigationId: string }) {
             onChange={(event) => setStatement(event.target.value)}
           />
         </label>
-        <button type="submit" className={BUTTON} disabled={writes.isPending}>
+        <button type="submit" className={BUTTON} disabled={writes.isPending || !may}>
           Add
         </button>
       </form>
@@ -688,6 +711,7 @@ function HypothesesPanel({ investigationId }: { investigationId: string }) {
 }
 
 function GapsPanel({ investigationId }: { investigationId: string }) {
+  const may = permits(usePermissions(), MAY.create);
   const gaps = useResearchGaps(investigationId);
   const writes = useResearchWrites();
   const [description, setDescription] = useState("");
@@ -718,7 +742,7 @@ function GapsPanel({ investigationId }: { investigationId: string }) {
                 <button
                   type="button"
                   className={SECONDARY}
-                  disabled={writes.isPending}
+                  disabled={writes.isPending || !may}
                   onClick={() => writes.resolveGap(row.id)}
                 >
                   Close gap
@@ -756,7 +780,7 @@ function GapsPanel({ investigationId }: { investigationId: string }) {
             <option value="low">Low</option>
           </select>
         </label>
-        <button type="submit" className={BUTTON} disabled={writes.isPending}>
+        <button type="submit" className={BUTTON} disabled={writes.isPending || !may}>
           Add
         </button>
       </form>
@@ -766,6 +790,7 @@ function GapsPanel({ investigationId }: { investigationId: string }) {
 }
 
 function DraftFindingForm({ investigationId }: { investigationId: string }) {
+  const may = permits(usePermissions(), MAY.create);
   const writes = useResearchWrites();
   const [subject, setSubject] = useState("");
   const [statement, setStatement] = useState("");
@@ -849,7 +874,7 @@ function DraftFindingForm({ investigationId }: { investigationId: string }) {
           />
         </label>
       </div>
-      <button type="submit" className={`${BUTTON} mt-3`} disabled={writes.isPending}>
+      <button type="submit" className={`${BUTTON} mt-3`} disabled={writes.isPending || !may}>
         Draft finding
       </button>
       <Feedback writes={writes} />
@@ -858,6 +883,7 @@ function DraftFindingForm({ investigationId }: { investigationId: string }) {
 }
 
 function ProposeExperimentForm({ investigationId }: { investigationId: string }) {
+  const may = permits(usePermissions(), MAY.propose);
   const hypotheses = useResearchHypotheses(investigationId);
   const writes = useResearchWrites();
   const [objective, setObjective] = useState("");
@@ -987,7 +1013,7 @@ function ProposeExperimentForm({ investigationId }: { investigationId: string })
           </select>
         </label>
       </div>
-      <button type="submit" className={`${BUTTON} mt-3`} disabled={writes.isPending}>
+      <button type="submit" className={`${BUTTON} mt-3`} disabled={writes.isPending || !may}>
         Propose experiment
       </button>
       <Feedback writes={writes} />
@@ -996,6 +1022,7 @@ function ProposeExperimentForm({ investigationId }: { investigationId: string })
 }
 
 function Workspace({ investigation }: { investigation: Investigation }) {
+  const may = permits(usePermissions(), MAY.create);
   const writes = useResearchWrites();
   return (
     <div className="grid gap-4">
@@ -1005,7 +1032,7 @@ function Workspace({ investigation }: { investigation: Investigation }) {
           <button
             type="button"
             className={SECONDARY}
-            disabled={writes.isPending}
+            disabled={writes.isPending || !may}
             onClick={() => writes.close(investigation.id)}
           >
             Close workspace
@@ -1024,6 +1051,11 @@ function Workspace({ investigation }: { investigation: Investigation }) {
 }
 
 function FindingsRegister() {
+  const permissions = usePermissions();
+  // Submitting your own work for review is part of doing the work; PROMOTING
+  // it into the register the assistant treats as authoritative is not.
+  const may = permits(permissions, MAY.create);
+  const mayPromote = permits(permissions, MAY.promote);
   const findings = useResearchFindings();
   const writes = useResearchWrites();
   const rows = findings.data ?? [];
@@ -1071,7 +1103,7 @@ function FindingsRegister() {
                     <button
                       type="button"
                       className={BUTTON}
-                      disabled={writes.isPending}
+                      disabled={writes.isPending || !may}
                       onClick={() => writes.submit(row.id)}
                     >
                       Submit for approval
@@ -1082,7 +1114,7 @@ function FindingsRegister() {
                       <button
                         type="button"
                         className={BUTTON}
-                        disabled={writes.isPending}
+                        disabled={writes.isPending || !mayPromote}
                         onClick={() => writes.promote(row.id)}
                       >
                         Promote to Knowledge Library
@@ -1106,6 +1138,9 @@ function FindingsRegister() {
 }
 
 function ProposalsRegister() {
+  // 🔴 ACCEPT AND REJECT ARE ONE AUTHORITY. Deciding is deciding, and the
+  // server gates both on `experiment.accept` for that reason.
+  const may = permits(usePermissions(), MAY.accept);
   const proposals = useExperimentProposals();
   const writes = useResearchWrites();
   const [openId, setOpenId] = useState<string | null>(null);
@@ -1158,6 +1193,7 @@ function ProposalsRegister() {
                   <button
                     type="button"
                     className={SECONDARY}
+                    disabled={!may}
                     onClick={() => {
                       const next = openId === row.id ? null : row.id;
                       setOpenId(next);
