@@ -234,7 +234,9 @@ test.describe("the materials page", () => {
 
     // The row came from the API, so it cannot have come from the bundle:
     // this code appears nowhere in demo-data.json.
-    await expect(page.getByText("RM-LIVE-01")).toBeVisible();
+    await expect(
+      page.getByRole("cell", { name: "RM-LIVE-01", exact: true }),
+    ).toBeVisible();
     await expect(
       page.getByRole("note", { name: "Data source notice" }),
     ).toContainText(/live data/i);
