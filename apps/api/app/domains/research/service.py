@@ -1589,6 +1589,41 @@ def accept_experiment_proposal(
         session, proposal_id=proposal_id, organization_id=organization_id
     )
 
+    # 🔴 REFUSE BEFORE CLONING, NOT AFTER.
+    #
+    # `experiment_proposals_version_fk` already refuses a version outside the
+    # proposal's project — but it fires on the UPDATE below, which is AFTER
+    # `revise_version` has cloned a formula version. The clone is then undone
+    # only by the caller's rollback, and the message a client reads describes a
+    # constraint rather than the decision.
+    #
+    # The Supervisor's re-review of `ef160b3` found `project_id` being selected
+    # and read by nothing — a value computed and carried but never used, which
+    # is this project's own name for a capability the comments claim and the
+    # code lacks. This is that value doing its job.
+    #
+    # ⚠️ NULL means the investigation is organization-wide, and then there is no
+    # project to be outside of: §1.2's deliberate case, and the database agrees
+    # because MATCH SIMPLE skips the three-column key when the column is NULL.
+    if proposal["project_id"] is not None:
+        version_project = session.execute(
+            text(
+                """
+                SELECT project_id FROM formulations.formula_versions
+                 WHERE id = :vid AND organization_id = :org
+                """
+            ),
+            {"vid": version_id, "org": organization_id},
+        ).scalar_one_or_none()
+        if version_project is None:
+            raise ResearchNotFoundError("no such formula version in this organization")
+        if version_project != proposal["project_id"]:
+            raise ResearchStateError(
+                "that formula version belongs to a different project. Research "
+                "scoped to one project revises that project's formulas; only "
+                "organization-wide research may revise any you can reach."
+            )
+
     revision = revise_version(
         session,
         version_id=version_id,
