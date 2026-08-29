@@ -27,6 +27,35 @@ import { expect, test, type Page } from "@playwright/test";
 
 const PASSWORD = process.env.TEST_KEYCLOAK_PASSWORD ?? "";
 const USERNAME = process.env.TEST_SIGNIN_USER ?? "lead.demo";
+
+/**
+ * 🔴 THE FORM YOU ARE TESTING DECIDES WHO SIGNS IN, AND THIS FILE GOT THAT
+ * WRONG FOR THREE OF ITS SIX TESTS.
+ *
+ * Every test signed in as `lead.demo` and the file said so nowhere. Measured
+ * against the seeded realm on 2026-08-29, `product_development_lead` holds
+ * `project.create` and `project.edit` and does NOT hold `material.create`
+ * (procurement and the chemist do) or `test.plan` (the engineer does). So the
+ * material tests clicked a "New material" button that is correctly absent, and
+ * the plan-a-test one clicked a form that is correctly not offered — three
+ * failures against a product that was behaving exactly as designed.
+ *
+ * One of them even carried the comment *"`lead.demo` HOLDS `material.create`,
+ * so the control is here"*, which was simply false. A comment asserting a rule
+ * that does not exist, in a test written to catch exactly that class of thing.
+ *
+ * `scripts/keycloak-bootstrap.sh` seeds ONE USER PER ROLE against a single
+ * `KC_USER_PASSWORD`, so the fix is to name the holder rather than to weaken
+ * the assertion.
+ */
+const AS = {
+  /** `project.create`, `project.edit`. */
+  lead: "lead.demo",
+  /** `material.create`. So does `proc.demo`. */
+  chemist: "chem.demo",
+  /** `test.plan`, and only this role. */
+  engineer: "eng.demo",
+} as const;
 const USERNAME_FIELD = "#username, input[name='username']";
 const PASSWORD_FIELD = "#password, input[name='password']";
 
@@ -35,12 +64,12 @@ function runId(): string {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
-async function signIn(page: Page): Promise<void> {
+async function signIn(page: Page, as: string = USERNAME): Promise<void> {
   await page.goto("/");
   const signInButton = page.getByRole("button", { name: "Sign in" });
   await expect(signInButton).toBeVisible({ timeout: 30_000 });
   await signInButton.click();
-  await page.locator(USERNAME_FIELD).fill(USERNAME, { timeout: 60_000 });
+  await page.locator(USERNAME_FIELD).fill(as, { timeout: 60_000 });
   await page.locator(PASSWORD_FIELD).fill(PASSWORD);
   await page.locator(PASSWORD_FIELD).press("Enter");
   await expect(page.getByRole("button", { name: "Sign in" })).toBeHidden({ timeout: 60_000 });
@@ -63,7 +92,9 @@ test.describe("the create forms actually create", () => {
   test("create: a material can be created from the materials page", async ({ page }) => {
     test.skip(PASSWORD === "", "TEST_KEYCLOAK_PASSWORD is not set — NOT verified");
     const id = runId();
-    await signIn(page);
+    // The chemist, not the lead: `material.create` is held by the chemist and
+    // procurement. See `AS`.
+    await signIn(page, AS.chemist);
     await openFromSidebar(page, "Materials", /\/materials/);
 
     await page.getByRole("button", { name: "New material" }).click();
@@ -108,6 +139,12 @@ test.describe("the create forms actually create", () => {
 
     await page.getByRole("button", { name: "Raise a task" }).click();
     await page.getByLabel("Title").fill(`End-to-end task ${id}`);
+    // 🔴 A TASK NEEDS AN OWNER, AND THIS TEST PROVED THE FORM COULD NOT GIVE IT
+    // ONE. `create_task` refuses a task with neither an assigned user nor an
+    // assigned role, and the form carried no assignee control at all — so it
+    // returned 409 on every press and this assertion never saw a status. The
+    // control exists now, and choosing from it is part of the flow.
+    await page.getByLabel("Assign to").selectOption("laboratory_technician");
     await page.getByRole("button", { name: "Raise task" }).click();
 
     await expect(page.getByRole("status")).toContainText("Task raised", { timeout: 30_000 });
@@ -117,7 +154,8 @@ test.describe("the create forms actually create", () => {
     page,
   }) => {
     test.skip(PASSWORD === "", "TEST_KEYCLOAK_PASSWORD is not set — NOT verified");
-    await signIn(page);
+    // `test.plan` belongs to the engineer alone. See `AS`.
+    await signIn(page, AS.engineer);
     await openFromSidebar(page, "Testing", /\/testing/);
 
     await page.getByRole("button", { name: "Plan a test" }).click();
@@ -133,13 +171,38 @@ test.describe("the create forms actually create", () => {
     page,
   }) => {
     test.skip(PASSWORD === "", "TEST_KEYCLOAK_PASSWORD is not set — NOT verified");
-    await signIn(page);
+    // 🔴 BOTH DIRECTIONS, AND THIS TEST ASSERTED THE WRONG ONE.
+    //
+    // It signed in as `lead.demo` and asserted the "New material" control was
+    // ENABLED, on a stated premise — "`lead.demo` HOLDS `material.create`" —
+    // that is false. So it failed against a product doing the right thing, and
+    // in the direction that matters least: asserting only that a control
+    // APPEARS would pass against a screen that offers everything to everyone,
+    // which is the defect twelve controls on this application had last week.
+    //
+    // The holder sees it; the non-holder does not. Either alone is satisfiable
+    // by a component that ignores permissions entirely.
+    await signIn(page, AS.chemist);
+    await openFromSidebar(page, "Materials", /\/materials/);
+    await expect(page.getByRole("button", { name: "New material" })).toBeEnabled();
+  });
+
+  test("create: the same form is refused to a caller who does not hold it", async ({
+    page,
+  }) => {
+    test.skip(PASSWORD === "", "TEST_KEYCLOAK_PASSWORD is not set — NOT verified");
+    // `product_development_lead` does not hold `material.create`. The control
+    // must be absent, and the screen must SAY so rather than simply omitting it
+    // — a missing button and a broken page look identical.
+    await signIn(page, AS.lead);
     await openFromSidebar(page, "Materials", /\/materials/);
 
-    // `lead.demo` HOLDS `material.create`, so the control is here. This asserts
-    // the shell renders the openable form rather than the refusal — the other
-    // direction is covered by the permission tests, and asserting only the
-    // refusal would pass against a component that never renders a form at all.
-    await expect(page.getByRole("button", { name: "New material" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "New material" })).toHaveCount(0);
+    // The exact sentence `CreateForm` renders, not a guess at it. Written from
+    // the component rather than from memory -- the first attempt asserted "do
+    // not have permission" and the screen says "do not hold".
+    await expect(
+      page.getByText(/which your roles do not hold/i).first(),
+    ).toBeVisible({ timeout: 30_000 });
   });
 });

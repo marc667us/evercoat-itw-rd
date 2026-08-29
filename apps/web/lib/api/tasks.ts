@@ -62,6 +62,24 @@ export function fetchMyWork(
   );
 }
 
+/*
+ * 🔴 `/api/my-work`, NOT `/api/tasks`. THE ROUTER IS MOUNTED UNDER THE QUEUE.
+ *
+ * `main.py` does `include_router(tasks_router, prefix="/api/my-work")`, so
+ * every task route -- create, claim, complete, reassign -- lives under the
+ * name of the SCREEN rather than of the table. `createTask` was written
+ * against `/api/tasks` and 404'd on every press. The live suite found it: a
+ * 404 from a path that does not exist looks exactly like a refusal from one
+ * that does, and nothing below the browser was wrong.
+ *
+ * ⚠️ AND THE PREFIX IS WRITTEN OUT IN FULL AT EACH CALL, NOT HOISTED INTO A
+ * CONSTANT. Hoisting it was the obvious tidy-up and it silently disabled the
+ * guard that catches this: `every path the web client calls is a path the API
+ * serves` reads these literals out of the source, and `path: TASKS` and
+ * `` `${TASKS}/${id}/claim` `` are invisible to it -- measured, by putting the
+ * wrong base back and watching the check report nothing missing. A literal
+ * that a reader and a test can both see beats a constant neither can.
+ */
 export interface TaskCreateRequest {
   readonly task_type: string;
   readonly title: string;
@@ -124,7 +142,7 @@ export function createTask(
   request: TaskCreateRequest,
 ): Promise<{ id: string }> {
   return apiRequest(
-    { path: "/api/tasks", method: "POST", credentials, body: request },
+    { path: "/api/my-work", method: "POST", credentials, body: request },
     (payload) => z.object({ id: z.string() }).passthrough().parse(payload),
   );
 }
@@ -141,7 +159,7 @@ export function createTask(
  */
 export function claimTask(credentials: ApiCredentials, taskId: string): Promise<unknown> {
   return apiRequest(
-    { path: `/api/tasks/${taskId}/claim`, method: "POST", credentials, body: {} },
+    { path: `/api/my-work/${taskId}/claim`, method: "POST", credentials, body: {} },
     (payload) => payload,
   );
 }
@@ -154,7 +172,7 @@ export function completeTask(
 ): Promise<unknown> {
   return apiRequest(
     {
-      path: `/api/tasks/${taskId}/complete`,
+      path: `/api/my-work/${taskId}/complete`,
       method: "POST",
       credentials,
       body: outcomeNote === undefined ? {} : { outcome_note: outcomeNote },
@@ -164,7 +182,7 @@ export function completeTask(
 }
 
 /*
- * ⚠️ `POST /api/tasks/{id}/reassign` HAS NO CLIENT HERE, ON PURPOSE.
+ * ⚠️ `POST /api/my-work/{id}/reassign` HAS NO CLIENT HERE, ON PURPOSE.
  *
  * It is the third orphaned route on this module and the one that most deserves
  * a control -- handing work to a named colleague. It is not built yet because

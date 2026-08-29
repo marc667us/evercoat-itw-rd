@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { expect, test } from "@playwright/test";
 
 /**
@@ -240,6 +243,65 @@ test.describe("the route surface is what the application claims", () => {
     // quietly reducing it to zero assertions.
     expect(writeOps, "no write operations found — this test stopped testing").toBeGreaterThan(0);
     expect(undeclared, "these API operations declare no authentication").toEqual([]);
+  });
+
+  /**
+   * 🔴 EVERY PATH THE BROWSER CALLS MUST BE A PATH THE SERVER SERVES.
+   *
+   * `createTask` posted to `/api/tasks` for as long as it existed. The router
+   * is mounted at `/api/my-work` -- `main.py` names the SCREEN, not the table
+   * -- so every press returned 404, and two more clients written beside it
+   * inherited the same wrong base. Nothing below the browser was wrong, and
+   * nothing caught it: `typecheck` sees a string, vitest stubs the response,
+   * and a 404 from a path that does not exist looks exactly like a refusal
+   * from one that does.
+   *
+   * This reads the client source and the SERVED OpenAPI. It needs no session:
+   * whether a route exists is not a question about who is asking.
+   *
+   * ⚠️ IT COMPARES SHAPES, NOT STRINGS. A client path is a template literal
+   * (`/api/materials/${id}/documents`); OpenAPI writes `{material_id}`. Both
+   * collapse to a placeholder so the comparison is about the ROUTE, and a
+   * renamed path parameter is correctly not a failure.
+   */
+  test("every path the web client calls is a path the API serves", async ({ request }) => {
+    const spec = await (await request.get("/openapi.json")).json();
+    const served = new Set(
+      Object.keys(spec.paths as Record<string, unknown>).map((p) =>
+        p.replace(/\{[^}]*\}/g, "{}"),
+      ),
+    );
+
+    const clientDir = join(__dirname, "..", "..", "..", "apps", "web", "lib", "api");
+    const files = readdirSync(clientDir).filter(
+      (f) => f.endsWith(".ts") && !f.includes(".test."),
+    );
+    expect(files.length, "no client modules found — has lib/api moved?").toBeGreaterThan(5);
+
+    const called = new Map<string, string>();
+    for (const file of files) {
+      const source = readFileSync(join(clientDir, file), "utf8");
+      // `path: "/api/x"` and `path: `/api/x/${id}`` alike.
+      for (const m of source.matchAll(/path:\s*[`"]([^`"]*)[`"]/g)) {
+        const raw = m[1];
+        if (raw === undefined || !raw.startsWith("/api")) continue;
+        // The query string is not part of the route. Four clients carry one
+        // inline (`/api/knowledge/search?q=${term}`), and comparing it against
+        // OpenAPI -- which keys on the path alone -- reported four routes as
+        // missing that are served perfectly well.
+        const route = raw.split("?")[0] ?? raw;
+        called.set(route.replace(/\$\{[^}]*\}/g, "{}"), file);
+      }
+    }
+    expect(called.size, "no /api paths parsed out of the client").toBeGreaterThan(20);
+
+    const missing = [...called.entries()]
+      .filter(([path]) => !served.has(path))
+      .map(([path, file]) => `${path}  (${file})`);
+    expect(
+      missing,
+      "the browser calls these and the API does not serve them — every press is a 404",
+    ).toEqual([]);
   });
 
   test("every registered API GET refuses an anonymous caller", async ({ request }) => {
