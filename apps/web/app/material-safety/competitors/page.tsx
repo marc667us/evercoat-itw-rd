@@ -52,6 +52,33 @@ import {
   type CompetitorProduct,
   type EvidenceRow,
 } from "@/lib/api/competitors";
+import { permits, usePermissions } from "@/lib/permissions";
+
+/**
+ * What each act on this screen requires, mirrored from `app/api/competitors.py`.
+ *
+ * 🔴 THIS SCREEN HAD NO PERMISSION CHECK ANYWHERE IN IT. Six controls, all live
+ * for every reader, including the grading select -- which is `compliance.review_sds`,
+ * held by ONE of the ten roles. Nine people out of ten could pick a confidence
+ * level off a dropdown and watch the row snap back on a 403.
+ *
+ * ⚠️ `benchmark` NEEDS BOTH, AND THE SERVER MEANS *BOTH*. `POST /{id}/benchmarks`
+ * is `require_permission("material.edit", "test.view", require_all=True)`, unlike
+ * every other route here, which take ANY of the codes they name. Mirroring it as
+ * one code would have offered the control to somebody holding just one -- so it is
+ * two checks, and the shape of the constant says which.
+ *
+ * A mirror, and mirrors drift: this exists so the screen can avoid offering a
+ * control the server will refuse, never as the thing that decides.
+ */
+const MAY = {
+  /** Register a product, upload a document, register a sample, record evidence. */
+  record: "material.edit",
+  /** Grade a piece of evidence. */
+  grade: "compliance.review_sds",
+  /** Record a benchmark -- ALL of these, not any. */
+  benchmark: ["material.edit", "test.view"],
+} as const;
 
 const BUTTON =
   "rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 " +
@@ -128,6 +155,7 @@ function MatrixRow({
   onGrade: (evidenceId: string, confidence: string) => void;
   isPending: boolean;
 }) {
+  const mayGrade = permits(usePermissions(), MAY.grade);
   const confidence = CONFIDENCE[row.confidence];
   const source = EVIDENCE_SOURCES.find((s) => s.id === row.evidence_source);
   return (
@@ -174,7 +202,7 @@ function MatrixRow({
           id={`grade-${row.id}`}
           className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-900"
           value={row.confidence}
-          disabled={isPending}
+          disabled={isPending || !mayGrade}
           onChange={(event) => onGrade(row.id, event.target.value)}
         >
           {CONFIDENCE_ORDER.map((level) => (
@@ -195,6 +223,10 @@ function MatrixRow({
 }
 
 function ProductWorkspace({ product }: { product: CompetitorProduct }) {
+  const permissions = usePermissions();
+  const mayRecord = permits(permissions, MAY.record);
+  // Both, because the route is `require_all=True`. See `MAY`.
+  const mayBenchmark = MAY.benchmark.every((code) => permits(permissions, code));
   const matrix = useCompositionMatrix(product.id);
   const documents = useCompetitorDocuments(product.id);
   const samples = useCompetitorSamples(product.id);
@@ -333,7 +365,9 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
             <button
               type="button"
               className={BUTTON}
-              disabled={writes.isPending || file === null || docTitle.trim() === ""}
+              disabled={
+                writes.isPending || file === null || docTitle.trim() === "" || !mayRecord
+              }
               onClick={() => {
                 if (file === null) return;
                 writes.upload(product.id, file, documentType, docTitle.trim(), () => {
@@ -424,7 +458,7 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
             <button
               type="button"
               className={BUTTON}
-              disabled={writes.isPending || sampleReference.trim() === ""}
+              disabled={writes.isPending || sampleReference.trim() === "" || !mayRecord}
               onClick={() =>
                 writes.registerSample(
                   product.id,
@@ -674,6 +708,7 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
               className={BUTTON}
               disabled={
                 writes.isPending ||
+                !mayRecord ||
                 component.trim() === "" ||
                 (needsDocument && sourceDocumentId === "") ||
                 // Refused by the database without it, so the form refuses too
@@ -861,6 +896,7 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
               className={BUTTON}
               disabled={
                 writes.isPending ||
+                !mayBenchmark ||
                 benchProject === "" ||
                 benchAttribute.trim() === "" ||
                 benchGap.trim() === ""
@@ -917,6 +953,7 @@ function ProductWorkspace({ product }: { product: CompetitorProduct }) {
 }
 
 export default function CompetitorsPage() {
+  const mayRecord = permits(usePermissions(), MAY.record);
   const products = useCompetitorProducts();
   const writes = useCompetitorWrites();
   const [openId, setOpenId] = useState<string | null>(null);
@@ -985,6 +1022,7 @@ export default function CompetitorsPage() {
                   className={BUTTON}
                   disabled={
                     writes.isPending ||
+                    !mayRecord ||
                     manufacturer.trim() === "" ||
                     productName.trim() === ""
                   }

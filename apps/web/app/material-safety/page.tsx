@@ -55,6 +55,31 @@ import type {
   PendingInterpretation,
   SafetyAlert,
 } from "@/lib/api/material-safety";
+import { permits, usePermissions } from "@/lib/permissions";
+
+/**
+ * What each act on this screen requires, mirrored from `app/api/material_safety.py`.
+ *
+ * 🔴 EVERY CONTROL ON THIS SCREEN WAS OFFERED TO EVERY READER. The prose above
+ * each section already said "Requires `material.edit`" / "Requires
+ * `compliance.review_sds`" -- and then the buttons were live for everybody, so
+ * the screen stated the rule and did not apply it. `compliance.review_sds` is
+ * held by ONE role of ten; nine people out of ten were being handed four
+ * controls that answer 403 after they have typed the form in.
+ *
+ * ⚠️ A MIRROR, AND MIRRORS DRIFT. This exists so the screen can avoid offering
+ * a control the server will refuse, never as the thing that decides.
+ * `tests/auth/test_material_safety_routes.py` asserts the server side; if the
+ * two disagree the server is right and this is the bug.
+ */
+const MAY = {
+  /** `POST /interpretations` -- transcribe a sheet. */
+  record: "material.edit",
+  /** Confirming a reading, raising alerts, opening a safety review. */
+  review: "compliance.review_sds",
+  /** Acknowledging is deliberately the READ permission -- see `AlertRow`. */
+  acknowledge: "material.view",
+} as const;
 
 const BUTTON =
   "rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 " +
@@ -119,6 +144,7 @@ function RecordReading({
     clear: () => void,
   ) => void;
 }) {
+  const may = permits(usePermissions(), MAY.record);
   const [documentId, setDocumentId] = useState("");
   const [revision, setRevision] = useState("");
   const [manufacturer, setManufacturer] = useState("");
@@ -262,7 +288,7 @@ function RecordReading({
       <button
         type="button"
         className={`${BUTTON} mt-3`}
-        disabled={pending || chosen === undefined}
+        disabled={pending || chosen === undefined || !may}
         onClick={() => {
           if (chosen === undefined) return;
           const hazards: HazardInput[] = hazardClass.trim()
@@ -306,6 +332,15 @@ function AlertRow({
   onAcknowledge: (id: string) => void;
   onOpenReview: (alert: SafetyAlert) => void;
 }) {
+  const permissions = usePermissions();
+  // 🔴 THE TWO BUTTONS IN THIS ROW ARE NOT THE SAME ACT AND ARE NOT THE SAME
+  // GATE. Acknowledging is `material.view` -- anyone who can SEE the alert may
+  // record that they have seen it, which is the point of an acknowledgement.
+  // Opening a safety review is `compliance.review_sds`, held by one role.
+  // Gating the row on one permission would either hide an acknowledgement from
+  // the eight roles it exists for, or offer a review to all of them.
+  const mayAcknowledge = permits(permissions, MAY.acknowledge);
+  const mayReview = permits(permissions, MAY.review);
   const severity = SEVERITY[alert.severity];
   return (
     <li className="rounded border border-slate-200 bg-white p-4">
@@ -337,7 +372,7 @@ function AlertRow({
           <button
             type="button"
             className={SECONDARY}
-            disabled={pending}
+            disabled={pending || !mayAcknowledge}
             onClick={() => onAcknowledge(alert.id)}
           >
             Acknowledge
@@ -356,7 +391,7 @@ function AlertRow({
         <button
           type="button"
           className={SECONDARY}
-          disabled={pending}
+          disabled={pending || !mayReview}
           onClick={() => onOpenReview(alert)}
         >
           Open a safety review on {alert.project_code}
@@ -375,6 +410,7 @@ function PendingRow({
   pending: boolean;
   onReview: (id: string, accept: boolean) => void;
 }) {
+  const may = permits(usePermissions(), MAY.review);
   return (
     <li className="rounded border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-baseline gap-2">
@@ -399,7 +435,7 @@ function PendingRow({
         <button
           type="button"
           className={BUTTON}
-          disabled={pending}
+          disabled={pending || !may}
           onClick={() => onReview(item.id, true)}
         >
           Confirm reading
@@ -407,7 +443,7 @@ function PendingRow({
         <button
           type="button"
           className={SECONDARY}
-          disabled={pending}
+          disabled={pending || !may}
           onClick={() => onReview(item.id, false)}
         >
           Reject reading
@@ -418,6 +454,7 @@ function PendingRow({
 }
 
 export default function MaterialSafetyPage() {
+  const mayReview = permits(usePermissions(), MAY.review);
   const alerts = useSafetyAlerts();
   const queue = usePendingInterpretations();
   const candidates = useInterpretableDocuments();
@@ -558,7 +595,7 @@ export default function MaterialSafetyPage() {
                     <button
                       type="button"
                       className={`${SECONDARY} mt-3`}
-                      disabled={busy}
+                      disabled={busy || !mayReview}
                       onClick={() => {
                         setActedOn(row.current_id);
                         writes.raise(row.current_id, row.previous_id);

@@ -21,6 +21,7 @@ import { MsdPanel } from "@/components/msd/msd-panel";
 import { AccountMenu } from "@/components/nav/account-menu";
 import { UserMenu } from "@/components/nav/user-menu";
 import { ApiStatus } from "@/components/nav/api-status";
+import { permits, useCallerIsKnown, usePermissions } from "@/lib/permissions";
 
 export function TopBar() {
   const [query, setQuery] = useState("");
@@ -29,6 +30,25 @@ export function TopBar() {
   // chatbot control"; a control that has never done anything is not
   // unobtrusive, it is a promise the product does not keep.
   const [msdOpen, setMsdOpen] = useState(false);
+
+  // 🔴 THE MSD CONTROL WAS OFFERED TO EVERY CALLER, AND TWO ROLES CANNOT USE
+  // IT. All four `/api/msd` routes are `msd.use`; the administrator and the
+  // executive viewer do not hold it, so opening the panel got them a 403 in
+  // place of a conversation. The role audit reported `msd.use` as
+  // held-with-no-control -- eight roles, no gate -- and this is the other half
+  // of that: no gate means nobody was filtered, not that nobody could press it.
+  //
+  // ⚠️ `useCallerIsKnown` IS LOAD-BEARING HERE, AND OMITTING IT WOULD HAVE BEEN
+  // A REGRESSION OF THE ONE THE SUPERVISOR ALREADY CAUGHT ON `ContextSubmenu`.
+  // With no session `usePermissions` falls back to `ALL_NAV_PERMISSIONS`, which
+  // holds only the codes a SIDEBAR ITEM asks for. MSD is a top-bar control and
+  // has no nav item, so `msd.use` is not in that set -- gating on the
+  // permission alone would have deleted MSD from the demonstration build, which
+  // is the state this application is shown in. So: offered when there is no
+  // caller to filter by, filtered the moment there is one.
+  const callerIsKnown = useCallerIsKnown();
+  const permissions = usePermissions();
+  const mayUseMsd = !callerIsKnown || permits(permissions, "msd.use");
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4">
@@ -69,17 +89,23 @@ export function TopBar() {
           hint="New project, formula, batch, failure"
         />
         {/* MSD — Material Science & Development Assistant. Persistent but
-            unobtrusive, per Concept Note §33. */}
-        <button
-          type="button"
-          onClick={() => setMsdOpen((open) => !open)}
-          aria-expanded={msdOpen}
-          aria-controls="msd-panel"
-          title="Material Science & Development Assistant"
-          className="rounded px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900"
-        >
-          MSD
-        </button>
+            unobtrusive, per Concept Note §33. Absent, not disabled, for a
+            caller without `msd.use`: a greyed control in this bar means "not
+            built yet" — that is what `TopBarButton` beside it means — and
+            saying that about a feature which exists and is simply not theirs
+            is a different and wrong message. */}
+        {mayUseMsd && (
+          <button
+            type="button"
+            onClick={() => setMsdOpen((open) => !open)}
+            aria-expanded={msdOpen}
+            aria-controls="msd-panel"
+            title="Material Science & Development Assistant"
+            className="rounded px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900"
+          >
+            MSD
+          </button>
+        )}
         <TopBarButton label="Alerts" hint="Notifications" />
         {/* 🔴 THE SIGNED-IN PERSON, BETWEEN ALERTS AND HELP. `/api/me` has
             always returned `display_name`; the auth provider parsed only the
@@ -94,7 +120,7 @@ export function TopBar() {
       {/* Beside the shell, not over it: a chemist asks MSD ABOUT WHAT
           THEY ARE LOOKING AT, and a full-screen modal removes the thing
           the question is about. */}
-      {msdOpen && (
+      {msdOpen && mayUseMsd && (
         <div
           id="msd-panel"
           className="fixed bottom-0 right-0 top-14 z-40 w-full max-w-md shadow-lg"
