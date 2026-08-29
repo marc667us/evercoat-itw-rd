@@ -61,3 +61,25 @@ export function fetchMyWork(
     taskList.parse(payload),
   );
 }
+
+export interface TaskCreateRequest {
+  readonly task_type: string;
+  readonly title: string;
+  readonly description?: string;
+  readonly priority?: string;
+  readonly project_id?: string;
+  readonly due_date?: string;
+  readonly required_action?: string;
+}
+
+export const TASK_PRIORITIES = ["low", "medium", "high", "critical"] as const;
+
+export function createTask(
+  credentials: ApiCredentials,
+  request: TaskCreateRequest,
+): Promise<{ id: string }> {
+  return apiRequest(
+    { path: "/api/tasks", method: "POST", credentials, body: request },
+    (payload) => z.object({ id: z.string() }).passthrough().parse(payload),
+  );
+}

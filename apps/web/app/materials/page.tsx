@@ -10,18 +10,23 @@
  * is a material no formula containing it can be costed or weighed.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { ColumnDef } from "@tanstack/react-table";
 
+import {
+  CreateForm,
+  CREATE_INPUT,
+  CREATE_LABEL,
+} from "@/components/ui/create-form";
 import {
   DataPage,
   DataSourceError,
 } from "@/components/ui/data-source-banner";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
-import { useMaterials } from "@/lib/api/hooks";
-import type { Material } from "@/lib/api/materials";
+import { useCreateMaterial, useMaterials } from "@/lib/api/hooks";
+import { MATERIAL_ROLES, type Material } from "@/lib/api/materials";
 import {
   MATERIALS,
   materialStatus,
@@ -194,6 +199,10 @@ export default function MaterialsPage() {
             Obsolete materials are retained rather than deleted, because historical
             batches still reference them."
     >
+      <div className="mb-4">
+        <NewMaterialForm />
+      </div>
+
       {materials.error ? (
         // NOT a fall back to the demonstration rows. A request that was
         // made and failed shows that it failed; substituting synthetic
@@ -248,5 +257,161 @@ function Quantity({
     <span className="tabular-nums">
       {value} {unit}
     </span>
+  );
+}
+
+
+/**
+ * Create a raw material.
+ *
+ * 🔴 THE NUMBERS ARE COLLECTED AND SENT AS TEXT.
+ *
+ * Density, solids fraction and cost are `NUMERIC` in PostgreSQL and `Decimal`
+ * in Pydantic. Parsing them to `number` here would push a controlled value
+ * through binary floating point before the server ever saw it — `CLAUDE.md` §5
+ * forbids exactly that, and `inputMode="decimal"` gets the right keyboard
+ * without changing the type.
+ *
+ * ⚠️ NO `status` FIELD. Creation always yields `development`; offering the
+ * choice would imply one that does not exist. Nothing here derives a status,
+ * either — §10 keeps that on the server.
+ */
+function NewMaterialForm() {
+  const writes = useCreateMaterial();
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState("");
+  const [role, setRole] = useState<string>("other");
+  const [density, setDensity] = useState("");
+  const [solids, setSolids] = useState("");
+  const [cost, setCost] = useState("");
+  const [hazard, setHazard] = useState("");
+  const [requiresSds, setRequiresSds] = useState(true);
+
+  return (
+    <CreateForm
+      title="New material"
+      permission="material.create"
+      submitLabel="Create material"
+      isPending={writes.isPending}
+      error={writes.error}
+      done={writes.created ? `${writes.created.material_code} created.` : null}
+      onSubmit={() =>
+        writes.create(
+          {
+            material_code: code,
+            name,
+            category,
+            role,
+            density_g_cm3: density === "" ? undefined : density,
+            solids_fraction: solids === "" ? undefined : solids,
+            cost_per_kg: cost === "" ? undefined : cost,
+            hazard_summary: hazard === "" ? undefined : hazard,
+            requires_sds: requiresSds,
+          },
+          () => {
+            setCode("");
+            setName("");
+            setCategory("");
+            setDensity("");
+            setSolids("");
+            setCost("");
+            setHazard("");
+          },
+        )
+      }
+    >
+      <label className={CREATE_LABEL}>
+        Material code
+        <input
+          className={CREATE_INPUT}
+          required
+          minLength={2}
+          value={code}
+          onChange={(event) => setCode(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Name
+        <input
+          className={CREATE_INPUT}
+          required
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Category
+        <input
+          className={CREATE_INPUT}
+          required
+          placeholder="Resin, Filler, Pigment…"
+          value={category}
+          onChange={(event) => setCategory(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Role
+        <select
+          className={CREATE_INPUT}
+          value={role}
+          onChange={(event) => setRole(event.target.value)}
+        >
+          {MATERIAL_ROLES.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className={CREATE_LABEL}>
+        Density (g/cm³)
+        <input
+          className={CREATE_INPUT}
+          inputMode="decimal"
+          placeholder="1.0900"
+          value={density}
+          onChange={(event) => setDensity(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Solids fraction (0–1)
+        <input
+          className={CREATE_INPUT}
+          inputMode="decimal"
+          placeholder="0.98"
+          value={solids}
+          onChange={(event) => setSolids(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Cost per kg
+        <input
+          className={CREATE_INPUT}
+          inputMode="decimal"
+          value={cost}
+          onChange={(event) => setCost(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Hazard summary
+        <input
+          className={CREATE_INPUT}
+          value={hazard}
+          onChange={(event) => setHazard(event.target.value)}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-xs font-medium text-slate-700 sm:col-span-2">
+        <input
+          type="checkbox"
+          checked={requiresSds}
+          onChange={(event) => setRequiresSds(event.target.checked)}
+        />
+        {/* Default ON, matching the server. A material whose SDS is not
+            required is the exception, and the formula-submission gate reads
+            this — so the safe default is the one that asks for the sheet. */}
+        A Safety Data Sheet is required for this material
+      </label>
+    </CreateForm>
   );
 }

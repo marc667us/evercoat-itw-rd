@@ -28,17 +28,26 @@
  * a supplier COUNT rather than inventing names it had not fetched.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { ColumnDef } from "@tanstack/react-table";
 
+import {
+  CreateForm,
+  CREATE_INPUT,
+  CREATE_LABEL,
+} from "@/components/ui/create-form";
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
+import {
+  PROJECT_CONFIDENTIALITY,
+  PROJECT_PRIORITIES,
+} from "@/lib/api/projects";
 import Link from "next/link";
 
 import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
-import { useProjects } from "@/lib/api/hooks";
+import { useCreateProject, useProjects } from "@/lib/api/hooks";
 import type { Project } from "@/lib/api/projects";
 import { PROJECTS, stageName, type DemoProject } from "@/lib/demo/dataset";
 
@@ -227,6 +236,10 @@ export default function ProjectsPage() {
       source={source}
       sourceReason={sourceReason}
     >
+      <div className="mb-4">
+        <NewProjectForm />
+      </div>
+
       {/* Order matters: the error takes precedence over rows. A screen
           whose request failed shows that it failed and substitutes
           nothing — the hook returns `undefined`, never the demonstration
@@ -247,5 +260,128 @@ export default function ProjectsPage() {
         />
       )}
     </DataPage>
+  );
+}
+
+/**
+ * Create a project — §2's second link, and the one every other record hangs
+ * off. A formula, a batch, a test and a failure all carry a `project_id`.
+ *
+ * 🔴 CONFIDENTIALITY IS A VISIBLE CHOICE, NOT A DEFAULT NOBODY SEES.
+ *
+ * `restricted` is what makes RLS scope the project to its MEMBERS rather than
+ * to the whole organization — the second of this platform's three tenancy
+ * layers. Hiding it would mean every project created here was readable
+ * company-wide, which is the opposite of what somebody creating a confidential
+ * project intends. `normal` is preselected because that is the server's own
+ * default, and the helper text says what the other one does.
+ */
+function NewProjectForm() {
+  const writes = useCreateProject();
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [family, setFamily] = useState("");
+  const [objective, setObjective] = useState("");
+  const [priority, setPriority] = useState<string>("medium");
+  const [confidentiality, setConfidentiality] = useState<string>("normal");
+
+  return (
+    <CreateForm
+      title="New project"
+      permission="project.create"
+      submitLabel="Create project"
+      isPending={writes.isPending}
+      error={writes.error}
+      done={writes.created ? `${writes.created.project_code} created.` : null}
+      onSubmit={() =>
+        writes.create(
+          {
+            project_code: code,
+            name,
+            product_family: family === "" ? undefined : family,
+            technical_objective: objective === "" ? undefined : objective,
+            priority,
+            confidentiality,
+          },
+          () => {
+            setCode("");
+            setName("");
+            setFamily("");
+            setObjective("");
+          },
+        )
+      }
+    >
+      <label className={CREATE_LABEL}>
+        Project code
+        <input
+          className={CREATE_INPUT}
+          required
+          minLength={3}
+          value={code}
+          onChange={(event) => setCode(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Name
+        <input
+          className={CREATE_INPUT}
+          required
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Product family
+        <input
+          className={CREATE_INPUT}
+          value={family}
+          onChange={(event) => setFamily(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Priority
+        <select
+          className={CREATE_INPUT}
+          value={priority}
+          onChange={(event) => setPriority(event.target.value)}
+        >
+          {PROJECT_PRIORITIES.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className={`${CREATE_LABEL} sm:col-span-2`}>
+        Technical objective
+        <textarea
+          className={CREATE_INPUT}
+          rows={2}
+          value={objective}
+          onChange={(event) => setObjective(event.target.value)}
+        />
+      </label>
+      <label className={`${CREATE_LABEL} sm:col-span-2`}>
+        Confidentiality
+        <select
+          className={CREATE_INPUT}
+          value={confidentiality}
+          onChange={(event) => setConfidentiality(event.target.value)}
+        >
+          {PROJECT_CONFIDENTIALITY.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+        <span className="mt-1 block text-xs font-normal text-slate-600">
+          A <strong>restricted</strong> project is visible only to its members —
+          colleagues in this organization who are not members reach none of its
+          formulas, batches, tests or research. <strong>Normal</strong> is
+          visible across the organization.
+        </span>
+      </label>
+    </CreateForm>
   );
 }

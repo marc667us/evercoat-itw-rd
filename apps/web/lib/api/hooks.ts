@@ -174,6 +174,8 @@ import {
   fetchSuppliers,
   type Material,
   type Supplier,
+  createMaterial,
+  type MaterialCreateRequest,
 } from "./materials";
 import {
   fetchAnalytics,
@@ -277,9 +279,19 @@ import {
   type DashboardRole,
   type RoleDashboard,
 } from "./dashboards";
-import { fetchProjects, type Project } from "./projects";
+import {
+  createProject,
+  fetchProjects,
+  type Project,
+  type ProjectCreateRequest,
+} from "./projects";
 import { useSession } from "./session";
-import { fetchMyWork, type Task } from "./tasks";
+import {
+  createTask,
+  fetchMyWork,
+  type Task,
+  type TaskCreateRequest,
+} from "./tasks";
 import {
   completeTest,
   confirmTest,
@@ -1468,6 +1480,164 @@ export function useCreateBatch(): {
 
   return {
     create: (request) => mutation.mutate(request),
+    created: mutation.data ?? null,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+/**
+ * Create a raw material.
+ *
+ * 🔴 IT INVALIDATES THE MATERIAL LIST AND NOTHING ELSE.
+ *
+ * A new material is not yet in any formula, so no composition, batch or test
+ * answer changes. Invalidating more would refetch six screens to show the same
+ * data — and invalidating less would leave the list the person is standing in
+ * front of stale, which is how "it did not save" gets reported for a write
+ * that worked.
+ */
+export function useCreateMaterial(): {
+  readonly create: (request: MaterialCreateRequest, after?: () => void) => void;
+  readonly created: { material_code: string } | null;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (job: { request: MaterialCreateRequest; after?: () => void }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return createMaterial(resolved.credentials, job.request);
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["materials"] });
+      job.after?.();
+    },
+  });
+
+  return {
+    create: (request, after) => mutation.mutate({ request, after }),
+    created: mutation.data ?? null,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+/**
+ * Create a project — the second link in §2's thread.
+ *
+ * ⚠️ IT INVALIDATES THE PROJECT LIST *AND* THE PIPELINE. A new project appears
+ * in the stage pipeline immediately, and a pipeline that still shows the old
+ * set after a create is the same staleness defect one screen along.
+ */
+export function useCreateProject(): {
+  readonly create: (request: ProjectCreateRequest, after?: () => void) => void;
+  readonly created: { project_code: string } | null;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (job: { request: ProjectCreateRequest; after?: () => void }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return createProject(resolved.credentials, job.request);
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void queryClient.invalidateQueries({ queryKey: ["project-pipeline"] });
+      job.after?.();
+    },
+  });
+
+  return {
+    create: (request, after) => mutation.mutate({ request, after }),
+    created: mutation.data ?? null,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+/** Raise a task. Invalidates My Work, which is where it will appear. */
+export function useCreateTask(): {
+  readonly create: (request: TaskCreateRequest, after?: () => void) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly created: { id: string } | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (job: { request: TaskCreateRequest; after?: () => void }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return createTask(resolved.credentials, job.request);
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["my-work"] });
+      job.after?.();
+    },
+  });
+
+  return {
+    create: (request, after) => mutation.mutate({ request, after }),
+    created: mutation.data ?? null,
+    isPending: mutation.isPending,
+    error: (mutation.error as Error | null) ?? null,
+  };
+}
+
+/**
+ * Plan a test against a sample.
+ *
+ * ⚠️ IT INVALIDATES THE TEST LIST AND THE BATCH THE SAMPLE CAME FROM. A batch
+ * carries a `test_count`, so a new test changes what the laboratory queue says
+ * about that batch — leaving it stale is the same defect as leaving the list
+ * stale, one screen along and harder to notice.
+ */
+export function useCreateTest(): {
+  readonly create: (request: TestCreateRequest, after?: () => void) => void;
+  readonly created: { test_number: string } | null;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (job: { request: TestCreateRequest; after?: () => void }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return createTest(resolved.credentials, job.request);
+    },
+    onSuccess: (_data, job) => {
+      void queryClient.invalidateQueries({ queryKey: ["testing-tests"] });
+      void queryClient.invalidateQueries({ queryKey: ["laboratory-batches"] });
+      void queryClient.invalidateQueries({ queryKey: ["batch"] });
+      job.after?.();
+    },
+  });
+
+  return {
+    create: (request, after) => mutation.mutate({ request, after }),
     created: mutation.data ?? null,
     isPending: mutation.isPending,
     error: (mutation.error as Error | null) ?? null,

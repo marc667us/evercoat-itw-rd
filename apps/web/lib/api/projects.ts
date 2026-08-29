@@ -580,3 +580,38 @@ export function reviseRequirement(
     (payload) => payload,
   );
 }
+
+export interface ProjectCreateRequest {
+  readonly project_code: string;
+  readonly name: string;
+  readonly product_family?: string;
+  readonly description?: string;
+  readonly technical_objective?: string;
+  readonly commercial_objective?: string;
+  readonly priority?: string;
+  readonly confidentiality?: string;
+}
+
+/**
+ * 🔴 `confidentiality` IS OFFERED, AND IT IS NOT COSMETIC.
+ *
+ * `restricted` is what makes RLS scope the project to its MEMBERS rather than
+ * to the whole organization — the second of the three layers this platform's
+ * tenancy rests on. Defaulting it silently would mean every project created
+ * through this form was readable company-wide, which is the opposite of what
+ * somebody creating a confidential project intends. So it is a visible choice
+ * with `normal` preselected, matching the server.
+ */
+export const PROJECT_CONFIDENTIALITY = ["normal", "restricted"] as const;
+export const PROJECT_PRIORITIES = ["low", "medium", "high", "critical"] as const;
+
+export function createProject(
+  credentials: ApiCredentials,
+  request: ProjectCreateRequest,
+): Promise<{ id: string; project_code: string }> {
+  return apiRequest(
+    { path: "/api/projects", method: "POST", credentials, body: request },
+    (payload) =>
+      z.object({ id: z.string(), project_code: z.string() }).passthrough().parse(payload),
+  );
+}

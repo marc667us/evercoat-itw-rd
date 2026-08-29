@@ -26,15 +26,21 @@
  * SOMEONE with your role to pick up.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { ColumnDef } from "@tanstack/react-table";
 
+import {
+  CreateForm,
+  CREATE_INPUT,
+  CREATE_LABEL,
+} from "@/components/ui/create-form";
 import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
+import { TASK_PRIORITIES } from "@/lib/api/tasks";
 import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
-import { useMyWork } from "@/lib/api/hooks";
+import { useCreateTask, useMyWork } from "@/lib/api/hooks";
 import type { Task } from "@/lib/api/tasks";
 import { DEMO_VIEWER, tasksAssignedTo, type DemoTask } from "@/lib/demo/dataset";
 
@@ -212,6 +218,10 @@ export default function MyWorkPage() {
       source={source}
       sourceReason={sourceReason}
     >
+      <div className="mb-4">
+        <RaiseTaskForm />
+      </div>
+
       {error !== null ? (
         <DataSourceError error={error} />
       ) : (
@@ -246,5 +256,106 @@ export default function MyWorkPage() {
         </>
       )}
     </DataPage>
+  );
+}
+
+/**
+ * Raise a task.
+ *
+ * ⚠️ WITH NO ASSIGNEE FIELD, AND THAT IS A STATED LIMIT RATHER THAN AN
+ * OVERSIGHT. `assigned_user_id` takes a UUID, and no endpoint yet lists the
+ * organization's people for a non-administrator to choose from — the same gap
+ * that still makes adding a project member ask for a UUID. Offering a raw
+ * identifier box would be a control nobody can use without a database; a task
+ * raised unassigned is a real, useful state, and it appears in the queue.
+ *
+ * The moment a people-picker endpoint exists, this is the first place to use
+ * it.
+ */
+function RaiseTaskForm() {
+  const writes = useCreateTask();
+  const [title, setTitle] = useState("");
+  const [taskType, setTaskType] = useState("review");
+  const [priority, setPriority] = useState<string>("medium");
+  const [due, setDue] = useState("");
+  const [action, setAction] = useState("");
+
+  return (
+    <CreateForm
+      title="Raise a task"
+      permission="project.edit"
+      submitLabel="Raise task"
+      isPending={writes.isPending}
+      error={writes.error}
+      done={writes.created ? "Task raised — it will appear in the queue." : null}
+      onSubmit={() =>
+        writes.create(
+          {
+            task_type: taskType,
+            title,
+            priority,
+            due_date: due === "" ? undefined : due,
+            required_action: action === "" ? undefined : action,
+          },
+          () => {
+            setTitle("");
+            setDue("");
+            setAction("");
+          },
+        )
+      }
+    >
+      <label className={CREATE_LABEL}>
+        Title
+        <input
+          className={CREATE_INPUT}
+          required
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Type
+        <input
+          className={CREATE_INPUT}
+          required
+          placeholder="review, retest, correction…"
+          value={taskType}
+          onChange={(event) => setTaskType(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Priority
+        <select
+          className={CREATE_INPUT}
+          value={priority}
+          onChange={(event) => setPriority(event.target.value)}
+        >
+          {TASK_PRIORITIES.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className={CREATE_LABEL}>
+        Due date
+        <input
+          className={CREATE_INPUT}
+          type="date"
+          value={due}
+          onChange={(event) => setDue(event.target.value)}
+        />
+      </label>
+      <label className={`${CREATE_LABEL} sm:col-span-2`}>
+        Required action
+        <input
+          className={CREATE_INPUT}
+          placeholder="What has to happen for this to be done?"
+          value={action}
+          onChange={(event) => setAction(event.target.value)}
+        />
+      </label>
+    </CreateForm>
   );
 }

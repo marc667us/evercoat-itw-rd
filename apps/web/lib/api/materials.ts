@@ -107,3 +107,58 @@ export function fetchSuppliers(
     supplierList.parse(payload),
   );
 }
+
+/**
+ * A new raw material.
+ *
+ * 🔴 EVERY NUMBER IS A STRING ON THE WIRE.
+ *
+ * `density_g_cm3`, `solids_fraction`, `cost_per_kg` and the two equivalent
+ * weights are `NUMERIC` in PostgreSQL and `Decimal` in Pydantic. Sending them
+ * as JavaScript numbers would push a controlled value through binary floating
+ * point before the server ever saw it — `CLAUDE.md` §5 forbids exactly that,
+ * and the API's own comment says the boundary is where the guarantee is made.
+ * The form collects text and it is sent as text.
+ *
+ * ⚠️ `status` IS NOT HERE. Creation always yields `development`; the server
+ * says so and offering the field would imply a choice that does not exist.
+ */
+export interface MaterialCreateRequest {
+  readonly material_code: string;
+  readonly name: string;
+  readonly category: string;
+  readonly role: string;
+  readonly description?: string;
+  readonly cas_number?: string;
+  readonly density_g_cm3?: string;
+  readonly solids_fraction?: string;
+  readonly cost_per_kg?: string;
+  readonly hazard_summary?: string;
+  readonly requires_sds?: boolean;
+  readonly notes?: string;
+}
+
+/** The roles a material can play, exactly as the server's pattern allows. */
+export const MATERIAL_ROLES = [
+  "resin",
+  "binder",
+  "hardener",
+  "catalyst",
+  "filler",
+  "extender",
+  "pigment",
+  "additive",
+  "solvent",
+  "other",
+] as const;
+
+export function createMaterial(
+  credentials: ApiCredentials,
+  request: MaterialCreateRequest,
+): Promise<{ id: string; material_code: string }> {
+  return apiRequest(
+    { path: "/api/materials", method: "POST", credentials, body: request },
+    (payload) =>
+      z.object({ id: z.string(), material_code: z.string() }).passthrough().parse(payload),
+  );
+}

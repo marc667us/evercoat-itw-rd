@@ -31,9 +31,23 @@
 
 import Link from "next/link";
 
+import {
+  CreateForm,
+  CREATE_INPUT,
+  CREATE_LABEL,
+} from "@/components/ui/create-form";
 import { LiveOnlyPage, DataSourceError } from "@/components/ui/data-source-banner";
 import { Absent } from "@/components/ui/record-link";
-import { useTests } from "@/lib/api/hooks";
+import { useState } from "react";
+
+import {
+  useBatch,
+  useBatches,
+  useCreateTest,
+  useTestMethods,
+  useTests,
+} from "@/lib/api/hooks";
+import type { Batch } from "@/lib/api/laboratory";
 import type { Test } from "@/lib/api/testing";
 
 /** An axis value as a readable word, without implying a judgement. */
@@ -65,6 +79,10 @@ export default function TestingPage() {
             light is derived from them by the server, not on this screen."
       unavailable={unavailable}
     >
+      <div className="mb-4">
+        <PlanTestForm />
+      </div>
+
       {error !== null ? (
         <DataSourceError error={error} />
       ) : unavailable !== null ? (
@@ -186,5 +204,189 @@ export default function TestingPage() {
         </>
       )}
     </LiveOnlyPage>
+  );
+}
+
+/**
+ * Plan a test.
+ *
+ * 🔴 BATCH FIRST, THEN SAMPLE — BECAUSE THAT IS THE THREAD, AND BECAUSE THERE
+ * IS NO SAMPLES LIST.
+ *
+ * §2 runs `Formula Version → Lab Batch → Sample → Test`, and a test is planned
+ * against a physical sample. There is no organization-wide samples endpoint —
+ * samples are returned by the batch detail — so this picks a batch and then a
+ * sample from it. That is not a workaround: choosing the sample without its
+ * batch would ask a person to identify a sample number out of context, and the
+ * batch is what they actually have in front of them.
+ *
+ * ⚠️ THE SAMPLE SELECT IS EMPTY UNTIL A BATCH IS CHOSEN, and says so rather
+ * than rendering a blank dropdown that looks broken.
+ *
+ * 🔴 NOTHING HERE SETS A RESULT OR A STATUS. §10: the five axes are stored and
+ * the colour is derived on the server. A form that offered "pass" at planning
+ * time would be inventing the one thing the product exists not to let a person
+ * pick.
+ */
+function PlanTestForm() {
+  const writes = useCreateTest();
+  const batches = useBatches<Batch[]>((live) => live);
+  const methods = useTestMethods();
+  const [batchId, setBatchId] = useState("");
+  const batch = useBatch(batchId);
+
+  const [testNumber, setTestNumber] = useState("");
+  const [sampleId, setSampleId] = useState("");
+  const [methodId, setMethodId] = useState("");
+  const [purpose, setPurpose] = useState("screening");
+  const [authority, setAuthority] = useState("preliminary");
+  const [plannedFor, setPlannedFor] = useState("");
+
+  const batchRows = batches.data ?? [];
+  const methodRows = methods.data ?? [];
+  const sampleRows = batchId === "" ? [] : (batch.data?.samples ?? []);
+
+  return (
+    <CreateForm
+      title="Plan a test"
+      permission="test.plan"
+      submitLabel="Plan test"
+      isPending={writes.isPending}
+      error={writes.error}
+      done={writes.created ? `${writes.created.test_number} planned.` : null}
+      disabled={
+        methodRows.length === 0
+          ? "No test methods are configured yet, and a test cannot be planned without one."
+          : false
+      }
+      onSubmit={() =>
+        writes.create(
+          {
+            test_number: testNumber,
+            sample_id: sampleId,
+            method_id: methodId,
+            test_purpose: purpose,
+            authority_level: authority,
+            planned_for: plannedFor === "" ? undefined : plannedFor,
+          },
+          () => {
+            setTestNumber("");
+            setPlannedFor("");
+          },
+        )
+      }
+    >
+      <label className={CREATE_LABEL}>
+        Test number
+        <input
+          className={CREATE_INPUT}
+          required
+          value={testNumber}
+          onChange={(event) => setTestNumber(event.target.value)}
+        />
+      </label>
+      <label className={CREATE_LABEL}>
+        Batch
+        <select
+          className={CREATE_INPUT}
+          required
+          value={batchId}
+          onChange={(event) => {
+            setBatchId(event.target.value);
+            // 🔴 CLEAR THE SAMPLE. It belonged to the OTHER batch, and leaving
+            // it selected would submit a sample from a batch the person is no
+            // longer looking at.
+            setSampleId("");
+          }}
+        >
+          <option value="">Choose a batch…</option>
+          {batchRows.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.batch_number}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className={CREATE_LABEL}>
+        Sample
+        <select
+          className={CREATE_INPUT}
+          required
+          value={sampleId}
+          disabled={batchId === ""}
+          onChange={(event) => setSampleId(event.target.value)}
+        >
+          <option value="">
+            {batchId === ""
+              ? "Choose a batch first"
+              : batch.isLoading
+                ? "Loading samples…"
+                : sampleRows.length === 0
+                  ? "This batch has no samples yet"
+                  : "Choose a sample…"}
+          </option>
+          {sampleRows.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.sample_number}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className={CREATE_LABEL}>
+        Method
+        <select
+          className={CREATE_INPUT}
+          required
+          value={methodId}
+          onChange={(event) => setMethodId(event.target.value)}
+        >
+          <option value="">Choose a method…</option>
+          {methodRows.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.method_code} — {row.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className={CREATE_LABEL}>
+        Purpose
+        <select
+          className={CREATE_INPUT}
+          value={purpose}
+          onChange={(event) => setPurpose(event.target.value)}
+        >
+          {/* §10: purpose is orthogonal to authority. A green SCREENING test is
+              never qualification evidence, which is why both are chosen. */}
+          <option value="screening">screening</option>
+          <option value="oversight">oversight</option>
+          <option value="confirmation">confirmation</option>
+          <option value="improvement">improvement</option>
+        </select>
+      </label>
+      <label className={CREATE_LABEL}>
+        Authority level
+        <select
+          className={CREATE_INPUT}
+          value={authority}
+          onChange={(event) => setAuthority(event.target.value)}
+        >
+          <option value="preliminary">preliminary</option>
+          <option value="development">development</option>
+          <option value="controlled">controlled</option>
+          <option value="validation">validation</option>
+          <option value="qualification">qualification</option>
+          <option value="release">release</option>
+        </select>
+      </label>
+      <label className={CREATE_LABEL}>
+        Planned for
+        <input
+          className={CREATE_INPUT}
+          type="date"
+          value={plannedFor}
+          onChange={(event) => setPlannedFor(event.target.value)}
+        />
+      </label>
+    </CreateForm>
   );
 }
