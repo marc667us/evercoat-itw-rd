@@ -23,6 +23,7 @@ re-proposed every year by somebody who was not in the room.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from dataclasses import dataclass
 from datetime import date
@@ -33,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import AuditEvent, write_audit
 from app.core.logging import log_audit
+from app.core.notifications import notify
 from app.core.tenancy import require_active_member
 
 __all__ = [
@@ -215,6 +217,53 @@ def submit_opportunity(
     means somebody is doing feasibility work, and this function does not know
     whether anyone is.
     """
+    # ── The Research Center gate (062) ────────────────────────────────
+    #
+    # 🔴 AN INNOVATION CARRYING AN INVESTIGATION MUST BE SCREENED FIRST.
+    #
+    # Owner: "the innovation information must be screened and researched at the
+    # material safety data and research center before requirements are sent and
+    # pipeline follows up."
+    #
+    # Submission is the arrow into the decision queue, and a decision is what
+    # makes a project — so this is the last point at which "has anyone actually
+    # looked at this?" can still be asked.
+    #
+    # ⚠️ CONDITIONAL, AND DELIBERATELY SO. Only opportunities that HAVE a linked
+    # investigation are gated. Most are raised inside the business and have
+    # none; gating those would put a Research Center step in front of every
+    # idea anybody ever had, and would have broken the golden scenario on its
+    # first run.
+    #
+    # ⚠️ A FINDING, NOT AN INVESTIGATION. Opening an investigation is starting
+    # to look; recording a finding is having looked. Accepting the former would
+    # make the gate satisfiable by clicking "open" — a check that cannot fail.
+    screening = session.execute(
+        text(
+            """
+            SELECT i.investigation_code,
+                   count(f.id) AS findings
+              FROM research.investigations i
+              LEFT JOIN research.findings f
+                     ON f.investigation_id = i.id
+                    AND f.organization_id = i.organization_id
+             WHERE i.opportunity_id = :oid
+               AND i.organization_id = :org
+             GROUP BY i.investigation_code
+            """
+        ),
+        {"oid": opportunity_id, "org": organization_id},
+    ).one_or_none()
+
+    if screening is not None and screening.findings == 0:
+        raise OpportunityStateError(
+            f"this innovation is being screened in the Research Center as "
+            f"{screening.investigation_code}, and that investigation has "
+            "recorded no finding yet. Record what the screening found before "
+            "sending it for a decision — a decision taken on an unscreened "
+            "note is one nobody can defend later."
+        )
+
     row = (
         session.execute(
             text(
@@ -615,3 +664,216 @@ def opportunity_detail(
     if row is None:
         raise OpportunityNotFoundError("opportunity not found")
     return dict(row)
+
+
+def create_opportunity_from_product(
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    public_product_id: uuid.UUID,
+    note: str,
+    datasheet_url: str | None = None,
+) -> dict[str, Any]:
+    """A chemist reading a competitor card raises an innovation from it.
+
+    The workflow the owner described: read a card, find something worth acting
+    on, paste it into a box, attach the data sheet, send it to Innovation, and
+    have the person who decides be told it is waiting.
+
+    🔴 THE PERSON'S WORDS ARE THE RECORD. THE APPLICATION ADDS NO ANALYSIS.
+
+    `note` goes into `market_need` as written. Nothing here summarises it,
+    scores it or infers a technical concept from it — that would be the
+    application putting words into a chemist's opportunity, and a reviewer
+    could no longer tell which sentence came from a person.
+
+    What the application DOES add is provenance: which public product this came
+    from and which data sheet was attached, so a reviewer can check the claim
+    against its source rather than take it on trust.
+
+    🔴 WHO IS TOLD IS RESOLVED FROM THE DATABASE, NOT FROM A ROLE NAME.
+
+    §6: authorize on permissions, never on role names. The recipients are
+    whoever holds `opportunity.decide` in THIS organization, read through
+    member_roles -> role_permissions -> permissions. Hard-coding
+    "product_development_lead" would break the moment an organization gave that
+    permission to a different role, and it would break silently — the
+    notification simply would not arrive.
+
+    ⚠️ AND IF NOBODY HOLDS IT, THAT IS REPORTED RATHER THAN SWALLOWED. An
+    opportunity nobody is told about is one nobody acts on, and a caller who
+    got a 201 would reasonably assume somebody had been alerted. `notified` in
+    the response is the honest count.
+    """
+    if not note.strip():
+        raise OpportunityStateError(
+            "an innovation note needs the observation that prompted it — "
+            "an empty one gives the reviewer nothing to decide on"
+        )
+
+    product = session.execute(
+        text(
+            """
+            SELECT manufacturer_name, product_name, category, source_url
+              FROM public_intel.v_products WHERE id = :id
+            """
+        ),
+        {"id": public_product_id},
+    ).one_or_none()
+    if product is None:
+        raise OpportunityStateError("that product is not in the published public catalogue")
+
+    # A per-organization code, like every other. `opportunities_org_code_key`
+    # is tenant-scoped, so a global sequence would be wrong as well as
+    # disclosing.
+    used = session.execute(
+        text(
+            "SELECT count(*) FROM innovation.opportunities "
+            " WHERE organization_id = :org AND opportunity_code LIKE :like"
+        ),
+        {"org": organization_id, "like": f"OPP-{dt.date.today().year}-MKT%"},
+    ).scalar_one()
+    code = f"OPP-{dt.date.today().year}-MKT{used + 1:02d}"
+
+    opportunity_id = create_opportunity(
+        session,
+        data=OpportunityInput(
+            opportunity_code=code,
+            title=f"From the marketplace: {product.manufacturer_name} {product.product_name}",
+            market_need=note.strip(),
+            product_family=product.category,
+            technical_concept=(
+                "Raised by a person from a competitor product card. The note "
+                "above is theirs, unedited.\n\n"
+                f"Source product: {product.manufacturer_name} — "
+                f"{product.product_name}\n"
+                f"Catalogue source: {product.source_url or 'not recorded'}\n"
+                f"Attached data sheet: {datasheet_url or 'none attached'}"
+            ),
+            priority="medium",
+        ),
+        actor_id=actor_id,
+        organization_id=organization_id,
+    )
+
+    # ── Open the screening, in the same transaction ───────────────────
+    #
+    # 🔴 THE GATE AND THE THING IT GATES ARE WRITTEN TOGETHER.
+    #
+    # `submit_opportunity` refuses an opportunity whose investigation has
+    # recorded no finding. If raising an innovation did not OPEN that
+    # investigation, the gate would be a rule about a link nothing creates — a
+    # gate on an unused path, which is a defect this session has already had to
+    # fix once today.
+    #
+    # Written directly rather than through `open_investigation`, which takes no
+    # `opportunity_id` (062 added the column); widening a domain service's
+    # signature to serve one caller is how it accumulates parameters nobody
+    # else passes. The code follows the per-organization, per-year shape 058
+    # established.
+    year = dt.date.today().year
+    issued = session.execute(
+        text(
+            "SELECT count(*) FROM research.investigations "
+            " WHERE organization_id = :org AND investigation_code LIKE :like"
+        ),
+        {"org": organization_id, "like": f"INV-{year}-%"},
+    ).scalar_one()
+    investigation_code = f"INV-{year}-{issued + 1000}"
+
+    investigation_id = session.execute(
+        text(
+            """
+            INSERT INTO research.investigations
+                (organization_id, opportunity_id, investigation_code, title,
+                 research_question, opened_by, owner_user_id)
+            -- The person who raised it owns the screening until somebody
+            -- reassigns it. `owner_user_id` is NOT NULL, and defaulting it to
+            -- nobody would create an investigation with no one accountable for
+            -- it — which is how a screening queue fills with work nobody owns.
+            VALUES (:org, :opp, :code, :title, :question, :actor, :actor)
+            RETURNING id
+            """
+        ),
+        {
+            "org": organization_id,
+            "opp": opportunity_id,
+            "code": investigation_code,
+            "title": f"Screening: {product.manufacturer_name} {product.product_name}",
+            "question": (
+                "Is this observation supported, and is the chemistry safe and "
+                "available to work with? Screen the material safety data and "
+                "the published sources before this becomes a project."
+            ),
+            "actor": actor_id,
+        },
+    ).scalar_one()
+
+    deciders = (
+        session.execute(
+            text(
+                """
+            -- 🔴 THE JOIN GOES THROUGH `organization_members`, AND THE FIRST
+            -- VERSION DID NOT. It read `mr.user_id` and `mr.organization_id`;
+            -- `core.member_roles` has NEITHER -- it is (member_id, role_id),
+            -- and the user and the tenant live on `organization_members`.
+            --
+            -- mypy and ruff both passed it. A column name inside `text()` is a
+            -- string to every tool in this repository, so the only thing that
+            -- was ever going to catch this was running it.
+            SELECT DISTINCT om.user_id
+              FROM core.organization_members om
+              JOIN core.member_roles mr ON mr.member_id = om.id
+              JOIN core.role_permissions rp ON rp.role_id = mr.role_id
+              JOIN core.permissions p ON p.id = rp.permission_id
+             WHERE p.code = 'opportunity.decide'
+               AND om.organization_id = :org
+               AND om.status = 'active'
+               AND om.user_id <> :actor
+            """
+            ),
+            {"org": organization_id, "actor": actor_id},
+        )
+        .scalars()
+        .all()
+    )
+
+    for recipient in deciders:
+        # §7: the recipient may see this. An opportunity is organization-wide
+        # (no project scope), and every recipient holds `opportunity.decide`
+        # in this organization — so naming it discloses nothing they could not
+        # already open.
+        notify(
+            session,
+            organization_id=organization_id,
+            recipient_id=recipient,
+            notification_type="opportunity_raised",
+            title=f"New innovation from the marketplace: {code}",
+            body=(
+                f"{product.manufacturer_name} {product.product_name}. "
+                f"Raised from a competitor product card. Screening opened as "
+                f"{investigation_code} in the Research Center — it must record "
+                "a finding before this can be sent for a decision."
+            ),
+            entity_type="opportunity",
+            entity_id=opportunity_id,
+            is_actionable=True,
+        )
+
+    return {
+        "opportunity_id": str(opportunity_id),
+        "opportunity_code": code,
+        "status": "draft",
+        "investigation_id": str(investigation_id),
+        "investigation_code": investigation_code,
+        "screening_required": True,
+        "notified": len(deciders),
+        # Said plainly, because "0" in a count field is easy to read past.
+        "note_if_nobody_notified": (
+            None
+            if deciders
+            else "nobody in this organization holds opportunity.decide, so no "
+            "one has been alerted. The opportunity exists and is waiting."
+        ),
+    }

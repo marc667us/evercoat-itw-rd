@@ -31,6 +31,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
   fetchPublicNews,
   fetchPublicNewsCategories,
+  newsAge,
+  STALE_AFTER_DAYS,
   type PublicNewsCategory,
   type PublicNewsItem,
 } from "@/lib/api/public-client";
@@ -125,8 +127,13 @@ export default function IndustryNewsPage() {
                         1–4 and a reader deserves to know whether a claim came
                         from a regulator or from general web information. */}
                     {item.source_name} · Tier {item.source_tier}
-                    {item.published_at ? ` · ${item.published_at.slice(0, 10)}` : ""}
                   </p>
+                  {/* 🔴 THE DATE IS ITS OWN LINE, NOT A SUFFIX.
+                      It used to be tacked onto the end of the source line at
+                      11px, where it read as part of the source name. A feed
+                      whose whole value is "what changed recently" has to make
+                      "when" easy to find. */}
+                  <PublishedOn publishedAt={item.published_at} />
                   {item.summary ? (
                     <p className="mt-2 line-clamp-5 text-xs leading-relaxed text-slate-600">
                       {item.summary_is_ai_generated ? (
@@ -187,5 +194,36 @@ function Chip({
     >
       {label}
     </button>
+  );
+}
+
+/**
+ * When it was published, and whether it is old enough to warn about.
+ *
+ * ⚠️ THE WARNING IS TEXT, NOT A COLOUR. §11 forbids conveying state by colour
+ * alone, and "this may be out of date" is exactly the kind of state a reader
+ * scanning a feed will otherwise miss.
+ */
+function PublishedOn({ publishedAt }: { publishedAt: string | null }) {
+  const { days, stale } = newsAge(publishedAt);
+
+  if (publishedAt === null) {
+    return (
+      <p className="mt-1 text-[11px] font-semibold text-amber-900">
+        No publication date recorded — treat as undated, not as current.
+      </p>
+    );
+  }
+
+  return (
+    <p className="mt-1 text-[11px] text-slate-700">
+      <span className="font-semibold">Published {publishedAt.slice(0, 10)}</span>
+      {days !== null ? ` · ${days} day${days === 1 ? "" : "s"} ago` : ""}
+      {stale ? (
+        <span className="ml-1 rounded bg-amber-200 px-1 py-0.5 font-bold text-amber-900">
+          over {STALE_AFTER_DAYS} days old — may not be current
+        </span>
+      ) : null}
+    </p>
   );
 }

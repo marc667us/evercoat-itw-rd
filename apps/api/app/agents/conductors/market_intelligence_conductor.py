@@ -71,6 +71,7 @@ __all__ = [
     "propose_catalogue_entry",
     "propose_opportunities_from_marketplace",
     "read_review_queue",
+    "review_stale_news",
 ]
 
 # The department's gate. `material.view` is the permission that already governs
@@ -274,3 +275,58 @@ def propose_opportunities_from_marketplace(
         )
 
     return raised
+
+
+def review_stale_news(
+    session: Session, caller: AgentPrincipal, *, older_than_days: int | None = None
+) -> dict[str, object]:
+    """Which published news items are older than the freshness threshold.
+
+    Owner instruction: an agent must handle news more than five days old.
+
+    🔴 WHAT IT HONESTLY DOES, AND WHY THAT IS LESS THAN "UPDATE".
+
+    It reports. It does not fetch a newer story, because nothing in this
+    application fetches an external source and an agent that invented a fresher
+    headline would be fabricating news about a named company. It does not
+    withdraw the item either — migration 060 refuses any publication-status
+    change from the agent role, and removing something from a public feed is a
+    publication decision.
+
+    What that leaves is worth having: a queue a human can act on, and a number
+    the feed itself can show, so nobody reads a two-week-old item as current.
+
+    ⚠️ READ ON THE CALLER'S SESSION. `public_intel` has no tenant, so nothing
+    is scoped here — but `authorize()` needs the caller's GUC, and the agent
+    pool has none. There is no write, so the draft-only boundary is not in
+    play.
+    """
+    caller = caller.authorize(session)
+    require(caller, department=DEPARTMENT, permission=PERMISSION)
+
+    days = older_than_days or market_intelligence.STALE_AFTER_DAYS
+    stale = market_intelligence.stale_news(session, older_than_days=days)
+    return {
+        "threshold_days": days,
+        "stale_count": len(stale),
+        # Said in the payload, not only in a docstring: a caller reading this
+        # over HTTP should not have to guess why nothing changed.
+        "action_taken": "none",
+        "why": (
+            "This agent reports stale items; it does not refresh or withdraw "
+            "them. There is no source-ingestion pipeline, and migration 060 "
+            "refuses any publication-status change from the agent role. A "
+            "human decides whether an aged item is withdrawn or replaced."
+        ),
+        "items": [
+            {
+                "news_id": str(item.news_id),
+                "headline": item.headline,
+                "published_at": item.published_at,
+                "age_days": item.age_days,
+                "source_name": item.source_name,
+                "source_url": item.source_url,
+            }
+            for item in stale
+        ],
+    }

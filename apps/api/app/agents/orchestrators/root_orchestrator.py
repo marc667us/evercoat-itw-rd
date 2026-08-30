@@ -59,6 +59,7 @@ __all__ = [
     "market_intelligence_opportunities",
     "market_intelligence_propose",
     "market_intelligence_review_queue",
+    "market_intelligence_stale_news",
     "materials_documents",
     "materials_material",
     "materials_materials",
@@ -540,4 +541,18 @@ def market_intelligence_opportunities(
     """
     return market_intelligence_conductor.propose_opportunities_from_marketplace(
         session, caller, limit=limit
+    )
+
+
+def market_intelligence_stale_news(
+    session: Session, *, caller: AgentPrincipal, older_than_days: int | None = None
+) -> dict[str, Any]:
+    """Published news older than the freshness threshold, for a human to act on.
+
+    The agent reports; it does not refresh or withdraw. `action_taken` in the
+    payload says so, so a caller reading this over HTTP is not left inferring
+    that something happened.
+    """
+    return market_intelligence_conductor.review_stale_news(
+        session, caller, older_than_days=older_than_days
     )

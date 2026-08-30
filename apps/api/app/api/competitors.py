@@ -31,6 +31,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.agents.orchestrators.root_orchestrator import (
+    AgentPrincipal,
+    market_intelligence_stale_news,
+)
 from app.core.documents import get_object_store, get_scanner
 from app.core.file_types import FileTypeRejectedError
 from app.core.malware import (
@@ -526,3 +530,32 @@ def post_adopt_public_product(
         raise _refuse(exc) from exc
     session.commit()
     return result
+
+
+@router.get(
+    "/news/stale",
+    summary="Published industry news older than the freshness threshold",
+)
+def get_stale_news(
+    older_than_days: int | None = Query(default=None, ge=1, le=365),
+    principal: Principal = Depends(require_permission("material.view")),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """🔴 GIVEN A CALLER AT THE SAME TIME AS THE FUNCTION, DELIBERATELY.
+
+    The opportunity sweep was written, tested and reachable from nothing — no
+    route, no job — and only a check for callers found it. Writing this route
+    in the same change is the lesson applied rather than restated.
+
+    ⚠️ THROUGH THE ORCHESTRATOR (§0.2). Routes never call a conductor.
+
+    The response reports; nothing is refreshed or withdrawn. `action_taken` in
+    the payload says so explicitly, because a caller who sees a list of stale
+    items and no explanation will reasonably assume something was done about
+    them.
+    """
+    return market_intelligence_stale_news(
+        session,
+        caller=AgentPrincipal.of(principal),
+        older_than_days=older_than_days,
+    )

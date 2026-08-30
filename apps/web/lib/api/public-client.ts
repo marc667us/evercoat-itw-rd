@@ -231,3 +231,31 @@ export function formatPrice(amount: string | null, currency: string | null): str
     maximumFractionDigits: 2,
   })}`;
 }
+
+/**
+ * How old a published item is, and whether that is old enough to say so.
+ *
+ * 🔴 FIVE DAYS, ON THE OWNER'S INSTRUCTION, AND ONE CONSTANT.
+ *
+ * The API carries the same threshold in `STALE_AFTER_DAYS`
+ * (`app/agents/tools/market_intelligence.py`). Two numbers in two languages
+ * cannot be type-checked into agreement — this repository has been bitten by
+ * exactly that shape more than once — so if this ever needs to change, change
+ * both and say so in the commit.
+ *
+ * ⚠️ AN UNDATED ITEM IS NOT FRESH. `published_at === null` returns `null` age
+ * and `stale: true`: unknown is not young, and treating an undated item as
+ * current is how one outlives every dated item on the page.
+ */
+export const STALE_AFTER_DAYS = 5;
+
+export function newsAge(publishedAt: string | null): {
+  days: number | null;
+  stale: boolean;
+} {
+  if (publishedAt === null) return { days: null, stale: true };
+  const then = Date.parse(publishedAt);
+  if (Number.isNaN(then)) return { days: null, stale: true };
+  const days = Math.floor((Date.now() - then) / 86_400_000);
+  return { days, stale: days > STALE_AFTER_DAYS };
+}

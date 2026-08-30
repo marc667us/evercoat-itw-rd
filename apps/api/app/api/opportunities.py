@@ -42,6 +42,7 @@ from app.agents.orchestrators.root_orchestrator import (
     AgentPrincipal,
     innovation_opportunities,
     innovation_opportunity,
+    market_intelligence_opportunities,
 )
 from app.core.security import Principal, get_db, require_permission
 from app.core.tenancy import CrossTenantReferenceError
@@ -52,6 +53,7 @@ from app.domains.opportunities.service import (
     OpportunityStateError,
     convert_to_project,
     create_opportunity,
+    create_opportunity_from_product,
     decide_opportunity,
     submit_opportunity,
 )
@@ -248,3 +250,80 @@ def post_conversion(
     except OpportunityStateError as exc:
         raise _refuse(exc) from exc
     return {"project_id": str(project_id)}
+
+
+@router.post(
+    "/from-marketplace",
+    status_code=status.HTTP_201_CREATED,
+    tags=["opportunities"],
+    summary="Have the market-intelligence agent raise opportunities from the public catalogue",
+)
+def post_opportunities_from_marketplace(
+    limit: int = Query(default=5, ge=1, le=25),
+    principal: Principal = Depends(require_permission("opportunity.create")),
+    session: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """🔴 THIS ROUTE EXISTS BECAUSE THE AGENT TIER HAD NO CALLER.
+
+    `propose_opportunities_from_marketplace` was written, tested and reachable
+    from nothing: no route, no job, no CLI. This repository has a name for
+    that — a function with no production path is the same defect as a
+    permission with no enforcement point, and it has caught nine of them. The
+    sweep would have sat there looking finished.
+
+    ⚠️ IT GOES THROUGH THE ORCHESTRATOR, not the conductor. §0.2: API routes
+    never call specialists or conductors directly, and
+    `tests/test_agent_topology.py` fails the build if one does.
+
+    Every opportunity it returns is a DRAFT. `submit_opportunity` — the
+    existing human action — is what moves one into the development workflow.
+    """
+    return market_intelligence_opportunities(
+        session, caller=AgentPrincipal.of(principal), limit=limit
+    )
+
+
+class InnovationFromProduct(BaseModel):
+    """What a chemist pastes into the box on a competitor product card."""
+
+    public_product_id: uuid.UUID
+    # 4000, matching a message. Long enough for a pasted specification, short
+    # enough that an opportunity stays something a reviewer will read.
+    note: str = Field(min_length=1, max_length=4000)
+    datasheet_url: str | None = Field(default=None, max_length=2000)
+
+
+@router.post(
+    "/from-product",
+    status_code=status.HTTP_201_CREATED,
+    tags=["opportunities"],
+    summary="Raise an innovation from a competitor product card",
+)
+def post_innovation_from_product(
+    payload: InnovationFromProduct,
+    principal: Principal = Depends(require_permission("opportunity.create")),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Read a card, paste what you found, attach the data sheet, send it in.
+
+    The note is stored as written. Nothing summarises or scores it — a reviewer
+    must be able to tell which sentence came from a person.
+
+    Whoever holds `opportunity.decide` in this organization is notified, and
+    the response says how many that was. If it is zero the response says so in
+    words as well: an opportunity nobody was told about is one nobody acts on,
+    and a bare 201 would imply somebody had been alerted.
+    """
+    try:
+        result = create_opportunity_from_product(
+            session,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            public_product_id=payload.public_product_id,
+            note=payload.note,
+            datasheet_url=payload.datasheet_url,
+        )
+    except OpportunityStateError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    session.commit()
+    return result

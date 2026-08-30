@@ -43,14 +43,17 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 __all__ = [
+    "STALE_AFTER_DAYS",
     "CategoryGap",
     "DraftedNews",
     "DraftedProduct",
+    "StaleNews",
     "category_gaps",
     "draft_manufacturer",
     "draft_news_item",
     "draft_product",
     "review_queue",
+    "stale_news",
 ]
 
 
@@ -350,6 +353,83 @@ def category_gaps(session: Session, *, limit: int = 10) -> list[CategoryGap]:
             competitor_products=r.competitor_products,
             adopted=r.adopted,
             manufacturers=r.manufacturers,
+        )
+        for r in rows
+    ]
+
+
+# The age at which a published item stops being reported as current. Five days,
+# on the owner's instruction (2026-08-30). One constant, because a threshold
+# written in two places is a threshold that will disagree with itself.
+STALE_AFTER_DAYS = 5
+
+
+@dataclass(frozen=True, slots=True)
+class StaleNews:
+    """A published item old enough that nobody should read it as current."""
+
+    news_id: uuid.UUID
+    headline: str
+    published_at: str | None
+    age_days: int | None
+    source_name: str
+    source_url: str
+
+
+def stale_news(session: Session, *, older_than_days: int = STALE_AFTER_DAYS) -> list[StaleNews]:
+    """Published news older than the threshold.
+
+    🔴 IT REPORTS. IT DOES NOT REFRESH, AND IT CANNOT.
+
+    The owner asked for an agent that updates news more than five days old.
+    Two things stop "update" meaning "fetch a newer version", and both are
+    real rather than a shortcut:
+
+    1. THERE IS NO INGESTION PIPELINE. Nothing in this application fetches an
+       external source. Building one needs an outbound gateway, a source
+       allowlist and robots/ToS review — none of which exists, and an agent
+       that invented a fresher headline instead would be fabricating news
+       about a named company.
+
+    2. THE AGENT CANNOT CHANGE A PUBLICATION STATUS AT ALL. Migration 060's
+       trigger refuses any non-draft write from `evercoat_agent`, so it cannot
+       withdraw a stale item either. That is the boundary working, not a gap:
+       removing something from a public feed is a publication decision.
+
+    So the honest unit of work is: find them, and let the surface say how old
+    they are. `age_days` is computed by the DATABASE from `published_at`, so
+    the number cannot drift from the timestamp it describes.
+
+    ⚠️ An item with no `published_at` is returned with a NULL age rather than
+    treated as fresh. Unknown is not young, and defaulting it to current is how
+    an undated item outlives every dated one.
+    """
+    rows = session.execute(
+        text(
+            """
+            SELECT n.id, n.headline, n.published_at, n.source_url,
+                   s.name AS source_name,
+                   CASE WHEN n.published_at IS NULL THEN NULL
+                        ELSE EXTRACT(DAY FROM (now() - n.published_at))::int
+                   END AS age_days
+              FROM public_intel.news_items n
+              JOIN public_intel.news_sources s ON s.id = n.source_id
+             WHERE n.publication_status = 'published'
+               AND (n.published_at IS NULL
+                    OR n.published_at < now() - make_interval(days => :days))
+             ORDER BY n.published_at ASC NULLS FIRST
+            """
+        ),
+        {"days": older_than_days},
+    ).all()
+    return [
+        StaleNews(
+            news_id=uuid.UUID(str(r.id)),
+            headline=r.headline,
+            published_at=r.published_at.isoformat() if r.published_at else None,
+            age_days=r.age_days,
+            source_name=r.source_name,
+            source_url=r.source_url,
         )
         for r in rows
     ]

@@ -168,6 +168,143 @@ function AdoptIntoPipeline({ product }: { product: PublicProduct }) {
   );
 }
 
+
+/**
+ * Raise an innovation from what this card says.
+ *
+ * The workflow the owner described: read the card, find something worth
+ * acting on, paste it here, attach the data sheet, send it to Innovation —
+ * and the person who decides is told it is waiting.
+ *
+ * 🔴 THE BOX IS EMPTY ON PURPOSE, AND STAYS THE PERSON'S WORDS.
+ *
+ * It would be easy to pre-fill it with the product's own description, and
+ * that would be worse than helpful: a reviewer opening the opportunity could
+ * no longer tell which sentence a chemist wrote and which the application
+ * pasted in. The provenance the application DOES add — which product, which
+ * data sheet, which catalogue source — is added beside the note, not inside
+ * it.
+ *
+ * ⚠️ THE DATA SHEET IS ATTACHED AS A LINK, NOT AN UPLOAD. This product has one
+ * document repository (§14) with checksums, malware scanning and an expiry
+ * chain, and a second upload path here would fork all of it. What the card
+ * actually holds is the manufacturer's published URL, so that is what travels.
+ */
+function CreateInnovation({ product }: { product: PublicProduct }) {
+  const { session } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [attach, setAttach] = useState(true);
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const [result, setResult] = useState<string | null>(null);
+
+  if (session.status !== "authenticated") return null;
+
+  if (state === "sent") {
+    return (
+      <p className="mt-2 text-[11px] font-semibold text-emerald-800">
+        {result}
+      </p>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-2 w-full rounded-md bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white"
+      >
+        Create innovation from this product
+      </button>
+    );
+  }
+
+  return (
+    <form
+      className="mt-2 rounded-md border border-slate-300 p-2"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setState("sending");
+        setResult(null);
+        try {
+          const payload = (await apiRequest(
+            {
+              path: "/api/opportunities/from-product",
+              method: "POST",
+              body: {
+                public_product_id: product.id,
+                note,
+                datasheet_url: attach ? product.source_url : null,
+              },
+              credentials: session.credentials,
+            },
+            (raw) => raw as { opportunity_code: string; notified: number },
+          )) as { opportunity_code: string; notified: number };
+          setState("sent");
+          setResult(
+            payload.notified > 0
+              ? `Sent to Innovation as ${payload.opportunity_code}. ${payload.notified} reviewer(s) alerted.`
+              : `Sent to Innovation as ${payload.opportunity_code}. Nobody here holds opportunity.decide, so no one was alerted — it is waiting in Innovation.`,
+          );
+        } catch (error) {
+          setState("failed");
+          setResult(
+            error instanceof Error ? error.message : "the note could not be sent",
+          );
+        }
+      }}
+    >
+      <label htmlFor={`note-${product.id}`} className="block text-[11px] font-semibold text-slate-800">
+        What did you find? Paste it here.
+      </label>
+      <textarea
+        id={`note-${product.id}`}
+        required
+        maxLength={4000}
+        rows={4}
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+        placeholder="Paste the specification, claim or observation that prompted this…"
+        className="mt-1 w-full rounded border border-slate-300 p-2 text-xs"
+      />
+      {product.source_url ? (
+        <label className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-700">
+          <input
+            type="checkbox"
+            checked={attach}
+            onChange={(event) => setAttach(event.target.checked)}
+          />
+          Attach the product data sheet
+        </label>
+      ) : (
+        <p className="mt-1 text-[11px] text-slate-600">
+          This product has no published document to attach.
+        </p>
+      )}
+      <div className="mt-2 flex gap-1.5">
+        <button
+          type="submit"
+          disabled={state === "sending" || note.trim() === ""}
+          className="rounded-md bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
+        >
+          {state === "sending" ? "Sending…" : "Upload innovation information"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="rounded-md border border-slate-300 px-3 py-1.5 text-[11px] font-semibold text-slate-700"
+        >
+          Cancel
+        </button>
+      </div>
+      {state === "failed" && result ? (
+        <p className="mt-1 text-[11px] text-red-700">{result}</p>
+      ) : null}
+    </form>
+  );
+}
+
 export function ProductCard({ product }: { product: PublicProduct }) {
   const price = formatPrice(product.price_amount, product.price_currency);
 
@@ -236,6 +373,7 @@ export function ProductCard({ product }: { product: PublicProduct }) {
         </Link>
       </div>
       <AdoptIntoPipeline product={product} />
+      <CreateInnovation product={product} />
     </article>
   );
 }
