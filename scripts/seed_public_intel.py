@@ -361,20 +361,27 @@ def main() -> None:
             )
 
     # ── report, and make the numbers checkable ────────────────────────────
+    #
+    # ⚠️ ONE STATEMENT WITH LITERAL TABLE NAMES, NOT A LOOP OVER f-STRINGS.
+    # The first version built `text(f"... FROM public_intel.{name}")` from a
+    # hardcoded tuple, which is not injectable today and which Semgrep blocked
+    # anyway (`avoid-sqlalchemy-text`). The rule is right about the shape: the
+    # tuple is one edit away from holding something a caller chose, and by then
+    # nobody re-reads the loop. There is no interpolation here at all.
     with engine.connect() as conn:
-        counts = {
-            name: conn.execute(
-                text(f"SELECT count(*) FROM public_intel.{name}")
-            ).scalar_one()
-            for name in (
-                "manufacturers",
-                "products",
-                "product_documents",
-                "news_items",
-                "news_categories",
-                "news_sources",
+        totals = conn.execute(
+            text(
+                """
+                SELECT (SELECT count(*) FROM public_intel.manufacturers)     AS manufacturers,
+                       (SELECT count(*) FROM public_intel.products)          AS products,
+                       (SELECT count(*) FROM public_intel.product_documents) AS product_documents,
+                       (SELECT count(*) FROM public_intel.news_items)        AS news_items,
+                       (SELECT count(*) FROM public_intel.news_categories)   AS news_categories,
+                       (SELECT count(*) FROM public_intel.news_sources)      AS news_sources
+                """
             )
-        }
+        ).one()
+        counts = dict(totals._mapping)
         undeclared = conn.execute(
             text(
                 "SELECT count(*) FROM public_intel.products "
