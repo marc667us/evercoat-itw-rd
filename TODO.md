@@ -2,6 +2,47 @@
 
 **Updated 2026-08-29. Read `RESUME_HERE.md` first.**
 
+## ▶ NEXT SESSION, FIRST TASK — the landing page + competitor marketplace
+
+Owner instruction, 2026-08-29 at session close, verbatim:
+
+> "when the app link is accessed the app home page which also the landing page
+> comes up, this landing page has the signup and sign in, it has competitor
+> products market place product cards like in solarpro market place user can
+> browse each competitor product has product name pricing, product information
+> and links to product data sheet and label and literature, there shall be
+> material safety data as well as link to reach the formulation, read solarpro
+> market place product card and adopt, must have 50 competitor names with more
+> than 100 products the global competitor product marketplace must be managed
+> by agents"
+
+**Read SolarPro's card before designing anything** — it lives in
+`Desktop/solar-pv-designer-lite/`. Adopt it; do not invent a second card.
+
+What exists: the whole `competitors` vertical (products, documents, samples,
+evidence, benchmarks, grading) and `material_safety` interpretations — both
+entirely behind authentication.
+
+🔴 **What does NOT exist, and must be decided before building:**
+
+- **No PUBLIC surface anywhere.** Every screen is behind sign-in, and
+  `LiveOnlyPage` renders a "no data source" notice when signed out. An
+  anonymous marketplace read path cuts across §6 and RLS and is the biggest
+  design question in this task. Do NOT bolt an anonymous flag onto the
+  existing routes.
+- **No sign-UP.** Keycloak self-registration is off, and self-registration
+  into a tenanted R&D system needs an approval path, not an open form.
+- **No PRICING column** on `competitor_products` — needs a migration.
+- **`/projects/[code]` still renders from `lib/demo/dataset`** and 404s for
+  live records. Fixed at the call site in `46884f3`, not at the source — a
+  card linking "through to the formulation" meets the same wall.
+- **50 competitors x 100+ products, agent-managed.** Rule 3 and §7: invented
+  content presented as fact is a defect. Synthetic rows must be labelled as
+  such; this application already refuses to render invented figures.
+- `/` currently redirects to `/dashboard`, asserted by `navigation.spec.ts`.
+  Changing it means changing that assertion deliberately, not deleting it.
+
+
 ✅ **PHASE 4 CLOSED — the research vertical (`e0b2394` + `ef160b3`, migration
 058 / q1000).** Eight `research` tables, six permissions, 26 routes,
 `/material-safety/research`, and §19's loop pressable end to end.

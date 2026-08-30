@@ -1,5 +1,99 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ 2026-08-29 (part 3) — FORMS, GATING, AND THREE LIVE-ONLY CONTRACT BUGS
+
+Tip **`e0ef6f0`** on `master`. Working tree clean, pushed. **CI green on every
+commit this session** — verified, not assumed.
+
+- apps/api **961 / 0 / 11** · apps/web **257** vitest
+- ruff, ruff format, mypy, `tsc`, ESLint all clean
+- Migration head **`q1000`** (058). No migration added in part 3.
+
+### 🔴 FIRST TASK IS NOT A BUG FIX
+
+The owner specified the next task at session close: **a public landing page at
+`/` carrying sign-up and sign-in, plus a competitor-product marketplace with
+SolarPro-style cards — 50 competitors, 100+ products, agent-managed.** The full
+instruction and the open design questions are at the top of `TODO.md`.
+
+**Read SolarPro's marketplace card first** (`Desktop/solar-pv-designer-lite/`)
+and adopt it. Then answer these before writing code:
+
+- **There is no PUBLIC surface in this application.** Every screen is behind
+  sign-in and `LiveOnlyPage` shows a "no data source" notice when signed out.
+  An anonymous read path cuts across §6 and RLS. Do not bolt a flag onto the
+  existing routes.
+- **There is no sign-UP.** Keycloak self-registration is off, and registration
+  into a tenanted R&D system needs an approval path.
+- `competitor_products` has **no pricing column**.
+- Rule 3 and §7: 100 agent-generated products presented as fact is a defect.
+  Synthetic rows must be labelled.
+
+### WHAT PART 3 DID
+
+**It opened by finding CI already broken** — `0bfc812` was CANCELLED (not
+passed) and `dbbd80b` had FAILED. Two e2e breaks from part 2's own work, both
+fixed. *"Queued at close" is not "passing".*
+
+- **`PUT /materials/{id}` had NO client at all.** The edit form now exists, and
+  loads from the DETAIL endpoint because the LIST omits four editable columns —
+  prefilling from the grid would have silently erased them on every save.
+- **Raise-a-task had never once raised a task** (404 + no owner). It has an
+  assignee control now, and Claim/Complete are pressable.
+- **Twelve controls were offered to callers the server refuses**, across
+  Material Safety, Competitors and the MSD button.
+- **`scripts/role_forms_audit.py` is committed** — 0 gaps across all ten roles,
+  down from 14, and still 0 with comments stripped.
+
+### 🔴 THE LESSON: THREE DEFECTS, ONE CAUSE
+
+All three were green in CI and invisible to every layer except a live press:
+
+1. `createTask` posted to `/api/tasks`; the router is at **`/api/my-work`**.
+2. `get_material` returned raw `Decimal`s — FastAPI encodes them as **floats**,
+   so the edit form could not load. **Codex found it.**
+3. `post_material` returned `{"id"}` while the client parsed `material_code` as
+   required — **the row was created and the response then failed to parse.**
+
+Server tests pass (the write is right), client tests stub the response, and
+`tsc` cannot relate a `dict[str, str]` to a Zod schema.
+`tests/e2e/api/serving.spec.ts` now asserts **every client path is a served
+path** (127 of them).
+
+### 🔴 FOUR OF MY OWN GUARDS COULD NOT FAIL
+
+Two source-scraping tests passed over the reverted fix; **hoisting a literal
+into a constant disabled the path-contract check**; a link guard flagged 10
+innocent sites. **Revert the fix and watch the test go red — every time.**
+
+### ⚠️ ENVIRONMENT
+
+- **Keycloak is on host 18080, Caddy 18081, Postgres 55432.** A probe of
+  `localhost:8080` returns nothing and looks like an outage.
+- **`demo-up.ps1` killed `explorer.exe`** by force-killing an unverified PID.
+  Fixed — it now names the process and refuses anything that is not
+  node/python/uvicorn. Recovery is `Start-Process explorer.exe`.
+- **`live-suite.sh` now waits for the identity provider.** Keycloak's ~2-minute
+  cold start after a demo restart caused 8 false failures.
+- 🔴 **Never edit a shell script while it is running.**
+- **The tunnel hostname changes on every demo restart** — read it from
+  `tmp/demo/cloudflared.err.log`.
+- **Ten demo users, one per role, one password** (`EvercoatDemo-2026!`).
+  🔴 **`lead.demo` holds neither `material.create` nor `test.plan`** — three
+  e2e tests failed on that false premise against a correct product.
+
+### ⚠️ OPEN, AND NAMED
+
+- `POST /my-work/{id}/reassign` — no client, no control. It needs a people
+  picker scoped to the task's project. I wrote the client and deleted it
+  rather than ship a caller-less function.
+- `MaterialActions` keeps `supplierId`/`target`/`reason` across a material
+  switch, so "Link supplier" can attach one material's supplier to another.
+- `/projects/[code]` renders from `lib/demo/dataset` and 404s for live records.
+  Fixed at the analytics call site only.
+
+---
+
 ## ▶▶ 2026-08-29 (part 2) — PHASE 5 §27, DEMO DATA, AND EVERY MISSING FORM
 
 Tip **`0bfc812`** on `master`. Working tree clean, pushed.
