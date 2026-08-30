@@ -160,11 +160,16 @@ def upgrade() -> None:
 
     # The write is INSERT-only. If it could SELECT, an anonymous caller
     # could enumerate everyone who has requested access.
-    for privilege, want in (("SELECT", False), ("UPDATE", False), ("DELETE", False), ("INSERT", True)):
+    access_request_privileges = (
+        ("SELECT", False),
+        ("UPDATE", False),
+        ("DELETE", False),
+        ("INSERT", True),
+    )
+    for privilege, want in access_request_privileges:
         got = bind.execute(
             text(
-                "SELECT has_table_privilege('evercoat_public', "
-                "'public_intel.access_requests', :p)"
+                "SELECT has_table_privilege('evercoat_public', 'public_intel.access_requests', :p)"
             ),
             {"p": privilege},
         ).scalar_one()
@@ -218,8 +223,7 @@ def upgrade() -> None:
     # `public` holds the extensions and nothing of ours. Every other schema
     # in this database is an application schema.
     in_app_schema = [
-        (r.nspname, r.proname) for r in reachable_fns
-        if r.nspname not in ("public", "public_intel")
+        (r.nspname, r.proname) for r in reachable_fns if r.nspname not in ("public", "public_intel")
     ]
     if in_app_schema:
         raise RuntimeError(
@@ -360,7 +364,7 @@ def upgrade() -> None:
                     """
                 )
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 - the probe asks WHETHER it refuses, not how
         refused = True
     if not refused:
         raise RuntimeError(
