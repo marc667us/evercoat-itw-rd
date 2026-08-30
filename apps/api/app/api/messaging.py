@@ -19,7 +19,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.core.security import Principal, get_db, get_principal, require_permission
@@ -51,6 +51,31 @@ class ChannelCreate(BaseModel):
     entity_type: str | None = Field(default=None, max_length=50)
     entity_id: uuid.UUID | None = None
     member_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _a_scoped_channel_names_its_project(self) -> ChannelCreate:
+        """I21. The database refuses this too — that is the boundary.
+
+        🔴 THIS IS THE MESSAGE, NOT THE CONTROL.
+
+        Migration 061 adds the CHECK, and 022 already had the one for
+        `project`. Both are what actually hold: a validator here stops nothing
+        that reaches the table by another path.
+
+        It exists because a `CheckViolation` names a constraint and not a
+        reason, and the reason matters — a `technical_thread` with no project
+        is readable by the whole organization, because `project_scope` treats
+        a NULL project as unscoped. Somebody creating one is not trying to
+        widen a permission; they are usually just omitting a field.
+        """
+        needs_project = {"project", "technical_thread"}
+        if self.channel_type in needs_project and self.project_id is None:
+            raise ValueError(
+                f"a {self.channel_type} channel must name its project: without "
+                "one it is visible to the whole organization, so a discussion "
+                "of a restricted record would be too"
+            )
+        return self
 
 
 class ThreadOpen(BaseModel):
