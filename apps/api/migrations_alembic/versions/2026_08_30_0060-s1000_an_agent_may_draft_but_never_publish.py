@@ -105,8 +105,15 @@ def upgrade() -> None:
             )
 
     for table in ("manufacturers", "products", "news_items", "product_documents"):
+        # ⚠️ THE TABLE NAME IS A BIND PARAMETER, NOT AN f-STRING.
+        # `has_table_privilege` takes the relation name as a VALUE, so there is
+        # no reason to build SQL here -- and Semgrep's `avoid-sqlalchemy-text`
+        # blocked the f-string version, correctly. The tuple above is hardcoded
+        # today; it is one edit away from not being, and by then nobody
+        # re-reads the loop.
         if bind.execute(
-            text(f"SELECT has_table_privilege('evercoat_agent', 'public_intel.{table}', 'DELETE')")
+            text("SELECT has_table_privilege('evercoat_agent', :rel, 'DELETE')"),
+            {"rel": f"public_intel.{table}"},
         ).scalar_one():
             raise RuntimeError(
                 f"evercoat_agent holds DELETE on {table}; it could erase the "
