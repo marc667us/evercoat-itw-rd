@@ -59,7 +59,7 @@ import urllib.request
 from sqlalchemy import create_engine, text
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _real_competitors import COMPETITORS  # noqa: E402
+from _real_competitors import COMPETITORS
 
 DB = os.environ.get(
     "SEED_DATABASE_URL",
@@ -85,10 +85,25 @@ def resolves(url: str, attempts: int = 3) -> tuple[bool, str]:
     So a network-level failure is retried; an HTTP 404 is not, because that is
     an answer rather than a failure to get one.
     """
+    # 🔴 https ONLY, CHECKED BEFORE THE FETCH.
+    #
+    # Semgrep's `dynamic-urllib-use-detected` is right about the shape:
+    # `urlopen` honours `file://`, so a non-http scheme in the competitor list
+    # would make this READ A LOCAL FILE and then report the row as "resolved" —
+    # a source that verified against nothing.
+    #
+    # The list is hand-written today, which is why this was not a live
+    # vulnerability. It is also exactly the sort of list a future ingestion
+    # step will populate from elsewhere, and by then nobody re-reads this
+    # function. Refused here, before the request is built.
+    if not url.lower().startswith("https://"):
+        return (False, "not-https")
+
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     last = "?"
     for attempt in range(attempts):
         try:
+            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
             with urllib.request.urlopen(req, timeout=25) as r:
                 return (200 <= r.status < 300, str(r.status))
         except urllib.error.HTTPError as exc:
@@ -141,8 +156,12 @@ def main() -> None:
     with engine.begin() as conn:
         # Order matters: products reference manufacturers ON DELETE RESTRICT.
         # Documents cascade from products.
-        conn.execute(text("DELETE FROM public_intel.products WHERE is_demonstration_data"))
-        conn.execute(text("DELETE FROM public_intel.manufacturers WHERE is_demonstration_data"))
+        conn.execute(
+            text("DELETE FROM public_intel.products WHERE is_demonstration_data")
+        )
+        conn.execute(
+            text("DELETE FROM public_intel.manufacturers WHERE is_demonstration_data")
+        )
         # And any earlier real run, so this is idempotent rather than additive.
         conn.execute(
             text(

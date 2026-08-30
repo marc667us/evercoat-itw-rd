@@ -37,10 +37,22 @@ def upgrade() -> None:
 
     bind = op.get_bind()
 
-    # A tenant and a project to hang the probes on. Rolled back either way —
-    # a migration that leaves probe rows behind has written data nobody asked
-    # for into a real database.
-    with bind.begin_nested() as probe:
+    # A tenant and a project to hang the probes on.
+    #
+    # 🔴 NOT `with bind.begin_nested()`. The first version used the context
+    # manager and called `probe.rollback()` inside it, which SQLAlchemy refuses
+    # with "Can't operate on closed transaction inside context manager".
+    #
+    # It passed locally and failed in CI, and the difference is the reason this
+    # is worth a note: `core.users` has rows on a developer database and is
+    # EMPTY on CI's fresh one, so only CI took the early-return path. A probe
+    # whose control flow depends on seeded data will be exercised differently
+    # in the two places it runs.
+    #
+    # Explicit begin/rollback in a `finally`, so every path unwinds the same
+    # way and nothing is left behind whatever happens.
+    probe = bind.begin_nested()
+    try:
         org = bind.execute(
             text(
                 "INSERT INTO core.organizations (name, code) "
@@ -48,84 +60,78 @@ def upgrade() -> None:
             )
         ).scalar_one()
         user = bind.execute(text("SELECT id FROM core.users LIMIT 1")).scalar_one_or_none()
-        if user is None:
-            # No users yet (a fresh database mid-bootstrap). The constraint is
-            # still asserted below against the catalogue; the behavioural probe
-            # needs a creator and is skipped rather than faked.
-            probe.rollback()
-            _assert_constraint_exists(bind)
-            return
 
-        project = bind.execute(
-            text(
-                """
-                INSERT INTO projects.projects
-                    (organization_id, project_code, name, lead_user_id)
-                VALUES (:org, '__P061__', '__probe_061__', :u)
-                RETURNING id
-                """
-            ),
-            {"org": org, "u": user},
-        ).scalar_one()
+        if user is not None:
+            project = bind.execute(
+                text(
+                    """
+                    INSERT INTO projects.projects
+                        (organization_id, project_code, name, lead_user_id)
+                    VALUES (:org, '__P061__', '__probe_061__', :u)
+                    RETURNING id
+                    """
+                ),
+                {"org": org, "u": user},
+            ).scalar_one()
 
-        # 1. The write the constraint exists to refuse.
-        refused = False
-        try:
+            # 1. The write the constraint exists to refuse.
+            refused = False
+            try:
+                with bind.begin_nested():
+                    bind.execute(
+                        text(
+                            """
+                            INSERT INTO messaging.channels
+                                (organization_id, channel_type, name, entity_type,
+                                 entity_id, created_by)
+                            VALUES (:org, 'technical_thread', 'probe',
+                                    'formula_version', :eid, :u)
+                            """
+                        ),
+                        {"org": org, "eid": str(uuid.uuid4()), "u": user},
+                    )
+            except Exception:  # noqa: BLE001 - the probe asks WHETHER it refuses
+                refused = True
+            if not refused:
+                raise RuntimeError(
+                    "a technical_thread was created with no project. It is "
+                    "readable organization-wide, so a discussion of a "
+                    "restricted record would be too."
+                )
+
+            # 2. The write it must still allow, without which messaging is
+            #    broken and every probe above passes anyway.
             with bind.begin_nested():
                 bind.execute(
                     text(
                         """
                         INSERT INTO messaging.channels
-                            (organization_id, channel_type, name, entity_type,
-                             entity_id, created_by)
-                        VALUES (:org, 'technical_thread', 'probe',
+                            (organization_id, project_id, channel_type, name,
+                             entity_type, entity_id, created_by)
+                        VALUES (:org, :pid, 'technical_thread', 'probe',
                                 'formula_version', :eid, :u)
                         """
                     ),
-                    {"org": org, "eid": str(uuid.uuid4()), "u": user},
+                    {"org": org, "pid": project, "eid": str(uuid.uuid4()), "u": user},
                 )
-        except Exception:  # noqa: BLE001 - the probe asks WHETHER it refuses
-            refused = True
-        if not refused:
+
+            # 3. And a direct message still needs no project -- 022 governs
+            #    those by channel membership, and breaking them would be this
+            #    fix overreaching.
+            with bind.begin_nested():
+                bind.execute(
+                    text(
+                        """
+                        INSERT INTO messaging.channels
+                            (organization_id, channel_type, name, created_by)
+                        VALUES (:org, 'direct', 'probe', :u)
+                        """
+                    ),
+                    {"org": org, "u": user},
+                )
+    finally:
+        if probe.is_active:
             probe.rollback()
-            raise RuntimeError(
-                "a technical_thread was created with no project. It is "
-                "readable organization-wide, so a discussion of a restricted "
-                "record would be too."
-            )
-
-        # 2. The write it must still allow, without which messaging is broken
-        #    and every probe above passes anyway.
-        with bind.begin_nested():
-            bind.execute(
-                text(
-                    """
-                    INSERT INTO messaging.channels
-                        (organization_id, project_id, channel_type, name,
-                         entity_type, entity_id, created_by)
-                    VALUES (:org, :pid, 'technical_thread', 'probe',
-                            'formula_version', :eid, :u)
-                    """
-                ),
-                {"org": org, "pid": project, "eid": str(uuid.uuid4()), "u": user},
-            )
-
-        # 3. And a direct message still needs no project — 022 says those are
-        #    governed by channel membership, and a constraint that broke them
-        #    would be this fix overreaching.
-        with bind.begin_nested():
-            bind.execute(
-                text(
-                    """
-                    INSERT INTO messaging.channels
-                        (organization_id, channel_type, name, created_by)
-                    VALUES (:org, 'direct', 'probe', :u)
-                    """
-                ),
-                {"org": org, "u": user},
-            )
-
-        probe.rollback()
 
     _assert_constraint_exists(bind)
 
