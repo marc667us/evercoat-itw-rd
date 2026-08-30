@@ -43,8 +43,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 __all__ = [
+    "CategoryGap",
     "DraftedNews",
     "DraftedProduct",
+    "category_gaps",
     "draft_manufacturer",
     "draft_news_item",
     "draft_product",
@@ -290,3 +292,64 @@ def review_queue(session: Session, *, limit: int = 50) -> list[dict[str, object]
         {"limit": limit},
     ).all()
     return [dict(row._mapping) for row in rows]
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryGap:
+    """A category the public catalogue covers and this organization has not.
+
+    🔴 A COUNT, NOT AN INSIGHT.
+
+    `competitor_products` is how many products the PUBLIC catalogue publishes in
+    this category; `adopted` is how many this organization has brought into its
+    own pipeline. That is all this claims, and it is all it can honestly claim:
+    the application knows what the catalogue holds and what this tenant has
+    looked at, and it does not know the market.
+
+    It is deliberately NOT called an opportunity score. A number computed from
+    two counts, presented as a ranking of commercial opportunity, would be a
+    prediction wearing a measurement's clothes — which rule 3 exists to stop.
+    """
+
+    category: str
+    competitor_products: int
+    adopted: int
+    manufacturers: int
+
+
+def category_gaps(session: Session, *, limit: int = 10) -> list[CategoryGap]:
+    """Categories the public catalogue covers where this tenant has adopted least.
+
+    ⚠️ THE SESSION MUST BE THE CALLER'S, AND THAT IS NOT A STYLE POINT. The
+    `competitors.products` half is RLS-scoped, so "what has this organization
+    adopted" is answered by the database for THIS tenant. Run on an unscoped
+    connection it would count every tenant's adoptions and report a gap that
+    is somebody else's.
+    """
+    rows = session.execute(
+        text(
+            """
+            SELECT v.category,
+                   count(DISTINCT v.id)              AS competitor_products,
+                   count(DISTINCT v.manufacturer_id) AS manufacturers,
+                   count(DISTINCT c.id)              AS adopted
+              FROM public_intel.v_products v
+              LEFT JOIN competitors.products c
+                     ON c.public_product_id = v.id
+             WHERE v.category IS NOT NULL
+             GROUP BY v.category
+             ORDER BY count(DISTINCT c.id) ASC, count(DISTINCT v.id) DESC
+             LIMIT :limit
+            """
+        ),
+        {"limit": limit},
+    ).all()
+    return [
+        CategoryGap(
+            category=r.category,
+            competitor_products=r.competitor_products,
+            adopted=r.adopted,
+            manufacturers=r.manufacturers,
+        )
+        for r in rows
+    ]

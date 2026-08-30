@@ -46,6 +46,7 @@ from app.domains.competitor_intelligence.service import (
     CompetitorNotFoundError,
     CompetitorStateError,
     EvidenceInput,
+    adopt_public_product,
     composition_matrix,
     list_benchmarks,
     list_products,
@@ -481,3 +482,47 @@ def get_benchmarks(
         organization_id=principal.organization_id,
         competitor_product_id=competitor_product_id,
     )
+
+
+class AdoptPublicProduct(BaseModel):
+    """Bring a public catalogue product into this tenant's pipeline."""
+
+    public_product_id: uuid.UUID
+    project_id: uuid.UUID | None = None
+
+
+@router.post(
+    "/from-public",
+    status_code=status.HTTP_201_CREATED,
+    summary="Adopt a product from the public catalogue into this tenant",
+)
+def post_adopt_public_product(
+    payload: AdoptPublicProduct,
+    principal: Principal = Depends(require_permission("material.edit")),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """The signed-in half of a public product card.
+
+    🔴 IT MAKES NO COMPOSITION CLAIM. It creates the tenant's own competitor
+    record and links it to the public row; the evidence matrix stays empty
+    until a document, a sample or a test fills it. This application does not
+    hold a competitor's formula and does not infer one — 056 settled that.
+
+    `material.edit`, the same permission `POST /competitors/products` already
+    requires, because this IS that write with its fields read from the public
+    catalogue rather than typed by hand.
+    """
+    try:
+        result = adopt_public_product(
+            session,
+            organization_id=principal.organization_id,
+            actor_id=principal.user_id,
+            public_product_id=payload.public_product_id,
+            project_id=payload.project_id,
+        )
+    except CompetitorNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except CompetitorError as exc:
+        raise _refuse(exc) from exc
+    session.commit()
+    return result

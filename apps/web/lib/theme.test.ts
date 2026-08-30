@@ -53,10 +53,22 @@ const TEXT_STEPS = [
 ] as const;
 
 describe("theme palettes", () => {
-  it("offers exactly five options", () => {
+  it("offers exactly six options", () => {
     // The count is a requirement, not an accident of the list.
-    expect(THEMES).toHaveLength(5);
-    expect(THEMES.map((t) => t.id)).toEqual(["system", "light", "dark", "contrast", "paper"]);
+    //
+    // Six since 2026-08-30: `patriot` was added on the owner's instruction.
+    // Changed deliberately rather than loosened — an assertion relaxed to
+    // `toBeGreaterThan` would stop noticing a theme added by accident, and
+    // this list is offered to users in this order.
+    expect(THEMES).toHaveLength(6);
+    expect(THEMES.map((t) => t.id)).toEqual([
+      "system",
+      "light",
+      "dark",
+      "contrast",
+      "paper",
+      "patriot",
+    ]);
   });
 
   it("🔴 every text step clears WCAG AA on its own surface", () => {
@@ -457,14 +469,25 @@ describe("the pre-paint script", () => {
     }
   });
 
-  it("carries all four palettes, and the dark one is really dark", () => {
+  it("carries every palette, and the dark one is really dark", () => {
     const payload = /var P=(\{.*?\}),K=/.exec(script);
     expect(payload).not.toBeNull();
     const palettes = JSON.parse((payload as RegExpExecArray)[1] as string) as Record<
       string,
       Record<string, string>
     >;
-    expect(Object.keys(palettes).sort()).toEqual(["contrast", "dark", "light", "paper"]);
+    // 🔴 DERIVED FROM `PALETTES`, NOT A LIST TYPED OUT HERE.
+    //
+    // It used to name the four literally, and that is why `patriot` could be
+    // added to THEMES while the pre-paint script did not carry it — this test
+    // would have gone on passing over a theme that flashed the default on
+    // every load, because the script applies the palette BEFORE React
+    // hydrates and a missing one simply does nothing.
+    //
+    // The type system caught it first (`PALETTES` is an exhaustive Record over
+    // ThemeId), which is the better guard. This is the second one, and it now
+    // compares against the source of truth instead of a copy.
+    expect(Object.keys(palettes).sort()).toEqual(Object.keys(PALETTES).sort());
     expect(palettes["dark"]?.[CSS_VARIABLES.white]).toBe(PALETTES.dark.white);
   });
 

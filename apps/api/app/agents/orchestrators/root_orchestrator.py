@@ -56,6 +56,7 @@ __all__ = [
     "knowledge_search",
     "laboratory_batch",
     "laboratory_batches",
+    "market_intelligence_opportunities",
     "market_intelligence_propose",
     "market_intelligence_review_queue",
     "materials_documents",
@@ -526,3 +527,17 @@ def market_intelligence_review_queue(
 ) -> list[dict[str, Any]]:
     """What the agent tier has proposed and no human has decided on."""
     return market_intelligence_conductor.read_review_queue(session, caller, limit=limit)
+
+
+def market_intelligence_opportunities(
+    session: Session, *, caller: AgentPrincipal, limit: int = 5
+) -> list[dict[str, Any]]:
+    """Raise Innovation opportunities from gaps in the public catalogue.
+
+    Every one is a DRAFT. `submit_opportunity` — a human action — is what moves
+    one into the development workflow, and that is the existing §9 path rather
+    than a second one built for agents.
+    """
+    return market_intelligence_conductor.propose_opportunities_from_marketplace(
+        session, caller, limit=limit
+    )

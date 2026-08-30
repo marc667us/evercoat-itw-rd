@@ -46,13 +46,13 @@ export default function MarketplacePage() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
-      <header className="border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+    <div className="min-h-screen bg-slate-50">
+      <header className="border-b border-slate-200 bg-white px-4 py-3">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
-          <Link href="/" className="text-sm font-black text-slate-900 dark:text-slate-100">
+          <Link href="/" className="text-sm font-black text-slate-900">
             ITW EVERCOAT R&amp;D
           </Link>
-          <Link href="/industry-news" className="text-xs font-semibold text-slate-700 underline dark:text-slate-300">
+          <Link href="/industry-news" className="text-xs font-semibold text-slate-700 underline">
             Industry news
           </Link>
         </div>
@@ -95,7 +95,7 @@ function ProductList() {
 
   return (
     <Shell>
-      <h1 className="text-sm font-black uppercase tracking-wide text-slate-900 dark:text-slate-100">
+      <h1 className="text-sm font-black uppercase tracking-wide text-slate-900">
         Global Competitor Product Marketplace
       </h1>
       <form
@@ -113,18 +113,18 @@ function ProductList() {
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="Search by product, manufacturer or code…"
-          className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-2 text-xs"
         />
         <button
           type="submit"
-          className="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white dark:bg-slate-100 dark:text-slate-900"
+          className="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white"
         >
           Search
         </button>
       </form>
 
       {state === "ready" ? (
-        <p className="mt-3 text-[11px] text-slate-600 dark:text-slate-400">
+        <p className="mt-3 text-[11px] text-slate-600">
           {/* The count is the SERVED total, not `products.length`. A page of 60
               out of 300 saying "60 products" would be a quiet lie. */}
           Showing {products.length} of {total} published products.
@@ -133,11 +133,11 @@ function ProductList() {
 
       <div className="mt-4">
         {state === "loading" ? (
-          <p className="text-xs text-slate-600 dark:text-slate-400">Loading the catalogue…</p>
+          <p className="text-xs text-slate-600">Loading the catalogue…</p>
         ) : state === "unavailable" ? (
           <Unavailable />
         ) : products.length === 0 ? (
-          <p className="text-xs text-slate-600 dark:text-slate-400">
+          <p className="text-xs text-slate-600">
             No published competitor products match that search.
           </p>
         ) : (
@@ -201,7 +201,7 @@ function ProductDetail({ id }: { id: string }) {
   if (state === "loading") {
     return (
       <Shell>
-        <p className="text-xs text-slate-600 dark:text-slate-400">Loading the product…</p>
+        <p className="text-xs text-slate-600">Loading the product…</p>
       </Shell>
     );
   }
@@ -215,7 +215,7 @@ function ProductDetail({ id }: { id: string }) {
   if (state === "missing" || product === null) {
     return (
       <Shell>
-        <p className="text-xs text-slate-700 dark:text-slate-300">
+        <p className="text-xs text-slate-700">
           That product is not in the published catalogue.
         </p>
         <Link href="/marketplace" className="mt-2 inline-block text-xs font-semibold underline">
@@ -231,20 +231,20 @@ function ProductDetail({ id }: { id: string }) {
 
   return (
     <Shell>
-      <Link href="/marketplace" className="text-xs font-semibold text-slate-700 underline dark:text-slate-300">
+      <Link href="/marketplace" className="text-xs font-semibold text-slate-700 underline">
         ← Marketplace
       </Link>
 
       <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-500">
             {product.category ?? "Uncategorised"}
             {product.chemistry ? ` · ${product.chemistry}` : ""}
           </p>
-          <h1 className="mt-1 text-lg font-black text-slate-900 dark:text-slate-100">
+          <h1 className="mt-1 text-lg font-black text-slate-900">
             {product.product_name}
           </h1>
-          <p className="text-xs text-slate-600 dark:text-slate-400">
+          <p className="text-xs text-slate-600">
             {product.manufacturer_name}
             {product.product_code ? ` · ${product.product_code}` : ""}
           </p>
@@ -258,15 +258,15 @@ function ProductDetail({ id }: { id: string }) {
         <div className="text-right">
           {price ? (
             <>
-              <p className="text-lg font-black text-slate-900 dark:text-slate-100">{price}</p>
+              <p className="text-lg font-black text-slate-900">{price}</p>
               {product.price_as_of ? (
-                <p className="text-[10.5px] text-slate-500 dark:text-slate-400">
+                <p className="text-[10.5px] text-slate-500">
                   as of {product.price_as_of}
                 </p>
               ) : null}
             </>
           ) : (
-            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+            <p className="text-xs font-medium text-slate-500">
               No published price
             </p>
           )}
@@ -276,7 +276,7 @@ function ProductDetail({ id }: { id: string }) {
       {/* The spec's tab set, minus the ones that need an account. Those are not
           rendered-and-disabled: an anonymous visitor is told where they live,
           rather than shown a control that refuses. */}
-      <div role="tablist" aria-label="Product information" className="mt-4 flex flex-wrap gap-1 border-b border-slate-200 dark:border-slate-800">
+      <div role="tablist" aria-label="Product information" className="mt-4 flex flex-wrap gap-1 border-b border-slate-200">
         {TABS.map((entry) => (
           <button
             key={entry.id}
@@ -286,8 +286,8 @@ function ProductDetail({ id }: { id: string }) {
             onClick={() => setTab(entry.id)}
             className={`rounded-t-md px-3 py-1.5 text-xs font-semibold ${
               tab === entry.id
-                ? "border-x border-t border-slate-200 bg-white text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100"
-                : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+                ? "border-x border-t border-slate-200 bg-white text-slate-900"
+                : "text-slate-600 hover:text-slate-900"
             }`}
           >
             {entry.label}
@@ -295,7 +295,7 @@ function ProductDetail({ id }: { id: string }) {
         ))}
       </div>
 
-      <div className="mt-4 text-xs text-slate-700 dark:text-slate-300">
+      <div className="mt-4 text-xs text-slate-700">
         {tab === "overview" ? (
           <>
             <p>{product.description ?? "No published description."}</p>
@@ -305,7 +305,7 @@ function ProductDetail({ id }: { id: string }) {
               <Detail label="Manufacturer" value={product.manufacturer_name} />
               <Detail label="Source" value={product.source_url} isLink />
             </dl>
-            <p className="mt-4 rounded-md border border-slate-200 bg-white p-3 text-[11px] dark:border-slate-800 dark:bg-slate-900">
+            <p className="mt-4 rounded-md border border-slate-200 bg-white p-3 text-[11px]">
               Internal benchmarking, composition evidence, similar formulas and
               test results are part of the R&amp;D environment.{" "}
               <Link href="/#access" className="font-semibold underline">
@@ -320,9 +320,9 @@ function ProductDetail({ id }: { id: string }) {
           ) : (
             <ul className="space-y-2">
               {product.news.map((item) => (
-                <li key={item.id} className="rounded-md border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
-                  <p className="font-semibold text-slate-900 dark:text-slate-100">{item.headline}</p>
-                  <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-400">
+                <li key={item.id} className="rounded-md border border-slate-200 bg-white p-3">
+                  <p className="font-semibold text-slate-900">{item.headline}</p>
+                  <p className="mt-0.5 text-[11px] text-slate-600">
                     {item.source_name} · Tier {item.source_tier}
                     {item.published_at ? ` · ${item.published_at.slice(0, 10)}` : ""}
                   </p>
@@ -364,12 +364,12 @@ function ProductDetail({ id }: { id: string }) {
 function Detail({ label, value, isLink = false }: { label: string; value: string | null; isLink?: boolean }) {
   return (
     <div>
-      <dt className="text-[10.5px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+      <dt className="text-[10.5px] font-bold uppercase tracking-wide text-slate-500">
         {label}
       </dt>
-      <dd className="text-xs text-slate-800 dark:text-slate-200">
+      <dd className="text-xs text-slate-800">
         {value === null || value === "" ? (
-          <span className="text-slate-500 dark:text-slate-400">Not published</span>
+          <span className="text-slate-500">Not published</span>
         ) : isLink ? (
           <a href={value} target="_blank" rel="noopener noreferrer" className="underline">
             {value}
@@ -384,7 +384,7 @@ function Detail({ label, value, isLink = false }: { label: string; value: string
 
 function Unavailable() {
   return (
-    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900 dark:text-amber-200">
+    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
       <strong className="font-semibold">The public catalogue is unavailable.</strong> This
       deployment could not reach the intelligence service. Nothing has been
       substituted or estimated.

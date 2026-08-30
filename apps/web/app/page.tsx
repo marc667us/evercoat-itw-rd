@@ -88,30 +88,33 @@ export default function Home() {
   }, [load]);
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
-      <header className="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <div className="min-h-screen bg-slate-50">
+      <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-baseline gap-2">
-            <span className="text-sm font-black tracking-tight text-slate-900 dark:text-slate-100">
+            <span className="text-sm font-black tracking-tight text-slate-900">
               ITW EVERCOAT R&amp;D
             </span>
           </div>
           <nav aria-label="Public sections" className="flex items-center gap-4 text-xs font-semibold">
-            <a href="#marketplace" className="text-slate-700 hover:underline dark:text-slate-300">
+            <a href="#marketplace" className="text-slate-700 hover:underline">
               Marketplace
             </a>
-            <a href="#news" className="text-slate-700 hover:underline dark:text-slate-300">
+            <a href="#news" className="text-slate-700 hover:underline">
               Industry News
             </a>
-            <a href="#access" className="text-slate-700 hover:underline dark:text-slate-300">
-              Request access
+            <a
+              href="#access"
+              className="rounded-md border border-slate-400 px-3 py-1.5 text-slate-900 hover:bg-slate-100"
+            >
+              Sign up
             </a>
             {/* Signed in, the honest control is "go to your workspace", not a
                 second Sign in that would restart a flow already completed. */}
             {signedIn ? (
               <Link
                 href="/dashboard"
-                className="rounded-md bg-slate-900 px-3 py-1.5 text-white dark:bg-slate-100 dark:text-slate-900"
+                className="rounded-md bg-slate-900 px-3 py-1.5 text-white"
               >
                 Go to your workspace
               </Link>
@@ -125,7 +128,7 @@ export default function Home() {
                     ? undefined
                     : "This deployment has no identity provider configured."
                 }
-                className="rounded-md bg-slate-900 px-3 py-1.5 text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+                className="rounded-md bg-slate-900 px-3 py-1.5 text-white disabled:opacity-50"
               >
                 Sign in
               </button>
@@ -134,27 +137,38 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="border-b border-slate-200 bg-white px-4 py-10 dark:border-slate-800 dark:bg-slate-900">
+      <section className="border-b border-slate-200 bg-white px-4 py-10">
         <div className="mx-auto max-w-6xl">
-          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">
             Research • Benchmark • Monitor • Develop better products
           </p>
-          <h1 className="mt-3 max-w-3xl text-2xl font-black leading-tight text-slate-900 dark:text-slate-100">
+          <h1 className="mt-3 max-w-3xl text-2xl font-black leading-tight text-slate-900">
             Global competitor products, materials intelligence and industry
             developments supporting advanced R&amp;D decision-making.
           </h1>
           <div className="mt-5 flex flex-wrap gap-2">
             <a
               href="#marketplace"
-              className="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white dark:bg-slate-100 dark:text-slate-900"
+              className="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white"
             >
               Explore products
             </a>
             <a
               href="#news"
-              className="rounded-md border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-800 dark:border-slate-700 dark:text-slate-200"
+              className="rounded-md border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-800"
             >
               Industry news
+            </a>
+            {/* 🔴 THE WAY IN, REPEATED IN THE HERO.
+                The owner could not find sign-in or sign-up on the first
+                version: both were in the header, at 12px, at the far right of
+                a row that wraps on a narrow window. A control that exists and
+                cannot be found has the same value as one that does not. */}
+            <a
+              href="#access"
+              className="rounded-md border border-slate-400 px-4 py-2 text-xs font-semibold text-slate-900"
+            >
+              Sign up
             </a>
           </div>
         </div>
@@ -165,11 +179,11 @@ export default function Home() {
           <div className="flex flex-wrap items-end justify-between gap-3">
             <h2
               id="marketplace-heading"
-              className="text-sm font-black uppercase tracking-wide text-slate-900 dark:text-slate-100"
+              className="text-sm font-black uppercase tracking-wide text-slate-900"
             >
               Global Competitor Product Marketplace
             </h2>
-            <Link href="/marketplace" className="text-xs font-semibold text-slate-700 underline dark:text-slate-300">
+            <Link href="/marketplace" className="text-xs font-semibold text-slate-700 underline">
               View all competitor products
             </Link>
           </div>
@@ -189,11 +203,11 @@ export default function Home() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search by product, manufacturer or code…"
-              className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-2 text-xs"
             />
             <button
               type="submit"
-              className="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white dark:bg-slate-100 dark:text-slate-900"
+              className="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white"
             >
               Search
             </button>
@@ -201,11 +215,11 @@ export default function Home() {
 
           <div className="mt-4">
             {state === "loading" ? (
-              <p className="text-xs text-slate-600 dark:text-slate-400">Loading the catalogue…</p>
+              <p className="text-xs text-slate-600">Loading the catalogue…</p>
             ) : state === "unavailable" ? (
               <CatalogueUnavailable />
             ) : products.length === 0 ? (
-              <p className="text-xs text-slate-600 dark:text-slate-400">
+              <p className="text-xs text-slate-600">
                 No published competitor products match that search.
               </p>
             ) : (
@@ -222,11 +236,11 @@ export default function Home() {
           <div className="flex flex-wrap items-end justify-between gap-3">
             <h2
               id="news-heading"
-              className="text-sm font-black uppercase tracking-wide text-slate-900 dark:text-slate-100"
+              className="text-sm font-black uppercase tracking-wide text-slate-900"
             >
               Global Competitor Industry News Feed
             </h2>
-            <Link href="/industry-news" className="text-xs font-semibold text-slate-700 underline dark:text-slate-300">
+            <Link href="/industry-news" className="text-xs font-semibold text-slate-700 underline">
               View all industry intelligence
             </Link>
           </div>
@@ -235,7 +249,7 @@ export default function Home() {
             {state === "unavailable" ? (
               <CatalogueUnavailable />
             ) : news.length === 0 ? (
-              <p className="text-xs text-slate-600 dark:text-slate-400">
+              <p className="text-xs text-slate-600">
                 No published industry developments yet.
               </p>
             ) : (
@@ -251,7 +265,7 @@ export default function Home() {
         <AccessRequestSection />
       </main>
 
-      <footer className="border-t border-slate-200 bg-white px-4 py-6 text-[11px] text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+      <footer className="border-t border-slate-200 bg-white px-4 py-6 text-[11px] text-slate-600">
         <div className="mx-auto max-w-6xl">
           ITW Evercoat R&amp;D Platform — Materials · Formulation · Lab · Testing ·
           Research · Analytics. Access to the R&amp;D environment is granted by an
@@ -264,7 +278,7 @@ export default function Home() {
 
 function CatalogueUnavailable() {
   return (
-    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900 dark:text-amber-200">
+    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
       <strong className="font-semibold">The public catalogue is unavailable.</strong>{" "}
       This deployment could not reach the intelligence service, so nothing is
       shown. Nothing here has been substituted or estimated.
@@ -274,25 +288,25 @@ function CatalogueUnavailable() {
 
 function NewsCard({ item }: { item: PublicNewsItem }) {
   return (
-    <article className="flex h-full flex-col rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-      <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+    <article className="flex h-full flex-col rounded-lg border border-slate-200 bg-white p-4">
+      <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-500">
         {item.category_label}
         {item.region ? ` · ${item.region}` : ""}
       </p>
-      <h3 className="mt-1 text-sm font-bold leading-tight text-slate-900 dark:text-slate-100">
+      <h3 className="mt-1 text-sm font-bold leading-tight text-slate-900">
         {item.headline}
       </h3>
-      <p className="mt-1 text-[11px] text-slate-600 dark:text-slate-400">
+      <p className="mt-1 text-[11px] text-slate-600">
         {item.source_name} · Tier {item.source_tier}
         {item.published_at ? ` · ${item.published_at.slice(0, 10)}` : ""}
       </p>
       {item.summary ? (
-        <p className="mt-2 line-clamp-4 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+        <p className="mt-2 line-clamp-4 text-xs leading-relaxed text-slate-600">
           {/* 🔴 THE SPEC IS EXPLICIT: an AI summary is labelled as a summary and
               never replaces the source article. The label rides with the text,
               not in a legend somewhere else on the page. */}
           {item.summary_is_ai_generated ? (
-            <span className="mr-1 rounded bg-slate-200 px-1 py-0.5 text-[10px] font-bold uppercase text-slate-700 dark:bg-slate-700 dark:text-slate-200">
+            <span className="mr-1 rounded bg-slate-200 px-1 py-0.5 text-[10px] font-bold uppercase text-slate-700">
               AI summary
             </span>
           ) : null}
@@ -304,7 +318,7 @@ function NewsCard({ item }: { item: PublicNewsItem }) {
           href={item.source_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[11px] font-semibold text-slate-800 underline dark:text-slate-200"
+          className="text-[11px] font-semibold text-slate-800 underline"
         >
           Read the source
         </a>
@@ -333,17 +347,17 @@ function AccessRequestSection() {
     <section id="access" aria-labelledby="access-heading" className="mt-10">
       <h2
         id="access-heading"
-        className="text-sm font-black uppercase tracking-wide text-slate-900 dark:text-slate-100"
+        className="text-sm font-black uppercase tracking-wide text-slate-900"
       >
-        Request access to the R&amp;D environment
+        Sign up — request access to the R&amp;D environment
       </h2>
-      <p className="mt-1 max-w-2xl text-xs text-slate-600 dark:text-slate-400">
+      <p className="mt-1 max-w-2xl text-xs text-slate-600">
         Access is granted by an administrator, not automatically. Submitting this
         creates a request for review — it does not create an account.
       </p>
 
       {sent ? (
-        <p className="mt-3 rounded-md border border-emerald-300 bg-emerald-50 p-3 text-xs text-emerald-900 dark:border-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">
+        <p className="mt-3 rounded-md border border-emerald-300 bg-emerald-50 p-3 text-xs text-emerald-900">
           Your request has been queued for review.
         </p>
       ) : (
@@ -377,13 +391,13 @@ function AccessRequestSection() {
             <button
               type="submit"
               disabled={busy}
-              className="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+              className="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
             >
               {busy ? "Submitting…" : "Request access"}
             </button>
           </div>
           {error ? (
-            <p className="text-xs text-red-700 sm:col-span-2 dark:text-red-300">{error}</p>
+            <p className="text-xs text-red-700 sm:col-span-2">{error}</p>
           ) : null}
         </form>
       )}
@@ -404,7 +418,7 @@ function Field({
 }) {
   return (
     <div>
-      <label htmlFor={name} className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+      <label htmlFor={name} className="block text-[11px] font-semibold text-slate-700">
         {label}
         {required ? <span aria-hidden="true"> *</span> : null}
       </label>
@@ -413,7 +427,7 @@ function Field({
         name={name}
         type={type}
         required={required}
-        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
       />
     </div>
   );

@@ -54,6 +54,7 @@ __all__ = [
     "CompetitorNotFoundError",
     "CompetitorStateError",
     "EvidenceInput",
+    "adopt_public_product",
     "composition_matrix",
     "list_benchmarks",
     "list_products",
@@ -174,6 +175,7 @@ def register_product(
     market_segment: str | None = None,
     project_id: uuid.UUID | None = None,
     notes: str | None = None,
+    public_product_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Register a competitor product.
 
@@ -188,9 +190,10 @@ def register_product(
                     """
                     INSERT INTO competitors.products
                         (organization_id, project_id, manufacturer, product_name,
-                         product_code, market_segment, notes, registered_by)
+                         product_code, market_segment, notes, registered_by,
+                         public_product_id)
                     VALUES (:org, :project, :manufacturer, :name, :code, :segment,
-                            :notes, :actor)
+                            :notes, :actor, :public_product_id)
                     RETURNING id
                     """
                 ),
@@ -203,6 +206,7 @@ def register_product(
                     "segment": market_segment,
                     "notes": notes,
                     "actor": actor_id,
+                    "public_product_id": public_product_id,
                 },
             ).scalar_one()
     except DBAPIError as exc:
@@ -708,3 +712,83 @@ def list_benchmarks(
             {"org": organization_id, "product": competitor_product_id},
         ).mappings()
     ]
+
+
+def adopt_public_product(
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    public_product_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    """Bring a product from the PUBLIC catalogue into this tenant's pipeline.
+
+    🔴 IT COPIES THE IDENTITY AND NOTHING ELSE, AND THAT IS THE POINT.
+
+    What crosses the boundary is the manufacturer, the product name and a link
+    back to the public row. What does NOT cross is any claim about what is in
+    it — because the public catalogue holds no such claim, and manufacturing
+    one here would be inventing a named company's formulation.
+
+    Migration 056 already settled that for this schema: *"THE MATRIX IS NOT A
+    FORMULA. There is deliberately no competitor-recipe table."*
+    `competitors.composition_evidence` holds CLAIMS, each with its source and a
+    confidence, and "verified" needs a re-checkable source plus a named
+    verifier holding `compliance.review_sds`. A teardown is that matrix filling
+    up from an SDS, a label and lab work — not a recipe this function guessed.
+
+    So this is the FIRST STEP of a teardown, not the teardown. It gives the
+    evidence matrix, the benchmark and the improvement-opportunity workflow
+    something real to hang on.
+
+    ⚠️ `public_product_id` IS THE ONLY LINK, AND IT POINTS OUTWARD ONLY.
+    Nothing public reads it back: the public projection carries no count of how
+    many tenants adopted a product, because that would leak one tenant's
+    interest to every other reader.
+    """
+    public = session.execute(
+        text(
+            """
+            SELECT id, manufacturer_name, product_name, product_code, category,
+                   source_url
+              FROM public_intel.v_products
+             WHERE id = :id
+            """
+        ),
+        {"id": public_product_id},
+    ).one_or_none()
+    if public is None:
+        # A draft and a nonexistent product are the same answer, as they are on
+        # the public route: distinguishing them would let a signed-in caller
+        # enumerate unpublished rows.
+        raise CompetitorNotFoundError("that product is not in the published public catalogue")
+
+    # 🔴 THE LINK IS SET IN THE INSERT, NOT BY A FOLLOW-UP UPDATE.
+    #
+    # The first version wrote the row and then UPDATEd `public_product_id`. It
+    # failed with `permission denied for table products`, and the refusal was
+    # right: `evercoat_app` holds SELECT and INSERT on `competitors.products`
+    # and NOT update. That vertical is append-only by design, and the fix is
+    # not to widen the grant to suit one caller — it is to write the whole row
+    # once. Atomic as well: there is no window in which an adopted product
+    # exists without its link.
+    registered = register_product(
+        session,
+        organization_id=organization_id,
+        actor_id=actor_id,
+        public_product_id=public_product_id,
+        manufacturer=public.manufacturer_name,
+        product_name=public.product_name,
+        product_code=public.product_code,
+        market_segment=public.category,
+        project_id=project_id,
+        notes=(
+            "Adopted from the public competitor catalogue. "
+            f"Source: {public.source_url or 'not recorded'}. "
+            "No composition claim has been made — the evidence matrix is empty "
+            "until a document, a sample or a test fills it."
+        ),
+    )
+
+    return {**registered, "public_product_id": str(public_product_id)}

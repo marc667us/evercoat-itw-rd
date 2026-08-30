@@ -62,20 +62,20 @@ export default function IndustryNewsPage() {
   }, [load, active]);
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
-      <header className="border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+    <div className="min-h-screen bg-slate-50">
+      <header className="border-b border-slate-200 bg-white px-4 py-3">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
-          <Link href="/" className="text-sm font-black text-slate-900 dark:text-slate-100">
+          <Link href="/" className="text-sm font-black text-slate-900">
             ITW EVERCOAT R&amp;D
           </Link>
-          <Link href="/marketplace" className="text-xs font-semibold text-slate-700 underline dark:text-slate-300">
+          <Link href="/marketplace" className="text-xs font-semibold text-slate-700 underline">
             Marketplace
           </Link>
         </div>
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6">
-        <h1 className="text-sm font-black uppercase tracking-wide text-slate-900 dark:text-slate-100">
+        <h1 className="text-sm font-black uppercase tracking-wide text-slate-900">
           Global Competitor Industry News Feed
         </h1>
 
@@ -95,15 +95,15 @@ export default function IndustryNewsPage() {
 
         <div className="mt-4">
           {state === "loading" ? (
-            <p className="text-xs text-slate-600 dark:text-slate-400">Loading the feed…</p>
+            <p className="text-xs text-slate-600">Loading the feed…</p>
           ) : state === "unavailable" ? (
-            <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900 dark:text-amber-200">
+            <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
               <strong className="font-semibold">The industry feed is unavailable.</strong> This
               deployment could not reach the intelligence service. Nothing has
               been substituted.
             </div>
           ) : items.length === 0 ? (
-            <p className="text-xs text-slate-600 dark:text-slate-400">
+            <p className="text-xs text-slate-600">
               No published developments in this category yet.
             </p>
           ) : (
@@ -111,16 +111,16 @@ export default function IndustryNewsPage() {
               {items.map((item) => (
                 <article
                   key={item.id}
-                  className="flex h-full flex-col rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+                  className="flex h-full flex-col rounded-lg border border-slate-200 bg-white p-4"
                 >
-                  <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  <p className="text-[10.5px] font-bold uppercase tracking-wide text-slate-500">
                     {item.category_label}
                     {item.region ? ` · ${item.region}` : ""}
                   </p>
-                  <h2 className="mt-1 text-sm font-bold leading-tight text-slate-900 dark:text-slate-100">
+                  <h2 className="mt-1 text-sm font-bold leading-tight text-slate-900">
                     {item.headline}
                   </h2>
-                  <p className="mt-1 text-[11px] text-slate-600 dark:text-slate-400">
+                  <p className="mt-1 text-[11px] text-slate-600">
                     {/* The tier is shown, not hidden: the spec ranks sources
                         1–4 and a reader deserves to know whether a claim came
                         from a regulator or from general web information. */}
@@ -128,9 +128,9 @@ export default function IndustryNewsPage() {
                     {item.published_at ? ` · ${item.published_at.slice(0, 10)}` : ""}
                   </p>
                   {item.summary ? (
-                    <p className="mt-2 line-clamp-5 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                    <p className="mt-2 line-clamp-5 text-xs leading-relaxed text-slate-600">
                       {item.summary_is_ai_generated ? (
-                        <span className="mr-1 rounded bg-slate-200 px-1 py-0.5 text-[10px] font-bold uppercase text-slate-700 dark:bg-slate-700 dark:text-slate-200">
+                        <span className="mr-1 rounded bg-slate-200 px-1 py-0.5 text-[10px] font-bold uppercase text-slate-700">
                           AI summary
                         </span>
                       ) : null}
@@ -181,8 +181,8 @@ function Chip({
       aria-pressed={active}
       className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
         active
-          ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
-          : "border border-slate-300 text-slate-700 dark:border-slate-700 dark:text-slate-300"
+          ? "bg-slate-900 text-white"
+          : "border border-slate-300 text-slate-700"
       }`}
     >
       {label}

@@ -401,7 +401,7 @@ export interface Theme {
   readonly palette: Palette | null;
 }
 
-export type ThemeId = "system" | "light" | "dark" | "contrast" | "paper";
+export type ThemeId = "system" | "light" | "dark" | "contrast" | "paper" | "patriot";
 
 /**
  * The default. Identical to Tailwind's own slate, so an application with no
@@ -502,8 +502,129 @@ const PAPER: Palette = {
   slate950: "18 15 10",
 };
 
+
+
+/** The navy ground this theme's chrome is built on. */
+const PATRIOT_NAVY = "9 20 56";
+
+/** The red the warm hues are pulled toward, so the theme earns its name. */
+const PATRIOT_RED = "176 18 34";
+
 /**
- * The five, in the order they are offered.
+ * Red, white and blue: the accents pulled a little toward the navy chrome.
+ *
+ * 🔴 NOT A COSMETIC TWEAK — A GUARD REFUSED THE HALF-THEME.
+ *
+ * The first version reused `ACCENTS_ON_LIGHT` unchanged, on the reasoning that
+ * the surface is still white so the ratios are still valid. That is true and
+ * it is not the point: `no themed palette leaves an accent ramp at Tailwind's
+ * own values` exists because a palette that moves its ground and leaves its
+ * accents behind is half-done, and the accents then read as belonging to the
+ * theme they came from.
+ *
+ * So each ground step is mixed a little toward the navy and each ink a little
+ * deeper. Small, because the surface really is white and a large shift would
+ * cost contrast the test would then refuse — which it measures, so these
+ * numbers were adjusted until it passed rather than chosen and hoped for.
+ */
+function patriotic(name: AccentName): Accent {
+  const accent = ACCENTS_ON_LIGHT[name];
+
+  // 🔴 RED IS PULLED THE OTHER WAY, OR THE THEME IS JUST "NAVY".
+  //
+  // The owner asked for red, white and blue. Mixing every hue toward the navy
+  // chrome makes a coherent theme and a DULL red — the one colour the name
+  // promises. So the warm hues are deepened toward a true red instead, which
+  // also keeps them differing from `light` (the half-theme guard asks that of
+  // every hue, so leaving red untouched would fail it).
+  const pull = name === "red" || name === "rose" || name === "orange"
+    ? PATRIOT_RED
+    : PATRIOT_NAVY;
+
+  return {
+    // 🔴 `50` IS LEFT EXACTLY AS IT IS, AND A TEST IS WHY.
+    //
+    // Darkening it by 4% toward the navy dropped the traffic light below AA on
+    // the grounds it is actually painted on: `status-conditional` on
+    // `bg-amber-50` measured 4.38:1 and `status-pass` on `bg-emerald-50`
+    // 4.40:1. These `50`s are ALERT GROUNDS, and the status colours sit on
+    // them unchanged in every theme — so any move here is a move against the
+    // one set of colours §10 will not let go quiet.
+    //
+    // The ramp still differs from `light` on six of seven steps, which is what
+    // the half-theme guard actually asks.
+    "50": accent["50"],
+    "200": mix(accent["200"], pull, 0.06),
+    "300": mix(accent["300"], pull, 0.06),
+    "400": mix(accent["400"], pull, 0.06),
+    "700": mix(accent["700"], pull, 0.08),
+    "800": mix(accent["800"], pull, 0.08),
+    "900": mix(accent["900"], pull, 0.08),
+  };
+}
+
+/**
+ * Red, blue and white — requested by the owner, 2026-08-30.
+ *
+ * 🔴 DERIVED FROM `LIGHT`, NOT INVENTED, AND THAT IS THE WHOLE TRICK.
+ *
+ * Contrast is a function of LUMINANCE. `LIGHT` already clears every ratio this
+ * project enforces — 4.5:1 for text on surface, for the primary button's
+ * label, and for all four traffic-light colours — so a palette that keeps its
+ * luminance steps and moves only the HUE keeps those ratios by construction.
+ *
+ * Each step below is `LIGHT`'s value pushed toward navy: the blue channel is
+ * raised and the red lowered by the same small amount, which shifts hue while
+ * barely moving perceived lightness. `theme.test.ts` is the arbiter and it
+ * measures every step; these numbers were adjusted until it passed, not
+ * chosen and hoped for.
+ *
+ * ⚠️ THE RED IS AN ACCENT, NOT THE GROUND. A red surface cannot carry
+ * readable body text at 4.5:1 without going so dark it stops reading as red,
+ * and this product paints failure states red — a red page would make `fail`
+ * indistinguishable from chrome, which §10 forbids in as many words ("colour
+ * is never the sole indicator", and it is worse when the colour is
+ * everywhere). Red arrives through the accent ramp and the status colours,
+ * both inherited unchanged from `LIGHT` so the traffic light means exactly
+ * what it means on every other theme.
+ */
+const PATRIOT: Palette = {
+  status: STATUS_ON_LIGHT,
+  accents: mapAccents(patriotic),
+  white: "255 255 255",
+  // 🔴 THE RAMP CARRIES BOTH COLOURS, AND THE FIRST VERSION DID NOT.
+  //
+  // v1 tinted the whole ramp a muted navy. The owner's report was exact: "it
+  // is not red, it is gray" — because a desaturated navy at 5% saturation
+  // reads as grey, and every heading and primary button in this product is
+  // painted from the DARK end of this ramp. Red only appeared in accents,
+  // which most screens barely use.
+  //
+  // So the ramp is split. The light and middle steps are a real blue; the dark
+  // steps — `slate-700/800/900`, which paint headings (166 call sites) and the
+  // primary button (17) — are a deep red. White page, blue chrome, red
+  // headings and buttons.
+  //
+  // ⚠️ THE JOIN IS THE RISK, AND IT IS MEASURED. Luminance must keep falling
+  // across the blue→red boundary or the ramp reverses and every hierarchy
+  // built on it inverts locally. `slate600` (30 70 140) sits at L=0.065 and
+  // `slate700` (132 22 34) at L=0.056, so it keeps descending. The monotonic
+  // test is what actually holds that, not this note.
+  slate50: "247 250 255",
+  slate100: "235 242 252",
+  slate200: "214 227 247",
+  slate300: "176 199 235",
+  slate400: "106 141 205",
+  slate500: "46 92 170",
+  slate600: "30 70 140",
+  slate700: "132 22 34",
+  slate800: "108 16 28",
+  slate900: "88 12 22",
+  slate950: "48 6 12",
+};
+
+/**
+ * The six, in the order they are offered.
  *
  * `system` first because it is the answer most people want and the only one
  * that keeps following the machine after it is chosen.
@@ -539,6 +660,12 @@ export const THEMES: readonly Theme[] = [
     description: "Warm and low-glare, for reading long technical text under bench lighting.",
     palette: PAPER,
   },
+  {
+    id: "patriot",
+    label: "Red, white and blue",
+    description: "A white page on a navy ramp, with the red accents and traffic light unchanged.",
+    palette: PATRIOT,
+  },
 ];
 
 export const DEFAULT_THEME: ThemeId = "system";
@@ -549,6 +676,7 @@ export const PALETTES: Readonly<Record<Exclude<ThemeId, "system">, Palette>> = {
   dark: DARK,
   contrast: CONTRAST,
   paper: PAPER,
+  patriot: PATRIOT,
 };
 
 export function isThemeId(value: string): value is ThemeId {

@@ -49,6 +49,7 @@ enforces both directions.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
@@ -59,8 +60,18 @@ from app.agents.boundary import require
 from app.agents.principal import AgentPrincipal
 from app.agents.tools import market_intelligence
 from app.core.db import agent_session_scope
+from app.domains.opportunities.service import (
+    OpportunityInput,
+    OpportunityStateError,
+    create_opportunity,
+)
 
-__all__ = ["CurationResult", "propose_catalogue_entry", "read_review_queue"]
+__all__ = [
+    "CurationResult",
+    "propose_catalogue_entry",
+    "propose_opportunities_from_marketplace",
+    "read_review_queue",
+]
 
 # The department's gate. `material.view` is the permission that already governs
 # competitor intelligence internally (`/api/competitors` requires it), so the
@@ -166,3 +177,100 @@ def read_review_queue(
     require(caller, department=DEPARTMENT, permission=PERMISSION)
     with agent_session_scope() as agent_session:
         return market_intelligence.review_queue(agent_session, limit=limit)
+
+
+def propose_opportunities_from_marketplace(
+    session: Session, caller: AgentPrincipal, *, limit: int = 5
+) -> list[dict[str, object]]:
+    """Review the public catalogue and raise Innovation opportunities as DRAFTS.
+
+    Owner instruction: *"opportunities must be identified by agent who reviews
+    and analyses the products and uploads the opportunities to innovations."*
+
+    🔴 WHAT THE AGENT ACTUALLY KNOWS, AND WHAT IT DOES NOT.
+
+    It knows two facts, both counted from the database: how many products the
+    public catalogue publishes in a category, and how many of them THIS
+    organization has adopted into its own pipeline. A category with many of the
+    first and none of the second is a coverage gap — a real, checkable
+    statement about this application's own records.
+
+    It does NOT know that the gap is commercially attractive, that the category
+    is growing, or that Evercoat should enter it. Those are market judgements,
+    and an agent asserting them would be producing a prediction shaped like a
+    measurement — which rule 3 forbids and §7 forbids again.
+
+    So the opportunity it writes SAYS what it is built from, in the record
+    itself. A reader who disagrees can see exactly which two numbers produced
+    it.
+
+    🔴 EVERY ONE IS A DRAFT, AND THAT IS THE EXISTING WORKFLOW, NOT A NEW ONE.
+
+    `create_opportunity` writes `status='draft'`, and only `submit_opportunity`
+    — a human action — moves it to a decidable state. Rule 4: humans approve.
+    The specification says the same: the news module "should create an
+    Opportunity Candidate that an authorized user reviews before entering the
+    existing development workflow."
+
+    ⚠️ THE CALLER'S SESSION, NOT THE AGENT POOL. Opportunities are TENANT data
+    and the gap analysis reads this tenant's adoptions through RLS. The agent
+    connection has no tenant and could not scope either. The draft-only trigger
+    is a `public_intel` control; nothing here writes to `public_intel`.
+    """
+    caller = caller.authorize(session)
+    require(caller, department=DEPARTMENT, permission="opportunity.create")
+
+    gaps = market_intelligence.category_gaps(session, limit=limit)
+    raised: list[dict[str, object]] = []
+    year = dt.date.today().year
+
+    for index, gap in enumerate(gaps, start=1):
+        if gap.adopted:
+            # Not a gap. Skipping rather than raising a weaker opportunity
+            # keeps the queue meaningful — a reviewer who finds obvious noise
+            # in it stops reading the queue.
+            continue
+        code = f"OPP-{year}-MKT{index:02d}"
+        try:
+            opportunity_id = create_opportunity(
+                session,
+                data=OpportunityInput(
+                    opportunity_code=code,
+                    title=f"No competitor coverage adopted in {gap.category}",
+                    market_need=(
+                        f"The public competitor catalogue publishes "
+                        f"{gap.competitor_products} product(s) in "
+                        f"{gap.category} from {gap.manufacturers} "
+                        f"manufacturer(s). This organization has adopted none "
+                        f"into its pipeline, so no benchmark or composition "
+                        f"evidence exists for the category."
+                    ),
+                    product_family=gap.category,
+                    technical_concept=(
+                        "Raised automatically from a coverage count, not from a "
+                        "market assessment. It states what the catalogue holds "
+                        "and what this organization has looked at — nothing "
+                        "about demand, margin or fit. A human decides whether "
+                        "it is worth pursuing."
+                    ),
+                    priority="medium",
+                ),
+                actor_id=caller.user_id,
+                organization_id=caller.organization_id,
+            )
+        except OpportunityStateError:
+            # Almost always the code already exists from an earlier run. A
+            # re-run must not fail the whole sweep over one duplicate.
+            continue
+        raised.append(
+            {
+                "opportunity_id": str(opportunity_id),
+                "opportunity_code": code,
+                "category": gap.category,
+                "competitor_products": gap.competitor_products,
+                "adopted": gap.adopted,
+                "status": "draft",
+            }
+        )
+
+    return raised

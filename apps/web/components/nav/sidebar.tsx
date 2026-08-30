@@ -59,6 +59,38 @@ export function Sidebar({ permissions, counts = {} }: SidebarProps) {
         )}
       </div>
 
+      {/* 🔴 THE TWO PUBLIC SURFACES, BESIDE THE APP NAME.
+          A signed-in user could not reach the marketplace or the news feed at
+          all: both are public routes with no entry point anywhere inside the
+          application, so the only way in was to type the URL. A page with no
+          caller is the same defect as a route with no caller, arriving from
+          the user's side of the screen.
+
+          They sit here rather than in a navigation GROUP because they are not
+          modules of the R&D application — they are the public surface the same
+          product serves, and grouping them under "Work" or "Resources" would
+          say otherwise.
+
+          ⚠️ These carry no `permission`. Both routes are public: gating them on
+          a grant would hide from a signed-in chemist what an anonymous visitor
+          can already see. */}
+      {!collapsed && (
+        <div className="flex gap-1 border-b border-slate-200 px-3 py-2">
+          <Link
+            href="/marketplace"
+            className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Marketplace
+          </Link>
+          <Link
+            href="/industry-news"
+            className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Industry News
+          </Link>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto py-2">
         {groups.map((group) => (
           <div key={group.id} className="mb-1">
