@@ -43,13 +43,16 @@ from app.core.config import settings
 
 __all__ = [
     "MissingContextError",
+    "PublicConnectionNotConfiguredError",
     "RequestContext",
     "SessionLocal",
     "apply_context",
     "auth_session_scope",
     "get_auth_engine",
     "get_engine",
+    "get_public_engine",
     "guarded_write",
+    "public_session_scope",
     "session_scope",
     "set_local",
     "unscoped_session_scope",
@@ -68,6 +71,23 @@ class AuthConnectionNotConfiguredError(RuntimeError):
     pool, which reads like a broken migration rather than like a missing
     setting. ``/health/ready`` reports the same condition before any user
     meets it.
+    """
+
+
+class PublicConnectionNotConfiguredError(RuntimeError):
+    """Raised when the anonymous public connection is needed and not configured.
+
+    🔴 A DISTINCT TYPE BECAUSE THE ONLY ACCEPTABLE RESPONSE IS TO REFUSE.
+
+    Every other missing setting in this application has a degraded mode. This
+    one does not. The public surface exists to be read by callers with no
+    identity, and the single mechanism keeping such a read away from tenant
+    rows is the role on the other end of ``PUBLIC_DATABASE_URL``.
+
+    So a public route that catches this must answer 503, never fall back to
+    the runtime pool. Falling back would serve an anonymous request over
+    `evercoat_app`, which can read every tenant -- an outage quietly
+    converted into a disclosure.
     """
 
 
@@ -236,6 +256,99 @@ def auth_session_scope() -> Iterator[Session]:
         get_auth_engine()
     assert _auth_session_factory is not None  # noqa: S101 - narrowed by get_auth_engine
     session = _auth_session_factory()
+    try:
+        session.begin()
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+_public_engine: Engine | None = None
+_public_session_factory: sessionmaker[Session] | None = None
+
+
+def get_public_engine() -> Engine:
+    """The pool that serves callers who have no identity at all.
+
+    🔴 THE ROLE IS THE BOUNDARY. THE ROUTE IS NOT.
+
+    Every other connection in this application belongs to a caller who has
+    proved something. This one belongs to nobody: the landing page, the
+    global competitor marketplace and the industry news feed answer before
+    anyone signs in, and there is no principal to check.
+
+    That is safe for exactly one reason, and it is not the routes. Migration
+    059 gives `evercoat_public` USAGE on nothing but `public` and
+    `public_intel`, SELECT on five published views, INSERT on one queue, and
+    no privilege on any tenant table. A query added here that reaches for a
+    tenant row FAILS -- it does not read across tenants -- and the migration
+    asserts that in both directions.
+
+    ⚠️ THIS IS WHY THE PUBLIC SURFACE IS NOT `permit_anonymous` ON THE
+    EXISTING ROUTES. Those routes derive an organization from the principal
+    and share a router with writes, documents, samples, evidence and
+    benchmarks. Making their dependency optional would put an
+    authentication-bypass seam on a connection that can read everything. The
+    privilege had to move to the connection, as ADR-032 decided in 053.
+
+    ⚠️ DELIBERATELY SMALL, but larger than the sign-in pool: this one serves
+    anonymous browsing, so it takes more concurrent readers than a sign-in
+    burst while still being bounded on a free-tier database.
+    """
+    global _public_engine, _public_session_factory
+    if _public_engine is not None:
+        return _public_engine
+
+    if not settings.public_database_url:
+        raise PublicConnectionNotConfiguredError(
+            "PUBLIC_DATABASE_URL is not set. The public surface reads through "
+            "the evercoat_public role (migration 059), which is the only "
+            "reason an anonymous read cannot reach a tenant row. Set "
+            "PUBLIC_DATABASE_URL to a URL for that role."
+        )
+
+    _public_engine = create_engine(
+        settings.public_database_url,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=5,
+        pool_reset_on_return="rollback",
+        echo=settings.db_echo,
+    )
+
+    @event.listens_for(_public_engine, "checkin")
+    def _scrub_public_connection(dbapi_connection, connection_record) -> None:  # type: ignore[no-untyped-def]
+        """Same scrub as the runtime pool, for the same reason."""
+        try:
+            with dbapi_connection.cursor() as cur:
+                cur.execute("DISCARD ALL")
+        except Exception:  # noqa: BLE001
+            connection_record.invalidate()
+
+    _public_session_factory = sessionmaker(
+        bind=_public_engine, expire_on_commit=False, class_=Session
+    )
+    return _public_engine
+
+
+@contextmanager
+def public_session_scope() -> Iterator[Session]:
+    """A session for anonymous callers. It never sets a tenant GUC.
+
+    🔴 DO NOT REACH FOR THIS BECAUSE A QUERY IS AWKWARD TO SCOPE, and do not
+    reach for the runtime pool from a public route because this one raised.
+    A public route that falls back to `session_scope` answers an anonymous
+    request over a connection that can read every tenant, which is the whole
+    failure this module exists to make impossible.
+    """
+    if _public_session_factory is None:
+        get_public_engine()
+    assert _public_session_factory is not None  # noqa: S101 - narrowed by get_public_engine
+    session = _public_session_factory()
     try:
         session.begin()
         yield session

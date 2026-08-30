@@ -76,7 +76,7 @@ def upgrade() -> None:
         text(
             """
             SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls,
-                   rolreplication, rolinherit, rolcanlogin
+                   rolreplication, rolinherit
               FROM pg_roles WHERE rolname = 'evercoat_public'
             """
         )
@@ -92,10 +92,25 @@ def upgrade() -> None:
             ("rolbypassrls", attrs.rolbypassrls, False),
             ("rolreplication", attrs.rolreplication, False),
             ("rolinherit", attrs.rolinherit, False),
-            # NOLOGIN: granting LOGIN and a password is the deployment's
-            # job. A migration that baked one in would put a credential in
-            # the repository.
-            ("rolcanlogin", attrs.rolcanlogin, False),
+            # 🔴 `rolcanlogin` IS DELIBERATELY NOT CHECKED, AND THE FIRST
+            # VERSION OF THIS LIST GOT THAT WRONG.
+            #
+            # The migration CREATES the role NOLOGIN because baking a
+            # credential into a migration would put it in the repository.
+            # But granting LOGIN and a password is the DEPLOYMENT's job --
+            # CI does it with `ALTER ROLE`, compose from `.env` -- so on
+            # every environment that actually serves the public surface the
+            # role legitimately has LOGIN by the time anyone re-runs
+            # migrations.
+            #
+            # Asserting NOLOGIN here therefore failed on the second run
+            # against a configured database, which is precisely the
+            # re-application CI performs to prove idempotence. 053
+            # normalises the security attributes and says nothing about
+            # LOGIN for the same reason.
+            #
+            # These five are the ones that matter: they decide whether the
+            # role can bypass RLS or inherit privileges from a group.
         )
         if value != want
     ]
@@ -280,6 +295,47 @@ def upgrade() -> None:
             f"{[(r.view_name, r.dep_schema, r.dep_relation) for r in foreign]}. "
             "These views run as evercoat_owner, so such a join reads across "
             "every tenant and serves it anonymously."
+        )
+
+    # -----------------------------------------------------------------
+    # 4a. 🔴 NOTHING HERE IS OWNED BY THE SUPERUSER.
+    #
+    # Migrations run as `MIGRATION_DATABASE_URL`, which is the superuser, so
+    # everything created is owned by `postgres` unless reassigned. The first
+    # version of this migration did not reassign it -- while its own header
+    # claimed the views "run as evercoat_owner".
+    #
+    # Because these views do not set `security_invoker`, they execute with
+    # their OWNER's privileges. A superuser-owned view bypasses RLS on
+    # anything it reads, INCLUDING FORCE RLS. Combined with a future join to
+    # a tenant table that would be an anonymous read of every tenant, as
+    # superuser. Found by a test running as `evercoat_owner` failing with
+    # "permission denied for schema public_intel", which was the smaller
+    # symptom of the same cause.
+    # -----------------------------------------------------------------
+    superuser_owned = bind.execute(
+        text(
+            """
+            SELECT n.nspname || '.' || c.relname AS obj,
+                   pg_get_userbyid(c.relowner) AS owner
+              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'public_intel'
+               AND c.relkind IN ('r', 'v')
+               AND pg_get_userbyid(c.relowner) <> 'evercoat_owner'
+            UNION ALL
+            SELECT 'schema ' || nspname, pg_get_userbyid(nspowner)
+              FROM pg_namespace
+             WHERE nspname = 'public_intel'
+               AND pg_get_userbyid(nspowner) <> 'evercoat_owner'
+            """
+        )
+    ).all()
+    if superuser_owned:
+        raise RuntimeError(
+            "public_intel objects are not owned by evercoat_owner: "
+            f"{[(r.obj, r.owner) for r in superuser_owned]}. These views run "
+            "with their owner's privileges, and a superuser-owned view "
+            "bypasses Row Level Security -- including FORCE RLS."
         )
 
     # -----------------------------------------------------------------

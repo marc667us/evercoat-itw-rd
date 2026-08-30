@@ -415,6 +415,62 @@ CREATE OR REPLACE VIEW public_intel.v_news_items AS
      WHERE n.publication_status = 'published';
 
 -- ---------------------------------------------------------------------
+-- 6a. 🔴 OWNERSHIP. THE MOST IMPORTANT STATEMENTS IN THIS FILE.
+-- ---------------------------------------------------------------------
+--
+-- Migrations run as the SUPERUSER (`MIGRATION_DATABASE_URL`), so everything
+-- created above is owned by `postgres` unless it is reassigned. The first
+-- version of this migration did not reassign it, and the header above
+-- claimed the views "run as `evercoat_owner`". THAT WAS FALSE. They ran as
+-- the superuser.
+--
+-- Why that is not cosmetic: these views deliberately do not set
+-- `security_invoker`, so they execute with their OWNER's privileges. A
+-- superuser-owned view bypasses Row Level Security on everything it reads --
+-- including FORCE RLS, which nothing else in this database can bypass. Today
+-- they read only `public_intel`, which has no RLS and no tenant, so nothing
+-- leaked. But it left the `pg_depend` probe as the only thing between a
+-- future join and an anonymous read of every tenant AS SUPERUSER, and it made
+-- `evercoat_owner` unable to manage objects in its own database.
+--
+-- Every other schema here -- core, materials, competitors, safety -- is owned
+-- by `evercoat_owner`. So is this one now, and §8 asserts it rather than
+-- trusting these lines to have run.
+ALTER SCHEMA public_intel OWNER TO evercoat_owner;
+
+DO $$
+DECLARE
+    obj RECORD;
+BEGIN
+    FOR obj IN
+        SELECT c.relname, c.relkind
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public_intel' AND c.relkind IN ('r', 'v')
+    LOOP
+        IF obj.relkind = 'r' THEN
+            EXECUTE format('ALTER TABLE public_intel.%I OWNER TO evercoat_owner', obj.relname);
+        ELSE
+            EXECUTE format('ALTER VIEW public_intel.%I OWNER TO evercoat_owner', obj.relname);
+        END IF;
+    END LOOP;
+END
+$$;
+
+DO $$
+DECLARE
+    t RECORD;
+BEGIN
+    FOR t IN
+        SELECT typ.typname FROM pg_type typ
+          JOIN pg_namespace n ON n.oid = typ.typnamespace
+         WHERE n.nspname = 'public_intel' AND typ.typtype = 'e'
+    LOOP
+        EXECUTE format('ALTER TYPE public_intel.%I OWNER TO evercoat_owner', t.typname);
+    END LOOP;
+END
+$$;
+
+-- ---------------------------------------------------------------------
 -- 7. Privileges. REVOKE FROM PUBLIC FIRST — a narrower revoke does nothing
 -- ---------------------------------------------------------------------
 --
@@ -445,5 +501,14 @@ GRANT INSERT ON public_intel.access_requests TO evercoat_public;
 -- The authenticated application role curates the catalogue.
 GRANT USAGE ON SCHEMA public_intel TO evercoat_app;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public_intel TO evercoat_app;
+
+-- ⚠️ `evercoat_owner` OWNS these objects but a schema owner is not
+-- automatically granted USAGE on its own schema in every path that matters,
+-- and the maintenance role needs to read the queue an administrator acts on.
+-- Granted explicitly so a test or a backfill running as the owner does not
+-- fail with "permission denied for schema public_intel" -- which is how the
+-- missing ownership above was found.
+GRANT USAGE ON SCHEMA public_intel TO evercoat_owner;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public_intel TO evercoat_owner;
 
 COMMIT;

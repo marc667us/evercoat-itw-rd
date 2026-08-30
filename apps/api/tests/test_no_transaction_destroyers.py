@@ -53,8 +53,21 @@ APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 # the author has to look at the new helper and decide whether it really owns a
 # transaction rather than having the exemption applied silently by proximity.
 # It does: it opens its own, on its own pool, for one query.
+#
+# ✅ AND IT PAID OFF A SECOND TIME. `public_session_scope` was added for the
+# public surface (migration 059) and this test failed on it immediately too.
+# Looked at rather than waved through: it opens its own transaction on its own
+# pool -- the anonymous `evercoat_public` connection -- and no caller shares a
+# unit of work with it, because nothing authenticated ever touches that pool.
+# So it owns the transaction it ends, and the exemption is correct here for the
+# same reason it is correct for the other three.
 ROLLBACK_ALLOWED: dict[str, set[str]] = {
-    "core/db.py": {"session_scope", "unscoped_session_scope", "auth_session_scope"},
+    "core/db.py": {
+        "session_scope",
+        "unscoped_session_scope",
+        "auth_session_scope",
+        "public_session_scope",
+    },
 }
 
 # Nodes that open a new scope. `ast.walk` crosses these happily, which would

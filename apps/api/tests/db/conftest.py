@@ -55,6 +55,7 @@ def db_urls() -> dict[str, str]:
         "owner": _url("TEST_OWNER_USER", "TEST_OWNER_PASSWORD", "evercoat_owner"),
         "app": _url("APP_DB_USER", "APP_DB_PASSWORD", "evercoat_app"),
         "auth": _url("AUTH_DB_USER", "AUTH_DB_PASSWORD", "evercoat_auth"),
+        "public": _url("PUBLIC_DB_USER", "PUBLIC_DB_PASSWORD", "evercoat_public"),
     }
 
 
@@ -115,6 +116,30 @@ def auth_engine():
             conn.execute(text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"no sign-in-role connection available for db tests: {exc}")
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def public_engine():
+    """The anonymous public read connection (migration 059).
+
+    🔴 PUBLIC-SURFACE TESTS MUST USE THIS, NOT `owner_engine` AND NOT
+    `app_engine`. The whole claim being tested is that a caller with no
+    identity cannot reach a tenant row, and that claim is a property of THIS
+    ROLE. Asserting it over the owner would pass no matter what 059 granted,
+    which is the same trap `auth_engine` exists to avoid.
+    """
+    engine = create_engine(
+        _url("PUBLIC_DB_USER", "PUBLIC_DB_PASSWORD", "evercoat_public"),
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+    )
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"no public-role connection available for db tests: {exc}")
     yield engine
     engine.dispose()
 

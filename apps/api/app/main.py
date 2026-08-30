@@ -39,6 +39,7 @@ from app.api.messaging import router as messaging_router
 from app.api.msd import router as msd_router
 from app.api.opportunities import router as opportunities_router
 from app.api.projects import router as projects_router
+from app.api.public import router as public_router
 from app.api.research import router as research_router
 from app.api.tasks import router as tasks_router
 from app.api.testing import reference_router as testing_reference_router
@@ -215,6 +216,15 @@ def create_app() -> FastAPI:
         return response
 
     application.include_router(health_router, prefix="/health", tags=["health"])
+    # 🔴 THE ONLY ROUTER MOUNTED WITHOUT A PRINCIPAL, AND THE ONLY ONE THAT
+    # MUST STAY THAT WAY. The public landing page, the global competitor
+    # marketplace and the industry news feed answer callers who have not
+    # signed in. Anonymity here is not a flag on these routes -- they read
+    # through `evercoat_public` (migration 059), a role with no privilege on
+    # any tenant table, so a query that reached for a tenant row would fail
+    # rather than leak. Do not add an auth dependency to make it "consistent",
+    # and do not point any other router at the public pool.
+    application.include_router(public_router, prefix="/api/public", tags=["public"])
     # Administration section 1 -- the write path for users, roles and
     # permissions. Live from Slice 1 (ADR-021): a configuration value
     # with no screen is a value nobody can write.

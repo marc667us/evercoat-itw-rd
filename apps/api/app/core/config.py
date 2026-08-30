@@ -72,6 +72,28 @@ class Settings(BaseSettings):
         description="SQLAlchemy URL for the sign-in role (evercoat_auth). I109.",
     )
 
+    # The anonymous read connection for the public landing page, the global
+    # competitor marketplace and the industry news feed (migration 059).
+    #
+    # 🔴 THE ONLY CONNECTION IN THIS APPLICATION THAT SERVES A CALLER WITH NO
+    # IDENTITY, AND THE ONLY REASON THAT IS SAFE IS THE ROLE ON THE OTHER END.
+    # `evercoat_public` holds USAGE on nothing but `public` and `public_intel`,
+    # SELECT on five published views, INSERT on one queue, and no privilege on
+    # any tenant table. Anonymity is not a flag on a route here -- it is a
+    # connection that cannot reach a tenant row even if a route asks it to.
+    #
+    # ⚠️ OPTIONAL, for the same reason `auth_database_url` is: an environment
+    # that never serves the public surface should not fail to import. The
+    # public routers return 503 rather than falling back to the runtime pool,
+    # because falling back would answer an anonymous request over a connection
+    # that can read every tenant.
+    public_database_url: str | None = Field(
+        default=None,
+        description=(
+            "SQLAlchemy URL for the anonymous public read role (evercoat_public). Migration 059."
+        ),
+    )
+
     # --- Keycloak -------------------------------------------------------
     keycloak_issuer: str = Field(..., description="Realm issuer URL")
     keycloak_audience: str = Field(default="evercoat-api")
@@ -147,7 +169,7 @@ class Settings(BaseSettings):
     # --- Security -------------------------------------------------------
     cors_allowed_origins: list[str] = Field(default_factory=list)
 
-    @field_validator("database_url", "auth_database_url")
+    @field_validator("database_url", "auth_database_url", "public_database_url")
     @classmethod
     def _reject_superuser(cls, v: str | None) -> str | None:
         """Refuse to start as a database superuser.
@@ -157,7 +179,8 @@ class Settings(BaseSettings):
         only surface in production (ADR-017). This is a cheap guard
         against a mistake that is expensive and silent.
 
-        🔴 IT COVERS THE SIGN-IN URL TOO, AND THAT ONE MATTERS MORE.
+        🔴 IT COVERS THE SIGN-IN URL TOO, AND THE PUBLIC ONE, AND THOSE
+        MATTER MORE.
 
         `auth_database_url` was added for I109 without this validator -- a
         deviation from an established guard in the same class, found in review.
@@ -175,8 +198,9 @@ class Settings(BaseSettings):
             if forbidden in lowered:
                 raise ValueError(
                     "the application must not connect as a database superuser; "
-                    "use the evercoat_app role for DATABASE_URL and the "
-                    "evercoat_auth role for AUTH_DATABASE_URL"
+                    "use the evercoat_app role for DATABASE_URL, the "
+                    "evercoat_auth role for AUTH_DATABASE_URL, and the "
+                    "evercoat_public role for PUBLIC_DATABASE_URL"
                 )
         return v
 
