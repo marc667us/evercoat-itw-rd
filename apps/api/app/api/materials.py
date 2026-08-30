@@ -255,7 +255,24 @@ def post_material(
         raise _invalid(exc) from exc
     except MaterialsError as exc:
         raise _invalid(exc) from exc
-    return {"id": str(material_id)}
+    # 🔴 THE CODE COMES BACK, AND LEAVING IT OUT BROKE THE FORM WITHOUT
+    # BREAKING THE WRITE.
+    #
+    # This returned `{"id": ...}` alone. `createMaterial` in the browser parses
+    # `{ id, material_code }` -- `material_code` REQUIRED, because the screen
+    # reports "RM-014 created" using the server's own code rather than echoing
+    # what was typed. So every creation SUCCEEDED and then failed to parse its
+    # own response: the material was in the database, and the screen showed
+    # "the client and the server disagree about this endpoint".
+    #
+    # Nothing caught it. The write was correct, so no server test failed; the
+    # client test stubs the response, so it parsed what it expected. The live
+    # suite pressing the button is what found it -- and the row it had just
+    # created was sitting in the table behind the error.
+    #
+    # The code is `spec.material_code` verbatim: the INSERT binds it unchanged,
+    # so this is what was stored, not merely what was asked for.
+    return {"id": str(material_id), "material_code": payload.material_code}
 
 
 @router.get("/{material_id}", tags=["materials"])

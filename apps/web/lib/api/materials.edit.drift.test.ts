@@ -197,3 +197,61 @@ describe("the material edit contract", () => {
     expect(absent).toContain("notes");
   });
 });
+
+/**
+ * The CREATE response must carry what the browser parses out of it.
+ *
+ * 🔴 THE WRITE SUCCEEDED AND THE RESPONSE DID NOT PARSE, WHICH IS THE WORST
+ * SHAPE THIS CLASS OF BUG COMES IN.
+ *
+ * `post_material` returned `{"id": ...}` alone. `createMaterial` parses
+ * `{ id, material_code }` with `material_code` REQUIRED, because the screen
+ * reports the server's own code — "RM-014 created" — rather than echoing what
+ * was typed. So every creation wrote its row and then failed on its own
+ * response, and the screen said "the client and the server disagree about this
+ * endpoint" while the new material sat in the table behind the error.
+ *
+ * No server test failed: the write was correct. No client test failed: it
+ * stubs the response, so it parsed exactly what it expected. Only pressing the
+ * button against a real API could find it — the recorded lesson on this project
+ * is *the SQL is not the contract; the response is*, and this is its fourth
+ * instance.
+ */
+describe("the material create response", () => {
+  /** `post_material` lives in the ROUTE module, not the service. */
+  function routeBody(name: string): string {
+    const routes = join(__dirname, "..", "..", "..", "api", "app", "api", "materials.py");
+    const src = readFileSync(routes, "utf8");
+    const start = src.indexOf(`def ${name}(`);
+    expect(start, `${name} was not found in api/materials.py`).toBeGreaterThan(-1);
+    const next = src.indexOf("\n@router.", start + 1);
+    return src.slice(start, next === -1 ? src.length : next);
+  }
+
+  function createReturn(): string {
+    const body = routeBody("post_material");
+    const start = body.lastIndexOf("return {");
+    expect(start, "post_material does not end in a dict literal").toBeGreaterThan(-1);
+    return body.slice(start);
+  }
+
+  it("finds the return it is meant to be checking", () => {
+    // The guard on the guard: a restructured route would otherwise make the
+    // assertion below read an empty string and pass.
+    expect(createReturn()).toContain('"id"');
+  });
+
+  it("carries every key the browser requires", () => {
+    const returned = createReturn();
+    // Mirrored from `createMaterial`'s parse in `materials.ts`. Both are
+    // required there, so both must be here.
+    for (const key of ["id", "material_code"]) {
+      expect(
+        returned.includes(`"${key}"`),
+        `POST /api/materials does not return "${key}", which the client parses ` +
+          "as required — the material is created and the response then fails to " +
+          "parse, so the screen reports a contract mismatch over a successful write",
+      ).toBe(true);
+    }
+  });
+});
