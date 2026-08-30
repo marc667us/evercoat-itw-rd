@@ -30,6 +30,7 @@
 import Link from "next/link";
 
 import { LiveOnlyPage, DataSourceError } from "@/components/ui/data-source-banner";
+import { formatDay, formatInstant } from "@/lib/format/date";
 import { Absent } from "@/components/ui/record-link";
 import { StatusBadge, type DisplayStatus } from "@/components/ui/status-badge";
 import { useBatches } from "@/lib/api/hooks";
@@ -203,16 +204,32 @@ export default function LaboratoryPage() {
                       )}
                     </dd>
                   </div>
+                  {/* Raised → started → completed, the three events a batch
+                      actually has. "Completed" appears only once it exists:
+                      a "Completed —" beside a running batch would imply the
+                      step was attempted and not recorded. */}
+                  <div className="flex gap-1.5">
+                    <dt className="font-medium text-slate-500">Created</dt>
+                    <dd title={formatInstant(b.created_at)}>{formatDay(b.created_at)}</dd>
+                  </div>
                   <div className="flex gap-1.5">
                     <dt className="font-medium text-slate-500">Started</dt>
                     <dd>
                       {b.started_at ? (
-                        b.started_at.slice(0, 10)
+                        <span title={formatInstant(b.started_at)}>{formatDay(b.started_at)}</span>
                       ) : (
                         <Absent what="not started" />
                       )}
                     </dd>
                   </div>
+                  {b.completed_at !== null && (
+                    <div className="flex gap-1.5">
+                      <dt className="font-medium text-slate-500">Completed</dt>
+                      <dd title={formatInstant(b.completed_at)}>
+                        {formatDay(b.completed_at)}
+                      </dd>
+                    </div>
+                  )}
                 </dl>
               </li>
             );

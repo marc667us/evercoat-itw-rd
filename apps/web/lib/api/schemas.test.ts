@@ -32,6 +32,11 @@ const PROJECT = {
   current_stage: "development",
   confidentiality: "normal",
   target_release_date: "2026-11-01",
+  // Added 2026-08-30 with the pipeline dates. `ProjectSummary` declares it, so
+  // the key is ALWAYS present in the response — the fixture must carry it or
+  // it stops being "a row the API actually sends", which is what this file
+  // claims to hold.
+  created_at: "2026-07-15T09:30:00Z",
 };
 
 const FORMULA = {
@@ -47,6 +52,9 @@ const FORMULA = {
   // NOT NULL column would have passed. Codex found it.
   owner_user_id: "44444444-4444-4444-4444-444444444444",
   updated_at: "2026-08-01T10:00:00Z",
+  // Projected by `list_formulas` since 2026-08-30. NOT NULL in
+  // `formulations.formulas`, so required rather than nullable.
+  created_at: "2026-07-20T08:00:00Z",
   // 🔴 THE KEY, NOT THE LABEL. `list_formulas` returns the latest version's
   // id, and twelve of the thirteen formulation routes are keyed by it. Its
   // ABSENCE was I86: without it the list could hand the workspace nothing to

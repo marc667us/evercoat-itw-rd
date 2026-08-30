@@ -53,8 +53,8 @@ from __future__ import annotations
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
+
+import httpx
 
 from sqlalchemy import create_engine, text
 
@@ -87,33 +87,50 @@ def resolves(url: str, attempts: int = 3) -> tuple[bool, str]:
     """
     # 🔴 https ONLY, CHECKED BEFORE THE FETCH.
     #
-    # Semgrep's `dynamic-urllib-use-detected` is right about the shape:
-    # `urlopen` honours `file://`, so a non-http scheme in the competitor list
-    # would make this READ A LOCAL FILE and then report the row as "resolved" —
-    # a source that verified against nothing.
-    #
-    # The list is hand-written today, which is why this was not a live
-    # vulnerability. It is also exactly the sort of list a future ingestion
-    # step will populate from elsewhere, and by then nobody re-reads this
-    # function. Refused here, before the request is built.
+    # A non-http scheme in the competitor list would make a URL fetcher read
+    # something that is not a web page and then report the row as "resolved" —
+    # a source that verified against nothing. The list is hand-written today,
+    # which is why this was never a live vulnerability; it is also exactly the
+    # sort of list a future ingestion step will populate from elsewhere, and by
+    # then nobody re-reads this function. Refused here, before any request.
     if not url.lower().startswith("https://"):
         return (False, "not-https")
 
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    # ⚠️ httpx, NOT urllib, AND THE REASON IS NOT COSMETIC.
+    #
+    # `urllib.request.urlopen` honours `file://`. Semgrep's
+    # `dynamic-urllib-use-detected` flags that shape wherever the URL is a
+    # variable, and it blocked CI here. The first attempt was a `nosemgrep`
+    # comment arguing the https guard above already closed the hole.
+    #
+    # That argument is sound and the suppression was still the wrong fix: it
+    # leaves a file-reading primitive one edit away from being reachable, and
+    # asks every future reader to re-derive why it is safe. httpx has no
+    # `file://` handler at all, so the capability is absent rather than
+    # guarded — and the rule's own advice is to use an HTTP client instead.
+    # `follow_redirects` is on because a manufacturer's canonical page is very
+    # often a redirect; httpx will not cross into a non-http scheme.
     last = "?"
     for attempt in range(attempts):
         try:
-            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
-            with urllib.request.urlopen(req, timeout=25) as r:
-                return (200 <= r.status < 300, str(r.status))
-        except urllib.error.HTTPError as exc:
-            # 403/406 are live hosts refusing automation. 404/410 are not, and
-            # retrying an answer does not change it.
-            return (exc.code in (403, 406), str(exc.code))
+            r = httpx.get(
+                url,
+                headers={"User-Agent": UA},
+                timeout=25,
+                follow_redirects=True,
+            )
         except Exception as exc:  # noqa: BLE001
+            # A network-level failure is not an answer, so it is retried.
             last = type(exc).__name__
             if attempt < attempts - 1:
                 time.sleep(2 * (attempt + 1))
+            continue
+        if 200 <= r.status_code < 300:
+            return (True, str(r.status_code))
+        # 403/406 are live hosts refusing automation — the host exists, which
+        # is what this function actually asks. 404/410 are answers, and
+        # retrying an answer does not change it.
+        return (r.status_code in (403, 406), str(r.status_code))
     return (False, last)
 
 

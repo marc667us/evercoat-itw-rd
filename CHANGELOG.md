@@ -1,5 +1,67 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-30 (part 3) — the pipeline could not say WHEN
+
+Every pipeline screen could report what STAGE a record was at and never when it
+got there. A repository-wide search for `toLocaleDateString`,
+`Intl.DateTimeFormat` and `new Date(` across the whole of `apps/web` returned
+**two hits, neither of which displayed a date** — one compared a due date, one
+formatted money. The application rendered no date anywhere.
+
+The columns were never missing. `created_at` was NOT NULL on every pipeline
+table the entire time; **four of the five list endpoints selected everything
+except it**, and nothing failed, because nothing asked.
+
+Fixed end to end, because each layer could silently undo the next:
+
+- **The SQL** — `list_projects`, `list_formulas`, `list_tests`, `list_batches`
+  and the requirements query now project `created_at`.
+- **The reshaping** — `verification_matrix` REBUILDS its rows, so a column in
+  its SELECT does not reach a caller unless the dict names it too.
+- **The response model** — `ProjectSummary` drops what it does not declare,
+  and supplies a default for what the query omits, so the two can cancel out.
+- **The Zod schemas** — strip undeclared keys before any view sees them.
+- **The views** — innovation, projects, formulations, testing, laboratory, the
+  requirements matrix, the Research Center's four registers, failures,
+  approvals and the pipeline board.
+
+🔴 **A REAL OFF-BY-ONE-DAY DEFECT, FOUND BY A TEST RATHER THAN BY READING.**
+`target_release_date` is a plain `date` column and arrives as `2026-11-30`.
+ECMAScript parses a bare date as **UTC midnight**, and `Intl` then renders it in
+the viewer's zone — so on this host it displayed **29 Nov 2026**. Every release
+target, and every date-typed column in the product, would have shown a day
+early for every user west of UTC. A calendar date is now constructed in local
+time; a `timestamptz` keeps the ordinary conversion, because for an instant
+"when, in my time" is the right question. A malformed date is rejected rather
+than rolled over — `new Date(2026, 12, 45)` silently becomes 2027, and a
+rolled-over date renders as a real-looking WRONG day.
+
+**One formatter and one component**, per §12: `lib/format/date.ts` and
+`components/ui/event-dates.tsx`. An event with no date is not rendered at all —
+"Completed —" beside a running batch claims the step was attempted and not
+recorded, which is worse than silence. Unknown renders as an em dash, never as
+a blank and never as `Invalid Date`, which is the literal string
+`toLocaleDateString` returns rather than throwing.
+
+**Semgrep, closed at the root rather than suppressed.** `dynamic-urllib-use-detected`
+blocked CI on the catalogue verifier. The first fix was a `nosemgrep` arguing
+the https guard already closed the hole; the argument was sound and the fix was
+still wrong, because it leaves a file-reading primitive one edit away from
+reachable. Now uses `httpx` — already a declared dependency, and it has no
+`file://` handler at all, **measured**: `UnsupportedProtocol`. Verified that the
+swap is not a regression — the one host that stopped resolving times out for
+`urllib` too, at the same moment.
+
+Ten new formatter tests and six projection assertions inside the golden
+scenario — placed there because a standalone test would call the list functions
+against whatever org it found, and an org with no rows returns `[]`, over which
+every assertion passes while checking nothing. **Every guard falsified by
+breaking the thing it watches**: each projection reverted one at a time (red),
+the calendar-date branch deleted (red), the rollover check removed (red), the
+NaN guard removed (red).
+
+apps/api **985**, apps/web **266 → 276**.
+
 ## 2026-08-29 (part 2) — Phase 5 §27, and the forms nobody could reach
 
 `b093726` · `21af227` · `d36aa80` · `c1f46f7` · `dbbd80b` · `0bfc812`.

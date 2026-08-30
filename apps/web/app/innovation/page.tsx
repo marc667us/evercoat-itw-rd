@@ -42,6 +42,12 @@ import {
   CREATE_LABEL,
 } from "@/components/ui/create-form";
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
+import { EventDates } from "@/components/ui/event-dates";
+import {
+  ACTION_REQUIRED_BUTTON,
+  ActionRequired,
+  type Actionable,
+} from "@/components/ui/action-required";
 import { StatusBadge, type StatusBadgeInput } from "@/components/ui/status-badge";
 import { serverMessage } from "@/lib/api/client";
 import { useOpportunities, useOpportunityWrites } from "@/lib/api/hooks";
@@ -55,6 +61,38 @@ import { permits, usePermissions } from "@/lib/permissions";
 const BUTTON =
   "rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 " +
   "disabled:cursor-not-allowed disabled:bg-slate-300";
+/**
+ * What each status is waiting on, and who can supply it.
+ *
+ * 🔴 THE ROLES ARE MEASURED, NOT ASSUMED. `002_seed_roles_permissions.sql`
+ * grants `opportunity.create` and `project.create` to
+ * `product_development_lead` and `opportunity.decide` to
+ * `product_development_director`. `action-required.drift.test.ts` reads that
+ * file and fails if either moves, because a red banner naming the wrong role
+ * sends people to somebody who cannot act and gives them no reason to doubt it.
+ *
+ * ⚠️ `approved` IS ONLY BLOCKED WHILE IT HAS NO PROJECT. An approved
+ * opportunity that already became one is finished, not waiting — so the
+ * decision is made at the call site rather than in this table.
+ */
+const BLOCKED_ON: Readonly<Record<string, Actionable>> = {
+  draft: {
+    permission: "opportunity.create",
+    role: "Product Development Lead",
+    verb: "submit it for a decision",
+  },
+  awaiting_decision: {
+    permission: "opportunity.decide",
+    role: "Product Development Director",
+    verb: "decide it",
+  },
+  approved: {
+    permission: "project.create",
+    role: "Product Development Lead",
+    verb: "convert it to a project",
+  },
+};
+
 const SECONDARY =
   "rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-800 " +
   "hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400";
@@ -261,6 +299,14 @@ function OpportunityCard({ row }: { readonly row: Opportunity }) {
   const mayDecide = permits(permissions, "opportunity.decide");
   const mayConvert = permits(permissions, "project.create");
 
+  // ⚠️ `approved` IS NOT BLOCKED ONCE IT HAS A PROJECT. Reading the status
+  // alone would keep the red marker on every opportunity that ever succeeded,
+  // and a marker that never clears is one people stop reading.
+  const blockedOn: Actionable | null =
+    row.status === "approved" && row.project_id !== null
+      ? null
+      : (BLOCKED_ON[row.status] ?? null);
+
   return (
     <li className="rounded border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-baseline gap-2">
@@ -276,6 +322,21 @@ function OpportunityCard({ row }: { readonly row: Opportunity }) {
         {row.created_by_name ? ` · raised by ${row.created_by_name}` : ""}
       </p>
 
+      {/* WHEN, not only what. "Added" is the owner's word for the first event
+          on the pipeline; "Decided" only appears once a decision exists. */}
+      <EventDates
+        events={[
+          { label: "Added", at: row.created_at, required: true },
+          { label: "Decided", at: row.decided_at },
+        ]}
+      />
+
+      {/* WHO IS HOLDING THIS. An idea uploaded from the marketplace used to
+          show only its status, so nobody reading the card could tell whether
+          they were the blocker. `blockedOn` is null once the thread has moved
+          on — a finished record must not wear an action marker. */}
+      {blockedOn !== null && <ActionRequired on={blockedOn} />}
+
       {/* 🔴 THE FORWARD LINK §2 REQUIRES. Without it this is a list of ideas
           with no way to see what became of them. */}
       {row.project_code !== null && (
@@ -288,7 +349,10 @@ function OpportunityCard({ row }: { readonly row: Opportunity }) {
         {row.status === "draft" && (
           <button
             type="button"
-            className={SECONDARY}
+            /* Red BECAUSE it is the act the record is waiting on — not because
+               submitting is dangerous. Exactly one control per card carries
+               this, or red would come to mean "button". */
+            className={blockedOn === null ? SECONDARY : ACTION_REQUIRED_BUTTON}
             disabled={writes.isPending || !maySubmit}
             onClick={() => writes.submit(row.id)}
           >
@@ -298,7 +362,7 @@ function OpportunityCard({ row }: { readonly row: Opportunity }) {
         {row.status === "awaiting_decision" && (
           <button
             type="button"
-            className={SECONDARY}
+            className={blockedOn === null ? SECONDARY : ACTION_REQUIRED_BUTTON}
             disabled={!mayDecide}
             onClick={() => setOpen(open === "decide" ? null : "decide")}
           >
@@ -308,7 +372,7 @@ function OpportunityCard({ row }: { readonly row: Opportunity }) {
         {row.status === "approved" && row.project_id === null && (
           <button
             type="button"
-            className={SECONDARY}
+            className={blockedOn === null ? SECONDARY : ACTION_REQUIRED_BUTTON}
             disabled={!mayConvert}
             onClick={() => setOpen(open === "convert" ? null : "convert")}
           >

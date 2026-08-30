@@ -45,6 +45,7 @@ import { DataPage, DataSourceError } from "@/components/ui/data-source-banner";
 import { serverMessage } from "@/lib/api/client";
 import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { EventDates } from "@/components/ui/event-dates";
 import { useCreateFormula, useFormulas, useProjects } from "@/lib/api/hooks";
 import { permits, usePermissions } from "@/lib/permissions";
 import type { Formula } from "@/lib/api/formulations";
@@ -78,6 +79,14 @@ interface FormulaRow {
    * does not.
    */
   readonly latest_version_id: string | null;
+  /**
+   * When the formula was created and when it last moved.
+   *
+   * ⚠️ NULL ON A FIXTURE ROW. `DemoFormula` carries neither timestamp, so the
+   * demonstration path shows no dates rather than invented ones.
+   */
+  readonly created_at: string | null;
+  readonly updated_at: string | null;
 }
 
 function fromApi(formula: Formula): FormulaRow {
@@ -100,6 +109,8 @@ function fromApi(formula: Formula): FormulaRow {
     latest_version_code: formula.latest_version_code,
     latest_version_status: formula.latest_version_status,
     latest_version_id: formula.latest_version_id,
+    created_at: formula.created_at,
+    updated_at: formula.updated_at,
   };
 }
 
@@ -131,6 +142,8 @@ function fromDemo(formula: DemoFormula): FormulaRow {
       latest_version_code: null,
       latest_version_status: null,
       latest_version_id: null,
+      created_at: null,
+      updated_at: null,
     };
   }
   return {
@@ -144,6 +157,8 @@ function fromDemo(formula: DemoFormula): FormulaRow {
     latest_version_status: latest.status,
     // A fixture has no live version id. See `FormulaRow`.
     latest_version_id: null,
+    created_at: null,
+    updated_at: null,
   };
 }
 
@@ -375,6 +390,17 @@ export default function FormulationsPage() {
                 )}
                 {f.product_family !== null && <> · {f.product_family}</>}
               </p>
+
+              {/* Created and last changed. `updated_at` matters as much as
+                  `created_at` here: §8 forbids editing an approved formula in
+                  place, so a formula whose last change postdates its approval
+                  is worth seeing at a glance. */}
+              <EventDates
+                events={[
+                  { label: "Created", at: f.created_at, required: f.created_at !== null },
+                  { label: "Last change", at: f.updated_at },
+                ]}
+              />
 
               {f.latest_version_id !== null && (
                 <p className="mt-2 text-xs">

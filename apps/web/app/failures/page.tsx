@@ -37,6 +37,7 @@ import Link from "next/link";
 
 import { useState } from "react";
 
+import { formatDay, formatInstant } from "@/lib/format/date";
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { serverMessage } from "@/lib/api/client";
 import { useFailures, useOpenInvestigation, useProjects } from "@/lib/api/hooks";
@@ -335,7 +336,10 @@ export default function FailuresPage() {
                   <dl className="mt-2 grid gap-x-6 gap-y-1 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
                     <div className="flex gap-1.5">
                       <dt className="font-medium text-slate-500">Opened</dt>
-                      <dd className="tabular-nums">{f.opened_at.slice(0, 10)}</dd>
+                      {/* Through the shared formatter — `.slice(0, 10)` printed
+                          a raw ISO date beside dates rendered as `30 Aug 2026`
+                          everywhere else. */}
+                      <dd title={formatInstant(f.opened_at)}>{formatDay(f.opened_at)}</dd>
                     </div>
                     <div className="flex gap-1.5">
                       <dt className="font-medium text-slate-500">Hypotheses</dt>

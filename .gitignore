@@ -6,6 +6,10 @@ __pycache__/
 !.env.example
 .next/
 .next-demo/
+# A THIRD build dir, so `next build` can prove the bundle compiles without
+# clobbering the one the running demo server holds open. A server owns its
+# dist dir: building into it stalls forever at near-zero CPU.
+.next-verify/
 dist/
 .venv/
 venv/

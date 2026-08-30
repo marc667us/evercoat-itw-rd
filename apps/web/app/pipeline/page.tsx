@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { DemoPage } from "@/components/ui/demo-banner";
+import { formatDay } from "@/lib/format/date";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
   PROJECTS,
@@ -83,6 +84,21 @@ export default function PipelinePage() {
                         <div className="mt-1 text-[11px] text-slate-600">
                           Lead {userName(p.lead)}
                         </div>
+                        {/* ⚠️ TARGET RELEASE, NOT "ADDED", AND THAT IS NOT AN
+                            OVERSIGHT.
+                            This board is fixture-backed (`DemoPage` over
+                            `PROJECTS`) and `DemoProject` carries no creation
+                            date. Rendering "Added —" on every card would put an
+                            empty date column on a board where nothing could ever
+                            fill it. The target release date is the one the
+                            fixture genuinely holds, and it is the date a stage
+                            board is actually about. The LIVE creation date is on
+                            /projects, which reads the API. */}
+                        {p.target_release_date !== null && (
+                          <div className="mt-0.5 text-[11px] text-slate-600">
+                            Target release {formatDay(p.target_release_date)}
+                          </div>
+                        )}
                         {/* A card with no requirements said "ALL PASSED".
                             Absence of evidence is not success. */}
                         <div className="mt-2">

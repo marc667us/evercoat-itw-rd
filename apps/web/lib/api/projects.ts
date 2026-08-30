@@ -50,6 +50,10 @@ export const projectSchema = z.object({
   // target release date set", which is a claim about the project rather
   // than about the response. Absence presenting as a fact. Codex found it.
   target_release_date: z.string().nullable(),
+  // When this record was created. ⚠️ ZOD STRIPS WHAT IT DOES NOT DECLARE,
+  // so the API returning the column is not enough — without this line the
+  // field is silently removed before any view can render it.
+  created_at: z.string(),
 });
 
 export type Project = z.infer<typeof projectSchema>;
@@ -287,6 +291,10 @@ export const requirementSchema = z.object({
   test_method_code: z.string().nullable(),
   requirement_status: z.string(),
   revision: z.number(),
+  // When this record was created. ⚠️ ZOD STRIPS WHAT IT DOES NOT DECLARE,
+  // so the API returning the column is not enough — without this line the
+  // field is silently removed before any view can render it.
+  created_at: z.string(),
   verification_status: z.string(),
   latest_result: z.string().nullable(),
   blocking_validation: z.boolean(),

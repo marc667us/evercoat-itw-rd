@@ -89,6 +89,10 @@ class ProjectSummary(BaseModel):
     current_stage: str | None
     confidentiality: str
     target_release_date: object | None = None
+    # When this project was opened. A Pydantic model DROPS what it does not
+    # declare, so projecting the column in SQL is only half the change —
+    # without this line the query returns it and the response omits it.
+    created_at: object | None = None
 
 
 class ProjectCreate(BaseModel):
@@ -179,8 +183,13 @@ def list_projects(
     rows = session.execute(
         text(
             """
+            -- `created_at` is projected because the pipeline views show WHEN
+            -- each step happened. The column has always existed; it was
+            -- simply never returned, so a screen could say what stage a
+            -- project was at and not when it got there.
             SELECT id, project_code, name, product_family, status, priority,
-                   current_stage, confidentiality, target_release_date
+                   current_stage, confidentiality, target_release_date,
+                   created_at
             FROM projects.projects
             ORDER BY
                 CASE priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2
@@ -223,8 +232,15 @@ def create_project(
                  confidentiality, lead_user_id)
             VALUES (:org, :code, :name, :family, :description, :tech, :comm,
                     :priority, :confidentiality, :lead)
+            -- 🔴 `created_at` HERE TOO, AND ITS ABSENCE WAS INVISIBLE.
+            -- `ProjectSummary` DEFAULTS this field to None, so omitting it
+            -- from RETURNING does not fail — the route answers 201 with
+            -- `created_at: null`, and the grid renders "—" beside a project
+            -- created one second earlier. A default and a missing column
+            -- cancel each other out exactly where nothing can see it.
             RETURNING id, project_code, name, product_family, status, priority,
-                      current_stage, confidentiality, target_release_date
+                      current_stage, confidentiality, target_release_date,
+                      created_at
             """
             ),
             {
@@ -272,8 +288,13 @@ def get_project(
         session.execute(
             text(
                 """
+            -- `created_at` is projected because the pipeline views show WHEN
+            -- each step happened. The column has always existed; it was
+            -- simply never returned, so a screen could say what stage a
+            -- project was at and not when it got there.
             SELECT id, project_code, name, product_family, status, priority,
-                   current_stage, confidentiality, target_release_date
+                   current_stage, confidentiality, target_release_date,
+                   created_at
             FROM projects.projects WHERE id = :pid
             """
             ),

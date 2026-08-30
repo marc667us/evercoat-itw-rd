@@ -1228,6 +1228,7 @@ def list_tests(
                    t.validity_status, t.calculated_result, t.review_state,
                    t.approval_state, t.test_purpose, t.authority_level,
                    t.final_confirmed, t.planned_for, t.executed_at, t.updated_at,
+                   t.created_at,
                    m.method_code, m.name AS method_name, m.canonical_unit,
                    m.replicates_required,
                    s.sample_number,

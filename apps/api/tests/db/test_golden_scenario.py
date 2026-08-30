@@ -67,6 +67,7 @@ from app.domains.formulations.service import (
     RevisionInput,
     create_formula,
     decide_version,
+    list_formulas,
     revise_version,
     set_components,
     submit_version,
@@ -78,6 +79,7 @@ from app.domains.laboratory.service import (
     complete_batch,
     create_batch,
     create_sample,
+    list_batches,
     record_weighing,
     start_batch,
 )
@@ -87,9 +89,11 @@ from app.domains.opportunities.service import (
     convert_to_project,
     create_opportunity,
     decide_opportunity,
+    list_opportunities,
     submit_opportunity,
 )
 from app.domains.projects.members import add_member
+from app.domains.requirements.service import verification_matrix
 from app.domains.testing.service import (
     DecisionInput,
     ReplicateInput,
@@ -97,6 +101,7 @@ from app.domains.testing.service import (
     complete_execution,
     create_test,
     get_test,
+    list_tests,
     record_decision,
     record_replicate,
     start_execution,
@@ -509,11 +514,135 @@ def test_the_golden_scenario_runs_end_to_end(owner_session: Session) -> None:
         "started it - the digital thread does not hold end to end"
     )
 
+    # ── The thread can also say WHEN each arrow was drawn ────────────────
+    #
+    # Owner instruction, 2026-08-30: every action and event on the pipeline
+    # must carry its date — added, defined, created, executed, started.
+    #
+    # 🔴 THE COLUMNS EXISTED THE WHOLE TIME; THE PROJECTIONS DID NOT RETURN
+    # THEM. Four of the five list endpoints stored `created_at` and selected
+    # everything except it, so every pipeline screen could say what STAGE a
+    # record was at and never when it got there. Nothing failed, because
+    # nothing asked.
+    #
+    # ⚠️ ASSERTED HERE, IN THE SCENARIO, RATHER THAN IN A TEST OF ITS OWN.
+    # A standalone test would call these five functions against whatever org
+    # it could find, and an org with no rows returns `[]` — over which every
+    # assertion below passes while checking nothing. This scenario has just
+    # built one of each entity, so the lists are guaranteed non-empty, and
+    # that is asserted before anything is read out of them.
+    #
+    # ⚠️ NOT A TEST THAT THE VALUE IS "RIGHT". A timestamp default cannot be
+    # wrong in an interesting way. What can regress — and did, silently, for
+    # the whole life of these endpoints — is the field being ABSENT from the
+    # projection. That is what this measures.
+    projections = {
+        "opportunities": list_opportunities(s, organization_id=org),
+        "projects": _project_rows(s, org),
+        "formulas": list_formulas(s, organization_id=org),
+        "batches": list_batches(s, organization_id=org),
+        "tests": list_tests(s, organization_id=org),
+        "requirements": verification_matrix(s, project_id=project, organization_id=org)[
+            "requirements"
+        ],
+    }
+
+    for name, rows in projections.items():
+        assert rows, (
+            f"{name} returned no rows, so asserting anything about their shape "
+            f"proves nothing - the scenario above built one of each"
+        )
+        missing = [i for i, row in enumerate(rows) if "created_at" not in dict(row)]
+        assert not missing, (
+            f"{name}: rows {missing} carry no created_at, so the view that "
+            f"lists them cannot say when the record was created"
+        )
+        undated = [i for i, row in enumerate(rows) if dict(row)["created_at"] is None]
+        assert not undated, (
+            f"{name}: rows {undated} have a NULL created_at - a record that "
+            f"exists was created at some point, so this is bad data rather "
+            f"than a step that has not happened yet"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers — deliberately thin. A scenario test whose setup is hidden behind
 # helpers stops being readable as a scenario.
 # ---------------------------------------------------------------------------
+
+
+def test_a_project_created_through_the_route_comes_back_dated(
+    owner_session: Session,
+) -> None:
+    """POST /api/projects must answer with the creation date it just wrote.
+
+    🔴 A DEFAULT AND A MISSING COLUMN CANCEL EACH OTHER OUT.
+
+    `ProjectSummary.created_at` is DEFAULTED, so a `RETURNING` clause that
+    omits the column does not fail: the route answers 201 with
+    `created_at: null`, and the grid renders "—" beside a project created one
+    second earlier. Nothing raises, nothing logs, and both halves look correct
+    read on their own. Found by reading the create path after fixing the list
+    path — the list was the reported problem, and this was the same defect one
+    route over.
+
+    ⚠️ THE ROUTE FUNCTION, NOT THE SQL. Asserting the query text would pass
+    over exactly the failure this exists to catch, because the model is what
+    decides what reaches the client.
+    """
+    from app.api.projects import ProjectCreate, create_project
+    from app.core.security import Principal
+
+    s = owner_session
+    suffix = uuid.uuid4().hex[:8]
+    org = s.execute(
+        text("INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"),
+        {"c": f"DATE-{suffix}", "n": "Dated Org"},
+    ).scalar_one()
+    who = _people(s, org, suffix)
+    s.flush()
+
+    created = create_project(
+        payload=ProjectCreate(
+            project_code=f"RDP-{suffix}",
+            name="A project that knows its own birthday",
+        ),
+        principal=Principal(
+            user_id=who["lead"],
+            organization_id=org,
+            keycloak_sub=f"sub-{suffix}",
+            email=f"lead-{suffix}@example.invalid",
+            display_name="Lead",
+        ),
+        session=s,
+    )
+
+    assert created.created_at is not None, (
+        "the create route answered without a creation date, so a project is "
+        "undated on the screen that lists it until something re-reads it"
+    )
+
+
+def _project_rows(s: Session, org: uuid.UUID) -> list[dict[str, object]]:
+    """The projects list AS THE ROUTE RETURNS IT, not as its SQL selects it.
+
+    🔴 THE MODEL IS THE CONTRACT HERE, NOT THE QUERY. `list_projects` builds
+    `ProjectSummary(**row)`, and that model DROPS any key it does not declare
+    while supplying a default for one the query omits. So a projection change
+    and a schema change can each silently undo the other, and reading the
+    SELECT would show neither. This calls the route function itself.
+
+    `principal` is unused by the body (`_ = principal`), so nothing is
+    authorized here — RLS on the owner session is what governs visibility, and
+    only the SHAPE of the rows is being asserted.
+    """
+    from app.api.projects import list_projects
+
+    return [
+        row.model_dump()
+        for row in list_projects(principal=None, session=s)  # type: ignore[arg-type]
+        if row.id is not None
+    ]
 
 
 def _formula_input(suffix: str):  # type: ignore[no-untyped-def]

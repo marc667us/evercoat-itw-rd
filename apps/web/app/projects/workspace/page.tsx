@@ -45,6 +45,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
+import { formatDay, formatInstant } from "@/lib/format/date";
 import { Absent } from "@/components/ui/record-link";
 import { serverMessage } from "@/lib/api/client";
 import {
@@ -554,6 +555,15 @@ function RequirementsSection({
                     <div className="flex gap-1.5">
                       <dt className="font-medium text-slate-500">Revision</dt>
                       <dd className="tabular-nums">{r.revision}</dd>
+                    </div>
+                    {/* WHEN THE REQUIREMENT WAS DEFINED — the owner named this
+                        one explicitly. Note that a REVISION creates a new row
+                        (§8's clone-never-edit discipline applied to
+                        requirements), so this is the date THIS revision was
+                        written, not the date the requirement first existed. */}
+                    <div className="flex gap-1.5">
+                      <dt className="font-medium text-slate-500">Defined</dt>
+                      <dd title={formatInstant(r.created_at)}>{formatDay(r.created_at)}</dd>
                     </div>
                   </dl>
 

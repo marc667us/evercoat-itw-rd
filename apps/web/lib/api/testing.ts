@@ -83,6 +83,10 @@ export const testSchema = z.object({
   planned_for: z.string().nullable(),
   executed_at: z.string().nullable(),
   updated_at: z.string(),
+  // When this record was created. ⚠️ ZOD STRIPS WHAT IT DOES NOT DECLARE,
+  // so the API returning the column is not enough — without this line the
+  // field is silently removed before any view can render it.
+  created_at: z.string(),
   // From the join to `test_methods`, all NOT NULL there.
   method_code: z.string(),
   method_name: z.string(),

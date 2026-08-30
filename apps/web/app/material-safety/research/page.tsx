@@ -30,6 +30,7 @@
 
 import { useState } from "react";
 
+import { formatDay, formatInstant } from "@/lib/format/date";
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { serverMessage } from "@/lib/api/client";
 import {
@@ -280,6 +281,9 @@ function QuestionsPanel({ investigationId }: { investigationId: string }) {
               <span className="text-xs text-slate-600">
                 {row.evidence_count} card(s) · {row.status}
               </span>
+              <span className="text-xs text-slate-500" title={formatInstant(row.created_at)}>
+                {formatDay(row.created_at)}
+              </span>
               {row.status === "open" && (
                 <>
                   <button
@@ -376,6 +380,9 @@ function SourcesPanel({ investigationId }: { investigationId: string }) {
               <span className="text-xs text-slate-600">
                 {row.source_kind}
                 {row.source_locator ? ` · ${row.source_locator}` : ""}
+              </span>
+              <span className="text-xs text-slate-500" title={formatInstant(row.created_at)}>
+                {formatDay(row.created_at)}
               </span>
             </li>
           ))}
@@ -659,6 +666,9 @@ function HypothesesPanel({ investigationId }: { investigationId: string }) {
               <span className="text-xs text-slate-600">
                 {row.status} · {row.proposal_count} proposal(s)
               </span>
+              <span className="text-xs text-slate-500" title={formatInstant(row.created_at)}>
+                {formatDay(row.created_at)}
+              </span>
               {row.status === "open" && (
                 <>
                   <button
@@ -738,6 +748,9 @@ function GapsPanel({ investigationId }: { investigationId: string }) {
               </span>
               <span className="flex-1 text-slate-800">{row.description}</span>
               <span className="text-xs text-slate-600">{row.status}</span>
+              <span className="text-xs text-slate-500" title={formatInstant(row.created_at)}>
+                {formatDay(row.created_at)}
+              </span>
               {row.status === "open" && (
                 <button
                   type="button"

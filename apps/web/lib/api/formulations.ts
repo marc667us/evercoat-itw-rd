@@ -68,6 +68,10 @@ export const formulaSchema = z.object({
   // while the UI silently rendered a gap. Codex found it.
   owner_user_id: z.string(),
   updated_at: z.string(),
+  // When this record was created. ⚠️ ZOD STRIPS WHAT IT DOES NOT DECLARE,
+  // so the API returning the column is not enough — without this line the
+  // field is silently removed before any view can render it.
+  created_at: z.string(),
   // Null when the formula has no version yet. Not an error, and not zero.
   // `latest_version_id` is the KEY the workspace opens with (I86); the code
   // beside it is a label and cannot be used for that.

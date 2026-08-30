@@ -355,7 +355,7 @@ def verification_matrix(
             SELECT id, requirement_code, name, category, criticality,
                    target_value, minimum_value, maximum_value, canonical_unit,
                    warning_threshold, verification_method, test_method_code,
-                   status, revision
+                   status, revision, created_at
             FROM projects.requirements
             WHERE project_id = :pid AND organization_id = :org
               AND status <> 'superseded'
@@ -393,6 +393,11 @@ def verification_matrix(
                 "test_method_code": r["test_method_code"],
                 "requirement_status": r["status"],
                 "revision": r["revision"],
+                # ⚠️ THIS SERVICE RESHAPES ITS ROWS, so projecting the
+                # column in the SELECT above is only half the change —
+                # a field that is not named here does not reach the
+                # client. "The SQL is not the contract; the response is."
+                "created_at": r["created_at"],
                 "verification_status": verification_status,
                 "latest_result": None,
                 "blocking_validation": blocking,

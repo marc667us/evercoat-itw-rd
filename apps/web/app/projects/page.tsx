@@ -47,6 +47,7 @@ import Link from "next/link";
 import { Absent, RecordLink } from "@/components/ui/record-link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
+import { formatDay, formatInstant } from "@/lib/format/date";
 import { useCreateProject, useProjects } from "@/lib/api/hooks";
 import type { Project } from "@/lib/api/projects";
 import { PROJECTS, stageName, type DemoProject } from "@/lib/demo/dataset";
@@ -77,6 +78,12 @@ interface ProjectRow {
   readonly priority: string;
   readonly stage: string;
   readonly target_release_date: string | null;
+  // ⚠️ NULLABLE BECAUSE THE FIXTURE PATH HAS NO SUCH FIELD. `DemoProject`
+  // carries no creation date, so the demonstration rows render "—". Typing
+  // this `string` would have forced the fixture to invent one, and an
+  // invented creation date on a row already labelled demonstration data is
+  // still a date somebody could read as real.
+  readonly created_at: string | null;
   readonly confidentiality: string;
 }
 
@@ -104,6 +111,7 @@ function fromApi(project: Project): ProjectRow {
     // until the list endpoint joins `stage_definitions.name`.
     stage: project.current_stage ?? "",
     target_release_date: project.target_release_date ?? null,
+    created_at: project.created_at,
     confidentiality: project.confidentiality,
   };
 }
@@ -120,6 +128,7 @@ function fromDemo(project: DemoProject): ProjectRow {
     priority: project.priority,
     stage: stageName(project.current_stage),
     target_release_date: project.target_release_date,
+    created_at: null,
     confidentiality: project.confidentiality,
   };
 }
@@ -217,11 +226,32 @@ export default function ProjectsPage() {
           ),
       },
       {
+        // WHEN THE PROJECT WAS OPENED. Sorting is on the RAW ISO string, not
+        // the formatted one: "30 Aug 2026" sorts alphabetically, which puts
+        // April before August in every year. The accessor feeds the sort, the
+        // cell feeds the eye, and they are deliberately different.
+        id: "created_at",
+        accessorFn: (p) => p.created_at ?? "",
+        header: "Opened",
+        cell: ({ row }) => {
+          const at = row.original.created_at;
+          if (at === null) return <Absent what="no creation date on this fixture row" />;
+          return <span title={formatInstant(at)}>{formatDay(at)}</span>;
+        },
+      },
+      {
         id: "target_release_date",
         accessorFn: (p) => p.target_release_date ?? "",
         header: "Target release",
         cell: ({ row }) =>
-          row.original.target_release_date ?? <Absent what="no target release date set" />,
+          row.original.target_release_date === null ? (
+            <Absent what="no target release date set" />
+          ) : (
+            // Formatted through the shared formatter rather than printed raw.
+            // It arrived as `2026-11-30` and rendered as `2026-11-30`, which is
+            // a different convention from every other date on the pipeline.
+            <span>{formatDay(row.original.target_release_date)}</span>
+          ),
       },
     ],
     [],

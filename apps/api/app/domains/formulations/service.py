@@ -381,6 +381,7 @@ def list_formulas(
             """
             SELECT f.id, f.formula_code, f.name, f.product_family, f.status,
                    f.project_id, p.project_code, f.owner_user_id, f.updated_at,
+                   f.created_at,
                    -- 🔴 THE ID, AND WITHOUT IT THIS LIST GOES NOWHERE (I86).
                    -- Twelve of the thirteen formulation routes are keyed by
                    -- `version_id`, and this endpoint returned the latest

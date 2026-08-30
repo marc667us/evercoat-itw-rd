@@ -66,6 +66,10 @@ export const batchSchema = z.object({
   started_at: z.string().nullable(),
   completed_at: z.string().nullable(),
   updated_at: z.string(),
+  // When this record was created. ⚠️ ZOD STRIPS WHAT IT DOES NOT DECLARE,
+  // so the API returning the column is not enough — without this line the
+  // field is silently removed before any view can render it.
+  created_at: z.string(),
   // Sub-counts. Integers, so numbers rather than strings: they are
   // cardinalities, not measurements, and no scale can be lost.
   component_count: z.number(),

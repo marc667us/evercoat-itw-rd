@@ -962,7 +962,7 @@ def list_batches(
             SELECT b.id, b.batch_number, b.status, b.planned_quantity_kg,
                    b.tolerance_percent, b.project_id, b.formula_version_id,
                    v.version_code, f.formula_code, f.name AS formula_name,
-                   b.started_at, b.completed_at, b.updated_at,
+                   b.started_at, b.completed_at, b.updated_at, b.created_at,
                    (SELECT count(*) FROM laboratory.batch_components c
                      WHERE c.batch_id = b.id) AS component_count,
                    (SELECT count(*) FROM laboratory.batch_components c

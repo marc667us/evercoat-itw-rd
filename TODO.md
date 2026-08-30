@@ -1,6 +1,27 @@
 # TODO — EvercoatITWRD APP
 
-**Updated 2026-08-29. Read `RESUME_HERE.md` first.**
+**Updated 2026-08-30. Read `RESUME_HERE.md` first.**
+
+## ✅ CLOSED 2026-08-30 — dates on every pipeline action and event
+
+Owner instruction, verbatim: *"include dates when pipeline item action is taken
+— when innovation is added the view must have date added, when requirement is
+defined the view must have date created, and so on across all actions and
+events on the pipeline and views."*
+
+Done across SQL projection → service reshaping → response model → Zod schema →
+view, because each layer silently drops what the one before it added. Ten
+formatter tests plus six projection assertions in the golden scenario, each
+falsified by reverting the thing it watches.
+
+🔴 **It also found a live off-by-one-day defect**: a bare `date` column
+(`target_release_date`) parsed as UTC midnight and rendered in local time
+displayed a day EARLY for every user west of UTC. See CHANGELOG 2026-08-30 pt3.
+
+⚠️ **Still undated, deliberately**: the `/pipeline` board is fixture-backed and
+`DemoProject` carries no creation date, so it shows the target release date it
+genuinely has rather than an "Added —" column nothing could fill. When that
+board reads the API, give it the creation date.
 
 ## ▶ NEXT SESSION, FIRST TASK — the landing page + competitor marketplace
 

@@ -37,6 +37,7 @@ import {
   CREATE_LABEL,
 } from "@/components/ui/create-form";
 import { LiveOnlyPage, DataSourceError } from "@/components/ui/data-source-banner";
+import { formatDay, formatInstant } from "@/lib/format/date";
 import { Absent } from "@/components/ui/record-link";
 import { useState } from "react";
 
@@ -184,13 +185,26 @@ export default function TestingPage() {
                       <dt className="font-medium text-slate-500">Approval</dt>
                       <dd>{axis(t.approval_state)}</dd>
                     </div>
+                    {/* WHEN THE TEST WAS RAISED. The list showed the three
+                        result axes and the execution date but never said when
+                        the test entered the pipeline, so a queue of pending
+                        tests gave no clue which had been waiting longest. */}
+                    <div className="flex gap-1.5">
+                      <dt className="font-medium text-slate-500">Created</dt>
+                      <dd title={formatInstant(t.created_at)}>{formatDay(t.created_at)}</dd>
+                    </div>
                     <div className="flex gap-1.5">
                       <dt className="font-medium text-slate-500">Executed</dt>
                       <dd>
+                        {/* Through the shared formatter. `.slice(0, 10)` left an
+                            ISO `2026-08-30` beside dates formatted elsewhere as
+                            `30 Aug 2026` — two conventions in one product. */}
                         {t.executed_at ? (
-                          t.executed_at.slice(0, 10)
+                          <span title={formatInstant(t.executed_at)}>
+                            {formatDay(t.executed_at)}
+                          </span>
                         ) : t.planned_for ? (
-                          <span>planned {t.planned_for.slice(0, 10)}</span>
+                          <span>planned {formatDay(t.planned_for)}</span>
                         ) : (
                           <Absent what="not scheduled" />
                         )}
