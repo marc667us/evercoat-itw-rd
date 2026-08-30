@@ -163,28 +163,42 @@ test.describe("where the application opens", () => {
    * about a setting with no enforcement point, arriving from the user's side
    * of the screen.
    */
-  test("the front door opens on the chosen screen", async ({ page }) => {
+  /**
+   * ⚠️ WHERE THESE THREE TESTS WENT, AND WHY THEY ARE NOT SIMPLY DELETED.
+   *
+   * They asserted that `/` redirects to the stored screen, to `/dashboard` by
+   * default, and to `/dashboard` when the stored value is not one of the three
+   * offered. All three were real, and all three tested behaviour that has now
+   * MOVED rather than disappeared: `/` is the public landing page, and the
+   * preference is consulted at SIGN-IN, where `auth-provider` substitutes
+   * `readLanding()` for a `returnTo` of `/`.
+   *
+   * The substitution and the fallback are asserted in
+   * `apps/web/lib/auth/return-to.test.ts`, at the seam where the decision is
+   * now made. They cannot be asserted here: reaching the post-sign-in
+   * destination requires completing a real Keycloak redirect, which this
+   * project has no deployed identity provider for.
+   *
+   * What a browser CAN still prove about the front door is that it renders
+   * rather than redirects, and `navigation.spec.ts` asserts exactly that.
+   *
+   * 🔴 THE ORIGINAL DEFECT MUST NOT COME BACK. The preference once had NO
+   * reader while Settings claimed it worked. If the sign-in substitution is
+   * ever removed, `return-to.test.ts` goes red — that is the guard, and it is
+   * named here so the next person can find it.
+   */
+  test("the front door renders instead of redirecting, and says what it is", async ({ page }) => {
+    // The stored preference must NOT move the public front door. A visitor who
+    // has never signed in has no workspace to be sent to, and honouring a
+    // stale localStorage value here would bounce an anonymous caller into a
+    // screen that immediately refuses them.
     await page.goto("/dashboard/");
     await page.evaluate(() => window.localStorage.setItem("evercoat.landing", "/testing"));
 
     await page.goto("/");
-    await expect(page).toHaveURL(/\/testing\/?$/, { timeout: 15_000 });
-  });
-
-  test("and on the dashboard when nothing has been chosen", async ({ page }) => {
-    // The default must be unchanged for anybody who never opens Settings.
-    await page.goto("/");
-    await expect(page).toHaveURL(/\/dashboard\/?$/, { timeout: 15_000 });
-  });
-
-  test("a stored screen that no longer exists falls back rather than 404s", async ({ page }) => {
-    await page.goto("/dashboard/");
-    await page.evaluate(() => window.localStorage.setItem("evercoat.landing", "/formulations"));
-    // `/formulations` is a real page but NOT one of the three offered, so it is
-    // not a valid stored value — `isLandingScreen` refuses it and the default
-    // applies. A preference read that accepted any path would be an open
-    // redirect with a friendly name.
-    await page.goto("/");
-    await expect(page).toHaveURL(/\/dashboard\/?$/, { timeout: 15_000 });
+    await expect(
+      page.getByRole("heading", { name: "Global Competitor Product Marketplace" }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page).toHaveURL(/\/$/);
   });
 });

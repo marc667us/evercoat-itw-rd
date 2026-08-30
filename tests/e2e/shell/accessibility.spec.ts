@@ -27,6 +27,20 @@ import { expect, test } from "@playwright/test";
 const STANDARD = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
 const PAGES = [
+  // 🔴 THE PUBLIC SURFACE FIRST, BECAUSE IT IS THE ONLY PART ANYONE CAN REACH
+  // WITHOUT AN ACCOUNT.
+  //
+  // Every other page in this list is behind sign-in, so its audience is ten
+  // demo users and a controlled set of staff. These three are the front door,
+  // the marketplace and the news feed, served to anybody with the URL — which
+  // makes them the pages where an accessibility failure has the widest reach
+  // and the least chance of being reported by someone who can raise a ticket.
+  //
+  // Scanned in their REAL public state: signed out, with whatever the public
+  // API returns. That is the state a visitor meets.
+  { name: "public landing page", path: "/" },
+  { name: "public marketplace", path: "/marketplace" },
+  { name: "public industry news", path: "/industry-news" },
   { name: "dashboard", path: "/dashboard" },
   { name: "administration", path: "/admin" },
   // The Slice 2 screens. Adding them is what caught the data grid's

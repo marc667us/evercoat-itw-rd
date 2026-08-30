@@ -37,20 +37,41 @@ const UNAVAILABLE_ITEMS = NAVIGATION.flatMap((group) =>
  */
 
 test.describe("application shell", () => {
-  test("the root path redirects into the dashboard", async ({ page }) => {
-    // Asserted in a browser because `redirect()` in a server component is
-    // not something reading the file proves — it proves the intent.
+  test("the root path is the public landing page and does NOT redirect", async ({ page }) => {
+    // 🔴 THIS TEST IS THE INVERSE OF THE ONE IT REPLACES, DELIBERATELY.
+    //
+    // It used to read "the root path redirects into the dashboard" and assert
+    // `/dashboard`. That was a real assertion about real behaviour, and the
+    // behaviour changed on purpose: the owner specified `/` as a PUBLIC
+    // landing page carrying sign-in, the competitor marketplace and the
+    // industry news feed. So the assertion is inverted rather than deleted --
+    // deleting it would leave the front door with no browser coverage at all,
+    // and "it redirects" and "it renders" are both things only a browser can
+    // prove.
+    //
+    // ⚠️ The landing preference did NOT disappear with the redirect. Its
+    // reader moved to sign-in, where `auth-provider` substitutes
+    // `readLanding()` for a `returnTo` of `/`. That is covered by
+    // `apps/web/lib/auth/return-to.test.ts`, because it happens in a redirect
+    // flow this suite cannot complete without a live Keycloak.
     await page.goto("/");
-    // The trailing slash is optional on purpose. The standalone build
-    // serves `/dashboard`; the static export sets `trailingSlash` (so that
-    // it writes directory indexes, which every static host serves) and
-    // therefore lands on `/dashboard/`. Both are the same destination, and
-    // anchoring on `$` without the `\/?` made this test assert a build mode
-    // rather than the behaviour it is named after.
-    await expect(page).toHaveURL(/\/dashboard\/?$/);
+
+    // Still `/` after the app has had time to run any client-side effect. A
+    // bare `toHaveURL` immediately after `goto` would also pass against a
+    // redirect that had simply not fired yet.
     await expect(
-      page.getByRole("heading", { name: "Dashboard", level: 1 }),
+      page.getByRole("heading", { level: 1, name: /Global competitor products/i }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page).toHaveURL(/\/$/);
+
+    // The two public surfaces the owner asked for, and the way in.
+    await expect(
+      page.getByRole("heading", { name: "Global Competitor Product Marketplace" }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Global Competitor Industry News Feed" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
   });
 
   test("the shell renders its landmarks", async ({ page }) => {

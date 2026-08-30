@@ -45,6 +45,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { API_BASE_URL } from "@/lib/api/config";
+import { readLanding } from "@/lib/preferences";
 import { readSession, setSession, useSession, type SessionState } from "@/lib/api/session";
 import {
   AUTH_UNCONFIGURED_REASON,
@@ -54,6 +55,7 @@ import {
   isAuthConfigured,
 } from "@/lib/auth/config";
 import { safeReturnTo, saveFlow } from "@/lib/auth/flow-state";
+import { returnToForSignIn } from "@/lib/auth/return-to";
 import { authorizationUrl, createChallenge, refreshTokens } from "@/lib/auth/pkce";
 
 /**
@@ -541,8 +543,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = useCallback(async () => {
     if (!isAuthConfigured) return;
     const challenge = await createChallenge();
+
+    // 🔴 SIGNING IN FROM THE PUBLIC LANDING PAGE MUST NOT RETURN TO IT.
+    //
+    // `returnTo` is normally "where you were", which is right everywhere in
+    // the application: sign in from a deep link and you land back on it.
+    //
+    // `/` is the one place that is wrong. It is now the PUBLIC landing page,
+    // not a screen anybody meant to be on, so returning there after a
+    // successful sign-in would deposit the visitor back on the marketplace
+    // they just signed in to get past — and it would leave `readLanding()`
+    // with no reader again, which is the exact defect both reviewers found
+    // the first time the preference was added. Codex raised it here.
+    //
+    // The decision lives in `returnToForSignIn` so it can be tested without a
+    // Keycloak redirect — see `lib/auth/return-to.test.ts`, which is the guard
+    // that goes red if the substitution is ever removed.
+    const current = window.location.pathname + window.location.search;
     const returnTo = safeReturnTo(
-      window.location.pathname + window.location.search,
+      returnToForSignIn(current, readLanding()),
       window.location.origin,
     );
 
