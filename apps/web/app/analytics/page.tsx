@@ -44,10 +44,10 @@
  * `by_colour` are two separate blocks for exactly that reason.
  */
 
-import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
+import { RecordLink } from "@/components/ui/record-link";
 import { useAnalytics } from "@/lib/api/hooks";
 import type { Analytics, PortfolioProject } from "@/lib/api/analysis";
 
@@ -230,13 +230,23 @@ function Portfolio({
           {projects.map((p) => (
             <tr key={p.project_id} className="border-b border-slate-100">
               <td className="py-2 pr-4">
-                {/* §2: every figure drills down to real source records. */}
-                <Link
-                  href={`/projects/${p.project_code}`}
+                {/* 🔴 `RecordLink`, NOT A HAND-ROLLED `<Link>`. THIS TABLE 404'd.
+                    §2 asks that every figure drill down to a real source record,
+                    and this row obliged with `/projects/{code}` for whatever the
+                    API returned. But `/projects/[code]` is a DEMONSTRATION screen:
+                    it renders from `lib/demo/dataset` and calls `notFound()` for
+                    any code that is not one of the three bundled projects. So a
+                    live project -- which is every project this table lists --
+                    took the reader to a 404.
+                    `RecordLink` is the component that already knows the
+                    difference, and renders the code as text with a reason when no
+                    detail page exists in this build. It was written for this and
+                    this screen did not use it. */}
+                <RecordLink
+                  kind="project"
+                  code={p.project_code}
                   className="font-medium text-slate-900 underline decoration-slate-300 underline-offset-2"
-                >
-                  {p.project_code}
-                </Link>
+                />
                 <span className="ml-2 text-slate-600">{p.name}</span>
               </td>
               <td className="py-2 pr-4 text-slate-700">{p.current_stage ?? "—"}</td>

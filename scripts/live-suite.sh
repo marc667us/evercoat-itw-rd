@@ -594,6 +594,54 @@ if [[ "${LIVE}" != "yes" ]]; then
 fi
 
 # ---------------------------------------------------------------------
+# 1b. AND WAIT FOR THE IDENTITY PROVIDER, WHICH IS A SEPARATE SURFACE.
+#
+# 🔴 `/health/ready` SAYS NOTHING ABOUT KEYCLOAK, AND EIGHT TESTS FAILED
+#    ON THAT GAP.
+#
+# Measured 2026-08-29, immediately after a demo restart: the API answered
+# `/health/ready` 200 in 25s and the suite began. `tests/integration`
+# authenticates by DIRECT GRANT against `${BASE_URL}/auth`, which at that
+# moment was still returning `502 <!DOCTYPE html>` from the freshly-minted
+# tunnel. Eight failures -- "Keycloak refused the direct grant for
+# lead.demo: 502" -- against a stack that was completely healthy ninety
+# seconds later, and one of them inverted an assertion so the report read
+# `assert 503 == 401`.
+#
+# That is a false RED, and it is as expensive as a false green: it costs a
+# session working out that nothing is broken. The API and the identity
+# provider are two upstreams behind one hostname, and readiness of one is
+# not readiness of the other -- `/health/ready`'s own `sign_in` check
+# probes the DATABASE ROLE, not Keycloak over HTTP.
+#
+# Non-fatal on purpose. A deployment with no Keycloak is a real
+# configuration, and the preflight above already governs whether the tests
+# that need one are allowed to run. This waits when there is one to wait
+# for, and says so plainly when there is not.
+KC_WELL_KNOWN="${BASE_URL}/auth/realms/evercoat/.well-known/openid-configuration"
+echo "--- waiting for the identity provider at ${BASE_URL}/auth ---"
+KC_DEADLINE=$((SECONDS + 180))
+KC_LIVE="no"
+while (( SECONDS < KC_DEADLINE )); do
+    KC_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${KC_WELL_KNOWN}")" || KC_CODE=""
+    [[ -z "${KC_CODE}" ]] && KC_CODE="000"
+    if [[ "${KC_CODE}" == "200" ]]; then
+        KC_LIVE="yes"
+        echo "  identity provider answering after $((SECONDS))s (HTTP 200)"
+        break
+    fi
+    echo "  HTTP ${KC_CODE} from the realm at $((SECONDS))s, still waiting..."
+    sleep 10
+done
+
+if [[ "${KC_LIVE}" != "yes" ]]; then
+    echo "  WARNING: the realm never answered 200. Every test that signs in or"
+    echo "  takes a direct grant will fail, and those failures will describe"
+    echo "  Keycloak rather than this application. Continuing so the report"
+    echo "  still covers what does not need an identity provider."
+fi
+
+# ---------------------------------------------------------------------
 # 2. Prove a real page mounts -- not just that something answered.
 #
 # Probing `/` alone is a FALSE GREEN. Application roots are commonly
