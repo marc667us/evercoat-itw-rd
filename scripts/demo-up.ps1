@@ -311,6 +311,15 @@ $apiCmd = @"
 # the demo starts, serves /health/live, and refuses every authenticated
 # request. /health/ready reports it rather than leaving that to a user.
 `$env:AUTH_DATABASE_URL='postgresql+psycopg://evercoat_auth:ci-auth@localhost:55432/evercoat_itw_rd';
+# The anonymous public read connection (migration 059). WITHOUT IT THE DEMO
+# COMES UP LOOKING FINE AND EVERY /api/public/* ROUTE ANSWERS 503 -- the
+# landing page then renders its "catalogue is unavailable" notice, which is
+# the honest failure but is indistinguishable, to a viewer, from the feature
+# not existing.
+`$env:PUBLIC_DATABASE_URL='postgresql+psycopg://evercoat_public:dev-public-pw@localhost:55432/evercoat_itw_rd';
+# The agent tier's curation connection (migration 060). Its inability to
+# publish is a property of this role.
+`$env:AGENT_DATABASE_URL='postgresql+psycopg://evercoat_agent:dev-agent-pw@localhost:55432/evercoat_itw_rd';
 `$env:KEYCLOAK_ISSUER='$PublicUrl/auth/realms/evercoat';
 `$env:CORS_ALLOWED_ORIGINS='[\"$PublicUrl\",\"http://localhost:3000\"]';
 `$env:APP_ENV='development'; `$env:LOG_FORMAT='console';
