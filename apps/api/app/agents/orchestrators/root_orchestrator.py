@@ -27,6 +27,7 @@ from app.agents.conductors import (
     innovation_conductor,
     knowledge_conductor,
     laboratory_conductor,
+    market_intelligence_conductor,
     materials_conductor,
     msd_conductor,
     quality_conductor,
@@ -55,6 +56,8 @@ __all__ = [
     "knowledge_search",
     "laboratory_batch",
     "laboratory_batches",
+    "market_intelligence_propose",
+    "market_intelligence_review_queue",
     "materials_documents",
     "materials_material",
     "materials_materials",
@@ -478,3 +481,48 @@ def knowledge_search(
 ) -> list[dict[str, Any]]:
     """Ranked passages for a PERSON — no relevance cut, unlike MSD's tool."""
     return knowledge_conductor.search(session, caller=caller, question=question, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# Market intelligence — the department that curates the PUBLIC catalogue.
+#
+# 🔴 THE ONLY DEPARTMENT WHOSE WRITES LEAVE THE TENANT.
+#
+# Everything else here reads and writes records belonging to the caller's
+# organization. This one proposes into `public_intel`, which has no tenant and
+# is served to anonymous readers. That is why its conductor takes two sessions
+# and why migration 060 exists: the caller's session answers "may this person
+# do this", and the agent connection answers "may this write be published" --
+# with the answer to the second being always no.
+# ---------------------------------------------------------------------------
+
+
+def market_intelligence_propose(
+    session: Session,
+    *,
+    caller: AgentPrincipal,
+    manufacturer_name: str,
+    product_name: str | None = None,
+    category: str | None = None,
+    source_url: str | None = None,
+) -> market_intelligence_conductor.CurationResult:
+    """Propose a competitor product into the public catalogue, as a DRAFT.
+
+    Nothing this returns is public. `CurationResult.published` is the honest
+    answer to "did this reach anybody", and it is False.
+    """
+    return market_intelligence_conductor.propose_catalogue_entry(
+        session,
+        caller,
+        manufacturer_name=manufacturer_name,
+        product_name=product_name,
+        category=category,
+        source_url=source_url,
+    )
+
+
+def market_intelligence_review_queue(
+    session: Session, *, caller: AgentPrincipal, limit: int = 50
+) -> list[dict[str, Any]]:
+    """What the agent tier has proposed and no human has decided on."""
+    return market_intelligence_conductor.read_review_queue(session, caller, limit=limit)

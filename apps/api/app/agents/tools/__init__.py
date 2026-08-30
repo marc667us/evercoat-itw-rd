@@ -17,6 +17,12 @@ be a second answer to the same question.
 from app.agents.tools.formulation import compare_formulas, formula_figures
 from app.agents.tools.guidance import explain_the_application
 from app.agents.tools.knowledge import search_knowledge
+from app.agents.tools.market_intelligence import (
+    draft_manufacturer,
+    draft_news_item,
+    draft_product,
+    review_queue,
+)
 from app.agents.tools.records import find_records
 from app.agents.tools.safety import (
     formula_safety,
@@ -28,6 +34,9 @@ from app.agents.tools.work import pending_work
 
 __all__ = [
     "compare_formulas",
+    "draft_manufacturer",
+    "draft_news_item",
+    "draft_product",
     "explain_test",
     "explain_the_application",
     "find_records",
@@ -36,5 +45,6 @@ __all__ = [
     "formulas_containing",
     "material_safety",
     "pending_work",
+    "review_queue",
     "search_knowledge",
 ]

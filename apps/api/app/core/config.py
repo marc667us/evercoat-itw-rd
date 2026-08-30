@@ -94,6 +94,23 @@ class Settings(BaseSettings):
         ),
     )
 
+    # The agent tier's connection for curating the public catalogue
+    # (migration 060).
+    #
+    # 🔴 THE DRAFT-ONLY BOUNDARY IS A PROPERTY OF THIS CONNECTION, SO THE
+    # AGENT TIER MUST ACTUALLY USE IT. Migration 060's trigger refuses a
+    # non-draft write from `evercoat_agent`, reading `session_user` — which
+    # nothing but the connection decides. Run the same code on
+    # `evercoat_app`'s session and the trigger never fires: the boundary
+    # becomes a gate on a path nothing takes, which is decoration.
+    #
+    # `test_agent_writes_go_through_the_agent_pool` is what keeps that from
+    # happening quietly.
+    agent_database_url: str | None = Field(
+        default=None,
+        description=("SQLAlchemy URL for the agent curation role (evercoat_agent). Migration 060."),
+    )
+
     # --- Keycloak -------------------------------------------------------
     keycloak_issuer: str = Field(..., description="Realm issuer URL")
     keycloak_audience: str = Field(default="evercoat-api")
@@ -169,7 +186,9 @@ class Settings(BaseSettings):
     # --- Security -------------------------------------------------------
     cors_allowed_origins: list[str] = Field(default_factory=list)
 
-    @field_validator("database_url", "auth_database_url", "public_database_url")
+    @field_validator(
+        "database_url", "auth_database_url", "public_database_url", "agent_database_url"
+    )
     @classmethod
     def _reject_superuser(cls, v: str | None) -> str | None:
         """Refuse to start as a database superuser.
@@ -200,7 +219,8 @@ class Settings(BaseSettings):
                     "the application must not connect as a database superuser; "
                     "use the evercoat_app role for DATABASE_URL, the "
                     "evercoat_auth role for AUTH_DATABASE_URL, and the "
-                    "evercoat_public role for PUBLIC_DATABASE_URL"
+                    "evercoat_public role for PUBLIC_DATABASE_URL, and the "
+                    "evercoat_agent role for AGENT_DATABASE_URL"
                 )
         return v
 

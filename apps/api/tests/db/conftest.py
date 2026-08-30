@@ -56,6 +56,7 @@ def db_urls() -> dict[str, str]:
         "app": _url("APP_DB_USER", "APP_DB_PASSWORD", "evercoat_app"),
         "auth": _url("AUTH_DB_USER", "AUTH_DB_PASSWORD", "evercoat_auth"),
         "public": _url("PUBLIC_DB_USER", "PUBLIC_DB_PASSWORD", "evercoat_public"),
+        "agent": _url("AGENT_DB_USER", "AGENT_DB_PASSWORD", "evercoat_agent"),
     }
 
 
@@ -140,6 +141,29 @@ def public_engine():
             conn.execute(text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"no public-role connection available for db tests: {exc}")
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def agent_engine():
+    """The agent tier's curation connection (migration 060).
+
+    🔴 THE DRAFT-ONLY BOUNDARY TESTS MUST USE THIS AND NOTHING ELSE. The
+    trigger reads `session_user`, so a test written against `owner_engine` or
+    `app_engine` would find the boundary absent and report it as passing —
+    the same trap `auth_engine` and `public_engine` exist to avoid.
+    """
+    engine = create_engine(
+        _url("AGENT_DB_USER", "AGENT_DB_PASSWORD", "evercoat_agent"),
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+    )
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"no agent-role connection available for db tests: {exc}")
     yield engine
     engine.dispose()
 

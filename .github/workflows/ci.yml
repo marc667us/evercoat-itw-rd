@@ -131,8 +131,14 @@ jobs:
           -- is that THIS ROLE cannot reach a tenant table. Running them as
           -- the owner would pass no matter what 059 granted.
           ALTER ROLE evercoat_public LOGIN PASSWORD 'ci-public';
+          -- The agent tier's curation role (migration 060). Its inability to
+          -- publish is a property of THIS connection, so the boundary tests
+          -- must connect as it; run as the owner they would find no boundary
+          -- and report that as passing.
+          ALTER ROLE evercoat_agent LOGIN PASSWORD 'ci-agent';
           GRANT CONNECT ON DATABASE evercoat_itw_rd
-            TO evercoat_owner, evercoat_app, evercoat_auth, evercoat_public;
+            TO evercoat_owner, evercoat_app, evercoat_auth, evercoat_public,
+               evercoat_agent;
           SQL
 
       - name: Tests
@@ -153,10 +159,13 @@ jobs:
           AUTH_DB_USER: evercoat_auth
           PUBLIC_DB_USER: evercoat_public
           PUBLIC_DB_PASSWORD: ci-public
+          AGENT_DB_USER: evercoat_agent
+          AGENT_DB_PASSWORD: ci-agent
           AUTH_DB_PASSWORD: ci-auth
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           PUBLIC_DATABASE_URL: postgresql+psycopg://evercoat_public:ci-public@localhost:5432/evercoat_itw_rd
+          AGENT_DATABASE_URL: postgresql+psycopg://evercoat_agent:ci-agent@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:18080/realms/evercoat
         run: |
           # -rs so SKIPPED tests are named, not just counted. A suite that
@@ -182,10 +191,13 @@ jobs:
           AUTH_DB_USER: evercoat_auth
           PUBLIC_DB_USER: evercoat_public
           PUBLIC_DB_PASSWORD: ci-public
+          AGENT_DB_USER: evercoat_agent
+          AGENT_DB_PASSWORD: ci-agent
           AUTH_DB_PASSWORD: ci-auth
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           PUBLIC_DATABASE_URL: postgresql+psycopg://evercoat_public:ci-public@localhost:5432/evercoat_itw_rd
+          AGENT_DATABASE_URL: postgresql+psycopg://evercoat_agent:ci-agent@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:18080/realms/evercoat
         run: |
           set -euo pipefail
@@ -434,8 +446,9 @@ jobs:
           -- The anonymous public read role (059). uvicorn needs it to serve
           -- /api/public/*, which the E2E suite probes without a token.
           ALTER ROLE evercoat_public LOGIN PASSWORD 'ci-public';
+          ALTER ROLE evercoat_agent LOGIN PASSWORD 'ci-agent';
           GRANT CONNECT ON DATABASE evercoat_itw_rd
-            TO evercoat_app, evercoat_public;
+            TO evercoat_app, evercoat_public, evercoat_agent;
           SQL
 
       - name: Install web dependencies
@@ -459,6 +472,7 @@ jobs:
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           PUBLIC_DATABASE_URL: postgresql+psycopg://evercoat_public:ci-public@localhost:5432/evercoat_itw_rd
+          AGENT_DATABASE_URL: postgresql+psycopg://evercoat_agent:ci-agent@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://127.0.0.1:1/realms/evercoat
           # CI supplies a real database, so readiness reporting 503 here
           # means something is genuinely broken. Locally the suite tolerates
@@ -652,8 +666,9 @@ jobs:
           -- The anonymous public read role (059). uvicorn needs it to serve
           -- /api/public/*, which the E2E suite probes without a token.
           ALTER ROLE evercoat_public LOGIN PASSWORD 'ci-public';
+          ALTER ROLE evercoat_agent LOGIN PASSWORD 'ci-agent';
           GRANT CONNECT ON DATABASE evercoat_itw_rd
-            TO evercoat_app, evercoat_public;
+            TO evercoat_app, evercoat_public, evercoat_agent;
           SQL
 
       - name: Seed, and capture the organization the tokens will name
@@ -697,6 +712,7 @@ jobs:
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
           PUBLIC_DATABASE_URL: postgresql+psycopg://evercoat_public:ci-public@localhost:5432/evercoat_itw_rd
+          AGENT_DATABASE_URL: postgresql+psycopg://evercoat_agent:ci-agent@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:8080/realms/evercoat
           KEYCLOAK_AUDIENCE: evercoat-api
         run: |

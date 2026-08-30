@@ -42,12 +42,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 
 __all__ = [
+    "AgentConnectionNotConfiguredError",
     "MissingContextError",
     "PublicConnectionNotConfiguredError",
     "RequestContext",
     "SessionLocal",
+    "agent_session_scope",
     "apply_context",
     "auth_session_scope",
+    "get_agent_engine",
     "get_auth_engine",
     "get_engine",
     "get_public_engine",
@@ -71,6 +74,19 @@ class AuthConnectionNotConfiguredError(RuntimeError):
     pool, which reads like a broken migration rather than like a missing
     setting. ``/health/ready`` reports the same condition before any user
     meets it.
+    """
+
+
+class AgentConnectionNotConfiguredError(RuntimeError):
+    """Raised when the agent curation connection is needed and not configured.
+
+    🔴 A DISTINCT TYPE BECAUSE THE ONLY ACCEPTABLE RESPONSE IS TO REFUSE.
+
+    The agent tier's inability to publish unverified content is a property of
+    the ``evercoat_agent`` role, not of any check in Python. Falling back to
+    the runtime pool would let the same code publish to anonymous readers with
+    nothing looking different — so an unconfigured agent connection means the
+    agent tier does not run.
     """
 
 
@@ -349,6 +365,89 @@ def public_session_scope() -> Iterator[Session]:
         get_public_engine()
     assert _public_session_factory is not None  # noqa: S101 - narrowed by get_public_engine
     session = _public_session_factory()
+    try:
+        session.begin()
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+_agent_engine: Engine | None = None
+_agent_session_factory: sessionmaker[Session] | None = None
+
+
+def get_agent_engine() -> Engine:
+    """The pool the agent tier curates the public catalogue on.
+
+    🔴 THE DRAFT-ONLY BOUNDARY IS A PROPERTY OF THIS CONNECTION.
+
+    Migration 060 puts a trigger on `public_intel` that refuses any non-draft
+    write from `evercoat_agent`, and refuses it recording a review. The
+    trigger reads `session_user`, which nothing but the connection decides —
+    `SET ROLE` cannot change it and `SET SESSION AUTHORIZATION` needs
+    superuser.
+
+    ⚠️ THAT MEANS RUNNING THE SAME TOOL CODE ON `session_scope()` SILENTLY
+    DISABLES THE BOUNDARY. The writes would succeed, the trigger would never
+    fire, and an agent would be able to publish invented claims to anonymous
+    readers. Nothing in the code would look different.
+
+    So the agent tools take a session from HERE and nowhere else, and
+    `tests/test_agent_pool_boundary.py` asserts it — a gate on a path nothing
+    takes is decoration, and this repository has shipped that defect before.
+    """
+    global _agent_engine, _agent_session_factory
+    if _agent_engine is not None:
+        return _agent_engine
+
+    if not settings.agent_database_url:
+        raise AgentConnectionNotConfiguredError(
+            "AGENT_DATABASE_URL is not set. The agent tier curates the public "
+            "catalogue through the evercoat_agent role (migration 060), whose "
+            "connection is what stops an agent publishing. Set "
+            "AGENT_DATABASE_URL to a URL for that role."
+        )
+
+    _agent_engine = create_engine(
+        settings.agent_database_url,
+        pool_pre_ping=True,
+        pool_size=2,
+        max_overflow=2,
+        pool_reset_on_return="rollback",
+        echo=settings.db_echo,
+    )
+
+    @event.listens_for(_agent_engine, "checkin")
+    def _scrub_agent_connection(dbapi_connection, connection_record) -> None:  # type: ignore[no-untyped-def]
+        """Same scrub as the runtime pool, for the same reason."""
+        try:
+            with dbapi_connection.cursor() as cur:
+                cur.execute("DISCARD ALL")
+        except Exception:  # noqa: BLE001
+            connection_record.invalidate()
+
+    _agent_session_factory = sessionmaker(
+        bind=_agent_engine, expire_on_commit=False, class_=Session
+    )
+    return _agent_engine
+
+
+@contextmanager
+def agent_session_scope() -> Iterator[Session]:
+    """A session for the agent tier. It never sets a tenant GUC.
+
+    🔴 DO NOT SUBSTITUTE `session_scope()` HERE BECAUSE A QUERY IS AWKWARD.
+    The agent's inability to publish is not enforced anywhere in Python; it
+    is enforced by the role on this connection.
+    """
+    if _agent_session_factory is None:
+        get_agent_engine()
+    assert _agent_session_factory is not None  # noqa: S101 - narrowed by get_agent_engine
+    session = _agent_session_factory()
     try:
         session.begin()
         yield session

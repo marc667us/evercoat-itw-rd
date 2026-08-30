@@ -54,6 +54,12 @@ APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 # transaction rather than having the exemption applied silently by proximity.
 # It does: it opens its own, on its own pool, for one query.
 #
+# ✅ AND A THIRD TIME, for `agent_session_scope` (migration 060). Same
+# question asked and answered: it opens its own transaction on the agent
+# connection, which is a pool no request and no other conductor touches, so
+# there is no caller's unit of work to destroy. The exemption list is doing
+# exactly what it was designed to do -- making somebody look, three times now.
+#
 # ✅ AND IT PAID OFF A SECOND TIME. `public_session_scope` was added for the
 # public surface (migration 059) and this test failed on it immediately too.
 # Looked at rather than waved through: it opens its own transaction on its own
@@ -67,6 +73,7 @@ ROLLBACK_ALLOWED: dict[str, set[str]] = {
         "unscoped_session_scope",
         "auth_session_scope",
         "public_session_scope",
+        "agent_session_scope",
     },
 }
 
