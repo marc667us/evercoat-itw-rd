@@ -215,14 +215,35 @@ test.describe("the route surface is what the application claims", () => {
     // weaker signal than a live probe — it proves the dependency is
     // DECLARED, not that it refuses — but paired with the live GET sweep
     // below, a route has to fail both to slip through.
+    // 🔴 `/api/public/*` IS EXCLUDED, AND THE UNAUTHENTICATED WRITE INSIDE IT
+    // IS PINNED BY NAME RATHER THAN WAVED THROUGH.
+    //
+    // The public surface (migration 059) answers callers with no identity, so
+    // "declares authentication" is the wrong assertion for that prefix. But an
+    // unauthenticated WRITE is the part worth losing sleep over, so excluding
+    // the prefix wholesale would hide the next one somebody adds.
+    //
+    // So: the prefix is excluded from the declaration sweep, and the exact set
+    // of unauthenticated writes is asserted below. Adding a second one fails
+    // this test until somebody writes it down here on purpose.
+    const ALLOWED_UNAUTHENTICATED_WRITES = new Set(["POST /api/public/access-requests"]);
+
     const schema = await (await request.get("/openapi.json")).json();
     const WRITE = ["post", "put", "patch", "delete"];
 
     const undeclared: string[] = [];
+    const publicWrites: string[] = [];
     let writeOps = 0;
 
     for (const [path, ops] of Object.entries<Record<string, any>>(schema.paths)) {
       if (!path.startsWith("/api/")) continue;
+
+      if (path.startsWith("/api/public/")) {
+        for (const method of Object.keys(ops)) {
+          if (WRITE.includes(method)) publicWrites.push(`${method.toUpperCase()} ${path}`);
+        }
+        continue;
+      }
 
       for (const [method, op] of Object.entries<any>(ops)) {
         if (!WRITE.includes(method) && method !== "get") continue;
@@ -243,6 +264,19 @@ test.describe("the route surface is what the application claims", () => {
     // quietly reducing it to zero assertions.
     expect(writeOps, "no write operations found — this test stopped testing").toBeGreaterThan(0);
     expect(undeclared, "these API operations declare no authentication").toEqual([]);
+
+    // The bounded exception. Every unauthenticated write in the whole API must
+    // be one somebody wrote down above; a new one fails here rather than
+    // shipping behind a prefix exclusion.
+    expect(
+      publicWrites.filter((op) => !ALLOWED_UNAUTHENTICATED_WRITES.has(op)),
+      "an unauthenticated write was added under /api/public that nobody declared",
+    ).toEqual([]);
+    // And the declared one still exists — otherwise this whole guard is a set
+    // membership test over an empty list.
+    expect(publicWrites, "the declared public write is not registered").toContain(
+      "POST /api/public/access-requests",
+    );
   });
 
   /**
@@ -310,12 +344,30 @@ test.describe("the route surface is what the application claims", () => {
     // instead of shipping. Health and metrics are excluded because they
     // are deliberately public; anything else answering anonymously is a
     // finding.
+    //
+    // 🔴 ONE EXCEPTION, ADDED DELIBERATELY: `/api/public/*` (migration 059).
+    //
+    // The landing page, the global competitor marketplace and the industry
+    // news feed answer callers who have not signed in — that is the entire
+    // point of them, so "must refuse" is the wrong assertion for that prefix
+    // and this test would otherwise be asserting the feature is broken.
+    //
+    // It is excluded by PREFIX rather than by listing paths, and the very
+    // next test asserts the other half: that those routes actually DO answer
+    // anonymously. An exclusion with no positive counterpart would let the
+    // whole public surface 500 and still look green here.
+    //
+    // What keeps the exception safe is not this test. `/api/public/*` reads
+    // through `evercoat_public`, a role with no privilege on any tenant
+    // table, asserted in both directions by
+    // `apps/api/tests/db/test_059_public_surface.py`.
     const schema = await (await request.get("/openapi.json")).json();
 
     const unprotected: string[] = [];
 
     for (const [path, methods] of Object.entries<Record<string, unknown>>(schema.paths)) {
       if (!path.startsWith("/api/")) continue;
+      if (path.startsWith("/api/public/")) continue;
       if (!("get" in methods)) continue;
       // Only GETs are probed: a POST/PATCH that answered anonymously
       // would be a far worse finding, but probing them blind would write
@@ -329,5 +381,43 @@ test.describe("the route surface is what the application claims", () => {
     }
 
     expect(unprotected, "these API routes answered an anonymous GET").toEqual([]);
+  });
+
+  test("every public GET ANSWERS an anonymous caller", async ({ request }) => {
+    // The other half of the exclusion above. Without this, excluding
+    // `/api/public/*` from the refusal property would hide a public surface
+    // that 401s, 500s, or was never mounted — and the suite would be green
+    // over a landing page that cannot load.
+    //
+    // Deliberately asserts a POSITIVE answer, not merely "not 401": a route
+    // that crashed would also not be 401. Detail routes are probed with a
+    // nonexistent identifier and may legitimately 404 — what matters is that
+    // the refusal is about the RECORD, never about the CALLER.
+    const schema = await (await request.get("/openapi.json")).json();
+
+    const publicGets = Object.entries<Record<string, unknown>>(schema.paths)
+      .filter(([path, methods]) => path.startsWith("/api/public/") && "get" in methods)
+      .map(([path]) => path);
+
+    expect(
+      publicGets.length,
+      "no /api/public GET routes are registered — the public surface is not mounted",
+    ).toBeGreaterThan(0);
+
+    const refused: string[] = [];
+    for (const path of publicGets) {
+      const probe = path.replace(/\{[^}]+\}/g, "00000000-0000-4000-8000-000000000000");
+      const response = await request.get(probe);
+      // 200 for collections; 404 for the nonexistent id above. 401/403 would
+      // mean the caller was rejected, and 5xx that the route is broken.
+      if (![200, 404].includes(response.status())) {
+        refused.push(`${probe} → ${response.status()}`);
+      }
+    }
+
+    expect(
+      refused,
+      "these public routes did not answer an anonymous caller; the landing page cannot load",
+    ).toEqual([]);
   });
 });

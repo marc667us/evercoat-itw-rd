@@ -90,6 +90,14 @@ const DATABASE_URL =
   process.env.DATABASE_URL ??
   "postgresql+psycopg://evercoat_app:dev-app-pw@localhost:55432/evercoat_itw_rd";
 
+// The anonymous public read connection (migration 059). Without it the API
+// starts perfectly well and every /api/public/* route answers 503, so the
+// landing-page suite would report a broken public surface as a refusal rather
+// than as the missing configuration it is.
+const PUBLIC_DATABASE_URL =
+  process.env.PUBLIC_DATABASE_URL ??
+  "postgresql+psycopg://evercoat_public:dev-public-pw@localhost:55432/evercoat_itw_rd";
+
 // A syntactically valid issuer that resolves to nothing. Every
 // authenticated route must refuse before it ever reaches JWKS, so these
 // tests never need a running Keycloak — and a test that quietly started
@@ -247,6 +255,7 @@ export default defineConfig({
       url: `${API_BASE_URL}/health/live`,
       env: {
         DATABASE_URL,
+        PUBLIC_DATABASE_URL,
         KEYCLOAK_ISSUER,
         APP_ENV: "development",
         LOG_FORMAT: "console",

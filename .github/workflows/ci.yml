@@ -125,8 +125,14 @@ jobs:
           -- functions and no table privilege at all; evercoat_app no longer
           -- holds EXECUTE on either, so without this nobody can authenticate.
           ALTER ROLE evercoat_auth  LOGIN PASSWORD 'ci-auth';
+          -- Anonymous public reads (migration 059). Created NOLOGIN by the
+          -- migration for the same reason as the others; the public surface
+          -- tests must connect AS this role, because the property under test
+          -- is that THIS ROLE cannot reach a tenant table. Running them as
+          -- the owner would pass no matter what 059 granted.
+          ALTER ROLE evercoat_public LOGIN PASSWORD 'ci-public';
           GRANT CONNECT ON DATABASE evercoat_itw_rd
-            TO evercoat_owner, evercoat_app, evercoat_auth;
+            TO evercoat_owner, evercoat_app, evercoat_auth, evercoat_public;
           SQL
 
       - name: Tests
@@ -145,9 +151,12 @@ jobs:
           # reported as green. The job's own "were any tests skipped" guard
           # catches it, and it caught this.
           AUTH_DB_USER: evercoat_auth
+          PUBLIC_DB_USER: evercoat_public
+          PUBLIC_DB_PASSWORD: ci-public
           AUTH_DB_PASSWORD: ci-auth
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
+          PUBLIC_DATABASE_URL: postgresql+psycopg://evercoat_public:ci-public@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:18080/realms/evercoat
         run: |
           # -rs so SKIPPED tests are named, not just counted. A suite that
@@ -171,9 +180,12 @@ jobs:
           # reported as green. The job's own "were any tests skipped" guard
           # catches it, and it caught this.
           AUTH_DB_USER: evercoat_auth
+          PUBLIC_DB_USER: evercoat_public
+          PUBLIC_DB_PASSWORD: ci-public
           AUTH_DB_PASSWORD: ci-auth
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
+          PUBLIC_DATABASE_URL: postgresql+psycopg://evercoat_public:ci-public@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:18080/realms/evercoat
         run: |
           set -euo pipefail
@@ -419,7 +431,11 @@ jobs:
           psql -h localhost -U postgres -d evercoat_itw_rd -v ON_ERROR_STOP=1 <<'SQL'
           ALTER ROLE evercoat_app LOGIN PASSWORD 'ci-app';
           ALTER ROLE evercoat_auth LOGIN PASSWORD 'ci-auth';
-          GRANT CONNECT ON DATABASE evercoat_itw_rd TO evercoat_app;
+          -- The anonymous public read role (059). uvicorn needs it to serve
+          -- /api/public/*, which the E2E suite probes without a token.
+          ALTER ROLE evercoat_public LOGIN PASSWORD 'ci-public';
+          GRANT CONNECT ON DATABASE evercoat_itw_rd
+            TO evercoat_app, evercoat_public;
           SQL
 
       - name: Install web dependencies
@@ -442,6 +458,7 @@ jobs:
           # this must match what production actually connects as.
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
+          PUBLIC_DATABASE_URL: postgresql+psycopg://evercoat_public:ci-public@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://127.0.0.1:1/realms/evercoat
           # CI supplies a real database, so readiness reporting 503 here
           # means something is genuinely broken. Locally the suite tolerates
@@ -632,7 +649,11 @@ jobs:
           psql -h localhost -U postgres -d evercoat_itw_rd -v ON_ERROR_STOP=1 <<'SQL'
           ALTER ROLE evercoat_app LOGIN PASSWORD 'ci-app';
           ALTER ROLE evercoat_auth LOGIN PASSWORD 'ci-auth';
-          GRANT CONNECT ON DATABASE evercoat_itw_rd TO evercoat_app;
+          -- The anonymous public read role (059). uvicorn needs it to serve
+          -- /api/public/*, which the E2E suite probes without a token.
+          ALTER ROLE evercoat_public LOGIN PASSWORD 'ci-public';
+          GRANT CONNECT ON DATABASE evercoat_itw_rd
+            TO evercoat_app, evercoat_public;
           SQL
 
       - name: Seed, and capture the organization the tokens will name
@@ -675,6 +696,7 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg://evercoat_app:ci-app@localhost:5432/evercoat_itw_rd
           AUTH_DATABASE_URL: postgresql+psycopg://evercoat_auth:ci-auth@localhost:5432/evercoat_itw_rd
+          PUBLIC_DATABASE_URL: postgresql+psycopg://evercoat_public:ci-public@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:8080/realms/evercoat
           KEYCLOAK_AUDIENCE: evercoat-api
         run: |
