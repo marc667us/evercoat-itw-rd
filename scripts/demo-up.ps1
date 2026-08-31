@@ -256,6 +256,37 @@ if ($kcUpdateExit -ne 0 -or $kcMissing.Count -gt 0) {
 $kcChecked = $kcWantRedirects.Count + $kcWantOrigins.Count
 Write-Host "  keycloak client repointed ($kcChecked/$kcChecked values verified per field by read-back)"
 
+# ---------------------------------------------------------- realm frontendUrl
+# 🔴 THE CLIENT IS NOT THE ONLY THING THAT HOLDS THE HOSTNAME, AND THE OTHER
+#    ONE DECIDES WHAT `iss` SAYS. 2026-08-31.
+#
+# The realm carries a `frontendUrl` attribute, PERSISTED IN THE DATABASE, and it
+# OVERRIDES `KC_HOSTNAME` on the container. This script repointed the client and
+# recreated the container with the new `KC_HOSTNAME`, and left that row alone --
+# so Keycloak went on minting tokens whose `iss` named a tunnel that had been
+# dead for hours, and the API rejected every one of them with "invalid token".
+#
+# ⚠️ IT LOOKS LIKE A PROXY PROBLEM AND IT IS NOT. The stale issuer is served on
+# `http://localhost:18080` too, with Caddy entirely out of the path -- which is
+# the measurement that tells the two apart, and is worth making before reaching
+# for `X-Forwarded-*`.
+#
+# ⚠️ AND `kcadm get realms/evercoat --fields attributes` RETURNED `{}` while the
+# row was sitting in `realm_attribute`. The admin API did not surface it. So the
+# read-back below goes to the DATABASE: asserting through the same interface
+# that hid it would prove nothing.
+& $docker exec evercoat-demo-keycloak /opt/keycloak/bin/kcadm.sh update realms/evercoat `
+    -s "attributes.frontendUrl=$PublicUrl/auth" 2>&1 | Out-Null
+$kcFrontend = (& $docker exec -e PGPASSWORD=dev-superuser-pw evercoat-postgres `
+    psql -U postgres -d keycloak -tAc "SELECT value FROM realm_attribute WHERE name='frontendUrl'") -join ""
+$kcFrontend = $kcFrontend.Trim()
+if ($kcFrontend -ne "$PublicUrl/auth") {
+    throw ("the realm frontendUrl was NOT repointed. It reads '$kcFrontend' and must read " +
+           "'$PublicUrl/auth'. Every token would be issued with that issuer and the API " +
+           "would refuse all of them as `"invalid token`".")
+}
+Write-Host "  keycloak realm frontendUrl repointed (read back from the database)"
+
 & $docker rm -f evercoat-demo-keycloak | Out-Null
 & $docker run -d --restart unless-stopped --name evercoat-demo-keycloak -p 18080:8080 `
     --add-host host.docker.internal:host-gateway `
