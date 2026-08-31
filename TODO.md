@@ -1,6 +1,44 @@
 # TODO — EvercoatITWRD APP
 
-**Updated 2026-08-30. Read `RESUME_HERE.md` first.**
+**Updated 2026-08-30 (part 4). Read `RESUME_HERE.md` first.**
+
+## ▶ REMAINING — LANDING PAGE (shipped and live; these are the gaps)
+
+Live at the demo tunnel: landing page, marketplace, industry news, access
+requests, theming including red/blue/white, marketplace + news entry points
+beside the app name, "create innovation" from a product card.
+
+| # | Open | Why it is not done |
+|---|---|---|
+| L1 | **Sign-UP is a request, not a registration.** `/api/public/access-requests` records an interest; nothing provisions an account. | Self-service sign-up is a Keycloak registration flow and a policy decision about who may self-register into which organization — not a form. |
+| L2 | **44 products live; the target was 50 competitors / 100+ products.** | `seed_public_intel_real.py` REFUSES to publish a row whose `source_url` does not resolve. Closing the gap means sourcing more real manufacturers, **not loosening the verifier**. |
+| L3 | **The news feed is still demonstration data** and says so on every card. | Real industry news needs a source-ingestion pipeline with licence and robots/ToS review. Inventing news about real companies is worse than inventing a product. |
+| L4 | ⚠️ **3M was dropped on the last verification run.** | It times out for `httpx` AND `urllib`, measured at the same moment — the host, not the client. Re-run the seed when it is reachable. |
+
+## ▶ REMAINING — MATERIAL SAFETY DATA & RESEARCH CENTER (Phase 5)
+
+Shipped: the screening gate (migration **062**) — an opportunity carrying an
+investigation cannot be submitted until that investigation records a finding;
+the four registers (questions, sources, hypotheses, gaps) now show their dates;
+`list_opportunities` projects the screening state so a screen can name the
+Research Center as the blocker.
+
+| # | Open |
+|---|---|
+| R1 | **§22 events** — the Research Center writes no domain events. |
+| R2 | **§25 contextual entry points** — reaching an investigation from the record that motivated it. |
+| R3 | **§29 global search** across investigations, findings and evidence. |
+| R4 | **§38 / §39 golden scenario** for the research vertical. |
+| R5 | **I7** — `revise_version` never writes `formula_version_drivers`. |
+
+## ▶ CURRENT PHASE — open issues
+
+**I110** (SECURITY.md §13 states a CSP that does not exist) · **I111**
+(`next build` rewrites `tsconfig.json` — caught before commit this time,
+4th occurrence, fix still owed) · **I56 / I58** (FORCE-RLS cutover) ·
+**I78** (knowledge list truncates at 100, silently) · **I9** (CI seed gate) ·
+**I76 / I77** (`MAX_DISTANCE = 0.74` must be re-derived) · **I101** · **I3**
+(the golden Playwright E2E — the database half exists, the UI half does not).
 
 ## ✅ CLOSED 2026-08-30 — dates on every pipeline action and event
 

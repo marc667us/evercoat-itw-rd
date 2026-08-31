@@ -2,9 +2,9 @@
 
 ## ▶▶ 2026-08-30 (part 4) — THE PIPELINE COULD NOT SAY WHEN, AND NOBODY KNEW WHO WAS HOLDING AN IDEA
 
-Tip **`<TIP>`** on `master`. Two owner instructions, both delivered.
+Tip **`d45906b`** on `master`, pushed. Two owner instructions, both delivered.
 
-- apps/api **<API>** · apps/web **281** vitest
+- apps/api **986 / 0 / 35** · apps/web **283** vitest
 - ruff, ruff format, mypy, `tsc`, ESLint all clean; `next build` proven green
 - Migration head **`u1000`** (062). **No migration added this session.**
 

@@ -369,6 +369,14 @@ test.describe("the screens wired in S2", () => {
     current_stage: "development",
     confidentiality: "restricted",
     target_release_date: "2026-12-01",
+    // ⚠️ THE FOURTH TIME THIS STUB HAS GONE STALE, AND ITS OWN COMMENT BELOW
+    // PREDICTED IT: the real server, `lib/api/schemas.test.ts` and this file
+    // all have to agree, and only the first two were updated when the
+    // pipeline gained `created_at`. Zod strips nothing here — the field is
+    // REQUIRED, so the stub failed to parse and the projects list rendered
+    // no rows at all. Nothing said "schema mismatch"; the screen was simply
+    // empty. CI caught it this time, before the live suite did.
+    created_at: "2026-07-15T09:30:00Z",
   };
 
   const LIVE_FORMULA = {
@@ -402,6 +410,8 @@ test.describe("the screens wired in S2", () => {
     latest_version_number: 7,
     latest_version_status: "draft",
     version_count: 7,
+    // See LIVE_PROJECT above. Same field, same reason, same file.
+    created_at: "2026-07-20T08:00:00Z",
   };
 
   const LIVE_TASK = {
