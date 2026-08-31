@@ -1,5 +1,101 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ 2026-08-31 — PHASE 5 CLOSED, I12 CLOSED, AND FOUR FAILURES THAT WERE NOT WHAT THEY LOOKED LIKE
+
+Tip **`<TIP>`** on `master`, **pushed, CI GREEN**.
+
+- 🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1143 / 0 / 0** (api-live 1059/0/0 · e2e 84/0/0)
+- apps/api **1048 / 0 / 11** local · apps/web **290**
+- Migration head **`v1000`** (063). One migration added: `workflow.domain_events`.
+- Live demo: read the URL from `tmp/demo/current_url.txt` or
+  `Desktop\EVERCOAT-LIVE-URL.txt` — **never from this note**, the quick tunnel
+  rotates. A 24h watchdog (`scripts/demo-watchdog.ps1`) repairs it and rewrites
+  both files.
+
+### ▶ WHAT CLOSED TODAY
+
+**MSD / Research Phase 5 — all five parts**, and with the landing page's seven
+slices **all 12 phases of this workstream are complete**:
+
+| Part | |
+|---|---|
+| §29 global search | 15 record types, permission-gated **per type** by a bound boolean, not a post-filter |
+| §25 contextual entry points | both directions — the workspace says what opened it |
+| §22 domain events | migration 063; **1 of 4 chains** wired end to end |
+| §38/§39 golden scenario | the **database half**; §39's criterion is an ABSENCE |
+| §27 dashboard widgets | (29 Aug) |
+
+**I12** — eight messaging endpoints finally have a browser caller. **MVP-1 now
+has no slice without a browser surface.**
+
+### 🔴 THE LESSON OF THE DAY: FOUR FAILURES, NONE WHAT THEY APPEARED
+
+1. **"0 failed / 35 skipped" in three handovers was 24 tests silently not
+   running.** `evercoat_public` / `evercoat_agent` are `dev-public-pw` /
+   `dev-agent-pw` here, not CI's `ci-*`, and `conftest` skipped on ANY
+   connection error. Those two files are the ONLY proof an anonymous caller
+   cannot reach a tenant row. A supplied-and-refused password now **fails**.
+   ⚠️ `docker exec psql` accepts BOTH passwords (local socket) — verify from the
+   HOST over TCP.
+2. **Sign-in was broken on the deployed site and only the live suite could see
+   it.** The realm's `frontendUrl`, persisted in Keycloak's DATABASE, overrides
+   `KC_HOSTNAME`. It looks like a proxy problem and is not — the stale issuer
+   was served on `localhost:18080` with Caddy out of the path. And
+   `kcadm get realms --fields attributes` returned `{}` while the row sat in
+   `realm_attribute`, so the read-back goes to the database.
+3. **A live run reported 21 failures and none were real.** Twenty were labelled
+   *accessibility* failures on untouched pages; the error was
+   `net::ERR_NAME_NOT_RESOLVED`. The same DNS outage broke a `git push` and
+   timed out a TLS handshake. **Read the failure; do not count it.**
+4. **Three "success" messages printed over failed operations**: `demo-up.ps1`
+   said "keycloak recreated" over two failed docker calls; `Start-Process
+   -ArgumentList @(...)` silently ran nothing because this repo's path contains
+   a space; and CI went red on a nested template literal in a `path:` string
+   that the route-surface guard could not parse. **Check the LISTENER, the
+   PROCESS, the PRIVILEGE — never the message.**
+
+### ▶ NEXT, in order
+
+1. 🔴 **I110 — MEASURED AND BIGGER THAN ITS TITLE.** `curl -D -` against the
+   deployed site returns **NONE of the five headers `SECURITY.md:234` claims**
+   (HSTS, nosniff, X-Frame-Options, Referrer-Policy AND the CSP). Fix belongs in
+   **Caddy** (Y6, sole header authority) — `infrastructure/compose/Caddyfile`
+   **and** `Caddyfile.tunnel`, or the tunnel serves different headers from the
+   compose stack. ⚠️ A CSP without `unsafe-inline` needs Next.js nonces/hashes;
+   a permissive one makes the document true and the control worthless.
+   **This was the task in flight when the session closed. Nothing was changed.**
+2. **§22's remaining three chains** — rewiring hard-coded cross-module calls.
+   A migration of behaviour, not an addition; its own slice.
+3. **§39's UI half** — its gate needs UI *and* database state on the deployed
+   instance.
+4. **L1 / L3 are OWNER DECISIONS**, not engineering: self-service sign-up is a
+   Keycloak flow plus a policy; the news feed needs a licensed pipeline.
+   **L2** needs more real manufacturers sourced (do NOT loosen the verifier);
+   **L4** re-run the seed when 3M's host responds.
+5. **I111** (`next build` rewrites `tsconfig.json`, 4th occurrence) ·
+   **I56/I58** (FORCE-RLS cutover — every table since 058 is born FORCE, and
+   mixing the two bit us twice today) · **I78** · **I9** · **I76/I77** ·
+   **I101** · **I3**.
+6. **D1 — deploy API + Keycloak.** Was held for 2026-09-01, which is now.
+
+### ⚠️ STILL UNANSWERED BY THE OWNER
+
+**"The phases were compressed to 10."** Every founder file and plan was read.
+The folders define **seven** phase structures — 11, 13, 6, 20, 12, 5 and 7 —
+and **none is 10**. `Desktop\EvercoatITWRD-Phase-by-Phase-2026-08-31.pdf`
+records all seven with sources. Ask which cut it supersedes before quoting a
+ten-phase plan anywhere.
+
+### 📄 On the Desktop
+
+`EvercoatITWRD-Phase-by-Phase-2026-08-31.pdf` (every phase, done + remaining) ·
+`EvercoatITWRD-Landing-and-MSD-Status-2026-08-31.pdf` ·
+`EvercoatITWRD-Phase-Progress-2026-08-31.pdf` · `EVERCOAT-LIVE-URL.txt` (live).
+
+Session transcript: `session-logs/session_2026-08-31_phase5_i12_and_the_silent_failures.jsonl`.
+
+---
+
 ## ▶▶ 2026-08-31 — THE PRODUCT COULD NOT BE SEARCHED, AND A WORKSPACE COULD NOT SAY WHY IT EXISTED
 
 Tip **`533c45a`** on `master`. 🔴 **MSD / RESEARCH PHASE 5 IS COMPLETE — 5 of 5 parts:**

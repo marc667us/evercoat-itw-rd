@@ -40,7 +40,7 @@ Research Center as the blocker.
 
 ## ▶ CURRENT PHASE — open issues
 
-**I110** (SECURITY.md §13 states a CSP that does not exist) · **I111**
+**I110** 🔴 **MEASURED 2026-08-31 — WORSE THAN THE TITLE: `curl -D -` against the deployed site returns NONE of the five headers `SECURITY.md:234` claims** (HSTS, nosniff, X-Frame-Options, Referrer-Policy AND the CSP), not merely the CSP. Fix belongs in **Caddy** (Y6 = sole header authority): `infrastructure/compose/Caddyfile` AND `Caddyfile.tunnel`, or the tunnel serves different headers from the compose stack. ⚠️ A CSP without `unsafe-inline` needs Next.js nonces/hashes; a permissive one would make the document true and the control worthless. · **I111** · **I111**
 (`next build` rewrites `tsconfig.json` — caught before commit this time,
 4th occurrence, fix still owed) · **I56 / I58** (FORCE-RLS cutover) ·
 **I78** (knowledge list truncates at 100, silently) · **I9** (CI seed gate) ·
