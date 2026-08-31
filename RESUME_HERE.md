@@ -147,7 +147,7 @@ values are chosen, the RESULT is derived.
    the news feed needs a licensed ingestion pipeline. **L2** needs more real
    manufacturers sourced (the verifier must not be loosened); **L4** re-run the
    seed when 3M's host responds.
-4. **I12 messaging** — still 0 of 5 endpoints pressable.
+4. ✅ **I12 CLOSED 2026-08-31** (`a99db32`, `15dc2ef`) — `/messages` ships channels, messages, posting, message→task promotion and notifications; the nav entry is live and the screen is in the axe-core sweep (it passes on the deployed site). **MVP-1 now has no slice without a browser surface.**
 5. **D1 — deploy API + Keycloak.** Held for 2026-09-01, which is now.
 6. **I110** · **I111** · **I56/I58** · **I78** · **I9** · **I76/I77** · **I101**.
 

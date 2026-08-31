@@ -1,5 +1,43 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-31 (part 4) — I12: the last MVP-1 slice gets its browser surface
+
+Eight messaging endpoints had shipped in Slice 7 with no client, no hook and no
+screen, and the sidebar's "Messages" entry pointed at a route that did not
+exist. `/messages` now ships channels, messages, posting, message→task
+promotion and notifications.
+
+🔴 **TWO OF THREE RESPONSE SHAPES WERE WRONG WHEN WRITTEN FROM THE ROUTE
+SIGNATURES, AND ONLY ONE WOULD HAVE BEEN LOUD.** `promoteMessage` parsed
+`{id, task_type}` against a service returning `{task_id, message_id}` — that
+throws. A link was parsed as `{…, reference}` against `{code, entity_type,
+entity_id}` — Zod strips unknown keys, so every link renders blank silently.
+And `mentions` was omitted entirely, which carries `notified: false`: the state
+that tells an author their mention reached NOBODY. `messaging.drift.test.ts`
+reads the Python and asserts the contract; falsified both ways.
+
+🔴 **AND I WROTE THE SAME PARSER BUG TWICE IN ONE DAY.** The morning's
+`stub-fixtures.drift.test.ts` was made comment-aware; a second key-scanner
+written here immediately collected `notified` out of a doc comment. A parser
+written twice drifts twice.
+
+🔴 **A NESTED TEMPLATE LITERAL IN A PATH BROKE CI** (`a99db32` → `15dc2ef`).
+`serving.spec.ts` reads every `path:` with a regex whose character class stops
+at the first backtick, so `` `/api/…${q ? `?${q}` : ""}` `` extracted a route
+the API does not serve. The guard was right; the code was the unusual shape.
+
+⚠️ **AND ONE LIVE RUN REPORTED 21 FAILURES THAT WERE ONE DNS OUTAGE.** Twenty
+were labelled accessibility failures on pages this session never touched;
+the actual error was `net::ERR_NAME_NOT_RESOLVED`. The same outage broke a
+`git push` with "Could not resolve host" and timed out a TLS handshake in
+api-live. Re-run after recovery: clean. **Read the failure, do not count it.**
+
+🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1143 passed / 0 failed / 0 SKIPPED**
+(api-live 1059/0/0 · e2e 84/0/0), and `messages has no WCAG 2.1 AA violations`
+passed on the live site. CI green on `15dc2ef`.
+
+apps/web **290**.
+
 ## 2026-08-31 (part 3) — the research golden scenario, and §39's criterion is an absence
 
 Spec §39, the last outstanding part of MSD/Research **Phase 5**. The chain
