@@ -524,6 +524,25 @@ function InvestigationWorkspace({ failure }: { failure: FailureDetail }) {
           <p className="mt-2 max-w-3xl text-sm text-slate-700">{failure.description}</p>
         )}
 
+        {/* §25 CONTEXTUAL ENTRY POINT — "Deep Research" from a failure.
+            §18's failure knowledge base and §19's research-to-experiment
+            workflow both start here in practice: a RED result is the most
+            common reason anybody opens a research workspace at all. Carrying
+            the failure through means the resulting investigation records what
+            motivated it, so the finding can be found later from the failure
+            rather than only from the Research Center's own list. */}
+        <p className="mt-3 text-sm">
+          <Link
+            href={`/material-safety/research?failure=${failure.id}`}
+            className="font-medium text-slate-900 underline"
+          >
+            Research this failure →
+          </Link>
+          <span className="ml-2 text-xs text-slate-600">
+            Opens a research workspace linked to {failure.failure_code}.
+          </span>
+        </p>
+
         <dl className="mt-3 grid gap-x-6 gap-y-1 text-xs text-slate-600 sm:grid-cols-3">
           <div className="flex gap-1.5">
             <dt className="font-medium text-slate-500">Opened</dt>

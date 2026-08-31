@@ -285,42 +285,47 @@ def test_an_exact_code_match_outranks_a_name_match(client, search_ctx):
     assert body["results"][0]["id"] == str(search_ctx["material_id"])
 
 
-def test_a_lone_wildcard_does_not_return_the_database(client, search_ctx):
+def test_a_percent_sign_is_a_literal_not_a_wildcard(client, search_ctx):
     """🔴 `%` IS A LIKE WILDCARD AND A CALLER MAY TYPE IT.
 
-    Unescaped, `%` matches every row of every branch — an authenticated caller
-    could page out the entire organization's record index with one character.
-    Escaped, it is the literal per-cent sign, which no fixture row contains.
-    """
-    body = client.get("/api/search", params={"q": "%"}, headers=search_ctx["lead_auth"]).json()
-    assert body["results"] == []
+    Unescaped, one `%` inside a term makes it match far more than was asked
+    for; a term that is nothing but wildcards returns the entire organization's
+    record index to any authenticated caller.
 
-    # And the guard-the-guard half: the search DOES work on this connection,
-    # so an empty list above is escaping and not a broken query.
-    assert client.get(
+    ⚠️ THE TERM IS CHOSEN SO THE TWO OUTCOMES DIFFER. The fixture's token is
+    "zetaxylene…". Searching "zeta%lene" matches it if and only if `%` is
+    treated as a wildcard, and matches nothing if `%` is the literal character.
+    A bare "%" could not be used: it is one character, and the minimum length
+    added for Codex's P1 refuses it before the escaping is ever reached.
+    """
+    escaped = client.get(
+        "/api/search", params={"q": "zeta%lene"}, headers=search_ctx["lead_auth"]
+    ).json()
+    assert escaped["results"] == [], "% behaved as a wildcard"
+
+    # Guard the guard: the same search WITHOUT the wildcard does find it, so
+    # the empty list above is the escaping and not a broken query.
+    control = client.get(
         "/api/search", params={"q": search_ctx["token"]}, headers=search_ctx["lead_auth"]
-    ).json()["results"]
+    ).json()
+    assert control["results"], "the control search found nothing -- proved nothing"
 
 
 def test_an_underscore_is_a_literal_not_a_single_character_wildcard(client, search_ctx):
-    """`_` matches one of any character in LIKE, so it must be escaped too.
+    """`_` matches exactly one of any character in LIKE, so it is escaped too.
 
-    🔴 THIS ASSERTS BOTH DIRECTIONS FROM ONE QUERY, which is why it is written
-    this way rather than as `results == []`. The fixture's material carries the
-    description "created by test_search_routes", which contains a literal
-    underscore; the fixture's project is named "Programme <token>" and its code
-    is "RDP-MINE-…", neither of which does.
-
-    - Escaped, `_` is a literal: the material comes back, the project does not.
-    - Unescaped, `_` is a wildcard matching any single character: EVERY row
-      with at least one character comes back, so the project would too.
-
-    An empty-list assertion could not tell those apart from a broken query.
+    Same construction as the `%` test above: "z_taxylene" matches the fixture's
+    "zetaxylene…" if and only if `_` is a wildcard.
     """
-    body = client.get("/api/search", params={"q": "_"}, headers=search_ctx["lead_auth"]).json()
+    escaped = client.get(
+        "/api/search", params={"q": "z_taxylene"}, headers=search_ctx["lead_auth"]
+    ).json()
+    assert escaped["results"] == [], "_ behaved as a single-character wildcard"
 
-    assert [r["id"] for r in _types(body, "material")] == [str(search_ctx["material_id"])]
-    assert _types(body, "project") == []
+    control = client.get(
+        "/api/search", params={"q": search_ctx["token"]}, headers=search_ctx["lead_auth"]
+    ).json()
+    assert control["results"], "the control search found nothing -- proved nothing"
 
 
 def test_an_unknown_record_type_is_refused_in_words(client, search_ctx):
@@ -486,3 +491,134 @@ def test_the_statement_contains_no_interpolation():
     source = SERVICE.read_text(encoding="utf-8")
     assert "text(f" not in source
     assert ".format(" not in source.split("def global_search")[0].split("_STATEMENT")[1]
+
+
+# ---------------------------------------------------------------------------
+# Codex review, 2026-08-31 -- one P1 and five P2s, each closed with a test
+# ---------------------------------------------------------------------------
+
+
+def test_a_one_character_search_is_refused(client, search_ctx):
+    """🔴 CODEX P1 — ESCAPING CLOSED INJECTION AND NOT COST.
+
+    `lower(col) LIKE '%a%'` has a leading wildcard, so no ordinary index serves
+    it: one common letter makes every permitted branch scan its table and
+    PostgreSQL sort the whole union before LIMIT discards it. `limit <= 50`
+    bounds the RESPONSE, not the WORK — cheap to send, expensive to answer,
+    repeatable by any authenticated caller.
+
+    ⚠️ THIS IS A BOUND, NOT A FIX, AND THE TEST SAYS SO. "ab" still scans. The
+    actual bound is the LOCAL `statement_timeout`, which cannot be asserted
+    here without a database large enough to exceed it.
+    """
+    refused = client.get("/api/search", params={"q": "a"}, headers=search_ctx["lead_auth"])
+    assert refused.status_code == 422, refused.text
+
+    # The other direction: two characters are accepted, so the rule is a
+    # minimum length and not a search that stopped working.
+    ok = client.get(
+        "/api/search", params={"q": search_ctx["token"][:2]}, headers=search_ctx["lead_auth"]
+    )
+    assert ok.status_code == 200, ok.text
+
+
+def test_truncated_is_false_when_the_answer_is_exactly_complete(client, search_ctx):
+    """🔴 CODEX P2 — `len(results) == limit` IS ALSO TRUE FOR A WHOLE ANSWER.
+
+    The screen said "the list is capped; narrow the search" about a result set
+    that was complete. The service now fetches one row more than asked for.
+
+    Both directions, from the same data: with `limit=1` over a query matching
+    two records the answer IS truncated; with `limit` at the default it is not.
+    """
+    q = search_ctx["token"]
+
+    capped = client.get(
+        "/api/search", params={"q": q, "limit": 1}, headers=search_ctx["lead_auth"]
+    ).json()
+    assert len(capped["results"]) == 1
+    assert capped["truncated"] is True
+
+    whole = client.get("/api/search", params={"q": q}, headers=search_ctx["lead_auth"]).json()
+    assert len(whole["results"]) >= 2, "the fixture must match more than one record"
+    assert whole["truncated"] is False
+
+
+def test_a_type_filter_changes_what_searched_reports(client, search_ctx):
+    """🔴 CODEX P2 — `searched` NAMED A CLAIM IT DID NOT COMPUTE.
+
+    With `types=material`, fourteen branches do not run and the response said
+    they had. `permitted` and `searched` are now two different facts.
+    """
+    unfiltered = client.get(
+        "/api/search", params={"q": search_ctx["token"]}, headers=search_ctx["lead_auth"]
+    ).json()
+    by_type = {row["record_type"]: row for row in unfiltered["searched"]}
+    assert by_type["project"]["permitted"] is True
+    assert by_type["project"]["searched"] is True
+
+    filtered = client.get(
+        "/api/search",
+        params={"q": search_ctx["token"], "types": ["material"]},
+        headers=search_ctx["lead_auth"],
+    ).json()
+    rows = {row["record_type"]: row for row in filtered["searched"]}
+
+    # The caller MAY search projects -- and this request did not.
+    assert rows["project"]["permitted"] is True
+    assert rows["project"]["searched"] is False
+    # The type they asked for is both.
+    assert rows["material"]["permitted"] is True
+    assert rows["material"]["searched"] is True
+
+
+def test_a_taxonomy_is_not_reported_as_a_lifecycle_state(client, search_ctx):
+    """🔴 CODEX P2 — `market_segment` AND `category` SAT IN THE `state` SLOT.
+
+    The screen renders `state` in the state position, so a market segment
+    appeared where a reader looks for "approved" or "withdrawn". A competitor
+    product has no lifecycle column, so its `state` must be null rather than
+    filled with the nearest available string.
+
+    Asserted structurally against the registry so it cannot rot: for every
+    searchable type, `state` is either null or a value from a state-ish column.
+    """
+    source = SERVICE.read_text(encoding="utf-8")
+    assert "cp.market_segment, cp.project_id" not in source, (
+        "market_segment is back in the state slot"
+    )
+    assert "pm.name, pp.category, NULL::uuid" not in source, "category is back in the state slot"
+    # Guard the guard: the branches still exist to be wrong.
+    assert "SELECT 'competitor_product'" in source
+    assert "SELECT 'catalogue_product'" in source
+
+
+def test_the_route_guard_checks_the_query_parameter_name_too(client, search_ctx):
+    """🔴 CODEX P2 — THE GUARD STRIPPED THE QUERY STRING AND CHECKED NOTHING.
+
+    `test_every_path_the_registry_emits_is_a_real_web_route` splits on "?" and
+    asserts only the base route, so `?verison=` instead of `?version=` would
+    have passed it — a link to a real page that opens nothing.
+
+    This asserts the other half: the parameter each detail path sends is one
+    the target page actually reads, measured from the page's own source.
+    """
+    web_app = API_ROOT.parent / "web" / "app"
+    checked = 0
+
+    for entry in SEARCHABLE:
+        if entry.detail_path is None or "?" not in entry.detail_path:
+            continue
+        route, query = entry.detail_path.split("?", 1)
+        param = query.split("=", 1)[0]
+        page = web_app / route.lstrip("/") / "page.tsx"
+        assert page.is_file(), f"{entry.record_type}: {page} does not exist"
+
+        source = page.read_text(encoding="utf-8")
+        assert f'params.get("{param}")' in source, (
+            f"{entry.record_type} sends ?{param}= but {route} never reads it"
+        )
+        checked += 1
+
+    # Guard the guard: five workspace routes take a record id today.
+    assert checked >= 4, f"only checked {checked} query-string paths -- the scan broke"

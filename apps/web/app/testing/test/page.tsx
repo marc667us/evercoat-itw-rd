@@ -447,6 +447,17 @@ function TestWorkspace({ test }: { test: TestDetail }) {
         <Link href="/testing" className="text-sm text-slate-600 underline">
           ← the test queue
         </Link>
+        {/* §25 CONTEXTUAL ENTRY POINT — "Research Result".
+            A result that is surprising, borderline or simply unexplained is a
+            research question, and the spec's point is that asking it should not
+            mean walking to the Research Center and re-describing the test from
+            memory. The workspace records the test it came from. */}
+        <Link
+          href={`/material-safety/research?test=${test.id}`}
+          className="text-sm font-medium text-slate-900 underline"
+        >
+          Research this result →
+        </Link>
       </div>
 
       {/*

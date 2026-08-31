@@ -23,6 +23,8 @@ import {
   DataPage,
   DataSourceError,
 } from "@/components/ui/data-source-banner";
+import Link from "next/link";
+
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TechnicalDataGrid } from "@/components/ui/technical-data-grid";
 import { useCreateMaterial, useMaterials } from "@/lib/api/hooks";
@@ -480,6 +482,26 @@ function ManageMaterialPanel() {
             materialCode={material.material_code}
             status={material.status}
           />
+          {/* §25 CONTEXTUAL ENTRY POINT — "Research Material".
+              The spec's point is that the Research Center should be reachable
+              WITHOUT going through its landing page and starting from nothing.
+              This carries the material through, so the workspace records what
+              motivated it and the material is how somebody finds the research
+              later — the back-link the Research Center now renders.
+
+              A link, not a button: it navigates, it can be opened in a new tab,
+              and it writes nothing until the workspace form is submitted. */}
+          <p className="mt-4 border-t border-slate-200 pt-4 text-sm">
+            <Link
+              href={`/material-safety/research?material=${material.id}`}
+              className="font-medium text-slate-900 underline"
+            >
+              Research this material →
+            </Link>
+            <span className="ml-2 text-xs text-slate-600">
+              Opens a research workspace linked to {material.material_code}.
+            </span>
+          </p>
         </div>
       )}
     </section>

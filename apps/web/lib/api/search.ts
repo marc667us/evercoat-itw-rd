@@ -55,7 +55,18 @@ export const searchableTypeSchema = z.object({
   record_type: z.string(),
   label: z.string(),
   permission: z.string(),
+  /** May this caller search this type at all. */
   permitted: z.boolean(),
+  /**
+   * Did THIS request search it.
+   *
+   * Differs from `permitted` exactly when a type filter was supplied. Two
+   * different facts: a type the caller may not search is a gap in their
+   * answer; one they deselected is not. Reported separately after review
+   * found the route calling the permission list "searched" while a
+   * `types=` filter had switched fourteen branches off.
+   */
+  searched: z.boolean(),
   has_detail_screen: z.boolean(),
   list_path: z.string(),
 });

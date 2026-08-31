@@ -549,3 +549,121 @@ def test_the_hypothesis_reader_returns_what_the_writer_wrote(client, research_ct
     )
     assert decided.status_code == 200, decided.text
     assert decided.json()["status"] == "refuted"
+
+
+# ---------------------------------------------------------------------------
+# §25 -- contextual entry points: the workspace names the record it came from
+# ---------------------------------------------------------------------------
+
+
+def test_the_list_says_which_material_motivated_a_workspace(
+    client, research_ctx, auth, owner_session
+) -> None:
+    """🔴 THE COLUMN WAS NEVER MISSING. THE PROJECTION WAS.
+
+    `research.investigations.material_id` has existed since migration 058 and
+    `POST /api/research` has always accepted it -- but `list_investigations`
+    selected neither it nor any of its three siblings, so the Research Center
+    could not say what an investigation was opened from and §25's "reaching an
+    investigation from the record that motivated it" had nothing to work with
+    in either direction.
+
+    Exactly the shape of the dates defect closed on 2026-08-30.
+
+    ⚠️ THE READABLE CODE IS ASSERTED, NOT ONLY THE ID. An id alone renders as a
+    UUID nobody can act on -- a back-link that looks like it works and tells
+    the reader nothing. The join is what makes the code appear, and asserting
+    only `material_id` would pass with the join deleted.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    code = f"RM-M{suffix[:5].upper()}"
+    material_id = owner_session.execute(
+        text(
+            "INSERT INTO materials.materials "
+            "(organization_id, material_code, name, category, role, status, created_by) "
+            "VALUES (:o, :c, :n, 'resin', 'binder', 'approved', :by) RETURNING id"
+        ),
+        {
+            "o": research_ctx["org_id"],
+            "c": code,
+            "n": "Motivating resin",
+            "by": research_ctx["user_id"],
+        },
+    ).scalar_one()
+    owner_session.commit()
+
+    try:
+        created = client.post(
+            "/api/research",
+            headers=auth,
+            json={
+                "title": "Why does this resin yellow?",
+                "research_question": "What drives the yellowing of this resin?",
+                "material_id": str(material_id),
+            },
+        )
+        assert created.status_code == 201, created.text
+        investigation_id = created.json()["id"]
+
+        rows = client.get("/api/research", headers=auth).json()
+        row = next(r for r in rows if r["id"] == investigation_id)
+
+        assert row["material_id"] == str(material_id)
+        assert row["material_code"] == code
+        assert row["material_name"] == "Motivating resin"
+
+        # The other direction: a workspace opened from NO record must report
+        # nulls rather than inheriting another row's material. Without this,
+        # a projection that returned the same material for every row passes.
+        orgwide = next(r for r in rows if r["id"] == str(research_ctx["orgwide"]))
+        assert orgwide["material_id"] is None
+        assert orgwide["material_code"] is None
+    finally:
+        # ⚠️ `research.investigations` IS FORCE RLS, SO THE OWNER NEEDS THE GUCS
+        # TOO. Without them the UPDATE matches zero rows *silently*, and the
+        # DELETE below then fails on `investigations_material_fk` -- which is
+        # what happened the first time this ran. FORCE means the table owner is
+        # not exempt; that is the point of it.
+        owner_session.rollback()
+        owner_session.begin()
+        owner_session.execute(
+            text("SELECT set_config('app.current_org', :o, true)"),
+            {"o": str(research_ctx["org_id"])},
+        )
+        owner_session.execute(
+            text("SELECT set_config('app.current_user_id', :u, true)"),
+            {"u": str(research_ctx["user_id"])},
+        )
+        owner_session.execute(
+            text("UPDATE research.investigations SET material_id = NULL WHERE material_id = :m"),
+            {"m": material_id},
+        )
+        owner_session.execute(
+            text("DELETE FROM materials.materials WHERE id = :m"), {"m": material_id}
+        )
+        owner_session.commit()
+
+
+def test_the_list_carries_all_four_motivating_links(client, research_ctx, auth) -> None:
+    """Structural: every §25 link the table holds is projected, with its code.
+
+    Enumerated rather than spot-checked because the defect this closes was
+    four columns omitted together, and a test that names only the one somebody
+    happened to notice leaves the other three exactly as they were.
+    """
+    rows = client.get("/api/research", headers=auth).json()
+    assert rows, "no workspaces -- this test proved nothing"
+
+    for field in (
+        "material_id",
+        "material_code",
+        "material_name",
+        "formula_version_id",
+        "version_code",
+        "test_id",
+        "test_number",
+        "failure_id",
+        "failure_code",
+        "failure_title",
+    ):
+        assert field in rows[0], f"{field} is not projected by list_investigations"

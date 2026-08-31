@@ -14,9 +14,18 @@ so search keeps working on a host where none is installed.
 Spec §29 says *extend* global search rather than build another search box.
 There was no global search to extend — measured, not assumed: before this
 module the only `/search` route in the API was `knowledge.get_search`, over
-passages. So this is that surface, and the Material Safety Data Assistant is
-expected to call `global_search` rather than grow a fourteenth query of its
-own (§29: "the same indexed records with permission filtering").
+passages.
+
+⚠️ THE AGENT TIER DOES NOT CALL THIS YET, AND SAYING OTHERWISE WOULD BE A
+CLAIM ABOUT A PATH THAT DOES NOT EXIST. §29 intends the Material Safety Data
+Assistant to use "the same indexed records with permission filtering", and
+`global_search` is shaped for that — it takes the caller's permission set as an
+argument precisely so a second adapter can supply its own. But Codex measured
+the call sites and found exactly one: the HTTP route. An earlier version of
+this paragraph said the assistant "is expected to call" it, which reads as a
+description of the system rather than of an intention. When an agent tool is
+written, it must derive organization and permissions from its authenticated
+execution context and never accept them as model-visible tool arguments.
 
 🔴 PERMISSION FILTERING IS PER RECORD TYPE, AND IT IS NOT A POST-FILTER.
 
@@ -31,10 +40,18 @@ gate and not a filter over results:
   gate is the only thing that puts the branch in the query at all, so a test
   that removes it changes the returned rows — it can fail.
 
-Tenancy is NOT done here. RLS applies the organization and project-membership
-predicates, exactly as it does for every list endpoint; the explicit
-`organization_id = :org` below is the same belt-and-braces the rest of the
-codebase uses, not the boundary.
+TENANCY IS ENFORCED IN TWO PLACES, AND THIS FILE IS ONE OF THEM.
+
+✅ CORRECTED after review. This paragraph said "tenancy is NOT done here" while
+fourteen of the fifteen branches carry an explicit `organization_id = :org`.
+That is application-layer tenancy enforcement, and describing it as merely
+decorative was wrong in the direction that invites somebody to delete it. RLS
+is the independent database-layer backstop (§5), not a reason the predicate
+above it is optional — the two are belt AND braces, and neither is "the" one.
+
+The fifteenth branch, `catalogue_product`, has no organization predicate
+because `public_intel` is the anonymous catalogue and its rows belong to no
+tenant. Its boundary is publication status instead.
 
 🔴 NO INTERPOLATION REACHES `text()`.
 
@@ -62,6 +79,30 @@ from sqlalchemy.orm import Session
 # `knowledge.MAX_SEARCH_RESULTS` so the two search surfaces cannot disagree
 # about what "a lot of results" means.
 MAX_SEARCH_RESULTS = 50
+
+# 🔴 THE TWO BOUNDS ON WHAT ONE SEARCH MAY COST. CODEX P1.
+#
+# Escaping `%` and `_` closed pattern INJECTION and did nothing about pattern
+# COST. `lower(col) LIKE '%a%'` has a leading wildcard, so no ordinary index
+# can serve it; a single common letter makes every permitted branch scan its
+# table and PostgreSQL sort the whole union before `LIMIT` throws it away.
+# `limit <= 50` bounds the RESPONSE, not the WORK. That is an authenticated
+# availability-abuse path: cheap to send, expensive to answer, repeatable.
+#
+# Two bounds, because neither alone is enough:
+#
+# - `MIN_QUERY_LENGTH` removes the cheapest and worst case. It is not a fix on
+#   its own -- "ab" scans almost as much as "a" -- and it is not claimed as one.
+# - `STATEMENT_TIMEOUT_MS` is the actual bound. It is set `LOCAL`, so it lasts
+#   only for this transaction, and a query that exceeds it is CANCELLED by the
+#   database rather than left to run. The caller gets a refusal that says the
+#   search was too broad, which is true and actionable.
+#
+# A single-character search is still legitimate for a person looking up a code;
+# they can type two. Neither bound is a rate limit, and this does not pretend
+# to be one -- I18 owns that, at the edge, for every route at once.
+MIN_QUERY_LENGTH = 2
+STATEMENT_TIMEOUT_MS = 5000
 
 
 @dataclass(frozen=True)
@@ -350,8 +391,14 @@ _STATEMENT = text(
              OR lower(coalesce(rf.statement, '')) LIKE :like)
 
         UNION ALL
+        -- ✅ `market_segment` MOVED OUT OF THE `state` SLOT. Codex P2: it is a
+        -- taxonomy, not a lifecycle state, and the screen renders `state` in
+        -- the state position -- so "Automotive refinish" appeared where a
+        -- reader looks for "approved" or "withdrawn". A competitor product has
+        -- no lifecycle column at all, so `state` is NULL, which is honest.
         SELECT 'competitor_product', cp.id, cp.product_code, cp.product_name,
-               cp.manufacturer, cp.market_segment, cp.project_id, cp.created_at,
+               cp.manufacturer || ' · ' || cp.market_segment, NULL::text,
+               cp.project_id, cp.created_at,
                CASE WHEN lower(coalesce(cp.product_code, '')) = :q THEN 0
                     WHEN lower(coalesce(cp.product_code, '')) LIKE :prefix THEN 1
                     WHEN lower(cp.product_name) LIKE :like THEN 2
@@ -396,8 +443,12 @@ _STATEMENT = text(
         -- to no tenant. The boundary that matters for it is publication:
         -- a `draft` row is an agent's unreviewed proposal, and only a human
         -- may publish one (commit 775285c). Withdrawn rows stay withdrawn.
+        -- ✅ Same correction as the competitor branch above: `category` is a
+        -- taxonomy. Here `state` CAN be a real state -- the publication status
+        -- the branch already filters on -- so it carries that rather than NULL.
         SELECT 'catalogue_product', pp.id, pp.product_code, pp.product_name,
-               pm.name, pp.category, NULL::uuid, pp.created_at,
+               pm.name || ' · ' || pp.category, pp.publication_status::text,
+               NULL::uuid, pp.created_at,
                CASE WHEN lower(coalesce(pp.product_code, '')) = :q THEN 0
                     WHEN lower(coalesce(pp.product_code, '')) LIKE :prefix THEN 1
                     WHEN lower(pp.product_name) LIKE :like THEN 2
@@ -445,7 +496,7 @@ def global_search(
     question: str,
     limit: int = MAX_SEARCH_RESULTS,
     types: tuple[str, ...] | None = None,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Records matching `question`, inside the caller's permission boundary.
 
     `permissions` is the caller's own permission set — passed in rather than
@@ -461,6 +512,11 @@ def global_search(
     cleaned = question.strip()
     if not cleaned:
         raise SearchError("a search needs something to search for")
+    if len(cleaned) < MIN_QUERY_LENGTH:
+        raise SearchError(
+            f"a search needs at least {MIN_QUERY_LENGTH} characters — "
+            "one letter matches most of the database and cannot use an index"
+        )
     if len(cleaned) > 200:
         raise SearchError("a search term this long is a paste, not a query")
 
@@ -481,16 +537,42 @@ def global_search(
         "q": lowered,
         "like": f"%{escaped}%",
         "prefix": f"{escaped}%",
-        "limit": max(1, min(int(limit), MAX_SEARCH_RESULTS)),
+        # 🔴 ONE MORE THAN ASKED FOR. CODEX P2: `truncated` USED TO LIE.
+        #
+        # It was computed as `len(results) == limit`, which is also true when
+        # the answer is exactly complete — the screen then said "the list is
+        # capped; narrow the search" about a result set that was whole.
+        # Fetching one extra row makes the question answerable rather than
+        # guessable: more rows than asked for means there were more.
+        "limit": max(1, min(int(limit), MAX_SEARCH_RESULTS)) + 1,
     }
     for entry in SEARCHABLE:
         wanted = types is None or entry.record_type in types
         params[f"may_{entry.record_type}"] = wanted and entry.permission in permissions
 
+    # 🔴 CODEX P1 — BOUND THE WORK, NOT ONLY THE RESPONSE. `LOCAL` scopes this
+    # to the current transaction, so it cannot leak into anything else running
+    # on this connection afterwards. A search that exceeds it is cancelled by
+    # PostgreSQL and surfaces as a refusal, not as a hung request.
+    #
+    # ⚠️ `set_config`, NOT `SET LOCAL`. `SET LOCAL statement_timeout = :ms` is a
+    # syntax error -- SET takes a literal, never a bind parameter, and
+    # PostgreSQL reports it as `syntax error at or near "$1"`. `set_config` is
+    # an ordinary function, so its arguments ARE values. Same reason
+    # `has_table_privilege` takes the table name as a bind parameter in d0775ab.
+    # Its third argument `true` is what makes it transaction-local.
+    session.execute(
+        text("SELECT set_config('statement_timeout', :ms, true)"),
+        {"ms": str(STATEMENT_TIMEOUT_MS)},
+    )
+
     rows = session.execute(_STATEMENT, params).mappings().all()
 
+    asked_for = max(1, min(int(limit), MAX_SEARCH_RESULTS))
+    truncated = len(rows) > asked_for
+
     out: list[dict[str, Any]] = []
-    for row in rows:
+    for row in rows[:asked_for]:
         entry = _BY_TYPE[row["record_type"]]
         link_id = row["link_id"]
         out.append(
@@ -513,15 +595,30 @@ def global_search(
                 "list_path": entry.list_path,
             }
         )
-    return out
+    return {"results": out, "truncated": truncated}
 
 
-def searchable_types(permissions: frozenset[str] | set[str]) -> list[dict[str, Any]]:
+def searchable_types(
+    permissions: frozenset[str] | set[str],
+    types: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
     """The record types this caller could get hits from, and the ones nobody can.
 
     A screen that offers a type filter must not offer a type the caller cannot
     search — and must not silently drop the two §29 names that have no table,
     because "no results" and "not held here" are different answers.
+
+    🔴 `searched` AND `permitted` ARE TWO DIFFERENT FACTS. CODEX P2.
+
+    This used to report only `permitted`, and the route called the result
+    `searched`. With `types=material` that was simply false: fourteen branches
+    did not run, and the response said they had. A field whose name is a claim
+    about what the query DID must be computed from what the query did.
+
+    So `permitted` answers "may this caller search it", `searched` answers "did
+    this request search it", and they differ exactly when a type filter was
+    supplied. The screen needs both: a type the caller may not search is a gap
+    in their answer, while one they deselected is not.
     """
     return [
         {
@@ -529,6 +626,7 @@ def searchable_types(permissions: frozenset[str] | set[str]) -> list[dict[str, A
             "label": s.label,
             "permission": s.permission,
             "permitted": s.permission in permissions,
+            "searched": (s.permission in permissions) and (types is None or s.record_type in types),
             "has_detail_screen": s.detail_path is not None,
             "list_path": s.list_path,
         }

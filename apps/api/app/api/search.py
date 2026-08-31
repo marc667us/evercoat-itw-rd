@@ -33,6 +33,7 @@ from app.core.security import Principal, get_db, get_principal
 from app.domains.search.service import (
     ABSENT,
     MAX_SEARCH_RESULTS,
+    MIN_QUERY_LENGTH,
     SearchError,
     global_search,
     searchable_types,
@@ -43,7 +44,7 @@ router = APIRouter()
 
 @router.get("", summary="Search every record type this caller may reach")
 def get_search(
-    q: str = Query(min_length=1, max_length=200),
+    q: str = Query(min_length=MIN_QUERY_LENGTH, max_length=200),
     limit: int = Query(default=MAX_SEARCH_RESULTS, ge=1, le=MAX_SEARCH_RESULTS),
     types: list[str] | None = Query(default=None),
     principal: Principal = Depends(get_principal),
@@ -57,27 +58,40 @@ def get_search(
     failures should be told failures were not searched, not that there are
     none.
     """
+    selected = tuple(types) if types else None
     try:
-        results = global_search(
+        outcome = global_search(
             session,
             organization_id=principal.organization_id,
             permissions=principal.permissions,
             question=q,
             limit=limit,
-            types=tuple(types) if types else None,
+            types=selected,
         )
     except SearchError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
+    results = outcome["results"]
     return {
         "query": q,
         "results": results,
         "result_count": len(results),
         # 🔴 REPORTED, NOT INFERRED FROM THE RESULTS. A type with zero hits and
         # a type the caller may not search look identical in `results`.
-        "searched": searchable_types(principal.permissions),
+        #
+        # ✅ `selected` IS PASSED IN NOW. Codex P2: this called
+        # `searchable_types(principal.permissions)` and labelled the answer
+        # `searched`, so `?types=material` reported fourteen types as searched
+        # when their branches had not run. Each row now carries `permitted`
+        # (may this caller search it) and `searched` (did this request), which
+        # differ exactly when a type filter was supplied.
+        "searched": searchable_types(principal.permissions, selected),
         "absent": [{"record_type": k, "reason": v} for k, v in sorted(ABSENT.items())],
-        "truncated": len(results) == min(limit, MAX_SEARCH_RESULTS),
+        # ✅ MEASURED, NOT INFERRED. Codex P2: `len(results) == limit` is also
+        # true for an exactly-complete answer, so the screen said "the list is
+        # capped" about a whole one. The service fetches one row more than
+        # asked for and reports whether it got it.
+        "truncated": outcome["truncated"],
     }

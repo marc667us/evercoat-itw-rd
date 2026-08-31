@@ -84,6 +84,35 @@ export const investigationSchema = z.object({
   evidence_count: z.number(),
   finding_count: z.number(),
   proposal_count: z.number(),
+
+  /**
+   * §25 — the record that motivated this workspace.
+   *
+   * 🔴 ALL FOUR HAVE EXISTED ON THE TABLE SINCE MIGRATION 058 AND THE CREATE
+   * ROUTE HAS ALWAYS ACCEPTED THEM. `list_investigations` projected none of
+   * them, so the Research Center could not say which material, formula
+   * version, test or failure an investigation came from — the same shape as
+   * the dates defect closed on 2026-08-30, where the column was never missing
+   * and the projection was.
+   *
+   * The readable CODE travels with each id. An id alone renders as a UUID
+   * nobody can act on, which is how a back-link ends up looking like it works
+   * while telling the reader nothing.
+   *
+   * Zod strips unknown keys, so omitting these here would have silently undone
+   * the SQL one layer up — which is exactly the "five layers each silently
+   * undo the next" chain this repository has already been bitten by.
+   */
+  material_id: z.string().nullable(),
+  material_code: z.string().nullable(),
+  material_name: z.string().nullable(),
+  formula_version_id: z.string().nullable(),
+  version_code: z.string().nullable(),
+  test_id: z.string().nullable(),
+  test_number: z.string().nullable(),
+  failure_id: z.string().nullable(),
+  failure_code: z.string().nullable(),
+  failure_title: z.string().nullable(),
 });
 
 export const researchQuestionSchema = z.object({
@@ -202,6 +231,25 @@ export interface InvestigationRequest {
   readonly research_question: string;
   readonly project_id?: string;
   readonly search_strategy?: string;
+
+  /**
+   * §25 — the record this investigation is being opened FROM.
+   *
+   * 🔴 `POST /api/research` HAS ACCEPTED ALL FOUR SINCE MIGRATION 058 AND THIS
+   * TYPE OFFERED NONE OF THEM, so no browser could ever create a linked
+   * investigation: the server had the parameter, the client had no way to send
+   * it, and there was no control to press. A route with no caller and a column
+   * with no writer are the same defect wearing two hats, and this one wore
+   * both.
+   *
+   * These are set by the contextual entry points ("Research this material" on
+   * a material, "Deep research" on a failure), which navigate to
+   * `/material-safety/research` with the record in the query string.
+   */
+  readonly material_id?: string;
+  readonly formula_version_id?: string;
+  readonly test_id?: string;
+  readonly failure_id?: string;
 }
 
 export interface SourceRequest {

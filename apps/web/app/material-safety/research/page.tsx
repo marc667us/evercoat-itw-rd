@@ -28,7 +28,9 @@
  * submitted — rendered as "Draft", not as a failure.
  */
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 import { formatDay, formatInstant } from "@/lib/format/date";
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
@@ -167,9 +169,38 @@ function Feedback({
 
 /* ------------------------------------------------------------------------ */
 
+/**
+ * §25 — the record a contextual entry point arrived with.
+ *
+ * The entry points ("Research this material", "Deep research" on a failure)
+ * navigate here with the record in the query string. Read once, here, so the
+ * form and its notice cannot disagree about what is being linked.
+ *
+ * ⚠️ ONLY ONE IS HONOURED, AND THE FIRST ONE WINS. `research.investigations`
+ * can hold all four at once, but an entry point sends exactly one, and
+ * accepting several from a hand-edited URL would attach an investigation to a
+ * combination no screen offers and no reviewer expects.
+ */
+const ENTRY_POINTS = [
+  { param: "material", field: "material_id", label: "material" },
+  { param: "version", field: "formula_version_id", label: "formula version" },
+  { param: "test", field: "test_id", label: "test" },
+  { param: "failure", field: "failure_id", label: "failure" },
+] as const;
+
+function useEntryPoint(): { field: string; label: string; id: string } | null {
+  const params = useSearchParams();
+  for (const entry of ENTRY_POINTS) {
+    const id = params.get(entry.param);
+    if (id) return { field: entry.field, label: entry.label, id };
+  }
+  return null;
+}
+
 function OpenWorkspaceForm({ projects }: { projects: readonly Project[] }) {
   const may = permits(usePermissions(), MAY.create);
   const writes = useResearchWrites();
+  const entry = useEntryPoint();
   const [title, setTitle] = useState("");
   const [question, setQuestion] = useState("");
   const [strategy, setStrategy] = useState("");
@@ -186,6 +217,7 @@ function OpenWorkspaceForm({ projects }: { projects: readonly Project[] }) {
             research_question: question,
             project_id: projectId === "" ? undefined : projectId,
             search_strategy: strategy === "" ? undefined : strategy,
+            ...(entry ? { [entry.field]: entry.id } : {}),
           },
           () => {
             setTitle("");
@@ -196,6 +228,16 @@ function OpenWorkspaceForm({ projects }: { projects: readonly Project[] }) {
       }}
     >
       <h3 className="text-sm font-semibold text-slate-900">Open a research workspace</h3>
+      {entry && (
+        <p
+          className="mt-2 rounded border border-sky-300 bg-sky-50 px-3 py-2 text-xs text-sky-900"
+          data-testid="research-entry-point"
+        >
+          → This workspace will be linked to the {entry.label} you came from. It will
+          say so on the workspace card, and the {entry.label} is how somebody
+          finds this research later.
+        </p>
+      )}
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <label className={LABEL}>
           Title
@@ -1034,6 +1076,84 @@ function ProposeExperimentForm({ investigationId }: { investigationId: string })
   );
 }
 
+/**
+ * §25 — the record that motivated this workspace, and the way back to it.
+ *
+ * 🔴 THE LINK IS THE POINT, AND IT IS ONLY OFFERED WHERE ONE EXISTS.
+ *
+ * A material, a test and a failure can all motivate an investigation. Only two
+ * of those have a detail screen in this product: `/testing/test?id=` and
+ * `/failures/investigation?id=`. Materials do not, and neither does a formula
+ * version outside its workspace — so those render as the CODE, not as a link
+ * to a route that would 404. Same judgement as `components/ui/record-link.tsx`
+ * and as the global search results, for the same reason.
+ *
+ * Renders nothing at all when an investigation was opened from no record. That
+ * is a real and ordinary state — an organization-wide question — and an empty
+ * "Opened from: —" row would suggest something was lost.
+ */
+function MotivatedBy({ investigation }: { investigation: Investigation }) {
+  const items: React.ReactNode[] = [];
+
+  if (investigation.material_id) {
+    items.push(
+      <span key="material">
+        Material{" "}
+        <span className="font-mono">{investigation.material_code ?? investigation.material_id}</span>
+        {investigation.material_name ? ` — ${investigation.material_name}` : ""}
+      </span>,
+    );
+  }
+  if (investigation.formula_version_id) {
+    items.push(
+      <Link
+        key="version"
+        href={`/formulations/formula?version=${investigation.formula_version_id}`}
+        className="underline"
+      >
+        Formula version{" "}
+        <span className="font-mono">
+          {investigation.version_code ?? investigation.formula_version_id}
+        </span>
+      </Link>,
+    );
+  }
+  if (investigation.test_id) {
+    items.push(
+      <Link key="test" href={`/testing/test?id=${investigation.test_id}`} className="underline">
+        Test <span className="font-mono">{investigation.test_number ?? investigation.test_id}</span>
+      </Link>,
+    );
+  }
+  if (investigation.failure_id) {
+    items.push(
+      <Link
+        key="failure"
+        href={`/failures/investigation?id=${investigation.failure_id}`}
+        className="underline"
+      >
+        Failure{" "}
+        <span className="font-mono">{investigation.failure_code ?? investigation.failure_id}</span>
+        {investigation.failure_title ? ` — ${investigation.failure_title}` : ""}
+      </Link>,
+    );
+  }
+
+  if (items.length === 0) return null;
+
+  return (
+    <p className="mt-1 text-xs text-slate-600" data-testid="investigation-motivated-by">
+      Opened from:{" "}
+      {items.map((item, i) => (
+        <span key={i}>
+          {i > 0 ? " · " : ""}
+          {item}
+        </span>
+      ))}
+    </p>
+  );
+}
+
 function Workspace({ investigation }: { investigation: Investigation }) {
   const may = permits(usePermissions(), MAY.create);
   const writes = useResearchWrites();
@@ -1314,7 +1434,7 @@ function ProposalsRegister() {
   );
 }
 
-export default function ResearchCenterPage() {
+function ResearchCenterScreen() {
   const investigations = useInvestigations();
   const projects = useProjects<Project[]>([], (live) => live);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -1369,6 +1489,7 @@ export default function ResearchCenterPage() {
                         {openId === row.id ? "Close" : "Open"}
                       </button>
                     </div>
+                    <MotivatedBy investigation={row} />
                     {openId === row.id && open !== undefined && (
                       <div className="mt-4 border-t border-slate-200 pt-4">
                         <Workspace investigation={open} />
@@ -1385,5 +1506,16 @@ export default function ResearchCenterPage() {
         </div>
       )}
     </LiveOnlyPage>
+  );
+}
+
+export default function ResearchCenterPage() {
+  // `useSearchParams` needs a Suspense boundary in an exported build, exactly
+  // as `/failures/investigation`, `/testing/test` and `/laboratory/batch` do.
+  // It is read here by the §25 contextual entry points.
+  return (
+    <Suspense fallback={<p className="p-6 text-sm text-slate-600">Loading…</p>}>
+      <ResearchCenterScreen />
+    </Suspense>
   );
 }

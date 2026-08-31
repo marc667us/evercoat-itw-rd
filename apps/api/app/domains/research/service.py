@@ -435,6 +435,21 @@ def list_investigations(
     The four counts come with it because a workspace with no questions and no
     evidence is one somebody started and abandoned, and the screen should be
     able to say so rather than making every card a round trip.
+
+    🔴 AND IT NOW SAYS WHAT MOTIVATED IT -- SPEC §25.
+
+    `research.investigations` has carried `material_id`, `formula_version_id`,
+    `test_id` and `failure_id` since migration 058, and the create route has
+    always accepted all four. This SELECT projected NONE of them, so the
+    Research Center could not say which material, test or failure an
+    investigation was opened from, and §25's "reaching an investigation from
+    the record that motivated it" had no data to work with in either direction.
+
+    That is the same defect shape as the dates one closed on 2026-08-30: the
+    column was never missing, the projection was. The lesson there was that
+    every layer silently undoes the next, so the readable CODE is projected
+    beside each id -- an id alone renders as a UUID nobody can act on, which is
+    how a link ends up looking like it works while telling the reader nothing.
     """
     return [
         dict(r)
@@ -444,6 +459,15 @@ def list_investigations(
                 SELECT i.id, i.investigation_code, i.title, i.research_question,
                        i.status, i.project_id, i.owner_user_id, i.created_at,
                        p.project_code,
+                       -- §25. The record that motivated this workspace, with
+                       -- the code a person reads rather than the id alone.
+                       -- LEFT JOINs, and every one tenant-qualified: RLS is a
+                       -- backstop, not the boundary, and a join that omits the
+                       -- organization is how a reference crosses a tenant.
+                       i.material_id, m.material_code, m.name AS material_name,
+                       i.formula_version_id, fv.version_code,
+                       i.test_id, t.test_number,
+                       i.failure_id, fl.failure_code, fl.title AS failure_title,
                        (SELECT count(*) FROM research.questions q
                          WHERE q.investigation_id = i.id
                            AND q.organization_id = i.organization_id) AS question_count,
@@ -459,6 +483,15 @@ def list_investigations(
                   FROM research.investigations i
                   LEFT JOIN projects.projects p
                          ON p.id = i.project_id AND p.organization_id = i.organization_id
+                  LEFT JOIN materials.materials m
+                         ON m.id = i.material_id AND m.organization_id = i.organization_id
+                  LEFT JOIN formulations.formula_versions fv
+                         ON fv.id = i.formula_version_id
+                        AND fv.organization_id = i.organization_id
+                  LEFT JOIN testing.tests t
+                         ON t.id = i.test_id AND t.organization_id = i.organization_id
+                  LEFT JOIN quality.failures fl
+                         ON fl.id = i.failure_id AND fl.organization_id = i.organization_id
                  WHERE i.organization_id = :org
                    AND (CAST(:status AS TEXT) IS NULL OR i.status = :status)
                  ORDER BY i.created_at DESC
