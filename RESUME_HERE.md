@@ -2,7 +2,7 @@
 
 ## ▶▶ 2026-08-31 — THE PRODUCT COULD NOT BE SEARCHED, AND A WORKSPACE COULD NOT SAY WHY IT EXISTED
 
-Tip **`<TIP>`** on `master`. Phase 5 §29 and §25 shipped; two parts remain.
+Tip **`354cf0c`** on `master`. Phase 5 §29 and §25 shipped; two parts remain.
 
 - 🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1130 / 0 / 0** (api-live 1047/0/0 · e2e 83/0/0)
 - apps/api **1036 / 0 / 11** local (was 986 / 0 / **35** — see below) · apps/web **286**
