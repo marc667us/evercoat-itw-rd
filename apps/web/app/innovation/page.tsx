@@ -71,27 +71,67 @@ const BUTTON =
  * file and fails if either moves, because a red banner naming the wrong role
  * sends people to somebody who cannot act and gives them no reason to doubt it.
  *
- * ⚠️ `approved` IS ONLY BLOCKED WHILE IT HAS NO PROJECT. An approved
- * opportunity that already became one is finished, not waiting — so the
- * decision is made at the call site rather than in this table.
+ * 🔴 ALL THREE DECIDABLE STATUSES, NOT JUST `awaiting_decision`.
+ *
+ * `_DECIDABLE` in `opportunities/service.py` is
+ * `{feasibility, awaiting_decision, on_hold}`. The first version of this table
+ * named only `awaiting_decision`, so recording a "hold" or "more information"
+ * decision left the opportunity fully actionable on the server and, on this
+ * screen, ownerless AND with no decision control at all — the one place where
+ * an idea can quietly stop moving. Codex found it.
+ *
+ * ⚠️ `approved` IS ONLY BLOCKED WHILE IT HAS NO PROJECT, and a `draft` may be
+ * blocked on the Research Center rather than on the Lead. Both depend on more
+ * than the status, so they are decided at the call site.
  */
+const DECIDE: Actionable = {
+  permission: "opportunity.decide",
+  role: "Product Development Director",
+  verb: "decide it",
+};
+
 const BLOCKED_ON: Readonly<Record<string, Actionable>> = {
   draft: {
     permission: "opportunity.create",
     role: "Product Development Lead",
     verb: "submit it for a decision",
   },
-  awaiting_decision: {
-    permission: "opportunity.decide",
-    role: "Product Development Director",
-    verb: "decide it",
-  },
+  feasibility: DECIDE,
+  awaiting_decision: DECIDE,
+  on_hold: DECIDE,
   approved: {
     permission: "project.create",
     role: "Product Development Lead",
     verb: "convert it to a project",
   },
 };
+
+/**
+ * A draft whose screening has not reported is blocked on the RESEARCH CENTER,
+ * not on the Lead.
+ *
+ * 🔴 `submit_opportunity` REFUSES IT. Migration 062 put the Research Center
+ * between Opportunity and Project for anything raised off a competitor's card,
+ * and the server rejects submission until the investigation records a finding.
+ * Labelling that row "Lead must submit it" points a person at a button the
+ * server will refuse — worse than no marker, because it looks authoritative.
+ */
+function screeningBlocker(row: Opportunity): Actionable | null {
+  if (row.screening_investigation_code === null) return null;
+  if (row.screening_has_finding) return null;
+  // ⚠️ `research.create` AND A REAL ROLE, BOTH MEASURED. The first draft named
+  // "Material Safety Data & Research Center" holding "research.record_finding"
+  // — a module, not a role, and a permission that does not exist. The drift
+  // test refused it, which is the whole reason it reads the migrations.
+  return {
+    permission: "research.create",
+    role: "Product Development Chemist",
+    verb: `record what screening ${row.screening_investigation_code} found`,
+  };
+}
+
+/** The statuses a decision may be recorded from — mirrors `_DECIDABLE`. */
+const DECIDABLE = new Set(["feasibility", "awaiting_decision", "on_hold"]);
 
 const SECONDARY =
   "rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-800 " +
@@ -302,10 +342,12 @@ function OpportunityCard({ row }: { readonly row: Opportunity }) {
   // ⚠️ `approved` IS NOT BLOCKED ONCE IT HAS A PROJECT. Reading the status
   // alone would keep the red marker on every opportunity that ever succeeded,
   // and a marker that never clears is one people stop reading.
+  // Screening outranks the status: a draft the server will refuse is not
+  // waiting on the person the status alone would name.
   const blockedOn: Actionable | null =
     row.status === "approved" && row.project_id !== null
       ? null
-      : (BLOCKED_ON[row.status] ?? null);
+      : (screeningBlocker(row) ?? BLOCKED_ON[row.status] ?? null);
 
   return (
     <li className="rounded border border-slate-200 bg-white p-4">
@@ -346,7 +388,7 @@ function OpportunityCard({ row }: { readonly row: Opportunity }) {
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
-        {row.status === "draft" && (
+        {row.status === "draft" && screeningBlocker(row) === null && (
           <button
             type="button"
             /* Red BECAUSE it is the act the record is waiting on — not because
@@ -359,7 +401,7 @@ function OpportunityCard({ row }: { readonly row: Opportunity }) {
             Submit for decision
           </button>
         )}
-        {row.status === "awaiting_decision" && (
+        {DECIDABLE.has(row.status) && (
           <button
             type="button"
             className={blockedOn === null ? SECONDARY : ACTION_REQUIRED_BUTTON}
@@ -379,7 +421,7 @@ function OpportunityCard({ row }: { readonly row: Opportunity }) {
             {open === "convert" ? "Cancel" : "Convert to a project"}
           </button>
         )}
-        {row.status === "awaiting_decision" && !mayDecide && (
+        {DECIDABLE.has(row.status) && !mayDecide && (
           <span className="self-center text-xs text-slate-600">
             Deciding needs the opportunity.decide permission.
           </span>

@@ -601,7 +601,23 @@ def list_opportunities(
                    o.target_application, o.status, o.priority, o.decision,
                    o.decided_at, o.created_at,
                    u.display_name AS created_by_name,
-                   p.id AS project_id, p.project_code
+                   p.id AS project_id, p.project_code,
+                   -- 🔴 THE SCREENING GATE, EXPOSED SO A SCREEN CAN NAME THE
+                   -- RIGHT BLOCKER.
+                   --
+                   -- `submit_opportunity` refuses a draft whose investigation
+                   -- has recorded no finding (migration 062). Without these
+                   -- two columns the list looks identical for a draft anybody
+                   -- may submit and one that is waiting on the Research
+                   -- Center, so a UI could only ever name one of them — and
+                   -- would send people to a transition the server refuses.
+                   -- Codex found exactly that.
+                   --
+                   -- ⚠️ A FINDING, NOT AN INVESTIGATION, matching the gate's
+                   -- own rule: opening an investigation is starting to look,
+                   -- recording a finding is having looked.
+                   inv.investigation_code AS screening_investigation_code,
+                   COALESCE(inv.findings, 0) > 0 AS screening_has_finding
             FROM innovation.opportunities o
             -- Attribution through the MEMBERSHIP (052): the global identity's
             -- name belongs to whichever tenant created it, and the runtime
@@ -612,6 +628,23 @@ def list_opportunities(
             LEFT JOIN projects.projects p
                    ON p.opportunity_id = o.id
                   AND p.organization_id = o.organization_id
+            -- One investigation per opportunity is enforced by the unique
+            -- partial index `investigations_one_per_opportunity` (062), so
+            -- this join cannot multiply rows.
+            LEFT JOIN (
+                SELECT i.opportunity_id,
+                       i.organization_id,
+                       i.investigation_code,
+                       count(f.id) AS findings
+                  FROM research.investigations i
+                  LEFT JOIN research.findings f
+                         ON f.investigation_id = i.id
+                        AND f.organization_id = i.organization_id
+                 WHERE i.opportunity_id IS NOT NULL
+                 GROUP BY i.opportunity_id, i.organization_id,
+                          i.investigation_code
+            ) inv ON inv.opportunity_id = o.id
+                 AND inv.organization_id = o.organization_id
             WHERE o.organization_id = :org
               -- CAST is required, not cosmetic. An untyped NULL bind
               -- appearing only in `:status IS NULL` gives the planner no

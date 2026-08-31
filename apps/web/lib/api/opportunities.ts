@@ -61,6 +61,20 @@ export const opportunitySchema = z.object({
   // The forward link §2 requires. Null until it is converted.
   project_id: z.string().nullable(),
   project_code: z.string().nullable(),
+  /**
+   * The screening investigation, when this opportunity has one.
+   *
+   * 🔴 WITHOUT THESE THE SCREEN CANNOT NAME THE RIGHT BLOCKER. A draft raised
+   * from the marketplace opens a screening investigation, and
+   * `submit_opportunity` REFUSES it until that investigation records a
+   * finding. A draft with no investigation is submittable by the Lead. The
+   * two are indistinguishable from every other field on this row, so the
+   * action marker would send people to a transition the server refuses.
+   *
+   * Null on an opportunity with no investigation, which is most of them.
+   */
+  screening_investigation_code: z.string().nullable(),
+  screening_has_finding: z.boolean(),
 });
 
 export type Opportunity = z.infer<typeof opportunitySchema>;

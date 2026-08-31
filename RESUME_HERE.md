@@ -1,6 +1,131 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
-## ▶▶ 2026-08-29 (part 3) — FORMS, GATING, AND THREE LIVE-ONLY CONTRACT BUGS
+## ▶▶ 2026-08-30 (part 4) — THE PIPELINE COULD NOT SAY WHEN, AND NOBODY KNEW WHO WAS HOLDING AN IDEA
+
+Tip **`<TIP>`** on `master`. Two owner instructions, both delivered.
+
+- apps/api **<API>** · apps/web **281** vitest
+- ruff, ruff format, mypy, `tsc`, ESLint all clean; `next build` proven green
+- Migration head **`u1000`** (062). **No migration added this session.**
+
+### WHAT SHIPPED
+
+**1. Dates on every pipeline action and event.** The columns were never
+missing — `created_at` is NOT NULL on every pipeline table — but four of the
+five list endpoints selected everything except it. A search of the whole of
+`apps/web` for `toLocaleDateString`, `Intl.DateTimeFormat` and `new Date(`
+returned **two hits, neither of which displayed a date**. Fixed at every layer,
+because each silently undoes the next: SQL projection → service reshaping →
+Pydantic model → Zod schema → view. Eleven views now carry dates.
+
+**2. "Action required — and by whom" on innovations.** A red marker (icon +
+words + the `status-fail` token, never colour alone) naming the role that can
+actually act, with the required control rendered red. The role names are read
+out of the migrations by `lib/api/action-required.drift.test.ts`.
+
+### 🔴 THREE THINGS THIS SESSION PROVED THE HARD WAY
+
+- **A CALENDAR DATE IS NOT AN INSTANT.** `target_release_date` is a plain
+  `date` column arriving as `2026-11-30`. ECMAScript parses a bare date as UTC
+  midnight and `Intl` renders it in the viewer's zone — it displayed
+  **29 Nov 2026** on this host. Every release target a day early for every user
+  west of UTC. Found by a test, not by reading. `lib/format/date.ts` now builds
+  calendar dates in local time and rejects malformed ones rather than letting
+  `new Date(2026, 12, 45)` roll over into a real-looking wrong day.
+
+- **A DEFAULT AND A MISSING COLUMN CANCEL EACH OTHER OUT.** `ProjectSummary`
+  defaults `created_at`, so the create route's `RETURNING` could omit it and
+  the route still answered 201 — with `created_at: null`. Nothing raised.
+  Same defect one route over from the reported one.
+
+- **THE DRIFT TEST'S OWN GUARD CAUGHT THE DRIFT TEST.** Its regex was built
+  from a TEMPLATE literal, where `\s` is just `s`, so `[\s\S]` became `[sS]`
+  and matched nothing. It would have compared two empty sets and passed. Only
+  the guard-the-guard assertion caught it. It also read only migration `002`
+  while `research.create` is granted in **058** — a guard reporting a defect
+  that is not there is as useless as one missing a defect that is.
+
+### ⚠️ WHAT BOTH REVIEWERS ADDED
+
+Codex found two P1s I had not: a marketplace draft is blocked on the
+**Research Center**, not the Lead (`submit_opportunity` refuses it until the
+screening investigation records a finding), and `_DECIDABLE` is
+`{feasibility, awaiting_decision, on_hold}` while the screen handled only
+`awaiting_decision` — so a held opportunity was actionable on the server and
+ownerless and inert in the UI. Both fixed; `list_opportunities` now projects
+`screening_investigation_code` and `screening_has_finding` so the screen can
+name the right blocker.
+
+### ▶ REMAINING — LANDING PAGE
+
+Shipped and live: public landing page, marketplace (44 real sourced products,
+every `source_url` fetched before publication), industry news, access requests,
+theme-aware including the red/blue/white theme, marketplace + news entry points
+beside the app name, "create innovation" from a product card.
+
+Still open:
+- **Sign-UP is a request, not a registration.** `/api/public/access-requests`
+  records an interest; nothing provisions an account. If self-service sign-up
+  is wanted, that is a Keycloak registration flow and a decision, not a form.
+- **50 competitors / 100+ products was the target; 44 products are live.** The
+  gap is honest: `seed_public_intel_real.py` REFUSES to publish a row whose
+  `source_url` does not resolve. Raising the count means sourcing more real
+  manufacturers, not loosening the verifier.
+- **The news feed is still demonstration data** and says so on every card. Real
+  news needs a source-ingestion pipeline with licence and robots/ToS review.
+- ⚠️ **3M was dropped on the last verification run** — it times out for both
+  `httpx` and `urllib`, measured at the same moment, so it is the host and not
+  the client. Re-run the seed when it is reachable.
+
+### ▶ REMAINING — MATERIAL SAFETY DATA & RESEARCH CENTER
+
+Shipped: the screening gate (migration **062**) — an opportunity carrying an
+investigation cannot be submitted until that investigation records a finding;
+the four registers (questions, sources, hypotheses, gaps) now show their dates.
+
+Still open, all Phase 5:
+- **§22 events** — the Research Center writes no domain events.
+- **§25 contextual entry points** — reaching an investigation from the record
+  that motivated it.
+- **§29 global search** across investigations, findings and evidence.
+- **§38 / §39 the golden scenario** for the research vertical.
+- **I7** — `revise_version` never writes `formula_version_drivers`.
+
+### ▶ REMAINING — CURRENT PHASE (issues)
+
+- **I110** — `SECURITY.md` §13 states a Content-Security-Policy that does not
+  exist. Measured twice, independently. Decide: ship the CSP or correct the doc.
+- **I111** — `next build` REWRITES `apps/web/tsconfig.json` on every run. It has
+  now been caught before commit rather than swept into one, but the fix is still
+  owed. `.next-verify/` was added to `.gitignore` this session so a verification
+  build no longer fights the running demo server for its dist directory.
+- **I56 / I58** — the FORCE-RLS cutover, carrying the owed measurement on
+  `core.authorization_for_current_session()`.
+- **I78** — the knowledge document list truncates at 100, silently.
+- **I9** — CI seed-gate coverage. **I76 / I77** — `MAX_DISTANCE = 0.74` must be
+  re-derived. **I101**.
+
+### 🔴 BEFORE YOU RUN ANYTHING
+
+The suite needs FIVE role variables plus `KEYCLOAK_ISSUER`, or 60+ tests fail
+as `AuthConnectionNotConfiguredError` and read like a regression. Without
+`KEYCLOAK_ISSUER` **collection itself fails** with a Pydantic
+`Settings.keycloak_issuer` error — an environment gap, not a code defect. The
+full incantation is in `CLAUDE.md` §13; `TEST_DB_PORT` is **55432** on this
+host, not 5432.
+
+The demo stack: **Keycloak 18080, Caddy 18081, Postgres 55432, API 18000.**
+The tunnel hostname ROTATES — read it from `tmp/demo/cloudflared.err.log`,
+never from a note. It was
+`https://planet-sounds-positions-band.trycloudflare.com` at close.
+**Restart the :18000 listener only** — restarting `cloudflared` mints a new
+hostname and invalidates the Keycloak `redirectUris` and realm `frontendUrl`.
+Verify the PID owns `uvicorn app.main:app` before stopping it; a port names a
+PID, not a process.
+
+---
+
+## ▶ PREVIOUS — 2026-08-29 (part 3) — FORMS, GATING, AND THREE LIVE-ONLY CONTRACT BUGS
 
 Tip **`e0ef6f0`** on `master`. Working tree clean, pushed. **CI green on every
 commit this session** — verified, not assumed.

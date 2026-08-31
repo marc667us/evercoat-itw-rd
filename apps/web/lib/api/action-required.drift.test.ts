@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -26,19 +26,23 @@ import { describe, expect, it } from "vitest";
  */
 
 const WEB = join(__dirname, "..", "..");
-const SEED = join(
-  WEB,
-  "..",
-  "api",
-  "migrations",
-  "002_seed_roles_permissions.sql",
-);
+/**
+ * EVERY migration, not just the original seed.
+ *
+ * 🔴 THE FIRST VERSION READ ONLY `002_seed_roles_permissions.sql`, and that
+ * was wrong the moment a later migration granted a permission. `research.create`
+ * is granted in **058**, so a banner naming it would have failed here with
+ * "not granted" while the grant plainly exists — a guard that reports a defect
+ * that is not there is as useless as one that misses a defect that is.
+ */
+const MIGRATIONS = join(WEB, "..", "api", "migrations");
 const SCREEN = join(WEB, "app", "innovation", "page.tsx");
 
 /** Role display name → the seed's role code. */
 const ROLE_CODES: Readonly<Record<string, string>> = {
   "Product Development Lead": "product_development_lead",
   "Product Development Director": "product_development_director",
+  "Product Development Chemist": "product_development_chemist",
 };
 
 /**
@@ -53,24 +57,34 @@ const ROLE_CODES: Readonly<Record<string, string>> = {
  */
 function grantedTo(sql: string, roleCode: string): Set<string> {
   const opening = "core._grant('" + roleCode + "'";
-  const start = sql.indexOf(opening);
-  if (start === -1) return new Set();
-  // Each grant is one statement; it ends at the first `);` after the opening.
-  const end = sql.indexOf(");", start);
-  if (end === -1) return new Set();
-
-  const body = sql.slice(start + opening.length, end);
   const found = new Set<string>();
-  for (const quoted of body.split("'")) {
-    // A permission code is `domain.action` — the only quoted token in the
-    // block with a dot in it. Commas and newlines fall out on their own.
-    if (/^[a-z_]+\.[a-z_]+$/.test(quoted)) found.add(quoted);
+
+  // A role may be granted more than once, across more than one migration.
+  // Taking only the first block would miss every later grant.
+  let start = sql.indexOf(opening);
+  while (start !== -1) {
+    const end = sql.indexOf(");", start);
+    if (end === -1) break;
+    for (const quoted of sql.slice(start + opening.length, end).split("'")) {
+      // A permission code is `domain.action` — the only quoted token in the
+      // block with a dot in it. Commas and newlines fall out on their own.
+      if (/^[a-z_]+\.[a-z_]+$/.test(quoted)) found.add(quoted);
+    }
+    start = sql.indexOf(opening, end);
   }
   return found;
 }
 
 describe("the action-required banner names a role that can actually act", () => {
-  const sql = readFileSync(SEED, "utf8");
+  // Concatenated in filename order, which is migration order.
+  const sql = readdirSync(MIGRATIONS)
+    .filter((f) => f.endsWith(".sql"))
+    .sort()
+    .map((f) => readFileSync(join(MIGRATIONS, f), "utf8"))
+    // Any separator does: a grant block runs from `core._grant(` to the
+    // first `);`, so joining on a statement terminator can neither split a
+    // real block nor manufacture a false one.
+    .join(" ; ");
   const screen = readFileSync(SCREEN, "utf8");
 
   // Pull `{ permission: "...", role: "...", ... }` out of BLOCKED_ON.
