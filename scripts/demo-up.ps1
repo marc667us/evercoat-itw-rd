@@ -150,6 +150,51 @@ Write-Host "  tunnel up: $PublicUrl"
 # the same BOM before; it is recorded as a hard rule.
 Set-Content -Path (Join-Path $RepoRoot "tmp\tunnel_url.txt") -Value $PublicUrl -Encoding ascii -NoNewline
 
+& $docker rm -f evercoat-demo-keycloak | Out-Null
+& $docker run -d --restart unless-stopped --name evercoat-demo-keycloak -p 18080:8080 `
+    --add-host host.docker.internal:host-gateway `
+    -e KC_DB=postgres -e KC_DB_URL="jdbc:postgresql://host.docker.internal:55432/keycloak" `
+    -e KC_DB_USERNAME=postgres -e KC_DB_PASSWORD=dev-superuser-pw `
+    -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=demo-admin-pw `
+    -e KC_HOSTNAME="$PublicUrl/auth" -e KC_HOSTNAME_STRICT=false -e KC_HTTP_ENABLED=true `
+    -e KC_PROXY_HEADERS=xforwarded -e KC_HEALTH_ENABLED=true `
+    -v "$RepoRoot\services\keycloak\realm:/opt/keycloak/data/import" `
+    quay.io/keycloak/keycloak:26.0 start-dev | Out-Null
+# 🔴 NEVER memory-cap it. `start-dev` runs a config build first; capped at
+# 512 MB it sticks at 497 and never boots. Expect 6-15 min, ONE log line until
+# done, memory climbing to ~595 MiB and then DROPPING to ~170 -- that drop is
+# the augmentation exiting and the server starting.
+Write-Host "  keycloak recreated on $PublicUrl/auth (6-15 min to boot)"
+
+# 🔴 THE CONTAINER IS CREATED BEFORE ANYTHING IS REPOINTED, AND IT DID NOT USE
+#    TO BE. 2026-08-31.
+#
+# The repointing below talks to Keycloak over `kcadm`, so it needs Keycloak
+# RUNNING. This script used to repoint first and recreate second, which works
+# only when a Keycloak from a PREVIOUS run happens to be up. On a cold start --
+# or after a `docker rm -f` that failed on a zombie PID, which is how it
+# happened -- `kcadm get clients` found nothing, the script threw
+# "could not resolve the evercoat-web client id", and died BEFORE the
+# `docker run` that would have created the very container it was looking for.
+#
+# The stack was then left with a live tunnel, no identity provider, and a realm
+# still naming a hostname two tunnels old. Recreate first, wait, then repoint.
+$kcReady = $false
+foreach ($attempt in 1..90) {
+    try {
+        $probe = Invoke-WebRequest -Uri "http://localhost:18080/realms/evercoat/.well-known/openid-configuration" `
+                                   -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        if ($probe.StatusCode -eq 200) { $kcReady = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 10
+}
+if (-not $kcReady) {
+    throw ("Keycloak did not answer on http://localhost:18080 within 15 minutes. " +
+           "`start-dev` runs a config build first and must NOT be memory-capped; " +
+           "check `docker logs evercoat-demo-keycloak`.")
+}
+Write-Host "  keycloak answering on :18080"
+
 # ------------------------------------------------------------------ keycloak
 # 🔴 FOUR THINGS CARRY THE HOSTNAME and all four must move together: the
 # client's redirect URIs, KC_HOSTNAME, the API's issuer, and the web bundle.
@@ -287,21 +332,6 @@ if ($kcFrontend -ne "$PublicUrl/auth") {
 }
 Write-Host "  keycloak realm frontendUrl repointed (read back from the database)"
 
-& $docker rm -f evercoat-demo-keycloak | Out-Null
-& $docker run -d --restart unless-stopped --name evercoat-demo-keycloak -p 18080:8080 `
-    --add-host host.docker.internal:host-gateway `
-    -e KC_DB=postgres -e KC_DB_URL="jdbc:postgresql://host.docker.internal:55432/keycloak" `
-    -e KC_DB_USERNAME=postgres -e KC_DB_PASSWORD=dev-superuser-pw `
-    -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=demo-admin-pw `
-    -e KC_HOSTNAME="$PublicUrl/auth" -e KC_HOSTNAME_STRICT=false -e KC_HTTP_ENABLED=true `
-    -e KC_PROXY_HEADERS=xforwarded -e KC_HEALTH_ENABLED=true `
-    -v "$RepoRoot\services\keycloak\realm:/opt/keycloak/data/import" `
-    quay.io/keycloak/keycloak:26.0 start-dev | Out-Null
-# 🔴 NEVER memory-cap it. `start-dev` runs a config build first; capped at
-# 512 MB it sticks at 497 and never boots. Expect 6-15 min, ONE log line until
-# done, memory climbing to ~595 MiB and then DROPPING to ~170 -- that drop is
-# the augmentation exiting and the server starting.
-Write-Host "  keycloak recreated on $PublicUrl/auth (6-15 min to boot)"
 
 # ----------------------------------------------------------- api preflight
 # 🔴 THE SIGN-IN ROLE MUST BE ABLE TO LOG IN, AND THIS SCRIPT PROVISIONS
