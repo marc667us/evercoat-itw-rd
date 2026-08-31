@@ -117,6 +117,12 @@ const PAGES = [
   // after a query, and its contrast is the reason it is amber-900 on
   // amber-50 rather than the amber-600 that first looked right.
   { name: "global search", path: "/search" },
+  // Messages (I12). Swept with no channel selected, which is what a visitor
+  // arriving from the sidebar sees: the channel list, the "choose a channel"
+  // prompt and the notifications section. The amber "Action required" chip and
+  // the "not notified" warning only appear with data, and both carry icon +
+  // words rather than colour alone.
+  { name: "messages", path: "/messages" },
   // The workspace routes, with no record named. That is a REAL state — it is
   // what a bookmarked link without its query string renders — and it is the
   // one most likely to be an unlabelled empty page.

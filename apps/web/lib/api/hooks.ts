@@ -86,6 +86,8 @@ import {
   type OpportunityCreateRequest,
   type OpportunityDecisionRequest,
 } from "./opportunities";
+import { useState } from "react";
+
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -133,6 +135,20 @@ import {
   type KnowledgeDocumentPage,
   type KnowledgePassage,
 } from "./knowledge";
+import {
+  fetchChannels,
+  fetchMessages,
+  fetchNotifications,
+  markNotificationRead,
+  postMessage,
+  promoteMessage,
+  type Channel,
+  type Message,
+  type Notification,
+  type PostedMessage,
+  type PostMessageRequest,
+  type PromoteRequest,
+} from "./messaging";
 import { searchRecords, type SearchResults } from "./search";
 import {
   authorizeBatch,
@@ -814,6 +830,179 @@ export function useGlobalSearch(
     isLoading: trimmed.length > 0 && result.isPending,
     error: (result.error as Error | null) ?? null,
     unavailable: null,
+  };
+}
+
+/**
+ * Channels this caller can see — I12.
+ *
+ * 🔴 THE FIRST CALLER THESE EIGHT ENDPOINTS HAVE EVER HAD.
+ */
+export function useChannels(): LiveOnly<Channel[]> {
+  return useLiveOnlyList("messaging-channels", (live: Channel[]) => live, fetchChannels);
+}
+
+/**
+ * One channel's messages, fetched only when a channel is selected.
+ *
+ * `enabled` for the same reason the search hooks have it: with no channel
+ * chosen there is nothing to ask for, and firing anyway would render "no
+ * messages" for a channel nobody opened.
+ */
+export function useChannelMessages(channelId: string | null): LiveOnly<Message[]> {
+  const resolved = useCredentials();
+
+  const result = useQuery({
+    queryKey: [
+      "messaging-messages",
+      channelId,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && channelId !== null,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured ? new ApiNoSessionError(resolved.reason) : new ApiNotConfiguredError();
+      }
+      return fetchMessages(resolved.credentials, channelId!, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+  return {
+    data: channelId === null ? undefined : result.data,
+    isLoading: channelId !== null && result.isPending,
+    error: (result.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * This caller's notifications.
+ *
+ * ⚠️ `unreadOnly` is a PARAMETER rather than a client-side filter, because the
+ * server caps the page: filtering after the fact would silently drop unread
+ * items past the cap, which is the I78 defect in a different table.
+ */
+export function useNotifications(unreadOnly: boolean): LiveOnly<Notification[]> {
+  const resolved = useCredentials();
+
+  const result = useQuery({
+    queryKey: [
+      "messaging-notifications",
+      unreadOnly,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured ? new ApiNoSessionError(resolved.reason) : new ApiNotConfiguredError();
+      }
+      return fetchNotifications(resolved.credentials, unreadOnly, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+  return {
+    data: result.data,
+    isLoading: result.isPending,
+    error: (result.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * The write paths: post a message, promote one, mark a notification read.
+ *
+ * 🔴 EVERY ONE OF THESE HAD A ROUTE AND NO CONTROL. Grouped in one hook so a
+ * screen cannot pick up the read paths and quietly leave the writes
+ * unreachable — which is the state this module was already in.
+ *
+ * `lastPosted` is kept so the screen can show what the server RESOLVED out of
+ * the body: which `#references` matched, and which `@mentions` were actually
+ * notified. An author who cannot see that a mention failed believes it landed.
+ */
+export function useMessagingWrites(channelId: string | null): {
+  readonly post: (body: string, onDone?: () => void) => void;
+  readonly promote: (messageId: string, request: PromoteRequest, onDone?: () => void) => void;
+  readonly markRead: (notificationId: string) => void;
+  readonly isPending: boolean;
+  readonly error: Error | null;
+  readonly lastPosted: PostedMessage | undefined;
+  readonly lastAction: string | null;
+  readonly unavailable: string | null;
+} {
+  const resolved = useCredentials();
+  const queryClient = useQueryClient();
+  const [lastAction, setLastAction] = useState<string | null>(null);
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ["messaging-messages"] });
+    void queryClient.invalidateQueries({ queryKey: ["messaging-channels"] });
+    void queryClient.invalidateQueries({ queryKey: ["messaging-notifications"] });
+  };
+
+  const postMutation = useMutation({
+    mutationFn: (request: PostMessageRequest) => {
+      if (!resolved.ok || channelId === null) {
+        throw isApiConfigured ? new ApiNoSessionError("no channel") : new ApiNotConfiguredError();
+      }
+      return postMessage(resolved.credentials, channelId, request);
+    },
+    onSuccess: () => {
+      setLastAction("Message posted.");
+      invalidate();
+    },
+  });
+
+  const promoteMutation = useMutation({
+    mutationFn: ({ messageId, request }: { messageId: string; request: PromoteRequest }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured ? new ApiNoSessionError(resolved.reason) : new ApiNotConfiguredError();
+      }
+      return promoteMessage(resolved.credentials, messageId, request);
+    },
+    onSuccess: () => {
+      // Tasks live in My Work, so that list is stale the moment this returns.
+      setLastAction("Message promoted to a task.");
+      void queryClient.invalidateQueries({ queryKey: ["my-work"] });
+      invalidate();
+    },
+  });
+
+  const readMutation = useMutation({
+    mutationFn: (notificationId: string) => {
+      if (!resolved.ok) {
+        throw isApiConfigured ? new ApiNoSessionError(resolved.reason) : new ApiNotConfiguredError();
+      }
+      return markNotificationRead(resolved.credentials, notificationId);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["messaging-notifications"] });
+    },
+  });
+
+  return {
+    post: (body, onDone) =>
+      postMutation.mutate({ body }, { onSuccess: () => onDone?.() }),
+    promote: (messageId, request, onDone) =>
+      promoteMutation.mutate({ messageId, request }, { onSuccess: () => onDone?.() }),
+    markRead: (notificationId) => readMutation.mutate(notificationId),
+    isPending: postMutation.isPending || promoteMutation.isPending || readMutation.isPending,
+    error:
+      ((postMutation.error ?? promoteMutation.error ?? readMutation.error) as Error | null) ?? null,
+    lastPosted: postMutation.data,
+    lastAction,
+    unavailable: resolved.ok || resolved.failed ? null : resolved.reason,
   };
 }
 

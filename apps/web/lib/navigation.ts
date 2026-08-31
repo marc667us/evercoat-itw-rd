@@ -318,6 +318,18 @@ export const BUILT_AHEAD: ReadonlySet<string> = new Set([
   // `navigation.test.ts` reads the filesystem and would fail the build for it.
   "analytics",
   "reports",
+  // 🔴 MESSAGES (slice 7) — I12, built 2026-08-31. Eight endpoints had shipped
+  // with no client, no hook and no screen, and THIS ENTRY BEING ABSENT is what
+  // kept the destination disabled — the gate doing exactly what it exists for,
+  // refusing to put a live link in front of a route that does not exist.
+  //
+  // `/messages` exists now, so the reason to hold it back is gone. Same
+  // argument Reports carried above: leaving eight endpoints orphaned because
+  // their slice ordinal has not arrived is that defect chosen on purpose.
+  //
+  // ⚠️ `navigation.test.ts` reads the filesystem and fails the build if this id
+  // has no `page.tsx` behind it, so this line cannot outrun the screen.
+  "messages",
   // Slice 6, built 2026-08-27 — the module that the SYSTEM writes to and no
   // person could read. §10 opens a failure investigation automatically on a RED
   // confirmation result, and until now the eleven write endpoints behind it and
