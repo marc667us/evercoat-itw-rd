@@ -2,9 +2,10 @@
 
 ## ▶▶ 2026-08-31 — THE PRODUCT COULD NOT BE SEARCHED, AND A WORKSPACE COULD NOT SAY WHY IT EXISTED
 
-Tip **`<TIP>`** on `master`. Phase 5 §29 and §25 shipped; three parts remain.
+Tip **`<TIP>`** on `master`. Phase 5 §29 and §25 shipped; two parts remain.
 
-- apps/api **1008 / 0 / 35** (was 986) · apps/web **283**
+- 🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1130 / 0 / 0** (api-live 1047/0/0 · e2e 83/0/0)
+- apps/api **1036 / 0 / 11** local (was 986 / 0 / **35** — see below) · apps/web **286**
 - ruff, ruff format, mypy, `tsc`, ESLint all clean
 - Migration head **`u1000`** (062). **No migration added this session.**
 
@@ -48,27 +49,46 @@ worth remembering: escaping `%` and `_` closed pattern INJECTION and did nothing
 about pattern COST — a leading wildcard cannot use an index, so one common
 letter scans fifteen tables, and `limit <= 50` bounds the RESPONSE not the WORK.
 
+### 🔴 THREE SILENT-FAILURE MECHANISMS, ALL FIXED AT THE MECHANISM
+
+1. **`tests/db/conftest.py` skipped on ANY connection error.** `evercoat_public`
+   and `evercoat_agent` are `dev-public-pw` / `dev-agent-pw` on this host, not
+   CI's `ci-*`. 24 tests reported SKIPPED; three handovers quoted
+   "0 failed / 35 skipped" as though chosen. A supplied-and-refused password
+   now FAILS; an unset one still skips. ⚠️ `docker exec psql` accepts BOTH
+   passwords (local socket) — verify from the HOST over TCP.
+2. **The realm `frontendUrl` overrides `KC_HOSTNAME`, and lives in the
+   database.** Every token was issued with a dead hostname and the API refused
+   all of them. It looks like a proxy problem and is not — the stale issuer was
+   served on `localhost:18080` with Caddy out of the path. `kcadm get realms
+   --fields attributes` returned `{}` while the row sat in `realm_attribute`,
+   so the read-back goes to the database.
+3. **`demo-up.ps1` printed "keycloak recreated" over two failed docker calls**,
+   then on the next run repointed Keycloak BEFORE creating it and died in the
+   gap — leaving a live tunnel with no identity provider. Reordered to
+   recreate → wait → repoint.
+
+**Five things carry the hostname, not the four the script's header claims:**
+client redirectUris, `KC_HOSTNAME`, the API issuer, the web bundle, **and the
+realm `frontendUrl`**.
+
 ### ▶ NEXT, in order
 
-1. 🔴 **RUN THE LIVE SUITE.** ⚠️ **The tunnel died and was replaced this
-   session** — `demo-up.ps1` was re-run and minted
-   `dramatically-bicycle-parliament-district.trycloudflare.com`. Read the
-   current one from `tmp/demo/cloudflared.err.log`, never from this note.
-2. **§22 domain events** — the last structural part of Phase 5. 🔴 **Greenfield:
+1. **§22 domain events** — the last structural part of Phase 5. 🔴 **Greenfield:
    measured this session, there is NO event infrastructure in this repository
    at all.** Emitting events nothing consumes would be a table with no reader,
    so this needs an emitter AND a consumer that replaces a hard-coded
    cross-module write (§22's own example: `ResearchFindingApproved` →
    Knowledge Library indexes it).
-3. **§38 / §39 golden scenario** for the research vertical.
-4. **L1 and L3 are OWNER DECISIONS, not unfinished work.** Self-service sign-up
+2. **§38 / §39 golden scenario** for the research vertical.
+3. **L1 and L3 are OWNER DECISIONS, not unfinished work.** Self-service sign-up
    is a Keycloak registration flow and a policy about who may self-register;
    the news feed needs a licensed ingestion pipeline. **L2** needs more real
    manufacturers sourced (the verifier must not be loosened); **L4** re-run the
    seed when 3M's host responds.
-5. **I12 messaging** — still 0 of 5 endpoints pressable.
-6. **D1 — deploy API + Keycloak.** Held for 2026-09-01, which is now.
-7. **I110** · **I111** · **I56/I58** · **I78** · **I9** · **I76/I77** · **I101**.
+4. **I12 messaging** — still 0 of 5 endpoints pressable.
+5. **D1 — deploy API + Keycloak.** Held for 2026-09-01, which is now.
+6. **I110** · **I111** · **I56/I58** · **I78** · **I9** · **I76/I77** · **I101**.
 
 **I7 was CLOSED as stale**, not fixed — `revise_version` has called
 `record_driver` since the failures work (`formulations/service.py:1421`).

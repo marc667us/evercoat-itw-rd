@@ -80,8 +80,34 @@ Codex returned **one P1 and five P2s on `b75f2e9`. Every one was real.**
 **Also closed:** **I7** was stale, not open — `revise_version` has called
 `record_driver` since the failures work (`formulations/service.py:1421`).
 
-apps/api **1008 / 0 / 35** (was 986) · apps/web **283**. Both new guards
-falsified by reverting them.
+### 🔴 AND THE LIVE SUITE FOUND WHAT NOTHING LOCAL COULD
+
+**Sign-in was broken on the deployed site.** Six tests failed there, all in
+`tests/integration/test_auth_end_to_end.py` — a real token from a real Keycloak
+got `401 invalid token`. Those six SKIP locally, so a green local run was
+reporting on a product nobody could sign into.
+
+The realm's `frontendUrl` is persisted in Keycloak's DATABASE and OVERRIDES
+`KC_HOSTNAME`; `demo-up.ps1` moved the client and the container and left that
+row naming a tunnel dead for hours. The client's `redirectUris` were two
+hostnames stale on top of it.
+
+⚠️ It looks like a proxy problem and is not — the stale issuer was served on
+`localhost:18080` with Caddy out of the path. And `kcadm get realms
+--fields attributes` returned `{}` while the row sat in `realm_attribute`, so
+the new read-back queries the database rather than the interface that hid it.
+
+**And 24 tests had been skipping on a wrong password** — `evercoat_public` and
+`evercoat_agent` are `dev-public-pw` / `dev-agent-pw` here, not CI's `ci-*`.
+`tests/db/conftest.py` skipped on ANY connection error, so three handovers
+quoted "0 failed / 35 skipped" as though the 35 were deliberate. A supplied
+credential that is refused now FAILS.
+
+🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1130 passed / 0 failed / 0 SKIPPED**
+(api-live 1047/0/0 · e2e 83/0/0). The previous best was 1024/0/0.
+
+apps/api **1036 / 0 / 11** local (was 986 / 0 / 35) · apps/web **286**. Both
+new guards falsified by reverting them.
 
 ## 2026-08-30 (part 3) — the pipeline could not say WHEN
 
