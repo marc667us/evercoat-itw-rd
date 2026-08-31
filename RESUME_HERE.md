@@ -2,7 +2,7 @@
 
 ## ▶▶ 2026-08-31 — PHASE 5 CLOSED, I12 CLOSED, AND FOUR FAILURES THAT WERE NOT WHAT THEY LOOKED LIKE
 
-Tip **`<TIP>`** on `master`, **pushed, CI GREEN**.
+Tip **`2cf6ada`** on `master`, **pushed, CI GREEN**.
 
 - 🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1143 / 0 / 0** (api-live 1059/0/0 · e2e 84/0/0)
 - apps/api **1048 / 0 / 11** local · apps/web **290**
