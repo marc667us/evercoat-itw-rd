@@ -1,5 +1,56 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-31 (part 3) — the research golden scenario, and §39's criterion is an absence
+
+Spec §39, the last outstanding part of MSD/Research **Phase 5**. The chain
+walked through the OWNING module at every hop: project → requirement →
+investigation → source → evidence → finding → the one approval engine →
+experiment proposal → accepted into a formula version by
+`formulations.revise_version` → batch → sample → test → RED → failure → a
+second investigation naming that failure, with the thread asserted BACKWARD in
+one query from the failure investigation to the proposal that started it.
+
+🔴 **§39 DOES NOT ASK "DID THE CHAIN RUN".** It says: *"If any step creates a
+parallel Project, Formula, Batch, Test, Approval, Document or Knowledge record
+outside its owning module, the integration is wrong."* That is a claim about
+what must NOT exist, and a forward walk cannot see it. The test counts all
+seven record classes before and after and asserts each grew by exactly what the
+owning module was asked for.
+
+Falsified exactly that way: one parallel `formula_versions` INSERT added to
+`accept_experiment_proposal` leaves every forward assertion passing and turns
+that assertion red. `research/service.py` has always CLAIMED "nothing here
+inserts a formula version, a lab batch or a test"; the claim now has a test.
+
+🔴 **AND THE COUNTER IS GUARDED.** If `_counts` were broken every delta would be
+zero and the assertion could pass for the wrong reason, so a second test inserts
+one row by hand and proves the counter sees it.
+
+**Five refusals the codebase raised, each a rule working:**
+
+- `research.investigations` is FORCE RLS with a PROJECT MEMBERSHIP predicate, so
+  `app.current_org` alone was refused — "this record names a project you cannot
+  reach". The owner is not exempt from a forced policy.
+- *"An evidence card must cite something… A card that cites nothing is an
+  opinion."* The first draft cited nothing.
+- The SDS is ATTACHED, not switched off — `requires_sds` defaults TRUE and
+  `submit_version` hard-blocks without it.
+- `TestInput` has no `project_id`: a test belongs to the project its SAMPLE came
+  from.
+- The engine returned `pass` because the values cleared the requirement. Values
+  are chosen; the RESULT is derived (§10).
+
+⚠️ **THE DATABASE HALF ONLY.** Three §39 steps are NOT walked and NOT faked —
+the competitor/SDS vertical has its own tests, DOE has no module (Slice 12).
+§39's own gate is the scenario on the deployed instance in **UI and** database
+state. Do not mark it closed on this file, and
+`test_the_scenario_names_the_steps_it_does_not_walk` keeps that declaration from
+being quietly deleted.
+
+**MSD / Research Phase 5 is now 5 of 5 parts: §22, §25, §27, §29, §38/§39.**
+
+apps/api **1048 / 0 / 11**.
+
 ## 2026-08-31 (part 2) — domain events, and one §22 chain wired end to end
 
 Migration **063**: `workflow.domain_events`. Spec §22, "integrate through

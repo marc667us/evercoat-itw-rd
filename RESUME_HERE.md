@@ -2,10 +2,12 @@
 
 ## ▶▶ 2026-08-31 — THE PRODUCT COULD NOT BE SEARCHED, AND A WORKSPACE COULD NOT SAY WHY IT EXISTED
 
-Tip **`a09665a`** on `master`. Phase 5 §29, §25 and §22 shipped; §38/§39 remains.
+Tip **`<TIP>`** on `master`. 🔴 **MSD / RESEARCH PHASE 5 IS COMPLETE — 5 of 5 parts:**
+§22 events · §25 contextual entry points · §27 dashboard widgets · §29 global search ·
+§38/§39 golden scenario.
 
-- 🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1139 / 0 / 0** (api-live 1056/0/0 · e2e 83/0/0)
-- apps/api **1045 / 0 / 11** local (was 986 / 0 / **35** — see below) · apps/web **286**
+- 🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1142 / 0 / 0** (api-live 1059/0/0 · e2e 83/0/0)
+- apps/api **1048 / 0 / 11** local (was 986 / 0 / **35** — see below) · apps/web **286**
 - Migration head **`v1000`** (063) — `workflow.domain_events`, spec §22.
 - ruff, ruff format, mypy, `tsc`, ESLint all clean
 - Migration head **`u1000`** (062). **No migration added this session.**
@@ -102,6 +104,33 @@ Four things it cost, all worth keeping:
   was to make the fixtures faithful to production, not to loosen a new table to
   match them. **Every table since 058 is born FORCE, so this will happen again
   to the next new table a service writes to.**
+
+### 🔴 §39 SHIPPED — AND ITS CRITERION IS AN ABSENCE
+
+`5479f1e`. The chain walked through the OWNING module at every hop, and the
+thread asserted BACKWARD in one query from the failure investigation to the
+proposal that started it.
+
+§39 does not ask "did the chain run". It says *"if any step creates a parallel
+Project, Formula, Batch, Test, Approval, Document or Knowledge record outside
+its owning module, the integration is wrong"* — a claim about what must NOT
+exist, which a forward walk cannot see. The test counts all seven classes
+before and after. **Falsified** by adding one parallel `formula_versions`
+INSERT to `accept_experiment_proposal`: every forward assertion still passes
+and that one goes red. The counter is itself guarded.
+
+⚠️ **DATABASE HALF ONLY.** §39's gate is the scenario on the deployed instance
+in **UI and** database state. Three steps are NOT walked and NOT faked (the
+competitor/SDS vertical has its own tests; DOE has no module). Do not mark §39
+closed on that file — the same caveat `test_golden_scenario.py` carries for I3.
+
+**Five refusals worth remembering**, each a rule working rather than an
+obstacle: `research.investigations` is FORCE RLS with a PROJECT MEMBERSHIP
+predicate (so `app.current_org` alone is refused — the owner is NOT exempt);
+"a card that cites nothing is an opinion"; the SDS is attached, not switched
+off; `TestInput` has no `project_id` because a test belongs to its SAMPLE's
+project; and the engine returns `pass` if your values clear the requirement —
+values are chosen, the RESULT is derived.
 
 ### ▶ NEXT, in order
 
