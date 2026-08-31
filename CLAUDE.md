@@ -299,17 +299,53 @@ The script now runs a PREFLIGHT that names every capability, the variables it
 needs and the tests it governs, and exits 2 rather than report three numbers
 over coverage it does not have. Give it what it needs:
 
+🔴 **AND THE PASSWORDS ARE NOT ALL `ci-*` ON THIS HOST. MEASURED 2026-08-31.**
+
+`evercoat_public` and `evercoat_agent` authenticate as **`dev-public-pw`** and
+**`dev-agent-pw`** here — the values `scripts/demo-up.ps1` starts the API with.
+`ci-public` / `ci-agent` are what **CI** provisions, and this incantation used
+to carry them.
+
+The cost was invisible: `tests/db/conftest.py` **skips** on any connection
+error, so 24 tests across `test_059_public_surface.py` and
+`test_060_agent_boundary.py` reported as SKIPPED rather than failing. Every
+recent handover quoted **`0 failed / 35 skipped`**, and that 35 was an
+environment gap wearing the clothes of a deliberate absence. With the right
+passwords the same suite is **1036 / 0 / 11**, and the 11 that remain are the
+integration tests that genuinely need a live Keycloak.
+
+⚠️ **VERIFY FROM THE HOST OVER TCP, NOT WITH `docker exec`** — the container's
+local socket accepts EITHER password, so `docker exec ... psql` says "ok" for
+credentials the test suite cannot use:
+
+```bash
+python -c "import psycopg; psycopg.connect(host='127.0.0.1',port=55432,
+  dbname='evercoat_itw_rd',user='evercoat_public',password='dev-public-pw')"
+```
+
+⚠️ **A CONNECTION ERROR IS NOT A LEGITIMATE ABSENCE.** `--allow-partial` exists
+for a capability that cannot exist; a wrong password is a misconfiguration, and
+this is the second time it has cost this project a run that proved less than it
+claimed (I100 was the first).
+
 ```bash
 U=https://<deployed-host>
 TEST_DB_HOST=localhost TEST_DB_PORT=55432 POSTGRES_DB=evercoat_itw_rd \
 TEST_OWNER_USER=evercoat_owner TEST_OWNER_PASSWORD=ci-owner \
 APP_DB_USER=evercoat_app APP_DB_PASSWORD=ci-app \
+AUTH_DB_USER=evercoat_auth AUTH_DB_PASSWORD=ci-auth \
+PUBLIC_DB_USER=evercoat_public PUBLIC_DB_PASSWORD=dev-public-pw \
+AGENT_DB_USER=evercoat_agent AGENT_DB_PASSWORD=dev-agent-pw \
 DATABASE_URL="postgresql+psycopg://evercoat_app:ci-app@localhost:55432/evercoat_itw_rd" \
+AUTH_DATABASE_URL="postgresql+psycopg://evercoat_auth:ci-auth@localhost:55432/evercoat_itw_rd" \
+PUBLIC_DATABASE_URL="postgresql+psycopg://evercoat_public:dev-public-pw@localhost:55432/evercoat_itw_rd" \
+AGENT_DATABASE_URL="postgresql+psycopg://evercoat_agent:dev-agent-pw@localhost:55432/evercoat_itw_rd" \
 KEYCLOAK_ISSUER="$U/auth/realms/evercoat" \
 TEST_KEYCLOAK_URL="$U/auth" TEST_API_URL="http://localhost:18000" \
-TEST_KEYCLOAK_PASSWORD='<demo password>' \
-TEST_ORGANIZATION_ID='<demo org uuid>' \
-./scripts/live-suite.sh "$U"
+TEST_KEYCLOAK_PASSWORD='EvercoatDemo-2026!' \
+TEST_ORGANIZATION_ID='c6031e4b-eff3-4aa6-a87b-697b6941c6e9' \
+KEYCLOAK_ADMIN_USER=admin KEYCLOAK_ADMIN_PASSWORD=demo-admin-pw \
+./scripts/live-suite.sh "$U" full
 ```
 
 Where a capability genuinely cannot exist — a deployed site with no local

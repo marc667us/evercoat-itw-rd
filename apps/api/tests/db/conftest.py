@@ -35,6 +35,49 @@ def _url(user_env: str, pass_env: str, default_user: str) -> str:
     return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{name}"
 
 
+def _connect_or_explain(engine, *, env_name: str, role: str, label: str) -> None:
+    """Prove the connection works, or say which of two very different things is wrong.
+
+    🔴 A SUPPLIED-BUT-REJECTED PASSWORD IS A MISCONFIGURATION, NOT AN ABSENCE.
+
+    These fixtures used to `pytest.skip` on ANY exception. That is right when
+    nobody configured the role — a machine with no database should not fail a
+    suite it was never asked to run — and it is wrong, silently and expensively,
+    when the credential was supplied and refused.
+
+    On 2026-08-31 that difference cost 24 tests. `evercoat_public` and
+    `evercoat_agent` authenticate as `dev-public-pw` / `dev-agent-pw` on the
+    development host while the documented incantation carried CI's `ci-public` /
+    `ci-agent`. Every case in `test_059_public_surface.py` and
+    `test_060_agent_boundary.py` reported SKIPPED, and three consecutive
+    handovers quoted "0 failed / 35 skipped" as though that 35 were deliberate.
+    With the right passwords the same suite is 1036 / 0 / 11.
+
+    Those two files are the ONLY proof that an anonymous caller cannot reach a
+    tenant row and that the agent role cannot publish. Skipping them quietly is
+    the worst available outcome: the suite reports green over the exact claims
+    it exists to defend.
+
+    So: no password in the environment at all -> skip, and name the variable.
+    A password that was given and refused -> fail.
+    """
+    supplied = os.getenv(env_name, "") != ""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        if not supplied:
+            pytest.skip(f"{label}: {env_name} is not set, so this role was never configured")
+        raise AssertionError(
+            f"{label}: {env_name} WAS supplied and {role} refused it. This is a "
+            f"misconfiguration, not an absent capability -- these tests are the "
+            f"only proof of this role's boundary, and skipping them would report "
+            f"green over the claim they exist to defend. "
+            f"⚠️ Verify from the HOST over TCP, not with `docker exec` (the "
+            f"container's local socket accepts either password). {exc}"
+        ) from exc
+
+
 @pytest.fixture(scope="session")
 def db_urls() -> dict[str, str]:
     """The three connection URLs, built from the SAME env the engines use.
@@ -82,11 +125,9 @@ def app_engine():
         pool_pre_ping=True,
         pool_reset_on_return="rollback",
     )
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"no application-role connection available: {exc}")
+    _connect_or_explain(
+        engine, env_name="APP_DB_PASSWORD", role="evercoat_app", label="the application role"
+    )
     yield engine
     engine.dispose()
 
@@ -112,11 +153,9 @@ def auth_engine():
         pool_pre_ping=True,
         pool_reset_on_return="rollback",
     )
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"no sign-in-role connection available for db tests: {exc}")
+    _connect_or_explain(
+        engine, env_name="AUTH_DB_PASSWORD", role="evercoat_auth", label="the sign-in role"
+    )
     yield engine
     engine.dispose()
 
@@ -136,11 +175,12 @@ def public_engine():
         pool_pre_ping=True,
         pool_reset_on_return="rollback",
     )
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"no public-role connection available for db tests: {exc}")
+    _connect_or_explain(
+        engine,
+        env_name="PUBLIC_DB_PASSWORD",
+        role="evercoat_public",
+        label="the anonymous public role",
+    )
     yield engine
     engine.dispose()
 
@@ -159,11 +199,9 @@ def agent_engine():
         pool_pre_ping=True,
         pool_reset_on_return="rollback",
     )
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"no agent-role connection available for db tests: {exc}")
+    _connect_or_explain(
+        engine, env_name="AGENT_DB_PASSWORD", role="evercoat_agent", label="the agent role"
+    )
     yield engine
     engine.dispose()
 
