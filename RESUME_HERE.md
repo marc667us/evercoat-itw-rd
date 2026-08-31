@@ -2,10 +2,11 @@
 
 ## ▶▶ 2026-08-31 — THE PRODUCT COULD NOT BE SEARCHED, AND A WORKSPACE COULD NOT SAY WHY IT EXISTED
 
-Tip **`354cf0c`** on `master`. Phase 5 §29 and §25 shipped; two parts remain.
+Tip **`<TIP>`** on `master`. Phase 5 §29, §25 and §22 shipped; §38/§39 remains.
 
-- 🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1130 / 0 / 0** (api-live 1047/0/0 · e2e 83/0/0)
-- apps/api **1036 / 0 / 11** local (was 986 / 0 / **35** — see below) · apps/web **286**
+- 🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1139 / 0 / 0** (api-live 1056/0/0 · e2e 83/0/0)
+- apps/api **1045 / 0 / 11** local (was 986 / 0 / **35** — see below) · apps/web **286**
+- Migration head **`v1000`** (063) — `workflow.domain_events`, spec §22.
 - ruff, ruff format, mypy, `tsc`, ESLint all clean
 - Migration head **`u1000`** (062). **No migration added this session.**
 
@@ -72,9 +73,40 @@ letter scans fifteen tables, and `limit <= 50` bounds the RESPONSE not the WORK.
 client redirectUris, `KC_HOSTNAME`, the API issuer, the web bundle, **and the
 realm `frontendUrl`**.
 
+### 🔴 §22 SHIPPED, AND WHAT IT IS NOT
+
+Migration **063** adds `workflow.domain_events` — append-only by TRIGGER (a
+revoked grant stops `evercoat_app` and nothing else), FORCE RLS, owned by
+`evercoat_owner` because the migration runs as the SUPERUSER. §22's second
+chain is wired whole: `confirm_test` announces `TestResultFinalized` and every
+open investigation naming that test is told.
+
+⚠️ **IT REWIRES NOTHING.** `revise_version` still calls `record_driver`
+directly; the safety chain still calls `material_usage` directly. Do not read
+the presence of a bus as decoupling — the module docstring says so too.
+
+Four things it cost, all worth keeping:
+
+- **The migration runs as the superuser**, so without an explicit
+  `ALTER TABLE ... OWNER TO` the table is owned by `postgres` while every other
+  table in `workflow` is owned by `evercoat_owner`. Commit `0108d7d` is the
+  previous instance; there is now a probe.
+- **`core.rls_permissive()` returns FALSE, not TRUE.** A note said otherwise
+  and it was stale.
+- **A stricter policy is not a safer one.** Mine omitted the
+  `(rls_permissive() AND current_org_id() IS NULL)` branch every other tenant
+  table carries, and broke two suites. Measure `pg_policies`, do not recall.
+- 🔴 **`testing.tests` is RLS-enabled but NOT FORCED**, so `test_018` and the
+  golden scenario had been calling `confirm_test` as the owner with no tenant
+  GUC. Production sets it at `db.py:514`. The fixtures now set it too — the fix
+  was to make the fixtures faithful to production, not to loosen a new table to
+  match them. **Every table since 058 is born FORCE, so this will happen again
+  to the next new table a service writes to.**
+
 ### ▶ NEXT, in order
 
-1. **§22 domain events** — the last structural part of Phase 5. 🔴 **Greenfield:
+1. **§22's remaining three chains** — rewiring hard-coded cross-module calls.
+   A migration of behaviour, not an addition; its own slice. — the last structural part of Phase 5. 🔴 **Greenfield:
    measured this session, there is NO event infrastructure in this repository
    at all.** Emitting events nothing consumes would be a table with no reader,
    so this needs an emitter AND a consumer that replaces a hard-coded

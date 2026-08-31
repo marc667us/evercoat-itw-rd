@@ -25,7 +25,7 @@ Research Center as the blocker.
 
 | # | Open |
 |---|---|
-| R1 | **§22 events** — the Research Center writes no domain events. 🔴 **Greenfield: measured 2026-08-31, this repository has NO event infrastructure at all** — no `domain_event`, no emitter, no bus. An architectural slice, not a wiring job; emitting events nothing consumes would be a table with no reader. |
+| R1b | **§22 events — THREE OF FOUR CHAINS REMAIN.** The log, the emitter and one chain shipped 2026-08-31 (`6fa2ff8`, migration 063). What is left is genuinely different work: **rewiring existing hard-coded cross-module calls** to react to events instead. `revise_version` still calls `record_driver` directly and the safety impact chain still calls `material_usage` directly. Those work and are tested — replacing a working direct call with an event is a migration of behaviour, not an addition, and should be its own slice with its own falsification. ⚠️ Do NOT read the presence of an event bus as decoupling. |
 | R4 | **§38 / §39 golden scenario** for the research vertical. |
 
 ### ✅ CLOSED 2026-08-31
@@ -34,6 +34,7 @@ Research Center as the blocker.
 |---|---|---|
 | **R2** | §25 contextual entry points | `2ca9f22`. **Both directions.** `research.investigations` has carried `material_id`, `formula_version_id`, `test_id` and `failure_id` since 058 and `POST /api/research` has always accepted them — but `list_investigations` projected NONE and the web `InvestigationRequest` offered NONE. So no browser could create a linked investigation and no screen could say what one came from. The columns were never missing; **the projection was, at both ends** — the same shape as the dates defect. Now the list projects all four *with the readable code beside each id*, the workspace card says "Opened from: …", and Materials / Testing / Failures each carry a "Research this →" entry point. |
 | **R3** | §29 global search | `b75f2e9` + `2ca9f22`. 15 record types in one literal statement, **permission-gated per type by a bound boolean, not a post-filter** — a post-filter leaks the total. Reports what it did **not** search, and names the two §29 types with no table here (patents = E10, released products = Slice 18). The top-bar box had been `disabled` since Slice 1. 🔴 **The first registry would have shipped 15 dead links**; caught before commit and now guarded by a test that reads `apps/web/app`. |
+| **R1a** | §22 — the Research Center writes no domain events | `6fa2ff8`, migration **063**. `workflow.domain_events`: append-only by TRIGGER (not only by a revoked grant), FORCE RLS, tenant-scoped, owned by `evercoat_owner` because the migration runs as the superuser. §22's SECOND chain is wired whole — `confirm_test` announces `TestResultFinalized` and investigations naming that test are told, with the outcome copied into the event because a test can be superseded. 🔴 **The vocabulary lists only what has an emitter**: the first draft declared seven types with three writers, which is the same defect as a table with no writer. Falsified both ways. |
 | **R5** | I7 — `revise_version` never writes `formula_version_drivers` | **Nothing. The entry was stale, not the code.** `revise_version` calls `record_driver` at `app/domains/formulations/service.py:1421`, and has since the failures work. Measured 2026-08-31. |
 
 ## ▶ CURRENT PHASE — open issues

@@ -1,5 +1,50 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-31 (part 2) — domain events, and one §22 chain wired end to end
+
+Migration **063**: `workflow.domain_events`. Spec §22, "integrate through
+domain events rather than hard-coded cross-module writes".
+
+🔴 **IS THIS A SECOND AUDIT LOG?** The question was measured, not waved away —
+this repository rejected a second document repository for exactly this shape.
+`audit.events` COULD have carried these (nullable `user_id`, app holds
+SELECT+INSERT and no UPDATE/DELETE, a bigint id a cursor could ride). It is
+still the wrong home: §5 says audit is unreachable from ordinary UI paths and
+these exist to be reached; audit's `action` names USER ACTIONS while an event
+names a FACT; and the hash chain exists to make audit evidence, not a bus.
+
+🔴 **THE VOCABULARY DOES NOT RUN AHEAD OF ITS EMITTERS.** The first draft
+declared seven event types while three had a writer. Four values no code can
+produce is the same defect as a table with no writer.
+`test_every_declared_event_type_has_an_emitter` parses the application source
+and fails if the list grows past it.
+
+🔴 **THE CONSUMER IS THE POINT.** An event log nothing reacts to is decoration.
+`confirm_test` announces `TestResultFinalized`; every open investigation naming
+that test is told, with the outcome copied into the event because a test can be
+superseded. It updates no controlled record — a researcher's evidence is theirs
+to write.
+
+⚠️ **IT REWIRES NOTHING**, and the module docstring says so: `revise_version`
+still calls `record_driver` directly. A reader must not infer decoupling from
+the presence of a bus.
+
+**What it cost.** The migration runs as the SUPERUSER, so the table was owned by
+`postgres` (commit `0108d7d` is the previous instance). `core.rls_permissive()`
+returns FALSE, not TRUE. My policy was stricter than every other tenant table,
+which is not safer, it is inconsistent — and it broke two suites. And
+`testing.tests` is RLS-enabled but NOT forced, so two db tests had been calling
+`confirm_test` as the owner with no tenant GUC; production sets it at
+`db.py:514`, and the fixtures now do too.
+
+🔴 **LIVE SUITE ON THE DEPLOYED SITE: 1139 passed / 0 failed / 0 SKIPPED**
+(api-live 1056/0/0 · e2e 83/0/0). apps/api **1045 / 0 / 11** local.
+
+⚠️ The events table is EMPTY after a run, because every test rolls back. The
+proof the emit is on the executed path is that it BROKE `test_018_testing` and
+`test_golden_scenario` when the RLS policy denied it — a statement that can
+fail those suites is unambiguously running.
+
 ## 2026-08-31 — Phase 5: the product could not be searched, and a workspace could not say why it existed
 
 Two of Phase 5's five cross-cutting parts, §29 and §25. Both were the same
