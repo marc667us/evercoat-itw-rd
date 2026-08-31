@@ -219,12 +219,24 @@ export function fetchNotifications(
   unreadOnly: boolean,
   signal?: AbortSignal,
 ): Promise<Notification[]> {
+  // 🔴 THE QUERY GOES INLINE AFTER `?`, AND NOT IN A NESTED TEMPLATE.
+  //
+  // This was written as `` `/api/messaging/notifications${query ? `?${query}` :
+  // ""}` `` and it broke CI. `tests/e2e/api/serving.spec.ts` reads every
+  // `path:` out of this directory with `/path:\s*[`"]([^`"]*)[`"]/` and checks
+  // it against the served OpenAPI — and that regex stops at the FIRST backtick,
+  // which a nested template puts in the middle of the path. The guard saw
+  // `/api/messaging/notifications${query` and correctly reported a route the
+  // API does not serve.
+  //
+  // The guard is right and the code was the unusual shape: every other client
+  // here writes the query inline so it splits cleanly at `?`. An empty
+  // `URLSearchParams` yields a trailing `?`, which is a no-op.
   const params = new URLSearchParams();
   if (unreadOnly) params.set("unread_only", "true");
-  const query = params.toString();
   return apiRequest(
     {
-      path: `/api/messaging/notifications${query ? `?${query}` : ""}`,
+      path: `/api/messaging/notifications?${params.toString()}`,
       credentials,
       signal,
     },
