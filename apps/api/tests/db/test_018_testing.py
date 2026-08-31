@@ -166,6 +166,20 @@ def testable(owner_session: Session) -> dict[str, uuid.UUID]:
         {"c": f"TST-{suffix}", "n": "Testing Org"},
     ).scalar_one()
 
+    # 🔴 THE TENANT GUC, BECAUSE `confirm_test` NOW TOUCHES A FORCE-RLS TABLE.
+    #
+    # `app/core/db.py:514` sets `app.current_org` on every real request, so
+    # production has always had it. This fixture never did, and got away with
+    # it because `testing.tests` is RLS-enabled but NOT forced -- the owner
+    # bypasses it. `workflow.domain_events` (migration 063) is born FORCE, as
+    # every table since 058 is, so the owner IS subject to the policy and an
+    # unset GUC denies the insert.
+    #
+    # Setting it here makes the fixture faithful to production rather than
+    # loosening the new table to match a fixture. `false` rather than `true`
+    # because this fixture spans more than one transaction.
+    owner_session.execute(text("SELECT set_config('app.current_org', :o, false)"), {"o": str(org)})
+
     users: dict[str, uuid.UUID] = {}
     for label in ("technician", "engineer", "lead", "chemist", "qa"):
         uid = owner_session.execute(

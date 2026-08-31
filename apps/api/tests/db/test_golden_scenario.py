@@ -159,6 +159,20 @@ def test_the_golden_scenario_runs_end_to_end(owner_session: Session) -> None:
         text("INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"),
         {"c": f"GOLD-{suffix}", "n": "Golden Org"},
     ).scalar_one()
+
+    # 🔴 THE TENANT GUC, BECAUSE THE THREAD NOW CROSSES A FORCE-RLS TABLE.
+    #
+    # Step 12 confirms a test, and `confirm_test` announces
+    # `TestResultFinalized` into `workflow.domain_events` (migration 063, spec
+    # §22). That table is born FORCE RLS like every table since 058, so the
+    # owner is NOT exempt and an unset `app.current_org` denies the insert.
+    #
+    # `app/core/db.py:514` sets this on every real request. The scenario claims
+    # to walk the path production walks, so it should have been setting it all
+    # along -- it only got away without it because the older tables it touches
+    # are RLS-enabled but not forced.
+    s.execute(text("SELECT set_config('app.current_org', :o, false)"), {"o": str(org)})
+
     who = _people(s, org, suffix)
     s.flush()
 

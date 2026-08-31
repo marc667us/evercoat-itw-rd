@@ -60,6 +60,7 @@ from app.domains.approvals.service import (
     route_outcome,
 )
 from app.domains.approvals.service import DecisionInput as RouteDecision
+from app.domains.events.service import announce_test_result_finalized
 from app.domains.failures.service import open_failure_for_failed_test
 
 __all__ = [
@@ -997,7 +998,8 @@ def confirm_test(
                 WHERE t.id = prev.id
                   AND prev.approval_state = 'approved'
                   AND prev.final_confirmed = FALSE
-                RETURNING t.id, t.test_number, t.final_confirmed
+                RETURNING t.id, t.test_number, t.final_confirmed,
+                          t.project_id, t.calculated_result
                 """
             ),
             {"tid": test_id, "org": organization_id, "actor": actor_id},
@@ -1028,6 +1030,34 @@ def confirm_test(
             reason="result confirmed as final",
         ),
     )
+
+    # 🔴 SPEC §22, SECOND CHAIN: `TestResultFinalized` -> the Research Center ->
+    # the related investigation updated. This is the finalization point -- the
+    # one statement in the system that sets `final_confirmed` -- so it is where
+    # the fact is announced.
+    #
+    # ⚠️ IN THIS TRANSACTION, DELIBERATELY. A reaction that could be lost
+    # between confirming a test and telling the investigation waiting on it is
+    # worse than no reaction: the researcher would be looking at a workspace
+    # that is confidently out of date. If the announcement fails the
+    # confirmation fails, and somebody sees an error rather than a silent gap.
+    #
+    # ⚠️ THE AUDIT WRITE ABOVE IS NOT THIS. Audit records that a PERSON
+    # confirmed a result; the event announces that a result IS final so another
+    # module can act. `CLAUDE.md` §5 keeps audit out of ordinary UI paths, and
+    # §22 needs this one reachable.
+    announce_test_result_finalized(
+        session,
+        organization_id=organization_id,
+        test_id=test_id,
+        actor_id=actor_id,
+        payload={
+            "test_number": row["test_number"],
+            "project_id": row["project_id"],
+            "calculated_result": row["calculated_result"],
+        },
+    )
+
     return _decimal_strings(row)
 
 

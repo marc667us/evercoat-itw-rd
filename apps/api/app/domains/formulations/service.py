@@ -60,6 +60,8 @@ from app.calculations.formulation import (
 from app.core.audit import AuditEvent, write_audit
 from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
+from app.domains.events.service import FORMULA_VERSION_CREATED
+from app.domains.events.service import emit as emit_domain_event
 from app.domains.failures.service import DriverInput, record_driver
 from app.domains.materials.service import BLOCKING_STATUSES
 
@@ -1434,6 +1436,28 @@ def revise_version(
             requirement_id=spec.driver_requirement_id,
             experiment_proposal_id=spec.driver_experiment_proposal_id,
         ),
+    )
+
+    # 🔴 SPEC §22, FIRST CHAIN: `FormulaVersionCreated` -> the safety module
+    # evaluates -> `SafetyReviewRequired`.
+    #
+    # ⚠️ ONLY THE FIRST HOP EXISTS. The announcement is real and this is the one
+    # function that creates a revision, so it is the right place for it. Nothing
+    # consumes it yet -- the safety evaluation is still a direct call elsewhere,
+    # and rewiring a working cross-module call is a migration of behaviour
+    # rather than an addition. Recorded here so a reader does not infer from the
+    # emit that the chain is closed. It is not.
+    emit_domain_event(
+        session,
+        organization_id=organization_id,
+        event_type=FORMULA_VERSION_CREATED,
+        subject_id=new_row["id"],
+        payload={
+            "version_code": new_row["version_code"],
+            "parent_version_code": parent["version_code"],
+            "driver_type": spec.driver_type,
+        },
+        actor_id=actor_id,
     )
 
     return {
