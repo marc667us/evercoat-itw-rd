@@ -41,6 +41,7 @@ from app.api.opportunities import router as opportunities_router
 from app.api.projects import router as projects_router
 from app.api.public import router as public_router
 from app.api.research import router as research_router
+from app.api.search import router as search_router
 from app.api.tasks import router as tasks_router
 from app.api.testing import reference_router as testing_reference_router
 from app.api.testing import router as testing_router
@@ -316,6 +317,9 @@ def create_app() -> FastAPI:
     # second document repository, and the register is one table.
     application.include_router(competitors_router, prefix="/api/competitors", tags=["competitors"])
     application.include_router(research_router, prefix="/api/research", tags=["research"])
+    # Spec §29. Authentication-gated, then filtered per record type by the
+    # permission each type declares -- see `app/api/search.py`.
+    application.include_router(search_router, prefix="/api/search", tags=["search"])
 
     if settings.metrics_enabled:
 

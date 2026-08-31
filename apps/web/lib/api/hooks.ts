@@ -133,6 +133,7 @@ import {
   type KnowledgeDocumentPage,
   type KnowledgePassage,
 } from "./knowledge";
+import { searchRecords, type SearchResults } from "./search";
 import {
   authorizeBatch,
   completeBatch,
@@ -757,6 +758,59 @@ export function useKnowledgeSearch(query: string): LiveOnly<KnowledgePassage[]> 
     data: trimmed.length === 0 ? undefined : result.data,
     // `isPending` is TRUE for a disabled query that has never run, so asking
     // it directly would leave the screen spinning before anything was typed.
+    isLoading: trimmed.length > 0 && result.isPending,
+    error: (result.error as Error | null) ?? null,
+    unavailable: null,
+  };
+}
+
+/**
+ * Global search across every record type the caller may reach — spec §29.
+ *
+ * `enabled` matters here for the same reason it does in `useKnowledgeSearch`
+ * above, and for one more: this query fans out across fifteen tables, so
+ * firing it for the empty string on every mount of the app shell would be a
+ * per-navigation cost paid for an answer nobody asked for.
+ *
+ * ⚠️ THE CALLER MUST RENDER `searched`, NOT JUST `results`. A record type the
+ * caller lacks the permission for returns no hits, and an empty section is a
+ * claim that none exist. `lib/api/search.ts` says why at more length.
+ */
+export function useGlobalSearch(
+  query: string,
+  types?: readonly string[],
+): LiveOnly<SearchResults> {
+  const resolved = useCredentials();
+  const trimmed = query.trim();
+  const typeKey = types ? [...types].sort().join(",") : "";
+
+  const result = useQuery({
+    queryKey: [
+      "global-search",
+      trimmed,
+      typeKey,
+      resolved.ok ? resolved.credentials.organizationId : null,
+      resolved.ok ? resolved.credentials.userId : null,
+    ],
+    enabled: resolved.ok && trimmed.length > 0,
+    queryFn: ({ signal }) => {
+      if (!resolved.ok) {
+        throw isApiConfigured
+          ? new ApiNoSessionError(resolved.reason)
+          : new ApiNotConfiguredError();
+      }
+      return searchRecords(resolved.credentials, trimmed, types, signal);
+    },
+  });
+
+  if (!resolved.ok) {
+    return resolved.failed
+      ? { data: undefined, isLoading: false, error: new Error(resolved.reason), unavailable: null }
+      : { data: undefined, isLoading: false, error: null, unavailable: resolved.reason };
+  }
+
+  return {
+    data: trimmed.length === 0 ? undefined : result.data,
     isLoading: trimmed.length > 0 && result.isPending,
     error: (result.error as Error | null) ?? null,
     unavailable: null,

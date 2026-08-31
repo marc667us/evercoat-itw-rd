@@ -111,6 +111,12 @@ const PAGES = [
   { name: "competitor intelligence", path: "/material-safety/competitors" },
   { name: "research center", path: "/material-safety/research" },
   { name: "reports", path: "/reports" },
+  // Global search (spec §29). Swept with no `q`, which is the state a visitor
+  // arriving from the top-bar box sees before submitting -- a form, a label
+  // and an explanatory paragraph. The amber "not searched" panel only renders
+  // after a query, and its contrast is the reason it is amber-900 on
+  // amber-50 rather than the amber-600 that first looked right.
+  { name: "global search", path: "/search" },
   // The workspace routes, with no record named. That is a REAL state — it is
   // what a bookmarked link without its query string renders — and it is the
   // one most likely to be an unlabelled empty page.

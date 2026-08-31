@@ -15,6 +15,7 @@
  */
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { MsdPanel } from "@/components/msd/msd-panel";
 
@@ -25,6 +26,7 @@ import { permits, useCallerIsKnown, usePermissions } from "@/lib/permissions";
 
 export function TopBar() {
   const [query, setQuery] = useState("");
+  const router = useRouter();
   // 🔴 MSD IS REAL NOW, AND THIS CONTROL WAS A DISABLED PLACEHOLDER FOR
   // FOUR SLICES. Concept Note §33 asks for a "persistent but unobtrusive
   // chatbot control"; a control that has never done anything is not
@@ -63,8 +65,26 @@ export function TopBar() {
 
       {/* Global search covers projects, formulas, materials, suppliers,
           batches, samples, tests, failures, products and documents
-          (Expanded Requirements §48). */}
-      <div className="min-w-0 flex-1">
+          (Expanded Requirements §48; MSD spec §29).
+
+          🔴 THIS WAS `disabled` FOR SEVEN SLICES. A search box that cannot be
+          typed into is the most-used control in the chrome promising something
+          the product did not have — and §29 asks to EXTEND global search, which
+          could not be done while there was no global search to extend.
+
+          It submits rather than searching as you type. Fifteen tables are
+          queried per request, and firing that on every keystroke would put a
+          fan-out query behind an autocomplete; the results page owns the
+          query, so a search can be linked, reloaded and gone back to. */}
+      <form
+        className="min-w-0 flex-1"
+        role="search"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const next = query.trim();
+          if (next) router.push(`/search?q=${encodeURIComponent(next)}`);
+        }}
+      >
         <label htmlFor="global-search" className="sr-only">
           Search projects, formulas, materials, tests
         </label>
@@ -73,11 +93,10 @@ export function TopBar() {
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search…  (⌘K)"
-          disabled
-          className="w-full max-w-md rounded border border-slate-200 px-3 py-1.5 text-sm placeholder:text-slate-400 disabled:bg-slate-50"
+          placeholder="Search records…"
+          className="w-full max-w-md rounded border border-slate-200 px-3 py-1.5 text-sm placeholder:text-slate-500"
         />
-      </div>
+      </form>
 
       <div className="flex items-center gap-1.5">
         {/* Whether the API is reachable, at a glance and on every page.
