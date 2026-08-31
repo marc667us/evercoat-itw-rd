@@ -23,6 +23,7 @@ import { AccountMenu } from "@/components/nav/account-menu";
 import { UserMenu } from "@/components/nav/user-menu";
 import { ApiStatus } from "@/components/nav/api-status";
 import { permits, useCallerIsKnown, usePermissions } from "@/lib/permissions";
+import { MIN_SEARCH_LENGTH } from "@/lib/api/search";
 
 export function TopBar() {
   const [query, setQuery] = useState("");
@@ -82,7 +83,15 @@ export function TopBar() {
         onSubmit={(e) => {
           e.preventDefault();
           const next = query.trim();
-          if (next) router.push(`/search?q=${encodeURIComponent(next)}`);
+          // 🔴 THE API REFUSES FEWER THAN TWO CHARACTERS, SO THE BOX MUST TOO.
+          // SUPERVISOR. Submitting "F" fired a request that 422s and the
+          // results page rendered a red "could not be run" alert -- a user
+          // typing one letter and pressing Enter met an error message, not
+          // guidance. The minimum is in the placeholder rather than only in
+          // this check, so the rule is visible before it is hit.
+          if (next.length >= MIN_SEARCH_LENGTH) {
+            router.push(`/search?q=${encodeURIComponent(next)}`);
+          }
         }}
       >
         <label htmlFor="global-search" className="sr-only">
@@ -93,7 +102,7 @@ export function TopBar() {
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search records…"
+          placeholder="Search records… (2 characters minimum)"
           className="w-full max-w-md rounded border border-slate-200 px-3 py-1.5 text-sm placeholder:text-slate-500"
         />
       </form>

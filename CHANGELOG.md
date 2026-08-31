@@ -1,5 +1,88 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-08-31 — Phase 5: the product could not be searched, and a workspace could not say why it existed
+
+Two of Phase 5's five cross-cutting parts, §29 and §25. Both were the same
+kind of gap: a capability the database already supported and no layer above it
+carried.
+
+### §29 — global search (`b75f2e9`, `2ca9f22`)
+
+Spec §29 asks to **extend** global search. There was none to extend: the top
+bar's box has been `disabled` since Slice 1, and the only `/search` route in
+the API was the knowledge library's passage retrieval.
+
+`GET /api/search` covers fifteen record types in one literal statement. It is
+gated on **authentication, not one permission** — a top-bar box is reachable by
+all ten roles — so authorization is per record type, each branch switched on by
+a bound boolean rather than filtered afterwards. A post-filter would leak the
+total: *"247 results, 3 shown"* tells an unauthorized caller how many materials
+match "isocyanate", which is most of the answer.
+
+🔴 **THE RESPONSE REPORTS WHAT IT DID NOT SEARCH.** "No results" and "not
+searched" are different answers, and only one of them is "there is nothing
+there". A chemist without `failure.view` who reads "nothing found" concludes no
+failure matches — false, in the direction that hides a problem from the person
+chasing it. The two §29 record types this system has no table for (patents,
+released products) are named as absent rather than returned empty.
+
+🔴 **THE FIRST REGISTRY WOULD HAVE SHIPPED FIFTEEN DEAD LINKS.** Every record
+type was given a detail route — `/materials/{id}`, `/suppliers/{id}` and eleven
+more — and not one is a route this application serves. Only five workspace
+screens take a record id, and as `?id=`, not as a path segment. `record-link.tsx`
+already carries the lesson: *a dead link is worse than no link.* `detail_path`
+is nullable now, a hit without one renders as text offering its list screen, and
+a test reads `apps/web/app` and fails on any path the router would not serve.
+
+### §25 — contextual entry points (`2ca9f22`)
+
+🔴 **THE COLUMNS WERE NEVER MISSING. THE PROJECTION WAS, AT BOTH ENDS.**
+
+`research.investigations` has carried `material_id`, `formula_version_id`,
+`test_id` and `failure_id` since migration 058, and `POST /api/research` has
+always accepted all four. `list_investigations` projected **none** of them and
+the web client's `InvestigationRequest` offered **none** of them — so no browser
+could create a linked investigation, and no screen could say what one came from.
+
+Exactly the shape of the dates defect closed the day before. The readable CODE
+travels beside each id, because an id alone renders as a UUID nobody can act on
+— a back-link that looks like it works and tells the reader nothing.
+
+Materials, Testing and Failures each carry a "Research this →" entry point that
+arrives with the record in the query string; the Research Center card says
+"Opened from: …" and links back where a detail screen exists.
+
+### What the reviewers added
+
+Codex returned **one P1 and five P2s on `b75f2e9`. Every one was real.**
+
+- **P1** — escaping `%` and `_` closed pattern INJECTION and did nothing about
+  pattern COST. `lower(col) LIKE '%a%'` has a leading wildcard, so no ordinary
+  index serves it; one common letter makes every permitted branch scan its
+  table. `limit <= 50` bounds the RESPONSE, not the WORK. Now bounded by a
+  minimum query length **and** a transaction-local `statement_timeout` — the
+  minimum is explicitly not claimed as the fix, because "ab" still scans.
+  ⚠️ `SET LOCAL statement_timeout = :ms` is a syntax error: SET takes a
+  literal, never a bind parameter. `set_config()` is a function, so its
+  arguments are values.
+- **P2** — `truncated` lied; `len(results) == limit` is also true for an
+  exactly-complete answer. Fetch one more row than asked for.
+- **P2** — `searched` named a claim it did not compute: with `?types=material`
+  fourteen branches did not run and the response said they had.
+- **P2** — `market_segment` and `category` sat in the `state` slot and rendered
+  where a reader looks for "approved".
+- **P2** — the route guard split on `?` and checked only the base route, so
+  `?verison=` would have passed it.
+- **P2** — two comments were false: "tenancy is NOT done here" while fourteen
+  branches enforce `organization_id`, and a claim that the agent tier calls this
+  service when nothing does. Both corrected rather than defended.
+
+**Also closed:** **I7** was stale, not open — `revise_version` has called
+`record_driver` since the failures work (`formulations/service.py:1421`).
+
+apps/api **1008 / 0 / 35** (was 986) · apps/web **283**. Both new guards
+falsified by reverting them.
+
 ## 2026-08-30 (part 3) — the pipeline could not say WHEN
 
 Every pipeline screen could report what STAGE a record was at and never when it

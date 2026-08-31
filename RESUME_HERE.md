@@ -1,5 +1,88 @@
 # ▶ RESUME HERE — EvercoatITWRD APP
 
+## ▶▶ 2026-08-31 — THE PRODUCT COULD NOT BE SEARCHED, AND A WORKSPACE COULD NOT SAY WHY IT EXISTED
+
+Tip **`<TIP>`** on `master`. Phase 5 §29 and §25 shipped; three parts remain.
+
+- apps/api **1008 / 0 / 35** (was 986) · apps/web **283**
+- ruff, ruff format, mypy, `tsc`, ESLint all clean
+- Migration head **`u1000`** (062). **No migration added this session.**
+
+### WHAT SHIPPED
+
+**§29 global search.** Fifteen record types, one literal statement, gated on
+AUTHENTICATION and then filtered per record type by a bound boolean — not a
+post-filter, which would leak the total. The response reports what it did NOT
+search, because "no results" and "not searched" are different answers. The
+top-bar box had been `disabled` since Slice 1.
+
+**§25 contextual entry points.** Both directions. Materials, Testing and
+Failures carry "Research this →"; the workspace card says "Opened from: …".
+
+### 🔴 THREE THINGS WORTH CARRYING FORWARD
+
+- **THE FIRST SEARCH REGISTRY WOULD HAVE SHIPPED FIFTEEN DEAD LINKS.** Every
+  record type was given a detail route and fourteen do not exist — only five
+  workspace screens take a record id, and as `?id=`, not a path segment. Caught
+  before commit. A test now reads `apps/web/app` and fails on any path the
+  router would not serve, and a second reads each target page's source and
+  asserts it calls `params.get("<name>")` — because the first guard split on
+  "?" and would have passed `?verison=`.
+
+- **§25 WAS THE DATES DEFECT AGAIN.** Four columns on `research.investigations`
+  since 058, accepted by the create route since 058, projected by NOTHING and
+  offered by NO client type. The columns were never missing; the projection was,
+  at both ends. **Ask of every column: which production path WRITES it, and
+  which one READS it back?**
+
+- **`SET LOCAL statement_timeout = :ms` IS A SYNTAX ERROR.** SET takes a
+  literal, never a bind parameter — PostgreSQL says `syntax error at or near
+  "$1"`. `set_config('statement_timeout', :ms, true)` is a function call, so its
+  arguments are values. Same reason `has_table_privilege` takes the table name
+  as a bind parameter in `d0775ab`.
+
+### ⚠️ WHAT THE REVIEWERS ADDED
+
+Codex: **one P1 and five P2s on `b75f2e9`, every one real.** The P1 is the one
+worth remembering: escaping `%` and `_` closed pattern INJECTION and did nothing
+about pattern COST — a leading wildcard cannot use an index, so one common
+letter scans fifteen tables, and `limit <= 50` bounds the RESPONSE not the WORK.
+
+### ▶ NEXT, in order
+
+1. 🔴 **RUN THE LIVE SUITE.** ⚠️ **The tunnel died and was replaced this
+   session** — `demo-up.ps1` was re-run and minted
+   `dramatically-bicycle-parliament-district.trycloudflare.com`. Read the
+   current one from `tmp/demo/cloudflared.err.log`, never from this note.
+2. **§22 domain events** — the last structural part of Phase 5. 🔴 **Greenfield:
+   measured this session, there is NO event infrastructure in this repository
+   at all.** Emitting events nothing consumes would be a table with no reader,
+   so this needs an emitter AND a consumer that replaces a hard-coded
+   cross-module write (§22's own example: `ResearchFindingApproved` →
+   Knowledge Library indexes it).
+3. **§38 / §39 golden scenario** for the research vertical.
+4. **L1 and L3 are OWNER DECISIONS, not unfinished work.** Self-service sign-up
+   is a Keycloak registration flow and a policy about who may self-register;
+   the news feed needs a licensed ingestion pipeline. **L2** needs more real
+   manufacturers sourced (the verifier must not be loosened); **L4** re-run the
+   seed when 3M's host responds.
+5. **I12 messaging** — still 0 of 5 endpoints pressable.
+6. **D1 — deploy API + Keycloak.** Held for 2026-09-01, which is now.
+7. **I110** · **I111** · **I56/I58** · **I78** · **I9** · **I76/I77** · **I101**.
+
+**I7 was CLOSED as stale**, not fixed — `revise_version` has called
+`record_driver` since the failures work (`formulations/service.py:1421`).
+
+### 📄 Progress report
+
+`Desktop\EvercoatITWRD-Phase-Progress-2026-08-31.pdf` (10 pages). ⚠️ It records
+that **the owner's "compressed to 10 phases" could not be found in any file** —
+the folders define 11 founder implementation phases, a 13-step MVP sequence, 20
+delivered slices, 12 extension slices, and this workstream's own 5 + 7. If a
+ten-phase cut was agreed, it is not written down and should be.
+
+---
+
 ## ▶▶ 2026-08-30 (part 4) — THE PIPELINE COULD NOT SAY WHEN, AND NOBODY KNEW WHO WAS HOLDING AN IDEA
 
 Tip **`d45906b`** on `master`, pushed. Two owner instructions, both delivered.

@@ -53,8 +53,71 @@ function keysOf(source: string, name: string): Set<string> {
   let lineStart = true;
   let current = "";
 
+  // 🔴 STRING- AND COMMENT-AWARE, BECAUSE BRACES LIVE INSIDE BOTH. SUPERVISOR.
+  //
+  // The first version counted every `{ } [ ]` it saw, including ones inside
+  // string values and comments.
+  //
+  // ⚠️ A BALANCED PAIR IN A STRING IS HARMLESS, AND THAT MATTERS FOR HOW THIS
+  // IS TESTED. "?id={id}" takes depth 1→2→1 and loses nothing; a sample built
+  // from one proves nothing, and the first version of the test below was
+  // exactly that and stayed green with this guard removed. What breaks the
+  // scanner is an UNBALANCED brace -- a single "}" in a value drops depth to 0
+  // and the loop breaks there, silently returning only the keys seen so far.
+  //
+  // ⚠️ AND THE `size > 3` SELF-GUARD DOES NOT CATCH EITHER FAILURE MODE, which
+  // is why the property is asserted directly at the bottom of this file. A
+  // guard that only checks for too few is half a guard.
+  //
+  // A comment line whose first word is followed by ":" also became a phantom
+  // key — harmless where extra keys are ignored, a spurious failure elsewhere.
+  let inString: string | null = null;
+  let inLineComment = false;
+  let inBlockComment = false;
+
   for (; i < source.length; i++) {
     const ch = source[i]!;
+    const nextCh = source[i + 1];
+
+    if (inLineComment) {
+      if (ch === "\n") {
+        inLineComment = false;
+        lineStart = true;
+        current = "";
+      }
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && nextCh === "/") {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      // A backslash escapes the next character, so an escaped quote does not
+      // end the string.
+      if (ch === "\\") i++;
+      else if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === "/" && nextCh === "/") {
+      inLineComment = true;
+      current = "";
+      continue;
+    }
+    if (ch === "/" && nextCh === "*") {
+      inBlockComment = true;
+      current = "";
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inString = ch;
+      current = "";
+      continue;
+    }
+
     if (ch === "{" || ch === "[") depth++;
     else if (ch === "}" || ch === "]") {
       depth--;
@@ -105,5 +168,54 @@ describe("the unit fixture and the E2E stub agree on the response shape", () => 
       `${e2eName} is missing fields the API sends; a required Zod field that ` +
         `is absent makes the screen render NOTHING, silently`,
     ).toEqual([]);
+  });
+});
+
+/**
+ * 🔴 THE PARSER'S OWN FALSIFICATION, AND THE FIRST VERSION OF IT COULD NOT FAIL.
+ *
+ * `keysOf` used to count every brace it saw, including ones inside string
+ * values and comments. The obvious sample to prove that -- a path template
+ * like "?id={id}" -- **does not exercise it at all**, because those braces are
+ * BALANCED: depth goes 2 then back to 1 and nothing is lost. Disabling the
+ * string tracking and re-running left all four tests green.
+ *
+ * So the sample below carries the two shapes that actually break it:
+ *
+ *  1. an UNBALANCED brace inside a string. One "}" in a value drops depth to 0
+ *     and the scan stops there, silently returning only the keys seen so far.
+ *  2. a comment whose first word is followed by ":", which the old scanner
+ *     collected as a key that exists in no object.
+ *
+ * Falsified: reverting either guard turns one of these red.
+ */
+describe("keysOf survives braces and colons that are not structure", () => {
+  const sample = [
+    "const SAMPLE = {",
+    "  before: 1,",
+    "  // note: this comment must not become a key",
+    '  label: "an unbalanced } brace in a value",',
+    '  path: "/projects/workspace?id={id}",',
+    "  after: 2,",
+    "};",
+    "const LATER = { leaked: 3 };",
+  ].join("\n");
+
+  const keys = keysOf(sample, "SAMPLE");
+
+  it("does not stop early on an unbalanced brace inside a string", () => {
+    // `after` comes AFTER the offending value. Without string tracking the
+    // scan has already broken out of the loop by the time it is reached.
+    expect(keys.has("after")).toBe(true);
+    expect(keys.has("label")).toBe(true);
+    expect(keys.has("path")).toBe(true);
+  });
+
+  it("does not collect a comment's leading word as a key", () => {
+    expect(keys.has("note")).toBe(false);
+  });
+
+  it("reads exactly the literal's own top-level keys", () => {
+    expect([...keys].sort()).toEqual(["after", "before", "label", "path"]);
   });
 });

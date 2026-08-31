@@ -30,7 +30,7 @@
 
 import { Suspense, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { formatDay, formatInstant } from "@/lib/format/date";
 import { DataSourceError, LiveOnlyPage } from "@/components/ui/data-source-banner";
@@ -201,6 +201,7 @@ function OpenWorkspaceForm({ projects }: { projects: readonly Project[] }) {
   const may = permits(usePermissions(), MAY.create);
   const writes = useResearchWrites();
   const entry = useEntryPoint();
+  const router = useRouter();
   const [title, setTitle] = useState("");
   const [question, setQuestion] = useState("");
   const [strategy, setStrategy] = useState("");
@@ -223,6 +224,14 @@ function OpenWorkspaceForm({ projects }: { projects: readonly Project[] }) {
             setTitle("");
             setQuestion("");
             setStrategy("");
+            // 🔴 CLEAR THE ENTRY POINT, NOT ONLY THE FORM. SUPERVISOR.
+            // `useEntryPoint` reads the URL, and nothing was clearing it. A
+            // chemist arriving from `?material=<id>`, opening one workspace and
+            // then opening an unrelated organization-wide question from the
+            // now-blank form got the SECOND one silently linked to the same
+            // material — the sky notice still on screen, but easy to skim past
+            // on a form you have already used once.
+            if (entry) router.replace("/material-safety/research");
           },
         );
       }}
@@ -1081,12 +1090,19 @@ function ProposeExperimentForm({ investigationId }: { investigationId: string })
  *
  * 🔴 THE LINK IS THE POINT, AND IT IS ONLY OFFERED WHERE ONE EXISTS.
  *
- * A material, a test and a failure can all motivate an investigation. Only two
- * of those have a detail screen in this product: `/testing/test?id=` and
- * `/failures/investigation?id=`. Materials do not, and neither does a formula
- * version outside its workspace — so those render as the CODE, not as a link
- * to a route that would 404. Same judgement as `components/ui/record-link.tsx`
- * and as the global search results, for the same reason.
+ * A material, a formula version, a test and a failure can all motivate an
+ * investigation. Three of those have a detail screen in this product —
+ * `/formulations/formula?version=`, `/testing/test?id=` and
+ * `/failures/investigation?id=` — and those render as links. **Materials do
+ * not**, so a material renders as its CODE rather than as a link to a route
+ * that would 404. Same judgement as `components/ui/record-link.tsx` and as the
+ * global search results, for the same reason.
+ *
+ * ✅ CORRECTED after review. This paragraph used to say a formula version had
+ * no detail screen either, while the code three lines down rendered it as a
+ * link — and the link is the correct half: `app/domains/search/service.py`'s
+ * registry lists that same route as a real detail path. Left as it was, the
+ * next reader deletes a working link to "fix" the comment.
  *
  * Renders nothing at all when an investigation was opened from no record. That
  * is a real and ordinary state — an organization-wide question — and an empty

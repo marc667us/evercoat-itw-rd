@@ -25,6 +25,43 @@ import { z } from "zod";
 
 import { apiRequest, type ApiCredentials } from "./client";
 
+/**
+ * The shortest query the API will run — `MIN_QUERY_LENGTH` in
+ * `app/domains/search/service.py`, mirrored here.
+ *
+ * ⚠️ A MIRROR, AND MIRRORS DRIFT. It exists so the top-bar box does not submit
+ * a query the server is going to refuse with a 422 the user reads as an error.
+ * The server remains authoritative; if the two disagree, this is the bug.
+ */
+export const MIN_SEARCH_LENGTH = 2;
+
+/**
+ * A record type's plural, for "open …" fallback copy.
+ *
+ * 🔴 NOT `label + "s"`. That produced "open sdss", "open lab batchs" and
+ * "open research workspaces" — English plurals are not a suffix, and the two
+ * that are acronyms are not pluralised at all. Keyed on `record_type` rather
+ * than on the label so a label reworded for the screen does not silently
+ * change the copy here.
+ */
+export const PLURAL_LABEL: Record<string, string> = {
+  project: "projects",
+  material: "materials",
+  sds: "the SDS list",
+  supplier: "suppliers",
+  formula: "formulas",
+  batch: "lab batches",
+  sample: "samples",
+  test: "tests",
+  failure: "failures",
+  research_investigation: "research workspaces",
+  research_finding: "research findings",
+  competitor_product: "competitor products",
+  document: "documents",
+  opportunity: "opportunities",
+  catalogue_product: "the marketplace",
+};
+
 export const searchHitSchema = z.object({
   record_type: z.string(),
   label: z.string(),
@@ -54,7 +91,8 @@ export type SearchHit = z.infer<typeof searchHitSchema>;
 export const searchableTypeSchema = z.object({
   record_type: z.string(),
   label: z.string(),
-  permission: z.string(),
+  /** Null where the data is public and reading it needs no permission. */
+  permission: z.string().nullable(),
   /** May this caller search this type at all. */
   permitted: z.boolean(),
   /**

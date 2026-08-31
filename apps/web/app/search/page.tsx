@@ -29,7 +29,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { LiveOnlyPage } from "@/components/ui/data-source-banner";
 import { useGlobalSearch } from "@/lib/api/hooks";
-import type { SearchHit } from "@/lib/api/search";
+import { MIN_SEARCH_LENGTH, PLURAL_LABEL, type SearchHit } from "@/lib/api/search";
 
 function SearchScreen() {
   const params = useSearchParams();
@@ -66,7 +66,13 @@ function SearchScreen() {
         onSubmit={(e) => {
           e.preventDefault();
           const next = draft.trim();
-          router.push(next ? `/search?q=${encodeURIComponent(next)}` : "/search");
+          // The API refuses fewer than MIN_SEARCH_LENGTH characters. Submitting
+          // anyway turned a too-short query into a red error alert instead of
+          // the guidance paragraph below. Same guard as the top-bar box.
+          if (next.length === 0) router.push("/search");
+          else if (next.length >= MIN_SEARCH_LENGTH) {
+            router.push(`/search?q=${encodeURIComponent(next)}`);
+          }
         }}
       >
         <label htmlFor="search-q" className="sr-only">
@@ -78,6 +84,7 @@ function SearchScreen() {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="Project code, formula code, material name…"
+          minLength={MIN_SEARCH_LENGTH}
           className="w-full max-w-lg rounded border border-slate-300 px-3 py-2 text-sm"
         />
         <button
@@ -90,8 +97,9 @@ function SearchScreen() {
 
       {queryFromUrl.trim().length === 0 && (
         <p className="text-sm text-slate-600">
-          Type a record code or name. Matching is on the words you type — this
-          searches records, not the text inside documents. For that, use the{" "}
+          Type a record code or name — at least {MIN_SEARCH_LENGTH} characters.
+          Matching is on the words you type; this searches records, not the text
+          inside documents. For that, use the{" "}
           <Link href="/knowledge" className="underline">
             Knowledge Library
           </Link>
@@ -211,7 +219,7 @@ function Hit({ hit }: { hit: SearchHit }) {
       <span className="ml-2 text-xs text-slate-500">
         — no detail screen for this record type yet;{" "}
         <Link href={hit.list_path} className="underline">
-          open {hit.label.toLowerCase()}s
+          open {PLURAL_LABEL[hit.record_type] ?? hit.list_path}
         </Link>
       </span>
     </div>

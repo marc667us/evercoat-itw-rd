@@ -21,6 +21,7 @@ idempotency gate fail while naming a file two directories away from the defect.
 
 from __future__ import annotations
 
+import ast
 import re
 import uuid
 from collections.abc import Iterator
@@ -29,7 +30,12 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from app.domains.search.service import _ABSENT_TABLES, ABSENT, SEARCHABLE
+from app.domains.search.service import (
+    _ABSENT_TABLES,
+    ABSENT,
+    SEARCHABLE,
+    SearchError,
+)
 from app.main import app
 
 API_ROOT = Path(__file__).resolve().parents[2]
@@ -357,7 +363,10 @@ def test_every_registry_permission_exists(owner_session):
     known = {r[0] for r in owner_session.execute(text("SELECT code FROM core.permissions")).all()}
     assert known, "read no permissions at all -- the guard could not have failed"
 
-    declared = {s.permission for s in SEARCHABLE}
+    # `None` is not a permission code and is guarded separately by
+    # `test_only_public_data_may_declare_no_permission`.
+    declared = {s.permission for s in SEARCHABLE if s.permission is not None}
+    assert declared, "no permissions declared at all -- the guard could not fail"
     assert declared <= known, f"not real permissions: {sorted(declared - known)}"
 
 
@@ -622,3 +631,126 @@ def test_the_route_guard_checks_the_query_parameter_name_too(client, search_ctx)
 
     # Guard the guard: five workspace routes take a record id today.
     assert checked >= 4, f"only checked {checked} query-string paths -- the scan broke"
+
+
+# ---------------------------------------------------------------------------
+# Supervisor review, 2026-08-31 -- nine findings
+# ---------------------------------------------------------------------------
+
+
+def test_every_record_type_declares_the_permission_its_own_routes_use(owner_session):
+    """🔴 THE SEARCH PAGE MUST NOT LIE ABOUT THE CALLER'S OWN ACCESS.
+
+    `competitor_product` was gated on `research.view` while every competitor
+    read route is gated on `material.view` (`app/api/competitors.py:140`, which
+    says why: "a competitor product is technical reference material of the same
+    kind as a raw material"). `research.view` is held by five of the ten roles,
+    so a laboratory technician who can browse `/material-safety/competitors`
+    perfectly well was told "Not searched — you do not hold `research.view`" —
+    a false claim about their own access, on the one screen whose stated
+    purpose is not to lie about what it did not search.
+
+    Asserted against the ROUTE FILE rather than against a second list, because
+    two hand-written lists prove only that somebody typed twice.
+    """
+    routes = (API_ROOT / "app" / "api" / "competitors.py").read_text(encoding="utf-8")
+    assert 'require_permission("material.view")' in routes, (
+        "the competitor routes no longer use material.view -- re-derive this"
+    )
+
+    entry = next(s for s in SEARCHABLE if s.record_type == "competitor_product")
+    assert entry.permission == "material.view"
+
+
+def test_only_public_data_may_declare_no_permission(owner_session):
+    """A null permission is a claim that the record type is anonymously readable.
+
+    Exactly one type makes it: `catalogue_product`, whose rows live in
+    `public_intel` and are served to visitors with no session at all. Gating it
+    on `research.view` told five of the ten roles that published, publicly
+    readable products "were not searched", which was false the same way the
+    competitor entry was.
+
+    🔴 THE GUARD IS THAT NOTHING ELSE MAY. A null permission on a tenant table
+    would be an unguarded branch wearing an honest-looking label.
+    """
+    unpermissioned = {s.record_type for s in SEARCHABLE if s.permission is None}
+    assert unpermissioned == {"catalogue_product"}, (
+        f"a non-public record type declares no permission: {sorted(unpermissioned)}"
+    )
+
+    # And the claim it rests on, measured rather than asserted: the anonymous
+    # role really can read those rows.
+    #
+    # ⚠️ THROUGH THE PUBLISHED VIEW, NOT THE BASE TABLE. `evercoat_public` has
+    # NO privilege on `public_intel.products` itself — migration 059 revokes
+    # from PUBLIC and grants only on `v_products`, which carries the
+    # `publication_status = 'published'` predicate. Asserting the base table
+    # would have failed while the design was correct, and asserting nothing
+    # would have let `permission=None` rest on an unchecked belief.
+    assert owner_session.execute(
+        text("SELECT has_table_privilege('evercoat_public', 'public_intel.v_products', 'SELECT')")
+    ).scalar_one()
+    assert not owner_session.execute(
+        text("SELECT has_table_privilege('evercoat_public', 'public_intel.products', 'SELECT')")
+    ).scalar_one(), "the anonymous role should reach the VIEW, never the base table"
+
+
+def test_a_null_subtitle_column_does_not_erase_the_manufacturer(client, search_ctx):
+    """`a || b` IS NULL WHEN EITHER SIDE IS.
+
+    `competitors.products.market_segment` is nullable and `manufacturer` is
+    NOT NULL, so concatenating them with `||` produced NULL for any product
+    without a segment — dropping the MANUFACTURER, the one field that tells two
+    same-named products apart. Same trap in the catalogue branch, where
+    `category` is nullable.
+
+    Asserted on the source because building a competitor product here needs a
+    project, a sample and a registration path this test has no business driving.
+    """
+    source = SERVICE.read_text(encoding="utf-8")
+    assert "cp.manufacturer || " not in source, "|| is back in the competitor branch"
+    assert "pm.name || " not in source, "|| is back in the catalogue branch"
+    assert source.count("concat_ws(' · '") == 2, "both branches must use concat_ws"
+
+
+def test_the_timeout_promise_is_kept_by_code_and_not_only_by_a_comment():
+    """🔴 A COMMENT THAT ASSERTS THE OUTCOME OF A SECURITY CONTROL.
+
+    `STATEMENT_TIMEOUT_MS` promised "a refusal that says the search was too
+    broad". Nothing caught the cancellation: it surfaced as `OperationalError`,
+    only `SearchError` was handled in the route, and this application has no
+    global DBAPI exception handler — so the real behaviour was a 500 and a
+    screen reading "the search could not be run".
+
+    This asserts the handler exists and that it is a `SearchError` subclass, so
+    the route's existing `except SearchError` turns it into a 422 rather than
+    letting it escape.
+    """
+    from app.domains.search.service import SearchTooBroadError
+
+    assert issubclass(SearchTooBroadError, SearchError)
+
+    source = SERVICE.read_text(encoding="utf-8")
+    assert "except OperationalError" in source
+    assert "canceling statement due to statement timeout" in source
+
+    # 🔴 AND IT MUST NOT ROLL BACK. The first version of the handler did, and
+    # `tests/test_no_transaction_destroyers.py` failed on it immediately --
+    # `Session.rollback()` ends the TOPMOST transaction, so a service that
+    # calls it destroys its caller's unit of work the moment it is composed
+    # into one. That composition is this module's stated plan for the agent
+    # tier. `session_scope` owns the transaction and ends it.
+    #
+    # ⚠️ ASSERTED OVER THE AST, NOT THE TEXT. `"session.rollback()" not in
+    # source` was the obvious form and it FAILED on the comment that explains
+    # why the call is absent -- a test defeated by its own subject matter. The
+    # parse asks about calls, so prose about a call is not a call.
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "rollback"
+    ]
+    assert calls == [], f"a rollback call survives at line {[c.lineno for c in calls]}"

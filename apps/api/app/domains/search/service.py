@@ -73,6 +73,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 # The largest page this endpoint will build. Chosen to match
@@ -135,7 +136,11 @@ class Searchable:
 
     record_type: str
     label: str
-    permission: str
+    #: The permission a caller must hold, or None where the data is public and
+    #: reading it requires none (`catalogue_product`). None is not "unguarded"
+    #: -- it is a claim that this record type is anonymously readable, and
+    #: `test_only_public_data_may_declare_no_permission` holds it to that.
+    permission: str | None
     #: The screen showing one record, or None when this product has none yet.
     detail_path: str | None
     #: The screen listing this record type. Every type has one.
@@ -177,16 +182,32 @@ SEARCHABLE: tuple[Searchable, ...] = (
         None,
         "/material-safety/research",
     ),
+    # 🔴 `material.view`, NOT `research.view`. SUPERVISOR.
+    # `app/api/competitors.py:140` gates every competitor read on
+    # `material.view` and says why: "a competitor product is technical
+    # reference material of the same kind as a raw material". `research.view`
+    # is held by only five of the ten roles (058), so a laboratory technician
+    # who can browse `/material-safety/competitors` perfectly well was told by
+    # the search page "Not searched — you do not hold `research.view`". A false
+    # claim about the caller's own access, on the one screen whose stated
+    # purpose is not to lie about what it did not search.
     Searchable(
         "competitor_product",
         "Competitor product",
-        "research.view",
+        "material.view",
         None,
         "/material-safety/competitors",
     ),
     Searchable("document", "Document", "knowledge.view", None, "/knowledge"),
     Searchable("opportunity", "Opportunity", "opportunity.view", None, "/innovation"),
-    Searchable("catalogue_product", "Catalogue product", "research.view", None, "/marketplace"),
+    # 🔴 NO PERMISSION AT ALL, AND THAT IS THE HONEST ANSWER. SUPERVISOR.
+    # `public_intel` is the ANONYMOUS catalogue -- `/marketplace` serves it to
+    # visitors with no session. Gating it on `research.view` told five of the
+    # ten roles that published, publicly-readable products "were not searched",
+    # which is false in the same way the competitor entry above was. There is
+    # no permission that means "may read public data", because reading it needs
+    # none. `None` says so rather than borrowing the nearest available code.
+    Searchable("catalogue_product", "Catalogue product", None, None, "/marketplace"),
 )
 
 _BY_TYPE = {s.record_type: s for s in SEARCHABLE}
@@ -225,6 +246,24 @@ _ABSENT_TABLES: dict[str, tuple[str, str]] = {
 
 class SearchError(ValueError):
     """A query this endpoint will not run."""
+
+
+class SearchTooBroadError(SearchError):
+    """The database cancelled the query at `STATEMENT_TIMEOUT_MS`.
+
+    🔴 THIS CLASS EXISTS BECAUSE THE COMMENT ABOVE PROMISED IT AND NOTHING
+    DELIVERED IT. SUPERVISOR.
+
+    `STATEMENT_TIMEOUT_MS`'s note said "the caller gets a refusal that says the
+    search was too broad, which is true and actionable". Nothing caught the
+    cancellation: it surfaced as `OperationalError`, only `SearchError` was
+    handled in the route, and there is no global DBAPI exception handler in
+    this application. So the real behaviour was a 500 and a screen reading
+    "the search could not be run: <generic>".
+
+    A comment asserting behaviour that does not exist is a defect in its own
+    right here, and this one asserted the *outcome of a security control*.
+    """
 
 
 _STATEMENT = text(
@@ -397,7 +436,12 @@ _STATEMENT = text(
         -- reader looks for "approved" or "withdrawn". A competitor product has
         -- no lifecycle column at all, so `state` is NULL, which is honest.
         SELECT 'competitor_product', cp.id, cp.product_code, cp.product_name,
-               cp.manufacturer || ' · ' || cp.market_segment, NULL::text,
+               -- ⚠️ `concat_ws`, NOT `||`. SUPERVISOR. `market_segment` is
+               -- nullable (056) and `manufacturer` is NOT NULL, so `a || b`
+               -- yields NULL for a product with no segment -- dropping the
+               -- MANUFACTURER, the one field that tells two same-named
+               -- products apart. `concat_ws` skips nulls instead.
+               concat_ws(' · ', cp.manufacturer, cp.market_segment), NULL::text,
                cp.project_id, cp.created_at,
                CASE WHEN lower(coalesce(cp.product_code, '')) = :q THEN 0
                     WHEN lower(coalesce(cp.product_code, '')) LIKE :prefix THEN 1
@@ -447,7 +491,9 @@ _STATEMENT = text(
         -- taxonomy. Here `state` CAN be a real state -- the publication status
         -- the branch already filters on -- so it carries that rather than NULL.
         SELECT 'catalogue_product', pp.id, pp.product_code, pp.product_name,
-               pm.name || ' · ' || pp.category, pp.publication_status::text,
+               -- Same nullability trap as the competitor branch: `category`
+               -- is nullable, `pm.name` is not.
+               concat_ws(' · ', pm.name, pp.category), pp.publication_status::text,
                NULL::uuid, pp.created_at,
                CASE WHEN lower(coalesce(pp.product_code, '')) = :q THEN 0
                     WHEN lower(coalesce(pp.product_code, '')) LIKE :prefix THEN 1
@@ -548,7 +594,8 @@ def global_search(
     }
     for entry in SEARCHABLE:
         wanted = types is None or entry.record_type in types
-        params[f"may_{entry.record_type}"] = wanted and entry.permission in permissions
+        held = entry.permission is None or entry.permission in permissions
+        params[f"may_{entry.record_type}"] = wanted and held
 
     # 🔴 CODEX P1 — BOUND THE WORK, NOT ONLY THE RESPONSE. `LOCAL` scopes this
     # to the current transaction, so it cannot leak into anything else running
@@ -566,7 +613,32 @@ def global_search(
         {"ms": str(STATEMENT_TIMEOUT_MS)},
     )
 
-    rows = session.execute(_STATEMENT, params).mappings().all()
+    try:
+        rows = session.execute(_STATEMENT, params).mappings().all()
+    except OperationalError as exc:
+        # 🔴 NO `session.rollback()` HERE, AND THE REPOSITORY'S OWN GUARD IS
+        # WHY. `tests/test_no_transaction_destroyers.py` failed on the first
+        # version of this handler, which rolled back to leave the session
+        # usable.
+        #
+        # `Session.rollback()` always ends the TOPMOST transaction, not the
+        # statement that failed. That is harmless while this function is the
+        # whole request and destructive the moment it is not -- and composing
+        # this service into a larger unit of work is the stated plan for the
+        # agent tier, three paragraphs into this module's docstring. The two
+        # defects that rule was written for (`open_failure`, `record_driver`)
+        # were both found by looking at the call that introduced the
+        # composition, not by reading the function.
+        #
+        # So the exception propagates and `session_scope` -- which owns the
+        # transaction -- ends it. Nothing runs another statement on this
+        # session in between: the route returns through the raise.
+        if "canceling statement due to statement timeout" not in str(exc).lower():
+            raise
+        raise SearchTooBroadError(
+            "that search matched too much of the database to complete — "
+            "add a few more characters, or narrow it to one record type"
+        ) from exc
 
     asked_for = max(1, min(int(limit), MAX_SEARCH_RESULTS))
     truncated = len(rows) > asked_for
@@ -620,15 +692,20 @@ def searchable_types(
     supplied. The screen needs both: a type the caller may not search is a gap
     in their answer, while one they deselected is not.
     """
-    return [
-        {
-            "record_type": s.record_type,
-            "label": s.label,
-            "permission": s.permission,
-            "permitted": s.permission in permissions,
-            "searched": (s.permission in permissions) and (types is None or s.record_type in types),
-            "has_detail_screen": s.detail_path is not None,
-            "list_path": s.list_path,
-        }
-        for s in SEARCHABLE
-    ]
+    rows = []
+    for entry in SEARCHABLE:
+        # A null permission means the data is public; the caller holds it by
+        # virtue of being a caller at all.
+        permitted = entry.permission is None or entry.permission in permissions
+        rows.append(
+            {
+                "record_type": entry.record_type,
+                "label": entry.label,
+                "permission": entry.permission,
+                "permitted": permitted,
+                "searched": permitted and (types is None or entry.record_type in types),
+                "has_detail_screen": entry.detail_path is not None,
+                "list_path": entry.list_path,
+            }
+        )
+    return rows
