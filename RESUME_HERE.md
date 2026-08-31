@@ -2,7 +2,7 @@
 
 ## ▶▶ 2026-08-31 — THE PRODUCT COULD NOT BE SEARCHED, AND A WORKSPACE COULD NOT SAY WHY IT EXISTED
 
-Tip **`<TIP>`** on `master`. 🔴 **MSD / RESEARCH PHASE 5 IS COMPLETE — 5 of 5 parts:**
+Tip **`533c45a`** on `master`. 🔴 **MSD / RESEARCH PHASE 5 IS COMPLETE — 5 of 5 parts:**
 §22 events · §25 contextual entry points · §27 dashboard widgets · §29 global search ·
 §38/§39 golden scenario.
 
