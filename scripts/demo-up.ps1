@@ -119,11 +119,47 @@ $cfOut = Join-Path $logDir "cloudflared.log"
 $cfErr = Join-Path $logDir "cloudflared.err.log"
 Remove-Item $cfOut, $cfErr -ErrorAction SilentlyContinue
 
+# THE TRANSPORT FLAGS ARE NOT OPTIONAL -- MEASURED 2026-09-01.
+#
+# The tunnel had been serving 530s and timeouts for hours while the ENTIRE
+# APP STACK WAS HEALTHY behind it (Caddy, Next, the API and Keycloak all
+# answering 200 on localhost). Two distinct faults, in order:
+#
+#   1. QUIC could not hold a connection at all:
+#        ERR Failed to dial a quic connection
+#            error="failed to dial to edge with quic: timeout: no recent
+#                   network activity"
+#      It registered, lost the datagram handler seconds later, and retried
+#      forever. `--protocol http2` gets past that.
+#
+#   2. On http2 it still dropped its edge connection every ~48 seconds
+#        INF Lost connection with the edge connIndex=0
+#      A quick tunnel holds ONE connection, so each drop 530s EVERY request
+#      until it reconnects -- which is exactly what a person sees as "the
+#      link did not open" while every local health check says 200.
+#      `--edge-ip-version 4` stopped it: 12/12 probes over 96s, zero drops.
+#      cloudflared had been choosing an IPv6 link-local source
+#      (fe80::...%Ethernet), which this host cannot sustain to the edge.
+#
+# `--ha-connections 4` is kept though Cloudflare grants a quick tunnel only
+# one: it costs nothing and takes effect immediately if this ever becomes a
+# NAMED tunnel, where four connections mean a single drop is invisible.
+#
+# The baseline network was verified fine at the same moment (four probes to
+# cloudflare.com, all 200, sub-second) -- so this is the tunnel's transport,
+# not the connection.
+$cfTransport = @(
+    "--protocol", "http2",
+    "--edge-ip-version", "4",
+    "--ha-connections", "4",
+    "--retries", "10"
+)
+
 if ($TunnelName) {
     if (-not $NamedHostname) { throw "-TunnelName requires -NamedHostname (the fixed public URL)" }
-    $cfArgs = @("tunnel", "--no-autoupdate", "run", "--url", "http://localhost:18081", $TunnelName)
+    $cfArgs = @("tunnel", "--no-autoupdate") + $cfTransport + @("run", "--url", "http://localhost:18081", $TunnelName)
 } else {
-    $cfArgs = @("tunnel", "--no-autoupdate", "--url", "http://localhost:18081")
+    $cfArgs = @("tunnel", "--no-autoupdate") + $cfTransport + @("--url", "http://localhost:18081")
 }
 Start-Process -FilePath $cloudflared -ArgumentList $cfArgs `
     -RedirectStandardOutput $cfOut -RedirectStandardError $cfErr -WindowStyle Hidden
