@@ -51,6 +51,7 @@ from __future__ import annotations
 import datetime as dt
 import email.utils
 import os
+import re
 import sys
 import urllib.parse
 import urllib.robotparser
@@ -86,6 +87,24 @@ SOURCES: list[tuple[str, int, str, str, str]] = [
             "https://www.federalregister.gov/api/v1/documents.rss"
             "?conditions%5Bagencies%5D%5B%5D=environmental-protection-agency"
         ),
+        "regulation",
+    ),
+    # 🔴 THIS ONE IS EXPECTED TO BE REFUSED, AND THAT IS WHY IT IS HERE.
+    #
+    # `epa.gov/robots.txt` disallows this feed for this agent. The Supervisor's
+    # finding was exact: the module docstring cited the EPA refusal as evidence
+    # the guard works, while no entry in this list actually exercised the deny
+    # branch — so the guard had never been observed returning False during a
+    # real run, only during a probe nobody could re-run.
+    #
+    # Listing it makes the refusal happen on EVERY run and appear in the report.
+    # A guard that has only ever allowed has not been shown to refuse, and the
+    # cheapest way to keep that true is to give it something to refuse.
+    (
+        "U.S. Environmental Protection Agency (expected: refused by robots.txt)",
+        1,
+        "https://www.epa.gov/",
+        "https://www.epa.gov/newsreleases/search/rss",
         "regulation",
     ),
     (
@@ -142,8 +161,16 @@ SOURCES: list[tuple[str, int, str, str, str]] = [
 # Conservative overrides. A headline has to actually say the word; nothing here
 # infers a topic from a synonym, because a mis-filed regulatory item is worse
 # than a broadly-filed one.
+#
+# 🔴 MATCHED ON WORD BOUNDARIES, AND THE FIRST VERSION WAS NOT. Raised by the
+# Supervisor: a plain substring test put *"Association advocates for shop safety
+# standards"* under `regulation`, because "advocates" contains "voc". Two
+# neighbouring entries already carried a trailing space (`"reach "`, `"epa "`)
+# as a hand-rolled boundary, which is the tell that the rule was known and
+# applied unevenly. `\b` applies it to all of them, so a phrase like
+# "supply chain" still matches and "advocate" no longer does.
 KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
-    ("regulation", ("regulation", "regulatory", "directive", "reach ", "epa ", "voc")),
+    ("regulation", ("regulation", "regulatory", "directive", "reach", "epa", "voc")),
     ("chemical-safety", ("safety", "hazard", "toxic", "exposure", "osha", "carcinogen")),
     ("patents", ("patent",)),
     ("supply", ("supply chain", "shortage", "capacity", "plant closure")),
@@ -169,22 +196,49 @@ def parse_feed(payload: bytes) -> ET.Element:
     this project settled on when it hit the sibling finding: a `nosemgrep`
     comment *"leaves the capability one edit away from being reachable, and asks
     every future reader to re-derive why it is safe"*. So the capability is
-    removed rather than argued about:
+    removed rather than argued about.
 
-      - a payload declaring a DTD or an ENTITY is REFUSED before parsing, which
-        is what both attacks need; and
+    🔴 AND THE FIRST VERSION OF THIS GUARD DID NOT WORK. Raised by Codex,
+    then MEASURED before it was believed:
+
+        payload = '<?xml version="1.0" encoding="UTF-16"?>…'.encode("utf-16")
+        b"<!DOCTYPE" in payload      -> False
+        ET.fromstring(payload)       -> parses fine
+
+    A UTF-16 document interleaves NUL bytes through every ASCII character, so
+    a byte-string search for `<!DOCTYPE` matches nothing while ElementTree
+    honours the declared encoding and parses the document anyway — including
+    its entity declarations. The guard read as a check on the payload and was
+    a check on one *encoding* of the payload. **That is the "a guard that
+    cannot fail is not a guard" defect in its purest form**, and it was found
+    by a reviewer rather than by me.
+
+    So the encoding is pinned FIRST and the token check runs on text:
+
+      - anything that is not decodable as UTF-8 is refused outright. Every
+        feed in `SOURCES` is UTF-8; a UTF-16 feed would be a new source and a
+        deliberate decision, not something this parser silently accepts;
+      - a decoded document declaring a DTD or an ENTITY is refused, which is
+        what both entity attacks need;
       - the payload is size-capped, so a well-formed but enormous feed cannot
         exhaust this process either.
 
-    Both are checkable in one line each, which a paragraph of reasoning about
-    CPython's expat configuration is not.
+    ⚠️ THE HONEST CLAIM IS NARROWER THAN "SAFE". This closes entity expansion
+    and external entities for the inputs this script accepts. `defusedxml`
+    would close the class rather than the instance; it is not a declared
+    dependency of this repository and adding one for a script is a decision
+    rather than a fix, so it is recorded in `TODO.md` instead of assumed.
     """
     if len(payload) > MAX_FEED_BYTES:
         raise ET.ParseError(f"feed is larger than {MAX_FEED_BYTES} bytes")
-    head = payload[:4096].lstrip().upper()
-    if b"<!DOCTYPE" in head or b"<!ENTITY" in payload.upper():
+    try:
+        document = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ET.ParseError(f"feed is not UTF-8 and is refused: {exc}") from exc
+    upper = document.upper()
+    if "<!DOCTYPE" in upper or "<!ENTITY" in upper:
         raise ET.ParseError("feed declares a DTD or entity and is refused")
-    return ET.fromstring(payload)  # noqa: S314 - guarded above
+    return ET.fromstring(document)  # noqa: S314 - encoding pinned, DTD refused
 
 
 def robots_allows(url: str) -> tuple[bool, str]:
@@ -207,6 +261,55 @@ def robots_allows(url: str) -> tuple[bool, str]:
     parser = urllib.robotparser.RobotFileParser()
     parser.parse(response.text.splitlines())
     return (parser.can_fetch(UA, url), "robots-parsed")
+
+
+class FeedRefusedError(RuntimeError):
+    """A fetch this script refuses to complete or to keep."""
+
+
+def fetch_feed(url: str) -> tuple[int, bytes]:
+    """Fetch a feed under a real byte budget, re-checking robots on redirect.
+
+    🔴 TWO SUPERVISOR FINDINGS, AND BOTH WERE COMMENTS DESCRIBING SOMETHING THE
+    CODE DID NOT DO.
+
+    **The size cap could not cap anything.** `parse_feed` checked
+    `len(payload) > MAX_FEED_BYTES` — but the caller had already done a
+    non-streaming `httpx.get`, so the entire response was in memory before the
+    check ran. The docstring claimed *"a well-formed but enormous feed cannot
+    exhaust this process"*, and only the PARSE was bounded. Now the body is
+    streamed and abandoned the moment it exceeds the budget, so the claim is
+    true of the fetch as well.
+
+    **`robots.txt` was checked for the configured URL and the fetch followed
+    redirects.** So a feed that moves to another host would be fetched from a
+    host whose `robots.txt` was never consulted, while the module docstring
+    said *"checked before every fetch"*. The final URL is now re-checked
+    whenever the host changes, and a refusal there drops the source.
+
+    Both are the same defect this repository keeps cataloguing: a comment
+    asserting a control that is not there.
+    """
+    with httpx.stream(
+        "GET", url, headers={"User-Agent": UA}, timeout=30, follow_redirects=True
+    ) as response:
+        final = str(response.url)
+        if urllib.parse.urlsplit(final).netloc != urllib.parse.urlsplit(url).netloc:
+            allowed, why = robots_allows(final)
+            if not allowed:
+                raise FeedRefusedError(f"redirected to {final} and robots refused it: {why}")
+
+        if response.status_code != 200:
+            return (response.status_code, b"")
+
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if total > MAX_FEED_BYTES:
+                raise FeedRefusedError(f"feed exceeded {MAX_FEED_BYTES} bytes and was abandoned")
+            chunks.append(chunk)
+    return (200, b"".join(chunks))
 
 
 def _published(item: ET.Element) -> dt.datetime | None:
@@ -251,7 +354,7 @@ def _link(item: ET.Element) -> str | None:
 def _categorise(headline: str, default_slug: str) -> str:
     lowered = headline.lower()
     for slug, words in KEYWORDS:
-        if any(word in lowered for word in words):
+        if any(re.search(rf"\b{re.escape(word)}\b", lowered) for word in words):
             return slug
     return default_slug
 
@@ -270,19 +373,21 @@ def main() -> None:
             print(f"  [robots] REFUSE {name} — {why}")
             continue
         try:
-            response = httpx.get(
-                feed_url, headers={"User-Agent": UA}, timeout=30, follow_redirects=True
-            )
+            code, payload = fetch_feed(feed_url)
+        except FeedRefusedError as exc:
+            refused.append(f"{name} ({exc})")
+            print(f"  [ guard] DROP   {name} — {exc}")
+            continue
         except Exception as exc:  # noqa: BLE001
             refused.append(f"{name} ({type(exc).__name__})")
             print(f"  [  net ] DROP   {name} — {type(exc).__name__}")
             continue
-        if response.status_code != 200:
-            refused.append(f"{name} (HTTP {response.status_code})")
-            print(f"  [{response.status_code:>6}] DROP   {name}")
+        if code != 200:
+            refused.append(f"{name} (HTTP {code})")
+            print(f"  [{code:>6}] DROP   {name}")
             continue
         try:
-            root = parse_feed(response.content)
+            root = parse_feed(payload)
         except ET.ParseError as exc:
             refused.append(f"{name} (unparseable: {exc})")
             print(f"  [ parse] DROP   {name}")
@@ -341,10 +446,20 @@ def main() -> None:
         conn.execute(
             text("DELETE FROM public_intel.news_items WHERE generated_by = 'ingest_public_news.py'")
         )
+        # 🔴 ONLY ORPHANS THIS SCRIPT IS ENTITLED TO REMOVE. Raised by Codex:
+        # the first version deleted EVERY orphaned source, so a manually
+        # curated source that happened to have no current items would vanish
+        # during an unrelated news refresh — a destructive side effect of a
+        # routine job, on rows this script did not create.
+        #
+        # Two kinds are in scope and no others: the demonstration sources 059
+        # seeded, which carry no `source_type` and are what this ingestion
+        # replaces, and this script's own `syndicated_feed` rows.
         conn.execute(
             text(
                 "DELETE FROM public_intel.news_sources s"
-                " WHERE NOT EXISTS (SELECT 1 FROM public_intel.news_items i"
+                " WHERE (s.source_type IS NULL OR s.source_type = 'syndicated_feed')"
+                "   AND NOT EXISTS (SELECT 1 FROM public_intel.news_items i"
                 "                    WHERE i.source_id = s.id)"
             )
         )
@@ -395,6 +510,21 @@ def main() -> None:
                 },
             ).rowcount
 
+        # 🔴 THE INVARIANT IS CHECKED INSIDE THE TRANSACTION, AND IT WAS NOT.
+        #
+        # Raised by Codex, and it is the sharpest finding of the review. The
+        # first version read these counts AFTER `with engine.begin()` had
+        # closed, so the delete-and-replace had already COMMITTED and a failure
+        # exited 1 over a database already in the state the check exists to
+        # prevent. A guard that runs after the thing it guards is a report.
+        #
+        # Raising here rolls the whole ingestion back, so the previous
+        # catalogue survives a run that would have published something
+        # dishonest.
+        #
+        # ⚠️ SCOPED TO THE ROWS THIS RUN WROTE. Asserting over every published
+        # row would make this script fail on somebody else's data, which is a
+        # different defect wearing the same clothes.
         published, demo, unsourced, with_summary = conn.execute(
             text(
                 """
@@ -404,9 +534,16 @@ def main() -> None:
                        count(*) FILTER (WHERE summary IS NOT NULL)
                   FROM public_intel.news_items
                  WHERE publication_status = 'published'
+                   AND generated_by = 'ingest_public_news.py'
                 """
             )
         ).one()
+        if demo or unsourced or with_summary:
+            raise SystemExit(
+                "REFUSING AND ROLLING BACK: of the rows this run published, "
+                f"{demo} are demonstration data, {unsourced} are unsourced and "
+                f"{with_summary} reproduce the publisher's prose."
+            )
 
     print("\nPUBLISHED")
     print(f"  news items       {published}")
@@ -414,12 +551,6 @@ def main() -> None:
     print(f"  still_demo       {demo}")
     print(f"  unsourced        {unsourced}")
     print(f"  carrying prose   {with_summary}")
-    if demo or unsourced or with_summary:
-        print(
-            "REFUSING TO REPORT OK: a published row is demonstration data, "
-            "unsourced, or reproduces the publisher's prose"
-        )
-        sys.exit(1)
     print("OK")
 
 

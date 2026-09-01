@@ -341,6 +341,7 @@ AUTH_DATABASE_URL="postgresql+psycopg://evercoat_auth:ci-auth@localhost:55432/ev
 PUBLIC_DATABASE_URL="postgresql+psycopg://evercoat_public:dev-public-pw@localhost:55432/evercoat_itw_rd" \
 AGENT_DATABASE_URL="postgresql+psycopg://evercoat_agent:dev-agent-pw@localhost:55432/evercoat_itw_rd" \
 KEYCLOAK_ISSUER="$U/auth/realms/evercoat" \
+PUBLIC_LANDING_ORGANIZATION_ID='c6031e4b-eff3-4aa6-a87b-697b6941c6e9' \
 TEST_KEYCLOAK_URL="$U/auth" TEST_API_URL="http://localhost:18000" \
 TEST_KEYCLOAK_PASSWORD='EvercoatDemo-2026!' \
 TEST_ORGANIZATION_ID='c6031e4b-eff3-4aa6-a87b-697b6941c6e9' \

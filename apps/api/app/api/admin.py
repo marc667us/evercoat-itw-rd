@@ -679,20 +679,29 @@ def set_member_status(
 # `(status, created_at DESC)`. Closing L1 therefore needs **no migration** — it
 # needs the reader and the decision.
 #
-# ⚠️ THIS QUEUE IS PLATFORM-SCOPED, NOT TENANT-SCOPED, AND THAT IS A REAL
-# LIMITATION RATHER THAN AN OVERSIGHT — RAISED AS I113.
+# 🔴 THE QUEUE IS TENANT-SCOPED, AND IT TOOK A REFUSAL TO GET THERE (I113).
 #
-# An access request names no organization: the applicant does not know which
-# tenant they would be joining, so the row cannot carry an `organization_id`
-# and the table has no RLS. The consequence is that in a multi-tenant
-# deployment (M5 — this product is built multi-tenant) an administrator of
-# organization A can read the name, work address and company of somebody who
-# meant to apply to organization B. That is the applicant's own data rather
-# than any tenant's, and every read is behind `admin.users`, but it is a
-# genuine disclosure across a boundary this codebase otherwise enforces
-# absolutely. It is named here rather than papered over, and the fix — an
-# applicant-nominated organization, or a platform-operator role distinct from
-# a tenant administrator — is a decision, not a cleanup.
+# The first version of these routes gated on `admin.users` over a table with
+# no `organization_id` and no RLS, and wrote the cross-tenant exposure down as
+# an issue. Codex refused it in one sentence: *"the comment acknowledges the
+# breach but does not enforce a rule."* That is correct and it is the rule this
+# codebase applies everywhere else — every cross-tenant read is stopped twice,
+# once by the query and once by RLS, and a comment is neither.
+#
+# Migration 064 gives the request an owner at birth, taken from the DEPLOYMENT
+# rather than from the applicant: a public landing page belongs to one
+# deployment and that deployment belongs to one organization
+# (`Settings.public_landing_organization_id`). The public route now REFUSES
+# with 503 when that is unset, because writing a row no tenant may ever read
+# would recreate, one layer down, the exact "table with no reader" defect these
+# routes exist to close.
+#
+# ⚠️ ROWS WRITTEN BEFORE 064 CARRY A NULL OWNER AND ARE READ BY NOBODY.
+# `NULL = anything` is NULL, which the policy and the predicate both treat as
+# false. Counting them is a SUPERUSER query and there is deliberately no route
+# for it — see the note below `decide_access_request`, which records why the
+# one that was written had to be deleted. Measured 2026-09-01: **zero** such
+# rows exist on this database, so the case is theoretical rather than a gap.
 
 
 class AccessRequestRead(BaseModel):
@@ -765,20 +774,49 @@ def list_access_requests(
     Bounded at 200 rows in SQL like every other collection on this API
     (`SECURITY.md` §10), newest first.
     """
+    # 🔴 THE TENANT PREDICATE IS HERE *AND* IN THE RLS POLICY (064).
+    # `CLAUDE.md` §6 requires the database to be an independent barrier, and
+    # this repository has twice found the application layer to be the only one
+    # actually holding. Writing it once would be exactly that.
     rows = session.execute(
         text(
             """
             SELECT id, full_name, work_email, company, reason, status,
                    created_at, decided_at, decided_by
               FROM public_intel.access_requests
-             WHERE (:want = 'all' OR status = :want)
+             WHERE organization_id = :org
+               AND (:want = 'all' OR status = :want)
              ORDER BY created_at DESC
              LIMIT 200
             """
         ),
-        {"want": status_filter},
+        {"want": status_filter, "org": principal.organization_id},
     ).all()
     return [AccessRequestRead.model_validate(row) for row in rows]
+
+
+# 🔴 THERE IS DELIBERATELY NO "COUNT THE UNATTRIBUTABLE ROWS" ROUTE.
+#
+# One was written and deleted before it shipped. Under FORCE RLS the tenant
+# policy filters a NULL-owner row out before `count(*)` ever sees it, so such a
+# route would return 0 for every caller, always — a number that looks like an
+# answer and is a property of the policy. That is precisely the "a gate on an
+# unused path is decoration" defect this repository has catalogued, and adding
+# it would have been worse than the gap it pretended to close.
+#
+# 🔴 AND NOT ON THE OWNER CONNECTION EITHER. An earlier version of this note
+# said "answered on the owner connection", which is wrong for the same reason
+# the route was: `access_requests` is FORCE RLS and `evercoat_owner` is
+# NOBYPASSRLS, so the owner is governed by the same predicate and a NULL owner
+# matches nothing for it too. Raised by the Supervisor.
+#
+# Pre-064 rows are a SUPERUSER question — the `MIGRATION_DATABASE_URL` role:
+#
+#     SELECT count(*) FROM public_intel.access_requests
+#      WHERE organization_id IS NULL;
+#
+# Recorded in `TODO.md` so it is a known number rather than a disappearance.
+# Measured 2026-09-01: zero.
 
 
 @router.post(
@@ -792,7 +830,29 @@ def decide_access_request(
     principal: Principal = Depends(require_permission("admin.users")),
     session: Session = Depends(get_db),
 ) -> AccessRequestDecisionResult:
-    """Decide one queued request. `admin.users`.
+    """Decide one queued request. `admin.users`, plus `admin.roles` to APPROVE.
+
+    🔴 THE APPROVAL BRANCH GRANTS A ROLE, AND THE FIRST VERSION DID NOT ASK FOR
+    THE PERMISSION THAT GOVERNS THAT. Raised by Codex.
+
+    It required `admin.users` alone — the permission that binds a person —
+    while the approval branch calls `_grant_role`, which every other route in
+    this file guards with `admin.roles`. `members.tsx` states the distinction
+    the product depends on: *"`admin.users` binds and unbinds a person;
+    `admin.roles` decides what they may do. Collapsing them would make 'can add
+    a colleague' and 'can grant them every permission in the product' the same
+    decision."* Approving an applicant straight into `administrator` was
+    exactly that collapse, and it was reachable.
+
+    🔴 AND THE SECOND VERSION OVER-CORRECTED. Raised by the Supervisor: putting
+    both on the dependency made **rejecting** an applicant require the
+    role-granting permission too, which no part of the justification supports —
+    a rejection grants nothing. So the extra permission is required where the
+    grant actually happens, and the refusal names it.
+
+    ⚠️ ONLY `administrator` HOLDS BOTH ON THE SEEDED REALM — measured, so this
+    takes nothing away from anyone today. It stops a future deployment that
+    splits the two from finding the split silently bypassed here.
 
     🔴 `FOR UPDATE`, AND THE STATUS IS RE-READ INSIDE THE LOCK.
 
@@ -808,16 +868,19 @@ def decide_access_request(
     there is no state in which the queue says `approved` and no membership
     exists.
     """
+    # The tenant predicate is here as well as in 064's policy, for the reason
+    # `list_access_requests` states: the database must be an independent
+    # barrier, and writing the rule once makes it the only one.
     row = session.execute(
         text(
             """
             SELECT id, full_name, work_email, company, status
               FROM public_intel.access_requests
-             WHERE id = :id
+             WHERE id = :id AND organization_id = :org
              FOR UPDATE
             """
         ),
-        {"id": request_id},
+        {"id": request_id, "org": principal.organization_id},
     ).one_or_none()
     if row is None:
         raise HTTPException(
@@ -833,6 +896,18 @@ def decide_access_request(
     member_id: uuid.UUID | None = None
 
     if payload.decision == "approved":
+        # 🔴 THE GRANT'S OWN PERMISSION, CHECKED WHERE THE GRANT HAPPENS.
+        # Not on the dependency: a rejection grants nothing and must not need
+        # it. `PermissionDenied` is what `require_permission` raises, so the
+        # client sees the same 403 shape either way.
+        if "admin.roles" not in principal.permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "approving grants a role, which needs admin.roles as well "
+                    "as admin.users"
+                ),
+            )
         if not payload.keycloak_sub:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

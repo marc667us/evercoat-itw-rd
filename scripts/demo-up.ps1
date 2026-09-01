@@ -381,6 +381,18 @@ $apiCmd = @"
 # The agent tier's curation connection (migration 060). Its inability to
 # publish is a property of this role.
 `$env:AGENT_DATABASE_URL='postgresql+psycopg://evercoat_agent:dev-agent-pw@localhost:55432/evercoat_itw_rd';
+# 🔴 WITHOUT THIS THE LANDING PAGE'S SIGN UP ANSWERS 503 (migration 064).
+#
+# An access request now belongs to an organization, taken from the deployment
+# rather than from the applicant, because before 064 the queue was
+# platform-wide and every tenant's administrator could read every applicant.
+# The route REFUSES rather than writing a row no tenant may ever read.
+#
+# Raised by the Supervisor: the setting existed in `config.py` and was set
+# nowhere in the repository, so the feature this whole change exists to
+# complete would have gone dead the moment it shipped. This is the demo's
+# organization, `EVERCOAT-DEMO`.
+`$env:PUBLIC_LANDING_ORGANIZATION_ID='c6031e4b-eff3-4aa6-a87b-697b6941c6e9';
 `$env:KEYCLOAK_ISSUER='$PublicUrl/auth/realms/evercoat';
 `$env:CORS_ALLOWED_ORIGINS='[\"$PublicUrl\",\"http://localhost:3000\"]';
 `$env:APP_ENV='development'; `$env:LOG_FORMAT='console';

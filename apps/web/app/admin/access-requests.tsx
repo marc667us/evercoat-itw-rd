@@ -36,6 +36,10 @@
  * redirected to a different person than the one that was reviewed. Only the
  * display name may be corrected, and only because it is presentation.
  *
+ * ⚠️ TWO PERMISSIONS, NOT ONE. `admin.users` is enough to REJECT; approving
+ * grants a role and needs `admin.roles` as well. The server checks the second
+ * one inside the approval branch, so a rejection is not caught by it.
+ *
  * ⚠️ AND THE ROLE IS REQUIRED. A membership with no role holds no permission,
  * so approving into one produces an account that signs in and reaches nothing —
  * a "yes" that behaves like a "no". The server refuses it at 422; this form
@@ -96,12 +100,20 @@ function RequestRow({
   request,
   roles,
   mayDecide,
+  mayApprove,
   pending,
   onDecide,
 }: {
   request: AccessRequest;
   roles: readonly Role[];
+  /** `admin.users` — enough to reject. */
   mayDecide: boolean;
+  /**
+   * `admin.roles` as well — required to APPROVE, because approving grants a
+   * role. The server enforces this inside the approval branch; hiding the
+   * control is cosmetic, and both exist for the reason §6 gives.
+   */
+  mayApprove: boolean;
   pending: boolean;
   onDecide: (
     requestId: string,
@@ -166,17 +178,29 @@ function RequestRow({
 
       {decided || !mayDecide ? null : (
         <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            className={BUTTON_QUIET}
-            disabled={pending}
-            onClick={() => {
-              setApproving((open) => !open);
-              setRejecting(false);
-            }}
-          >
-            {approving ? "Cancel" : "Approve…"}
-          </button>
+          {/* 🔴 APPROVE NEEDS `admin.roles` AND REJECT DOES NOT.
+              Raised by the Supervisor: the first version showed both controls
+              to anyone holding `admin.users`, so half of them 403'd on press.
+              A control a caller may not use is worse than an absent one — it
+              reads as a broken feature rather than as a permission. */}
+          {mayApprove ? (
+            <button
+              type="button"
+              className={BUTTON_QUIET}
+              disabled={pending}
+              onClick={() => {
+                setApproving((open) => !open);
+                setRejecting(false);
+              }}
+            >
+              {approving ? "Cancel" : "Approve…"}
+            </button>
+          ) : (
+            <p className="text-xs italic text-slate-500">
+              Approving grants a role, which needs the role-administration
+              permission. You can reject.
+            </p>
+          )}
           <button
             type="button"
             className={BUTTON_QUIET}
@@ -307,6 +331,7 @@ export function AccessRequestsAdministration() {
   const actions = useAdminActions();
   const permissions = usePermissions();
   const mayDecide = permits(permissions, "admin.users");
+  const mayApprove = mayDecide && permits(permissions, "admin.roles");
 
   return (
     <section className="mt-10">
@@ -372,6 +397,7 @@ export function AccessRequestsAdministration() {
               request={request}
               roles={roles.data ?? []}
               mayDecide={mayDecide}
+              mayApprove={mayApprove}
               pending={actions.isPending}
               onDecide={actions.decide}
             />

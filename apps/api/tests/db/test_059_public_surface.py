@@ -115,6 +115,12 @@ def test_the_access_request_queue_is_insert_only(public_engine, owner_engine) ->
 
     SELECT here would be an enumeration primitive over names, work addresses
     and employers -- personal data, submitted by people who are not users.
+
+    🔴 UPDATED FOR MIGRATION 064. The queue is now tenant-scoped: the row
+    carries the organization whose landing page took it, the table is FORCE
+    RLS, and the owner is governed by the predicate like everyone else. So
+    this test now names a tenant for both the write and the read-back --
+    and asserts the new refusal as well as the old one.
     """
     with (
         public_engine.connect() as conn,
@@ -122,19 +128,54 @@ def test_the_access_request_queue_is_insert_only(public_engine, owner_engine) ->
     ):
         conn.execute(text("SELECT count(*) FROM public_intel.access_requests"))
 
-    # And the write it IS allowed actually lands, so the refusal above is not
-    # simply "this role can do nothing with this table".
     marker = f"insert-only-{uuid.uuid4()}@example.test"
-    with public_engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO public_intel.access_requests "
-                "(full_name, work_email, company) VALUES ('T', :e, 'C')"
-            ),
-            {"e": marker},
-        )
+    suffix = uuid.uuid4().hex[:8]
+
+    with owner_engine.begin() as conn:
+        org_id = conn.execute(
+            text("INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"),
+            {"c": f"T059-{suffix}", "n": "059 public surface org"},
+        ).scalar_one()
+
     try:
+        # 🔴 THE NEW REFUSAL: an ownerless request is rejected by the policy.
+        # 064's public INSERT policy carries `WITH CHECK (organization_id IS
+        # NOT NULL)` precisely so a row cannot be written into a place no
+        # tenant predicate can reach -- which would be a table with no reader,
+        # the defect the whole 2026-09-01 change exists to close. Asserted
+        # here because this is the file that owns the public role's contract.
+        with (
+            public_engine.begin() as conn,
+            pytest.raises(ProgrammingError, match="row-level security"),
+        ):
+            conn.execute(
+                text(
+                    "INSERT INTO public_intel.access_requests "
+                    "(full_name, work_email, company) VALUES ('T', :e, 'C')"
+                ),
+                {"e": marker},
+            )
+
+        # And the write it IS allowed actually lands, so the refusal above is
+        # not simply "this role can do nothing with this table".
+        with public_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public_intel.access_requests "
+                    "(organization_id, full_name, work_email, company) "
+                    "VALUES (:o, 'T', :e, 'C')"
+                ),
+                {"o": org_id, "e": marker},
+            )
+
+        # ⚠️ THE OWNER NAMES ITS TENANT. `evercoat_owner` is NOBYPASSRLS and
+        # 064's policy has no `TO` clause, so the owner reads through the same
+        # predicate as the runtime role. Without this the count is 0 and the
+        # test fails for a reason that has nothing to do with the public role.
         with owner_engine.connect() as conn:
+            conn.execute(
+                text("SELECT set_config('app.current_org', :o, false)"), {"o": str(org_id)}
+            )
             found = conn.execute(
                 text("SELECT count(*) FROM public_intel.access_requests WHERE work_email = :e"),
                 {"e": marker},
@@ -143,9 +184,14 @@ def test_the_access_request_queue_is_insert_only(public_engine, owner_engine) ->
     finally:
         with owner_engine.begin() as conn:
             conn.execute(
+                text("SELECT set_config('app.current_org', :o, false)"), {"o": str(org_id)}
+            )
+            conn.execute(
                 text("DELETE FROM public_intel.access_requests WHERE work_email = :e"),
                 {"e": marker},
             )
+        with owner_engine.begin() as conn:
+            conn.execute(text("DELETE FROM core.organizations WHERE id = :o"), {"o": org_id})
 
 
 def test_public_role_reaches_nothing_outside_its_allowlist(owner_engine) -> None:

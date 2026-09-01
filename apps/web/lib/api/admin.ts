@@ -477,7 +477,10 @@ export interface AccessRequestDecisionRequest {
 }
 
 /**
- * Decide one request. `admin.users`.
+ * Decide one request. `admin.users` — plus `admin.roles` to APPROVE.
+ *
+ * ⚠️ THE SECOND PERMISSION IS BRANCH-SPECIFIC. Approving grants a role and is
+ * refused without `admin.roles`; rejecting grants nothing and is not.
  *
  * ⚠️ APPROVING IS A BIND, NOT A REGISTRATION. This application cannot create
  * credentials — Keycloak owns identity and self-registration stays off. An

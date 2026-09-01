@@ -61,16 +61,36 @@ def queued_request(owner_session, admin_org) -> Iterator[dict[str, object]]:
     """
     sfx = uuid.uuid4().hex[:8]
     email = f"l1-applicant-{sfx}@l1probe.org"
+    # 🔴 THE OWNER IS SUBJECT TO 064'S PREDICATE AND MUST SAY WHICH TENANT IT IS
+    # ACTING AS.
+    #
+    # `access_requests` is FORCE RLS and its tenant policy carries no `TO`
+    # clause, so `evercoat_owner` — NOBYPASSRLS since 001 — is governed by
+    # `organization_id = core.current_org_id()` exactly like the runtime role.
+    # Without this the INSERT below raises *"new row violates row-level security
+    # policy"*, which is how this fixture caught the first draft of migration 064
+    # locking the owner out of the table entirely.
+    #
+    # Session-scoped rather than `SET LOCAL`, because this fixture COMMITS and a
+    # transaction-scoped setting would be gone by the time teardown runs.
+    owner_session.execute(
+        text("SELECT set_config('app.current_org', :org, false)"),
+        {"org": str(admin_org["org_id"])},
+    )
+    # 🔴 THE REQUEST HAS AN OWNER (migration 064). Before it, this table had no
+    # `organization_id`, so the queue was platform-wide and every tenant's
+    # administrator could read every applicant.
     request_id = owner_session.execute(
         text(
             """
             INSERT INTO public_intel.access_requests
-                (full_name, work_email, company, reason)
-            VALUES (:n, :e, :c, :r)
+                (organization_id, full_name, work_email, company, reason)
+            VALUES (:org, :n, :e, :c, :r)
             RETURNING id
             """
         ),
         {
+            "org": admin_org["org_id"],
             "n": "Dana Applicant",
             "e": email,
             "c": "Applicant Coatings Ltd",
@@ -80,7 +100,12 @@ def queued_request(owner_session, admin_org) -> Iterator[dict[str, object]]:
     owner_session.commit()
 
     try:
-        yield {"id": request_id, "email": email, "suffix": sfx}
+        yield {
+            "id": request_id,
+            "email": email,
+            "suffix": sfx,
+            "organization_id": admin_org["org_id"],
+        }
     finally:
         owner_session.rollback()
         owner_session.execute(
@@ -120,8 +145,27 @@ def _headers(make_token, sub: str, org_id: object) -> dict[str, str]:
     return {"Authorization": f"Bearer {make_token(sub=sub)}", ORG_HEADER: str(org_id)}
 
 
-def _status_of(owner_session, request_id: object) -> tuple[str, object]:
+def _status_of(owner_session, request_id: object, org: object) -> tuple[str, object]:
+    """Read one request back as the owner, NAMING THE TENANT EVERY TIME.
+
+    🔴 `app.current_org` IS A CONNECTION PROPERTY AND THE POOL HANDS
+    CONNECTIONS AROUND.
+
+    An earlier version set the GUC once in the fixture and let every later read
+    inherit it. That is exactly the connection-pool tenant-context trap
+    `IMPLEMENTATION_PLAN.md` §J names as *"the classic way RLS silently
+    fails"*: `pool_reset_on_return="rollback"` does not clear a session-level
+    `set_config(..., false)`, tests that repoint it do not always put it back,
+    and the failure surfaces as `NoResultFound` in a test that has nothing to
+    do with the one that moved it.
+
+    Setting it here makes each read state which tenant it is asking as, which
+    is what the production code does at `db.py:514` for the same reason.
+    """
     owner_session.rollback()
+    owner_session.execute(
+        text("SELECT set_config('app.current_org', :org, false)"), {"org": str(org)}
+    )
     return owner_session.execute(
         text("SELECT status, decided_by FROM public_intel.access_requests WHERE id = :i"),
         {"i": request_id},
@@ -191,7 +235,7 @@ def test_approving_without_a_keycloak_subject_is_422_and_changes_nothing(
     )
     assert r.status_code == 422, f"{r.status_code}: {r.text}"
     assert "keycloak_sub" in r.text
-    status_now, decided_by = _status_of(owner_session, queued_request["id"])
+    status_now, decided_by = _status_of(owner_session, queued_request["id"], admin_org["org_id"])
     assert status_now == "new"
     assert decided_by is None
 
@@ -216,7 +260,7 @@ def test_approving_with_no_role_is_422_and_changes_nothing(
         headers=_headers(make_token, str(admin_org["admin_sub"]), admin_org["org_id"]),
     )
     assert r.status_code == 422, f"{r.status_code}: {r.text}"
-    status_now, _ = _status_of(owner_session, queued_request["id"])
+    status_now, _ = _status_of(owner_session, queued_request["id"], admin_org["org_id"])
     assert status_now == "new"
 
 
@@ -234,7 +278,7 @@ def test_approving_with_an_unknown_role_is_422_and_changes_nothing(
         headers=_headers(make_token, str(admin_org["admin_sub"]), admin_org["org_id"]),
     )
     assert r.status_code == 422, f"{r.status_code}: {r.text}"
-    status_now, _ = _status_of(owner_session, queued_request["id"])
+    status_now, _ = _status_of(owner_session, queued_request["id"], admin_org["org_id"])
     assert status_now == "new"
 
 
@@ -275,13 +319,21 @@ def test_approving_binds_the_submitted_address_and_moves_the_request(
     assert body["member_id"], "an approval reported success without a membership"
 
     owner_session.rollback()
-    stored_email, stored_org, role_count = owner_session.execute(
+    # 🔴 THE EXACT ROLE, NOT A COUNT. Raised by Codex: asserting
+    # `count(...) == 1` passes if the approval granted `administrator` instead
+    # of the role that was asked for, which is the single worst thing this
+    # route could get wrong. The code is asserted, and so is the absence of any
+    # other role.
+    stored_email, stored_org, granted = owner_session.execute(
         text(
             """
-            SELECT m.email::text, m.organization_id, count(mr.role_id)
+            SELECT m.email::text, m.organization_id,
+                   coalesce(array_agg(r.code ORDER BY r.code)
+                            FILTER (WHERE r.code IS NOT NULL), '{}') AS roles
               FROM core.organization_members m
               JOIN core.users u ON u.id = m.user_id
               LEFT JOIN core.member_roles mr ON mr.member_id = m.id
+              LEFT JOIN core.roles r ON r.id = mr.role_id
              WHERE u.keycloak_sub = :s
              GROUP BY m.email, m.organization_id
             """
@@ -292,9 +344,12 @@ def test_approving_binds_the_submitted_address_and_moves_the_request(
         "the bind used an address other than the one submitted and reviewed"
     )
     assert str(stored_org) == str(admin_org["org_id"])
-    assert role_count == 1
+    assert list(granted) == ["executive_viewer"], (
+        f"the approval granted {list(granted)!r} rather than the role it was "
+        "asked for. A count would have accepted 'administrator' here."
+    )
 
-    status_now, decided_by = _status_of(owner_session, queued_request["id"])
+    status_now, decided_by = _status_of(owner_session, queued_request["id"], admin_org["org_id"])
     assert status_now == "approved"
     assert str(decided_by) == str(admin_org["admin_id"])
 
@@ -327,18 +382,26 @@ def test_rejecting_moves_the_request_and_creates_no_membership(
     ).scalar_one()
     assert after == before, "a rejection created a membership"
 
-    status_now, decided_by = _status_of(owner_session, queued_request["id"])
+    status_now, decided_by = _status_of(owner_session, queued_request["id"], admin_org["org_id"])
     assert status_now == "rejected"
     assert str(decided_by) == str(admin_org["admin_id"])
 
 
 def test_deciding_twice_is_a_409(client, make_token, admin_org, queued_request) -> None:
-    """The second administrator to press the button gets an answer, not a 500.
+    """A decided request refuses a second decision.
 
-    Two people opening the same queue and approving the same row is the
-    ordinary case. Without the `FOR UPDATE` re-read both would bind, and the
-    loser would hit `organization_members_unique` and surface as a 500 -- a
-    contention failure wearing the clothes of a server fault.
+    THIS TEST DOES **NOT** PROVE THE `FOR UPDATE` LOCK, AND ITS FIRST DOCSTRING
+    CLAIMED IT DID. Raised by Codex.
+
+    The two requests here are strictly sequential: the first transaction has
+    committed before the second begins, so the status re-read alone is enough
+    and this passes with the lock removed. What it actually proves is that a
+    decided row is not decidable again -- worth having, and not the concurrency
+    property. `test_the_row_lock_serialises_two_deciders` below is the one that
+    needs two connections to observe it.
+
+    A test that names a mechanism it cannot see is how a guard ends up trusted
+    for the wrong reason.
     """
     headers = _headers(make_token, str(admin_org["admin_sub"]), admin_org["org_id"])
     first = client.post(
@@ -398,7 +461,7 @@ def test_a_member_without_admin_users_cannot_decide(
         headers=_headers(make_token, str(admin_org["plain_sub"]), admin_org["org_id"]),
     )
     assert r.status_code == 403, f"{r.status_code}: {r.text}"
-    status_now, _ = _status_of(owner_session, queued_request["id"])
+    status_now, _ = _status_of(owner_session, queued_request["id"], admin_org["org_id"])
     assert status_now == "new"
 
 
@@ -409,3 +472,333 @@ def test_an_unknown_request_is_404(client, make_token, admin_org) -> None:
         headers=_headers(make_token, str(admin_org["admin_sub"]), admin_org["org_id"]),
     )
     assert r.status_code == 404, f"{r.status_code}: {r.text}"
+
+
+# ---------------------------------------------------------------------------
+# The boundary migration 064 added, and the lock the sequential test cannot see
+# ---------------------------------------------------------------------------
+
+
+def test_another_organizations_administrator_cannot_see_the_request(
+    client, make_token, owner_session, admin_org, queued_request
+) -> None:
+    """THE CROSS-TENANT DISCLOSURE CODEX REFUSED, ASSERTED CLOSED.
+
+    Before migration 064 `public_intel.access_requests` had no
+    `organization_id`, no RLS and no predicate, so this queue was platform-wide
+    and an administrator of any organization could read every applicant's name,
+    work address and company. The first version of these routes wrote that down
+    as an issue; Codex's reply was that a comment acknowledging a breach is not
+    a rule.
+
+    Falsified by removing `AND organization_id = :org` from
+    `list_access_requests`: the RLS policy still filters the row, so making
+    this go red then needs the policy dropped as well -- which is exactly why
+    both exist.
+    """
+    sfx = uuid.uuid4().hex[:8]
+    other_org = owner_session.execute(
+        text("INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"),
+        {"c": f"L1-OTHER-{sfx}", "n": "A different tenant"},
+    ).scalar_one()
+    other_uid = owner_session.execute(
+        text(
+            "INSERT INTO core.users (keycloak_sub, email, display_name)"
+            " VALUES (:s, :e, 'Other Admin') RETURNING id"
+        ),
+        {"s": f"l1-other-{sfx}", "e": f"l1-other-{sfx}@l1probe.org"},
+    ).scalar_one()
+    other_mid = owner_session.execute(
+        text(
+            "INSERT INTO core.organization_members"
+            " (organization_id, user_id, email, display_name)"
+            " VALUES (:o, :u, :e, 'Other Admin') RETURNING id"
+        ),
+        {"o": other_org, "u": other_uid, "e": f"l1-other-{sfx}@l1probe.org"},
+    ).scalar_one()
+    owner_session.execute(
+        text(
+            "INSERT INTO core.member_roles (member_id, role_id)"
+            " SELECT :m, id FROM core.roles WHERE code = 'administrator'"
+        ),
+        {"m": other_mid},
+    )
+    owner_session.commit()
+
+    # 🔴 SWITCH TENANT FOR THE OWNER'S OWN READS, AND SWITCH BACK IN teardown.
+    # `_status_of` at the end of this test reads the ORIGINAL request, which
+    # belongs to `admin_org`, so leaving the GUC pointed at the other tenant
+    # would make that read return nothing and the test fail for a reason that
+    # has nothing to do with what it is testing.
+    try:
+        rows = client.get(
+            "/api/admin/access-requests?status=all",
+            headers=_headers(make_token, f"l1-other-{sfx}", other_org),
+        )
+        assert rows.status_code == 200, f"{rows.status_code}: {rows.text}"
+        assert not [r for r in rows.json() if r["id"] == str(queued_request["id"])], (
+            "an administrator of another organization can read this applicant"
+        )
+
+        # And cannot decide it either -- 404, because to them it does not exist.
+        decision = client.post(
+            f"/api/admin/access-requests/{queued_request['id']}/decision",
+            json={"decision": "rejected", "reason": "reaching across a boundary"},
+            headers=_headers(make_token, f"l1-other-{sfx}", other_org),
+        )
+        assert decision.status_code == 404, f"{decision.status_code}: {decision.text}"
+
+        status_now, _ = _status_of(owner_session, queued_request["id"], admin_org["org_id"])
+        assert status_now == "new"
+    finally:
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.member_roles WHERE member_id = :m"), {"m": other_mid}
+        )
+        owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE id = :m"), {"m": other_mid}
+        )
+        owner_session.execute(text("DELETE FROM core.users WHERE id = :u"), {"u": other_uid})
+        owner_session.execute(
+            text("DELETE FROM core.organizations WHERE id = :o"), {"o": other_org}
+        )
+        owner_session.commit()
+
+
+def test_the_row_lock_serialises_two_deciders(owner_engine, queued_request) -> None:
+    """THE CONCURRENCY PROPERTY, ON TWO REAL CONNECTIONS.
+
+    `test_deciding_twice_is_a_409` is sequential and cannot see this: by the
+    time its second request runs, the first has committed. The lock only
+    matters inside the window where the first decider is still open.
+
+    Two connections, in order: A locks the row and stays open; B asks for the
+    same lock with `NOWAIT` and must be REFUSED. Without `FOR UPDATE` in the
+    route, B would read `new`, bind, and produce a second membership for the
+    same applicant -- or lose on `organization_members_unique` and surface as a
+    500, a contention failure wearing the clothes of a server fault.
+
+    `NOWAIT` rather than a timing sleep. A test that waits and hopes goes flaky
+    on a slow machine; asking PostgreSQL whether the lock is held is a question
+    with an answer.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    request_id = queued_request["id"]
+    first = owner_engine.connect()
+    second = owner_engine.connect()
+    try:
+        # Both connections are the owner, and the owner is governed by 064's
+        # predicate like everyone else, so each must name its tenant before it
+        # can see the row it is trying to lock.
+        for connection in (first, second):
+            connection.execute(
+                text("SELECT set_config('app.current_org', :org, false)"),
+                {"org": str(queued_request["organization_id"])},
+            )
+        first.execute(text("BEGIN"))
+        first.execute(
+            text("SELECT id FROM public_intel.access_requests WHERE id = :i FOR UPDATE"),
+            {"i": request_id},
+        )
+
+        second.execute(text("BEGIN"))
+        with pytest.raises(DBAPIError) as refused:
+            second.execute(
+                text("SELECT id FROM public_intel.access_requests WHERE id = :i FOR UPDATE NOWAIT"),
+                {"i": request_id},
+            )
+        assert "could not obtain lock" in str(refused.value).lower(), (
+            f"the second decider was not blocked by the first: {refused.value}"
+        )
+
+        second.execute(text("ROLLBACK"))
+        first.execute(text("ROLLBACK"))
+
+        # And once the first is done the second gets the lock, so the refusal
+        # above was the lock rather than something permanently wrong with the
+        # row. A one-directional assertion here would not tell them apart.
+        second.execute(text("BEGIN"))
+        second.execute(
+            text("SELECT id FROM public_intel.access_requests WHERE id = :i FOR UPDATE NOWAIT"),
+            {"i": request_id},
+        )
+        second.execute(text("ROLLBACK"))
+    finally:
+        first.close()
+        second.close()
+
+
+# ---------------------------------------------------------------------------
+# The two permission boundaries the reviewers forced
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def binder_only(owner_session, admin_org) -> Iterator[str]:
+    """Somebody holding `admin.users` and NOT `admin.roles`.
+
+    🔴 A REAL ROLE, NOT A PATCHED PRINCIPAL. No seeded role has this shape --
+    only `administrator` holds either permission and it holds both -- so the
+    role is created here and granted exactly one permission. Patching
+    `Principal.permissions` would have tested the patch: the whole question is
+    whether the REAL chain (token -> principal -> require_permission -> the
+    branch check) arrives at the right answer, and a stubbed principal skips
+    most of it.
+    """
+    sfx = uuid.uuid4().hex[:8]
+    sub = f"l1-binder-{sfx}"
+    role_code = f"l1_binder_only_{sfx}"
+
+    role_id = owner_session.execute(
+        text(
+            "INSERT INTO core.roles (code, name, description, is_seeded)"
+            " VALUES (:c, 'Binder only', 'admin.users without admin.roles', false)"
+            " RETURNING id"
+        ),
+        {"c": role_code},
+    ).scalar_one()
+    owner_session.execute(
+        text(
+            "INSERT INTO core.role_permissions (role_id, permission_id)"
+            " SELECT :r, id FROM core.permissions WHERE code = 'admin.users'"
+        ),
+        {"r": role_id},
+    )
+    uid = owner_session.execute(
+        text(
+            "INSERT INTO core.users (keycloak_sub, email, display_name)"
+            " VALUES (:s, :e, 'Binder Only') RETURNING id"
+        ),
+        {"s": sub, "e": f"{sub}@l1probe.org"},
+    ).scalar_one()
+    mid = owner_session.execute(
+        text(
+            "INSERT INTO core.organization_members"
+            " (organization_id, user_id, email, display_name)"
+            " VALUES (:o, :u, :e, 'Binder Only') RETURNING id"
+        ),
+        {"o": admin_org["org_id"], "u": uid, "e": f"{sub}@l1probe.org"},
+    ).scalar_one()
+    owner_session.execute(
+        text("INSERT INTO core.member_roles (member_id, role_id) VALUES (:m, :r)"),
+        {"m": mid, "r": role_id},
+    )
+    owner_session.commit()
+
+    try:
+        yield sub
+    finally:
+        owner_session.rollback()
+        owner_session.execute(
+            text("DELETE FROM core.member_roles WHERE member_id = :m"), {"m": mid}
+        )
+        owner_session.execute(
+            text("DELETE FROM core.organization_members WHERE id = :m"), {"m": mid}
+        )
+        owner_session.execute(text("DELETE FROM core.users WHERE id = :u"), {"u": uid})
+        owner_session.execute(
+            text("DELETE FROM core.role_permissions WHERE role_id = :r"), {"r": role_id}
+        )
+        owner_session.execute(text("DELETE FROM core.roles WHERE id = :r"), {"r": role_id})
+        owner_session.commit()
+
+
+def test_approving_needs_admin_roles_and_rejecting_does_not(
+    client, make_token, owner_session, admin_org, binder_only, queued_request
+) -> None:
+    """APPROVING grants a role. REJECTING grants nothing. They differ.
+
+    ⚠️ NOTE THE FIXTURE ORDER. `queued_request` is requested LAST so it is set
+    up last and therefore torn down FIRST -- the rejection below writes
+    `decided_by`, and deleting the deciding user before the request it decided
+    violates `access_requests_decided_by_fkey`. Teardown order is a real
+    dependency here, not a style question.
+
+
+    🔴 CODEX: the first version gated the whole route on `admin.users` while the
+    approval branch called `_grant_role` -- so a caller holding only the
+    person-binding permission could approve an applicant straight into
+    `administrator`. `members.tsx` states the rule that breaks: *"collapsing
+    them would make 'can add a colleague' and 'can grant them every permission
+    in the product' the same decision."*
+
+    🔴 SUPERVISOR: the fix over-corrected by putting both on the dependency,
+    which made REJECTING an applicant require the role-granting permission too.
+    A rejection grants nothing and no part of the justification covers it.
+
+    Both directions are asserted, because a test that only checked the refusal
+    would have passed against the over-correction exactly as happily as against
+    the right answer.
+    """
+    headers = _headers(make_token, binder_only, admin_org["org_id"])
+
+    refused = client.post(
+        f"/api/admin/access-requests/{queued_request['id']}/decision",
+        json={
+            "decision": "approved",
+            "reason": "approving without the role permission",
+            "keycloak_sub": f"l1-bound-{queued_request['suffix']}-d",
+            "roles": ["executive_viewer"],
+        },
+        headers=headers,
+    )
+    assert refused.status_code == 403, f"{refused.status_code}: {refused.text}"
+    assert "admin.roles" in refused.text
+    status_now, _ = _status_of(owner_session, queued_request["id"], admin_org["org_id"])
+    assert status_now == "new", "a refused approval still moved the request"
+
+    # The same caller may still REJECT -- that is the Supervisor's half.
+    allowed = client.post(
+        f"/api/admin/access-requests/{queued_request['id']}/decision",
+        json={"decision": "rejected", "reason": "not a business address"},
+        headers=headers,
+    )
+    assert allowed.status_code == 200, (
+        "rejecting was refused for want of admin.roles, which grants nothing: "
+        f"{allowed.status_code}: {allowed.text}"
+    )
+
+
+def test_sign_up_refuses_when_the_deployment_names_no_organization(monkeypatch) -> None:
+    """🔴 FAIL CLOSED: no configured owner means no request is taken.
+
+    Raised by the Supervisor as the deployment half of the same finding:
+    `public_landing_organization_id` existed in `config.py` and was set nowhere
+    in the repository, so this route would have answered 503 on every
+    deployment the moment it shipped. It is now set in `scripts/demo-up.ps1`,
+    and this pins the behaviour when it is absent.
+
+    Writing the row with a NULL owner instead would put it where no tenant
+    predicate can reach it -- recreating, one layer down, the exact "table with
+    no reader" defect this whole change exists to close.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.api import public as public_module
+
+    real = public_module.get_settings()
+
+    class _NoOwner:
+        """Everything the real settings say, except who owns the landing page."""
+
+        def __getattr__(self, name: str):
+            return getattr(real, name)
+
+        public_landing_organization_id = None
+
+    monkeypatch.setattr(public_module, "get_settings", _NoOwner)
+
+    from app.main import app
+
+    probe = TestClient(app, raise_server_exceptions=False)
+    response = probe.post(
+        "/api/public/access-requests",
+        json={
+            "full_name": "Nobody",
+            "work_email": "nobody@l1probe.org",
+            "company": "Nowhere",
+        },
+    )
+    assert response.status_code == 503, f"{response.status_code}: {response.text}"
+    assert "not been configured" in response.text

@@ -53,6 +53,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from app.core.config import get_settings
 from app.core.db import PublicConnectionNotConfiguredError, public_session_scope
 
 router = APIRouter()
@@ -357,6 +358,30 @@ def create_access_request(payload: AccessRequestIn, request: Request) -> dict[st
     # An unparseable address must not cost the caller their request. The
     # address is here to make abuse attributable, not to gate anything, so a
     # value that is not an address is simply not recorded.
+    # 🔴 A REQUEST NOBODY MAY EVER READ IS WORSE THAN A FORM THAT SAYS IT IS
+    # UNAVAILABLE (migration 064).
+    #
+    # Until 2026-09-01 this table had no `organization_id`, so its queue was
+    # platform-wide and every tenant's administrator could read every
+    # applicant. 064 gives the row an owner, taken from the DEPLOYMENT rather
+    # than from the applicant — a public landing page belongs to one
+    # deployment and that deployment belongs to one organization.
+    #
+    # When the deployment has not said which, this refuses. Writing the row
+    # with a NULL owner would put it somewhere no tenant predicate can reach,
+    # which is precisely the "table with no reader" defect this whole change
+    # exists to close, recreated one layer down. Fails closed, like ADR-032's
+    # sign-in connection.
+    owner = get_settings().public_landing_organization_id
+    if owner is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "this deployment has not been configured to receive access "
+                "requests"
+            ),
+        )
+
     client_host = _client_ip(request)
     user_agent = request.headers.get("user-agent")
     try:
@@ -365,13 +390,14 @@ def create_access_request(payload: AccessRequestIn, request: Request) -> dict[st
                 text(
                     """
                     INSERT INTO public_intel.access_requests
-                        (full_name, work_email, company, reason,
-                         source_ip, user_agent)
-                    VALUES (:full_name, :work_email, :company, :reason,
-                            cast(:source_ip AS inet), :user_agent)
+                        (organization_id, full_name, work_email, company,
+                         reason, source_ip, user_agent)
+                    VALUES (:organization_id, :full_name, :work_email, :company,
+                            :reason, cast(:source_ip AS inet), :user_agent)
                     """
                 ),
                 {
+                    "organization_id": owner,
                     "full_name": payload.full_name.strip(),
                     "work_email": payload.work_email.strip(),
                     "company": payload.company.strip(),

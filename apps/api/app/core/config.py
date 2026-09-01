@@ -13,6 +13,7 @@ explicitly.
 
 from __future__ import annotations
 
+import uuid
 from functools import lru_cache
 from typing import Literal
 
@@ -109,6 +110,33 @@ class Settings(BaseSettings):
     agent_database_url: str | None = Field(
         default=None,
         description=("SQLAlchemy URL for the agent curation role (evercoat_agent). Migration 060."),
+    )
+
+    # 🔴 WHOSE LANDING PAGE IS THIS? THE DEPLOYMENT ANSWERS, NOT THE APPLICANT.
+    #
+    # An access request names no tenant — somebody submitting the form does not
+    # know which organization they would be joining. Migration 059 therefore
+    # gave `public_intel.access_requests` no `organization_id`, and when the
+    # queue finally got its reader on 2026-09-01 that left every tenant's
+    # administrator able to read every applicant's name, address and company.
+    # Codex refused it: a comment acknowledging a breach is not a rule.
+    #
+    # A public landing page belongs to one deployment and that deployment
+    # belongs to one organization. This is where it says so, and migration 064
+    # is what enforces it — the tenant predicate is in the route's SQL *and* in
+    # an RLS policy.
+    #
+    # ⚠️ UNSET MEANS THE SIGN-UP FORM IS UNAVAILABLE, NOT THAT IT WRITES A ROW
+    # NOBODY MAY READ. `POST /api/public/access-requests` answers 503. A form
+    # that accepts a submission into a row no tenant can ever open is worse
+    # than one that says it is not available — that is the same fail-closed
+    # rule ADR-032 applied to the sign-in connection.
+    public_landing_organization_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "The organization that owns this deployment's public landing page. "
+            "Required for Sign Up to accept a request. Migration 064."
+        ),
     )
 
     # --- Keycloak -------------------------------------------------------

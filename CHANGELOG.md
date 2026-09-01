@@ -43,13 +43,45 @@ already CHECKs `new|approved|rejected`, `decided_by` already references
   substituted a value the test never sent, so it proved nothing and was
   replaced. A guard is not falsified until the mutation actually changes what
   the test observes.
-- ⚠️ **NEW ISSUE I113.** This queue is platform-wide, not tenant-scoped: an
-  access request names no organization, so in a multi-tenant deployment an
-  administrator sees applicants who did not mean to apply here. Named on the
-  screen and in the route rather than papered over.
+- 🔴 **I113 WAS RAISED AND THEN CLOSED THE SAME DAY, BECAUSE BOTH REVIEWERS
+  REFUSED TO ACCEPT IT AS AN ISSUE.** The first version gated on `admin.users`
+  over a table with no `organization_id` and no RLS, and wrote the cross-tenant
+  exposure down. Codex, in one sentence: *"the comment acknowledges the breach
+  but does not enforce a rule."* That is the correct standard — every other
+  cross-tenant read in this system is stopped twice, by the query and by RLS,
+  and a comment is neither.
+
+  **Migration 064** gives the request an owner at birth, taken from the
+  DEPLOYMENT (`Settings.public_landing_organization_id`) rather than from the
+  applicant, and `POST /api/public/access-requests` answers **503** when that
+  is unset — writing a row no tenant may ever read would recreate, one layer
+  down, the exact defect this change exists to close.
+
+- 🔴 **AND THE FIRST DRAFT OF 064 LOCKED THE OWNER OUT OF THE TABLE.** It wrote
+  the tenant policy as `TO evercoat_app`; under FORCE RLS that leaves
+  `evercoat_owner` (NOBYPASSRLS since 001) matching no policy at all, so every
+  SELECT returns nothing and every INSERT is refused — and it surfaces as an
+  empty queue rather than as an error. **Both reviewers found it independently
+  and the test suite found it too.** It is the 2026-08-31 lesson word for word:
+  *"a stricter policy is not a safer one."* The migration's own probe now
+  asserts the policy's ROLE SET rather than its existence, which is the check
+  that would have caught it.
+
+- 🔴 **THE REVIEW FOUND FOUR MORE THINGS WORTH KEEPING.**
+  **(a)** The route granted roles under `admin.users` alone, so an applicant
+  could be approved straight into `administrator`; the fix then over-corrected
+  and made *rejecting* need `admin.roles` too, which grants nothing. The
+  permission is now required where the grant happens, and both directions are
+  tested. **(b)** The XML guard did not work: a UTF-16 feed interleaves NUL
+  bytes, so `b"<!DOCTYPE"` matched nothing while ElementTree parsed the
+  document happily — measured, then fixed by pinning the encoding first.
+  **(c)** The ingester's "REFUSING TO REPORT OK" invariant ran *after* the
+  transaction committed, so it could not protect the state it guarded. **(d)**
+  The ingester deleted every orphaned news source, including ones it did not
+  create.
 
 🔴 **L2 / L4 — 38 manufacturers and 44 products became 50 and 151**, every one
-fetched before publication. Thirteen manufacturers added — Troton, HB BODY,
+fetched before publication. Twelve manufacturers added — Troton, HB BODY,
 Novol, Roberlo, Mipa, WEICON, Farecla, Menzerna, Tenax, Scott Bader, APP, and
 Sunmight repointed. **The verifier was not loosened and it dropped six rows**:
 Lechler's homepage answered 520, WEICON HP 404, one Scott Bader resin 502, and
@@ -70,9 +102,13 @@ because *"we could not ask" is not permission*; and **headline and link only —
 `<description>`, because reproducing a publisher's prose is the part that needs
 a licence and naming their headline is not.
 
-- 🔴 **THE ROBOTS CHECK REFUSED A SOURCE ON ITS FIRST RUN.** `epa.gov` disallows
-  its newsroom feed for this agent, so the EPA is not ingested. A guard that has
-  only ever allowed has not been shown to refuse.
+- 🔴 **THE ROBOTS CHECK REFUSES A SOURCE ON EVERY RUN, AND THAT TOOK A SECOND
+  PASS.** `epa.gov` disallows its newsroom feed for this agent. The first
+  version cited that as evidence the guard worked — while no entry in the
+  shipped list actually exercised the deny branch, so the refusal had happened
+  once, in a probe nobody could re-run. The Supervisor caught it. The EPA feed
+  is now IN the source list precisely so it is refused on every run and the
+  refusal appears in the report.
 - ⚠️ **A missing date is rendered as no date, never as `now()`.** An invented
   timestamp beside a real headline is the 2026-08-30 dates defect in a new
   costume.
