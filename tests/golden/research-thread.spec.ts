@@ -156,6 +156,21 @@ test.describe("§39 — the research thread, in a browser", () => {
       .fill(`Does talc loading above 22% reduce adhesion? ${tag}`);
 
     const project = openForm.getByLabel("Project");
+
+    // ⚠️ WAIT FOR THE QUERY, DO NOT READ THE SELECT THE INSTANT IT RENDERS.
+    //
+    // The projects arrive from their own request, so for the first moments the
+    // select holds ONLY "Organization-wide (no project)". Reading it straight
+    // away failed in CI after 2.5s with "the seed must provide at least one
+    // project" — an assertion that was true about the DOM and false about the
+    // database, where `scripts/seed.py` had already made chem.demo a member of
+    // a seeded project. The message accused the seed of a defect belonging to
+    // the test. Poll instead: if the seed really did provide nothing, this
+    // still fails, just honestly and 30 seconds later.
+    await expect
+      .poll(async () => project.locator("option").count(), { timeout: 30_000 })
+      .toBeGreaterThan(1);
+
     const projectValues = await project.locator("option").evaluateAll((options) =>
       options.map((option) => (option as HTMLOptionElement).value),
     );
@@ -207,6 +222,14 @@ test.describe("§39 — the research thread, in a browser", () => {
     // that would have failed on a source that exists — a red test blaming the
     // wrong thing. The value is the id; find it by the title it contains.
     const sourceSelect = evidence.getByLabel("Source it rests on");
+
+    // ⚠️ SAME RACE AS THE PROJECT SELECT, SAME FIX. The evidence form builds
+    // its options from the sources query, so wait for the source recorded above
+    // to actually be offered before reading the list.
+    await expect
+      .poll(async () => sourceSelect.locator("option").count(), { timeout: 30_000 })
+      .toBeGreaterThan(1);
+
     const sourceValue = await sourceSelect
       .locator("option")
       .evaluateAll(
