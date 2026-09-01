@@ -2,18 +2,26 @@
 
 **Updated 2026-08-30 (part 4). Read `RESUME_HERE.md` first.**
 
-## ▶ REMAINING — LANDING PAGE (shipped and live; these are the gaps)
+## ✅ CLOSED 2026-09-01 — LANDING PAGE (L1, L2, L3, L4)
 
 Live at the demo tunnel: landing page, marketplace, industry news, access
 requests, theming including red/blue/white, marketplace + news entry points
 beside the app name, "create innovation" from a product card.
 
-| # | Open | Why it is not done |
+| # | Was | Closed by |
 |---|---|---|
-| L1 | **Sign-UP is a request, not a registration.** `/api/public/access-requests` records an interest; nothing provisions an account. | Self-service sign-up is a Keycloak registration flow and a policy decision about who may self-register into which organization — not a form. |
-| L2 | **44 products live; the target was 50 competitors / 100+ products.** | `seed_public_intel_real.py` REFUSES to publish a row whose `source_url` does not resolve. Closing the gap means sourcing more real manufacturers, **not loosening the verifier**. |
-| L3 | **The news feed is still demonstration data** and says so on every card. | Real industry news needs a source-ingestion pipeline with licence and robots/ToS review. Inventing news about real companies is worse than inventing a product. |
-| L4 | ⚠️ **3M was dropped on the last verification run.** | It times out for `httpx` AND `urllib`, measured at the same moment — the host, not the client. Re-run the seed when it is reachable. |
+| **L1** | Sign-UP is a request, not a registration — `/api/public/access-requests` records an interest and nothing provisions an account | 🔴 **The real defect was narrower and worse: the table had a WRITER AND NO READER.** No migration was needed — `status`, `decided_by`, `decided_at` and the `(status, created_at DESC)` index had all been there since 059. `GET /api/admin/access-requests` and `POST /api/admin/access-requests/{id}/decision` now exist (gated `admin.users`), with the controls on the Administration screen. Approving is a **bind, not a registration**: Keycloak still owns identity, so it carries a `keycloak_sub` that already exists and goes through `_bind_subject`, **extracted** from `invite_member` rather than copied. The address bound is the one SUBMITTED, not one the approver types. An approval must grant a role. Three guards falsified. |
+| **L2** | 44 products live; the target was 50 competitors / 100+ products | **50 manufacturers / 151 products**, every URL fetched before publication. Thirteen manufacturers added; **the verifier was not loosened and dropped six rows**. |
+| **L3** | The news feed is still demonstration data | **120 syndicated items from 8 real sources, zero demonstration rows.** `scripts/ingest_public_news.py`: feeds only (a publisher's own offer of headline and link), `robots.txt` checked before every fetch and failing CLOSED, **headline and link only — `summary` stays NULL**. 🔴 The robots check **refused the EPA on its first run**. |
+| **L4** | 3M was dropped on the last verification run | **Still dropped, and still a measurement.** 3M, DeVilbiss and Meguiar's refuse this client. Re-run the seed when reachable. **Sunmight, by contrast, was dropped because its URL was WRONG** — repointed and now live. |
+
+### ⚠️ WHAT THE LANDING PAGE STILL DOES NOT DO — named, not hidden
+
+| # | Open |
+|---|---|
+| **I113** | 🔴 **The access-request queue is platform-wide, not tenant-scoped.** An access request names no organization — the applicant does not know which tenant they would join — so the row carries no `organization_id` and the table has no RLS. In a multi-organization deployment an administrator of A can read the name, work address and company of somebody who meant to apply to B. That is the applicant's own data rather than any tenant's, and it is behind `admin.users`, but it crosses a boundary this codebase otherwise enforces absolutely. The fix is a decision — an applicant-nominated organization, or a platform-operator role distinct from a tenant administrator — not a cleanup. |
+| **L5** | **Approving does not CREATE the Keycloak account.** The API holds no Keycloak admin credential (`config.py` carries only issuer and audience), so an administrator creates the identity in Keycloak and pastes its subject. Giving the API an admin credential is a new secret and a new outbound dependency, and is an owner decision rather than a cleanup. |
+| **L6** | The news feed's **action drawer** (Save to Research / Create Opportunity / Link to Material) and the six deferred link tables remain deferred, per `IMPLEMENTATION_PLAN_PUBLIC_LANDING.md` §7. Nothing dangles: none of those tables exist. |
 
 ## ▶ REMAINING — MATERIAL SAFETY DATA & RESEARCH CENTER (Phase 5)
 

@@ -18,9 +18,10 @@ untraceable privilege escalation.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -263,52 +264,34 @@ def _bind_conflict(exc: IntegrityError) -> HTTPException:
     )
 
 
-@router.post(
-    "/members",
-    response_model=MemberRead,
-    status_code=status.HTTP_201_CREATED,
-    tags=["admin"],
-)
-def invite_member(
-    payload: MemberInvite,
-    principal: Principal = Depends(require_permission("admin.users")),
-    session: Session = Depends(get_db),
-) -> MemberRead:
-    """Bind an existing Keycloak subject to this organization."""
-    unknown = _unknown_roles(session, payload.roles)
-    if unknown:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"unknown roles: {sorted(unknown)}",
-        )
+def _bind_subject(
+    session: Session,
+    *,
+    keycloak_sub: str,
+    email: str,
+    display_name: str,
+) -> uuid.UUID:
+    """Bind an existing Keycloak subject to the caller's organization.
 
-    # 🔴 ONE STATEMENT: RESOLVE, CREATE IF NEW, AND BIND (I82).
-    #
-    # This used to be `core.user_id_for_subject(:sub)` followed by a
-    # conditional INSERT and then a separate membership INSERT. That resolver
-    # answered, for an exact subject in ANY organization, with the user's uuid
-    # and their existence -- on a SELECT, leaving no row behind. Narrow (it
-    # needs `admin.users` and the exact subject) but an oracle, and the shape
-    # migration 048 had just gone out of its way to avoid.
-    #
-    # `core.bind_subject_to_organization` returns the identifier only after
-    # the membership exists. If the bind fails the whole thing rolls back and
-    # nothing is returned; if it succeeds, the caller shares an organization
-    # with that user and 044's read policy admits them anyway. So the id is
-    # never learned by someone not entitled to it.
-    #
-    # ⚠️ THE ORGANIZATION IS NOT PASSED. It comes from `app.current_org`
-    # inside the function. A SECURITY DEFINER taking an organization argument
-    # would create memberships in any tenant the caller named -- a
-    # cross-tenant WRITE inside the change that removes a cross-tenant READ,
-    # which is the exact reflex ADR-029 caught in its own first draft.
-    #
-    # ⚠️ AND IT STILL RACES, SO IT IS STILL GUARDED. Two administrators
-    # inviting the same brand-new subject concurrently both find no row and
-    # both insert; the loser hits `users_keycloak_sub_key`. Atomicity removes
-    # the read-then-write GAP within one call, not the contention between two.
-    # `guarded_write` keeps the violation from destroying the request
-    # transaction (I30), and the retry re-resolves through the same function.
+    🔴 EXTRACTED 2026-09-01, AND NOT COPIED, BECAUSE THERE ARE NOW TWO CALLERS.
+
+    `POST /api/admin/members` has always done this. Approving an access request
+    has to do exactly the same thing, and every hard-won part of it —
+    050's standing-check refusal arriving as a `ProgrammingError` rather than an
+    `IntegrityError`, the three constraints that must be told apart, and the
+    bounded retry whose own failure needs its own handler — would have had to be
+    reproduced at the second call site. This file's own docstring names that
+    shape: *"a second entry point would be the I5/I36 shape this codebase has
+    already logged twice."*
+
+    ⚠️ THE ORGANIZATION IS STILL NOT AN ARGUMENT. It comes from
+    `app.current_org` inside `core.bind_subject_to_organization`. Adding an
+    organization parameter here would let a caller name a tenant, which is the
+    cross-tenant write ADR-029 refused.
+
+    Returns the membership id. Raises `HTTPException` for every refusal the
+    database makes, and re-raises anything it cannot classify.
+    """
     try:
         with guarded_write(session):
             bound = session.execute(
@@ -319,9 +302,9 @@ def invite_member(
                     """
                 ),
                 {
-                    "sub": payload.keycloak_sub,
-                    "email": payload.email,
-                    "name": payload.display_name,
+                    "sub": keycloak_sub,
+                    "email": email,
+                    "name": display_name,
                 },
             ).one()
     except DBAPIError as exc:
@@ -378,9 +361,9 @@ def invite_member(
                             """
                         ),
                         {
-                            "sub": payload.keycloak_sub,
-                            "email": payload.email,
-                            "name": payload.display_name,
+                            "sub": keycloak_sub,
+                            "email": email,
+                            "name": display_name,
                         },
                     ).one()
             except DBAPIError as retry_exc:
@@ -398,8 +381,61 @@ def invite_member(
             # message is two things to keep in agreement, and this file's own
             # history is a list of what happens when they drift.
             raise _bind_conflict(exc) from exc
+    return bound.member_id  # type: ignore[no-any-return]
 
-    member_id = bound.member_id
+
+@router.post(
+    "/members",
+    response_model=MemberRead,
+    status_code=status.HTTP_201_CREATED,
+    tags=["admin"],
+)
+def invite_member(
+    payload: MemberInvite,
+    principal: Principal = Depends(require_permission("admin.users")),
+    session: Session = Depends(get_db),
+) -> MemberRead:
+    """Bind an existing Keycloak subject to this organization."""
+    unknown = _unknown_roles(session, payload.roles)
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"unknown roles: {sorted(unknown)}",
+        )
+
+    # 🔴 ONE STATEMENT: RESOLVE, CREATE IF NEW, AND BIND (I82).
+    #
+    # This used to be `core.user_id_for_subject(:sub)` followed by a
+    # conditional INSERT and then a separate membership INSERT. That resolver
+    # answered, for an exact subject in ANY organization, with the user's uuid
+    # and their existence -- on a SELECT, leaving no row behind. Narrow (it
+    # needs `admin.users` and the exact subject) but an oracle, and the shape
+    # migration 048 had just gone out of its way to avoid.
+    #
+    # `core.bind_subject_to_organization` returns the identifier only after
+    # the membership exists. If the bind fails the whole thing rolls back and
+    # nothing is returned; if it succeeds, the caller shares an organization
+    # with that user and 044's read policy admits them anyway. So the id is
+    # never learned by someone not entitled to it.
+    #
+    # ⚠️ THE ORGANIZATION IS NOT PASSED. It comes from `app.current_org`
+    # inside the function. A SECURITY DEFINER taking an organization argument
+    # would create memberships in any tenant the caller named -- a
+    # cross-tenant WRITE inside the change that removes a cross-tenant READ,
+    # which is the exact reflex ADR-029 caught in its own first draft.
+    #
+    # ⚠️ AND IT STILL RACES, SO IT IS STILL GUARDED. Two administrators
+    # inviting the same brand-new subject concurrently both find no row and
+    # both insert; the loser hits `users_keycloak_sub_key`. Atomicity removes
+    # the read-then-write GAP within one call, not the contention between two.
+    # `guarded_write` keeps the violation from destroying the request
+    # transaction (I30), and the retry re-resolves through the same function.
+    member_id = _bind_subject(
+        session,
+        keycloak_sub=payload.keycloak_sub,
+        email=payload.email,
+        display_name=payload.display_name,
+    )
 
     # 🔴 THE USER IS RESOLVED THROUGH THE MEMBERSHIP, NOT HANDED BACK BY THE
     # DEFINER — BECAUSE THE IDENTIFIER *WAS* THE EXISTENCE ANSWER (051).
@@ -620,6 +656,267 @@ def set_member_status(
             new_state={"status": payload.status},
             reason=payload.reason,
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Access requests — the landing page's "Sign Up", and its missing reader
+# ---------------------------------------------------------------------------
+#
+# 🔴 `public_intel.access_requests` HAD A WRITER AND NO READER (L1).
+#
+# `POST /api/public/access-requests` has recorded interest since migration 059.
+# Nothing in `apps/api/app` or `apps/web` ever read the table back, so every
+# request an anonymous visitor submitted went into a queue no production path
+# could open — which is this project's own most-repeated defect, stated in
+# `MEMORY.md` as *"a route with no caller, a permission with no enforcement
+# point and a table with no writer are one defect."* The mirror image is the
+# same defect: a table with no READER.
+#
+# The schema was designed for this all along and was never used: `status`
+# already CHECKs `new|approved|rejected`, `decided_by` already references
+# `core.users`, `decided_at` already exists, and there is already an index on
+# `(status, created_at DESC)`. Closing L1 therefore needs **no migration** — it
+# needs the reader and the decision.
+#
+# ⚠️ THIS QUEUE IS PLATFORM-SCOPED, NOT TENANT-SCOPED, AND THAT IS A REAL
+# LIMITATION RATHER THAN AN OVERSIGHT — RAISED AS I113.
+#
+# An access request names no organization: the applicant does not know which
+# tenant they would be joining, so the row cannot carry an `organization_id`
+# and the table has no RLS. The consequence is that in a multi-tenant
+# deployment (M5 — this product is built multi-tenant) an administrator of
+# organization A can read the name, work address and company of somebody who
+# meant to apply to organization B. That is the applicant's own data rather
+# than any tenant's, and every read is behind `admin.users`, but it is a
+# genuine disclosure across a boundary this codebase otherwise enforces
+# absolutely. It is named here rather than papered over, and the fix — an
+# applicant-nominated organization, or a platform-operator role distinct from
+# a tenant administrator — is a decision, not a cleanup.
+
+
+class AccessRequestRead(BaseModel):
+    """One queued request, as an administrator sees it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    full_name: str
+    work_email: str
+    company: str
+    reason: str | None
+    status: str
+    created_at: dt.datetime
+    decided_at: dt.datetime | None
+    decided_by: uuid.UUID | None
+
+
+class AccessRequestDecision(BaseModel):
+    """Approve or reject one request.
+
+    🔴 APPROVAL IS A BIND, NOT A REGISTRATION, AND THE PAYLOAD SAYS SO.
+
+    The application cannot create credentials — Keycloak owns identity, and
+    self-registration into a tenanted R&D system stays off (ADR-025, and the
+    landing-page plan §5). So approving carries the `keycloak_sub` of an
+    identity that already exists, exactly as `POST /api/admin/members` does,
+    and the two go through the *same* `_bind_subject`.
+
+    ⚠️ `roles` MUST NOT BE EMPTY ON AN APPROVAL. A membership with no role
+    holds no permission, so approving into one would produce an account that
+    can sign in and reach nothing — a "yes" that behaves like a "no", and the
+    hardest kind of failure to notice. Refused at 422 rather than created.
+    """
+
+    decision: str = Field(pattern="^(approved|rejected)$")
+    reason: str = Field(min_length=3, max_length=500)
+    keycloak_sub: str | None = Field(default=None, min_length=1, max_length=255)
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    roles: list[str] = Field(default_factory=list)
+
+
+class AccessRequestDecisionResult(BaseModel):
+    """What the decision actually did.
+
+    `member_id` is present only on an approval, and it is the membership the
+    bind produced — read back, not assumed. A decision that reported success
+    without one would be the "three success messages over failed operations"
+    failure recorded on 2026-08-31.
+    """
+
+    id: uuid.UUID
+    status: str
+    member_id: uuid.UUID | None = None
+
+
+@router.get("/access-requests", response_model=list[AccessRequestRead], tags=["admin"])
+def list_access_requests(
+    status_filter: str = Query(
+        default="new",
+        alias="status",
+        pattern="^(new|approved|rejected|all)$",
+        description="Queue to read. Defaults to the undecided ones.",
+    ),
+    principal: Principal = Depends(require_permission("admin.users")),
+    session: Session = Depends(get_db),
+) -> list[AccessRequestRead]:
+    """Read the access-request queue. `admin.users`.
+
+    Bounded at 200 rows in SQL like every other collection on this API
+    (`SECURITY.md` §10), newest first.
+    """
+    rows = session.execute(
+        text(
+            """
+            SELECT id, full_name, work_email, company, reason, status,
+                   created_at, decided_at, decided_by
+              FROM public_intel.access_requests
+             WHERE (:want = 'all' OR status = :want)
+             ORDER BY created_at DESC
+             LIMIT 200
+            """
+        ),
+        {"want": status_filter},
+    ).all()
+    return [AccessRequestRead.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/access-requests/{request_id}/decision",
+    response_model=AccessRequestDecisionResult,
+    tags=["admin"],
+)
+def decide_access_request(
+    request_id: uuid.UUID,
+    payload: AccessRequestDecision,
+    principal: Principal = Depends(require_permission("admin.users")),
+    session: Session = Depends(get_db),
+) -> AccessRequestDecisionResult:
+    """Decide one queued request. `admin.users`.
+
+    🔴 `FOR UPDATE`, AND THE STATUS IS RE-READ INSIDE THE LOCK.
+
+    Two administrators opening the same queue and approving the same row is
+    the ordinary case, not the exotic one. Without the lock both would read
+    `new`, both would bind, and the applicant would end up with two
+    memberships — or one bind would hit `organization_members_unique` and
+    surface as a 500. The row is locked, its status re-checked, and a request
+    that is no longer `new` is refused with 409.
+
+    The bind, the role grants, the status update and the audit event are ONE
+    transaction. `session_scope` rolls the whole thing back on any refusal, so
+    there is no state in which the queue says `approved` and no membership
+    exists.
+    """
+    row = session.execute(
+        text(
+            """
+            SELECT id, full_name, work_email, company, status
+              FROM public_intel.access_requests
+             WHERE id = :id
+             FOR UPDATE
+            """
+        ),
+        {"id": request_id},
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="no such access request",
+        )
+    if row.status != "new":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"this request was already {row.status}",
+        )
+
+    member_id: uuid.UUID | None = None
+
+    if payload.decision == "approved":
+        if not payload.keycloak_sub:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "approving binds an identity that already exists in "
+                    "Keycloak, so keycloak_sub is required"
+                ),
+            )
+        if not payload.roles:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="an approval must grant at least one role",
+            )
+        unknown = _unknown_roles(session, payload.roles)
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"unknown roles: {sorted(unknown)}",
+            )
+
+        # 🔴 THE SAME BIND AS `POST /api/admin/members`, NOT A SECOND ONE.
+        # See `_bind_subject`'s docstring for why this is extracted rather
+        # than copied.
+        #
+        # ⚠️ The address comes from the REQUEST ROW, not from the payload. An
+        # administrator approving "somebody" must not be able to silently
+        # redirect the approval to a different address than the one that was
+        # submitted and reviewed — that would make the audit record describe a
+        # decision nobody took. The display name may be corrected, because a
+        # free-text name is a presentation detail; the address is the identity
+        # the decision is about.
+        member_id = _bind_subject(
+            session,
+            keycloak_sub=payload.keycloak_sub,
+            email=row.work_email,
+            display_name=payload.display_name or row.full_name,
+        )
+        for role_code in payload.roles:
+            _grant_role(session, member_id, role_code)
+
+    session.execute(
+        text(
+            """
+            UPDATE public_intel.access_requests
+               SET status = :status,
+                   decided_by = :decided_by,
+                   decided_at = clock_timestamp()
+             WHERE id = :id
+            """
+        ),
+        {
+            "status": payload.decision,
+            "decided_by": principal.user_id,
+            "id": request_id,
+        },
+    )
+
+    write_audit(
+        session,
+        AuditEvent(
+            action=f"admin.access_request_{payload.decision}",
+            entity_type="access_request",
+            entity_id=str(request_id),
+            organization_id=principal.organization_id,
+            user_id=principal.user_id,
+            previous_state={"status": "new"},
+            new_state={
+                "status": payload.decision,
+                "member_id": str(member_id) if member_id else None,
+                "roles": payload.roles if payload.decision == "approved" else [],
+            },
+            reason=payload.reason,
+        ),
+    )
+    log_audit(
+        "access_request_decided",
+        request_id=str(request_id),
+        decision=payload.decision,
+    )
+
+    return AccessRequestDecisionResult(
+        id=request_id,
+        status=payload.decision,
+        member_id=member_id,
     )
 
 

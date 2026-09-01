@@ -26,6 +26,8 @@ import {
   createProductFamily,
   createStage,
   createUnit,
+  decideAccessRequest,
+  fetchAccessRequests,
   fetchAdminMembers,
   fetchPermissions,
   fetchProductFamilies,
@@ -40,6 +42,8 @@ import {
   setReferenceItemActive,
   setStageActive,
   updateStage,
+  type AccessRequest,
+  type AccessRequestDecisionRequest,
   type AdminMember,
   type MemberInviteRequest,
   type Permission,
@@ -2897,6 +2901,24 @@ export function usePermissionCatalogue(): LiveOnly<Permission[]> {
   return useLiveOnlyList("admin-permissions", (live) => live, fetchPermissions);
 }
 
+/**
+ * The access-request queue — the reader `public_intel.access_requests` never had.
+ *
+ * ⚠️ THE QUERY KEY CARRIES THE STATUS. Without it, switching the filter would
+ * serve the previous queue out of the cache and an administrator would decide
+ * against a list that is not the one on screen.
+ */
+export function useAccessRequests(
+  status: "new" | "approved" | "rejected" | "all" = "new",
+): LiveOnly<AccessRequest[]> {
+  return useLiveOnlyList<AccessRequest[], AccessRequest[]>(
+    `admin-access-requests:${status}`,
+    (live) => live,
+    (credentials: ApiCredentials, signal?: AbortSignal) =>
+      fetchAccessRequests(credentials, signal, status),
+  );
+}
+
 export function useStageDefinitions(): LiveOnly<StageDefinition[]> {
   return useLiveOnlyList("admin-stage-gates", (live) => live, fetchStageDefinitions);
 }
@@ -2919,6 +2941,11 @@ export function useProductFamilies(): LiveOnly<ProductFamily[]> {
  */
 export function useAdminActions(): {
   readonly invite: (request: MemberInviteRequest, after?: () => void) => void;
+  readonly decide: (
+    requestId: string,
+    request: AccessRequestDecisionRequest,
+    after?: () => void,
+  ) => void;
   readonly grant: (
     memberId: string,
     roleCode: string,
@@ -3009,6 +3036,24 @@ export function useAdminActions(): {
   return {
     invite: (request, after) =>
       run("membership", ["admin-members"], () => inviteMember(credentials(), request), after),
+    // 🔴 FOUR KEYS, NOT ONE. An approval writes a membership AND moves the
+    // request out of the `new` queue, so a decision that invalidated only its
+    // own filter would leave the members table and the other three queues
+    // showing the state before the decision — the screen contradicting itself
+    // in two places at once.
+    decide: (requestId, request, after) =>
+      run(
+        "access request",
+        [
+          "admin-members",
+          "admin-access-requests:new",
+          "admin-access-requests:approved",
+          "admin-access-requests:rejected",
+          "admin-access-requests:all",
+        ],
+        () => decideAccessRequest(credentials(), requestId, request),
+        after,
+      ),
     grant: (memberId, roleCode, reason, after) =>
       run(
         "role grant",

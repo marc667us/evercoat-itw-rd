@@ -4,6 +4,7 @@ import { ADMIN_SECTIONS } from "@/app/admin/sections";
 import { ContextSubmenu } from "@/components/ui/context-submenu";
 import { EntityHeader } from "@/components/ui/entity-header";
 
+import { AccessRequestsAdministration } from "./access-requests";
 import { MembersAdministration } from "./members";
 
 export const metadata: Metadata = { title: "Administration" };
@@ -53,6 +54,13 @@ export default function AdministrationPage() {
             to record. Four member write endpoints, zero controls, for four
             slices after their precondition was met. */}
         <MembersAdministration />
+
+        {/* 🔴 ADDED 2026-09-01, CLOSING L1. `public_intel.access_requests` had
+            had a writer since migration 059 and no reader anywhere — so the
+            landing page told every visitor "your request has been queued for
+            review" and no screen in the product could open the queue. Same
+            defect as a route with no caller, seen from the other side. */}
+        <AccessRequestsAdministration />
 
         <section className="mt-8 max-w-3xl">
           <h3 className="text-sm font-semibold text-slate-900">

@@ -36,7 +36,6 @@ survives a suite testing only the words.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -52,108 +51,6 @@ def client() -> TestClient:
     from app.main import app
 
     return TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture
-def admin_org(owner_session) -> Iterator[dict[str, object]]:
-    """An organization, an administrator holding `admin.users`, and a colleague.
-
-    COMMITs and cleans up explicitly: the request runs on the API's own
-    connection, so uncommitted fixture rows would be invisible to it.
-    """
-    sfx = uuid.uuid4().hex[:8]
-    admin_sub = f"i107-admin-{sfx}"
-    plain_sub = f"i107-plain-{sfx}"
-
-    org_id = owner_session.execute(
-        text("INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"),
-        {"c": f"I107-{sfx}", "n": "I107 admin route org"},
-    ).scalar_one()
-
-    def person(sub: str, email: str, name: str, role: str | None) -> tuple[uuid.UUID, uuid.UUID]:
-        uid = owner_session.execute(
-            text(
-                "INSERT INTO core.users (keycloak_sub, email, display_name)"
-                " VALUES (:s, :e, :n) RETURNING id"
-            ),
-            {"s": sub, "e": email, "n": name},
-        ).scalar_one()
-        mid = owner_session.execute(
-            text(
-                "INSERT INTO core.organization_members"
-                " (organization_id, user_id, email, display_name)"
-                " VALUES (:o, :u, :e, :n) RETURNING id"
-            ),
-            {"o": org_id, "u": uid, "e": email, "n": name},
-        ).scalar_one()
-        if role is not None:
-            owner_session.execute(
-                text(
-                    "INSERT INTO core.member_roles (member_id, role_id)"
-                    " SELECT :m, id FROM core.roles WHERE code = :c"
-                ),
-                {"m": mid, "c": role},
-            )
-        return uid, mid
-
-    admin_email = f"i107-admin-{sfx}@i107probe.org"
-    admin_id, _ = person(admin_sub, admin_email, "I107 admin", "administrator")
-    plain_email = f"i107-plain-{sfx}@i107probe.org"
-    plain_id, _ = person(plain_sub, plain_email, "I107 technician", "laboratory_technician")
-    owner_session.commit()
-
-    # The role must really carry the permission, or every test here would be
-    # refused at the route and prove nothing about the rest of the request.
-    holds = owner_session.execute(
-        text(
-            """
-            SELECT count(*) FROM core.roles r
-            JOIN core.role_permissions rp ON rp.role_id = r.id
-            JOIN core.permissions p       ON p.id = rp.permission_id
-            WHERE r.code = 'administrator' AND p.code = 'admin.users'
-            """
-        )
-    ).scalar_one()
-    assert holds == 1, "the seeded 'administrator' role does not carry admin.users"
-
-    try:
-        yield {
-            "org_id": org_id,
-            "admin_sub": admin_sub,
-            "admin_id": admin_id,
-            "admin_email": admin_email,
-            "plain_sub": plain_sub,
-            "plain_id": plain_id,
-            "plain_email": plain_email,
-            "suffix": sfx,
-        }
-    finally:
-        owner_session.rollback()
-        owner_session.execute(
-            text(
-                """
-                DELETE FROM core.member_roles WHERE member_id IN (
-                    SELECT id FROM core.organization_members WHERE organization_id = :o
-                )
-                """
-            ),
-            {"o": org_id},
-        )
-        # ⚠️ `audit.events` IS DELIBERATELY NOT CLEANED UP. It is append-only
-        # by trigger, and deleting from it raises -- which aborts this whole
-        # teardown transaction and leaves EVERY row above it behind, so one
-        # expected refusal becomes a fixture that leaks. Measured here: two
-        # runs leaked their organization, users and memberships before the
-        # DELETE was removed. `test_pipeline_history.py` records the same
-        # lesson. Audit rows carry no FK to these tables.
-        owner_session.execute(
-            text("DELETE FROM core.organization_members WHERE organization_id = :o"), {"o": org_id}
-        )
-        owner_session.execute(
-            text("DELETE FROM core.users WHERE keycloak_sub LIKE :p"), {"p": f"i107-%-{sfx}"}
-        )
-        owner_session.execute(text("DELETE FROM core.organizations WHERE id = :o"), {"o": org_id})
-        owner_session.commit()
 
 
 def _headers(make_token, sub: str, org_id: object) -> dict[str, str]:

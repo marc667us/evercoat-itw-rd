@@ -430,3 +430,76 @@ export function setReferenceItemActive(
     (payload) => payload,
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/* Access requests — the landing page's Sign Up, reviewed                      */
+/* -------------------------------------------------------------------------- */
+//
+// 🔴 THE TABLE HAD A WRITER AND NO READER (L1).
+//
+// `POST /api/public/access-requests` has recorded interest since migration
+// 059, and until 2026-09-01 nothing anywhere read it back — so an anonymous
+// visitor's request went into a queue no screen could open. That is the same
+// defect as a route with no caller, seen from the other side.
+
+export const accessRequestSchema = z.object({
+  id: z.string(),
+  full_name: z.string(),
+  work_email: z.string(),
+  company: z.string(),
+  reason: z.string().nullable(),
+  status: z.string(),
+  created_at: z.string(),
+  decided_at: z.string().nullable(),
+  decided_by: z.string().nullable(),
+});
+export type AccessRequest = z.infer<typeof accessRequestSchema>;
+
+/** Read the queue. `admin.users`. Defaults to the undecided requests. */
+export function fetchAccessRequests(
+  credentials: ApiCredentials,
+  signal?: AbortSignal,
+  status: "new" | "approved" | "rejected" | "all" = "new",
+): Promise<AccessRequest[]> {
+  return apiRequest(
+    { path: `/api/admin/access-requests?status=${status}`, credentials, signal },
+    (payload) => z.array(accessRequestSchema).parse(payload),
+  );
+}
+
+export interface AccessRequestDecisionRequest {
+  readonly decision: "approved" | "rejected";
+  readonly reason: string;
+  /** Required on an approval — the identity already in Keycloak. */
+  readonly keycloak_sub?: string;
+  readonly display_name?: string;
+  readonly roles?: readonly string[];
+}
+
+/**
+ * Decide one request. `admin.users`.
+ *
+ * ⚠️ APPROVING IS A BIND, NOT A REGISTRATION. This application cannot create
+ * credentials — Keycloak owns identity and self-registration stays off. An
+ * approval carries the `keycloak_sub` of an identity that already exists and
+ * goes through the same bind as `POST /api/admin/members`.
+ *
+ * ⚠️ THE ADDRESS IS NOT SENT. The server binds the address that was
+ * SUBMITTED, read from the request row, so an approval cannot be quietly
+ * redirected to a different person than the one that was reviewed.
+ */
+export function decideAccessRequest(
+  credentials: ApiCredentials,
+  requestId: string,
+  request: AccessRequestDecisionRequest,
+): Promise<unknown> {
+  return apiRequest(
+    {
+      path: `/api/admin/access-requests/${requestId}/decision`,
+      method: "POST",
+      body: request,
+      credentials,
+    },
+    (payload) => payload,
+  );
+}

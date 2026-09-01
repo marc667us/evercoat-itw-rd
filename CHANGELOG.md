@@ -1,5 +1,90 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-09-01 — the landing page stops being a demonstration: L1, L2, L3, L4
+
+All four open landing-page items closed, and none of them by loosening a check.
+
+🔴 **L1 — `public_intel.access_requests` HAD A WRITER AND NO READER.**
+`POST /api/public/access-requests` has recorded interest since migration 059.
+Nothing in `apps/api/app` or `apps/web` had ever read it back, so the landing
+page thanked every visitor for a request that no screen in the product could
+open. `MEMORY.md` states the rule it breaks — *a route with no caller, a
+permission with no enforcement point and a table with no writer are one
+defect* — and a table with no READER is the same defect from the other side,
+and the more misleading one, because the writer succeeds.
+
+**No migration was needed.** The schema had been ready the whole time: `status`
+already CHECKs `new|approved|rejected`, `decided_by` already references
+`core.users`, `decided_at` already existed, and there was already an index on
+`(status, created_at DESC)`. What was missing was the reader and the decision.
+`GET /api/admin/access-requests` and
+`POST /api/admin/access-requests/{id}/decision` now exist, gated on
+`admin.users`, with an Administration screen carrying the controls.
+
+- **Approving is a BIND, not a registration**, and the form says so. Keycloak
+  owns identity and self-registration stays off (ADR-025), so an approval
+  carries the `keycloak_sub` of an identity that already exists.
+- 🔴 **`_bind_subject` was EXTRACTED from `invite_member`, not copied.** Every
+  hard-won part of that bind — 050's standing check arriving as a
+  `ProgrammingError` rather than an `IntegrityError`, three constraints that
+  must be told apart, and a bounded retry whose own failure needs its own
+  handler — would otherwise have been reproduced at a second call site. The
+  file's own docstring names that shape: *a second entry point would be the
+  I5/I36 shape this codebase has already logged twice.*
+- ⚠️ **The address is not an input.** The bind uses the address that was
+  SUBMITTED, read from the request row, so an approval cannot be redirected to
+  a different person than the one that was reviewed.
+- ⚠️ **An approval must grant a role.** A membership with no role holds no
+  permission — an account that signs in and reaches nothing, a "yes" that
+  behaves like a "no". Refused at 422 rather than created.
+- 🔴 **Three guards falsified**, each going red on exactly one test: binding a
+  different address, ignoring the status filter, and removing the `FOR UPDATE`
+  status re-check. A fourth mutation was written first and **passed** — it
+  substituted a value the test never sent, so it proved nothing and was
+  replaced. A guard is not falsified until the mutation actually changes what
+  the test observes.
+- ⚠️ **NEW ISSUE I113.** This queue is platform-wide, not tenant-scoped: an
+  access request names no organization, so in a multi-tenant deployment an
+  administrator sees applicants who did not mean to apply here. Named on the
+  screen and in the route rather than papered over.
+
+🔴 **L2 / L4 — 38 manufacturers and 44 products became 50 and 151**, every one
+fetched before publication. Thirteen manufacturers added — Troton, HB BODY,
+Novol, Roberlo, Mipa, WEICON, Farecla, Menzerna, Tenax, Scott Bader, APP, and
+Sunmight repointed. **The verifier was not loosened and it dropped six rows**:
+Lechler's homepage answered 520, WEICON HP 404, one Scott Bader resin 502, and
+3M, DeVilbiss and Meguiar's still refuse this client — so L4's 3M remains a
+measurement rather than an oversight. **Sunmight had been absent because its
+URL was wrong, not because the company is not real**; the citation was the
+defect. Chemistry is stated conservatively: "Ultralight Carbon" is recorded as
+unsaturated polyester rather than as a carbon-fibre composite, because the name
+is a brand and not a datasheet. Still no prices.
+
+🔴 **L3 — THE NEWS FEED CARRIES REAL NEWS.** 36 invented items replaced by
+**120 syndicated items from 8 real sources**, zero demonstration rows.
+`scripts/ingest_public_news.py` answers the licence question narrowly and
+checkably: only sources that PUBLISH A FEED for syndication; `robots.txt`
+consulted before every fetch, failing CLOSED on 5xx or an unreachable host
+because *"we could not ask" is not permission*; and **headline and link only —
+`summary` is written NULL and stays NULL**, not even the feed's own
+`<description>`, because reproducing a publisher's prose is the part that needs
+a licence and naming their headline is not.
+
+- 🔴 **THE ROBOTS CHECK REFUSED A SOURCE ON ITS FIRST RUN.** `epa.gov` disallows
+  its newsroom feed for this agent, so the EPA is not ingested. A guard that has
+  only ever allowed has not been shown to refuse.
+- ⚠️ **A missing date is rendered as no date, never as `now()`.** An invented
+  timestamp beside a real headline is the 2026-08-30 dates defect in a new
+  costume.
+- ⚠️ **Ruff's `S314` was answered by removing the capability, not suppressing
+  it** — a payload declaring a DTD or ENTITY is refused before parsing and the
+  body is size-capped, following the rule `seed_public_intel_real.py` set when
+  it hit the sibling finding.
+- Categorisation is this application's editorial act, not the publisher's, and
+  `relevance_score` stays NULL because nothing here scores relevance.
+
+apps/web **290 / 0 / 0**. New API route tests **12 / 0 / 0**.
+
 ## 2026-08-31 (part 4) — I12: the last MVP-1 slice gets its browser surface
 
 Eight messaging endpoints had shipped in Slice 7 with no client, no hook and no
