@@ -47,6 +47,7 @@ from app.api.testing import reference_router as testing_reference_router
 from app.api.testing import router as testing_router
 from app.core.config import settings
 from app.core.logging import configure_logging
+from app.domains.events.wiring import wire_domain_events
 
 __all__ = ["app", "create_app"]
 
@@ -226,6 +227,16 @@ def create_app() -> FastAPI:
     # rather than leak. Do not add an auth dependency to make it "consistent",
     # and do not point any other router at the public pool.
     application.include_router(public_router, prefix="/api/public", tags=["public"])
+
+    # 🔴 SPEC §22. Register the domain-event reactions BEFORE any request can
+    # arrive. Called explicitly rather than relying on an import side effect:
+    # a bare `import wiring` reads as dead code to every linter and every
+    # reader, and the day somebody removes it the chains stop reacting while
+    # every existing test still passes.
+    #
+    # `test_every_declared_event_type_has_a_consumer` is what turns that
+    # silence into a failure.
+    wire_domain_events()
     # Administration section 1 -- the write path for users, roles and
     # permissions. Live from Slice 1 (ADR-021): a configuration value
     # with no screen is a value nobody can write.

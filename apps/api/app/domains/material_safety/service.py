@@ -48,6 +48,9 @@ from app.domains.approvals.service import (
     open_route,
     route_for_entity,
 )
+from app.domains.events.service import SAFETY_REVIEW_REQUIRED
+from app.domains.events.service import emit as emit_domain_event
+from app.domains.formulations.service import safety_blocks
 from app.domains.materials.service import material_usage
 
 __all__ = [
@@ -69,6 +72,7 @@ __all__ = [
     "list_interpretable_documents",
     "list_interpretations_for_material",
     "list_pending_interpretations",
+    "on_formula_version_created",
     "open_safety_review",
     "raise_alerts_for_revision",
     "safety_review_status",
@@ -1341,3 +1345,69 @@ def open_safety_review(
     )
 
     return {"id": review_id, "route": route}
+
+
+# ---------------------------------------------------------------------------
+# §22, first chain — the reaction to `FormulaVersionCreated`
+# ---------------------------------------------------------------------------
+
+
+def on_formula_version_created(
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    subject_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+    payload: dict[str, Any] | None = None,
+    actor_id: uuid.UUID | None = None,
+    triggered_by_event: int | None = None,
+) -> dict[str, Any]:
+    """`FormulaVersionCreated` → this evaluates → `SafetyReviewRequired`.
+
+    §22's first chain, and until migration 066 only its first hop existed:
+    `revise_version` announced the fact and **nothing consumed it**.
+
+    🔴 IT ASKS THE FORMULATIONS MODULE, IT DOES NOT RE-DERIVE THE ANSWER.
+    `formulations.safety_blocks` wraps the same `_safety_checks` the submission
+    gate uses, over components loaded through `materials.usable_documents`. A
+    join written here would be a second opinion about whether a formula is
+    safe, and the version this repository would notice last is the one where
+    the safety module says clean and submission refuses.
+
+    ⚠️ IT RAISES NO ALERT AND WRITES NO CONTROLLED RECORD. `safety_alerts` is
+    the SDS-revision chain's table (§23) and is raised per PROJECT by a
+    permissioned act; announcing here as well would put two writers on one
+    table for two different reasons. What this produces is the ANNOUNCEMENT
+    that a review is required — which is what §22 asks for, and what a screen
+    or a later consumer can react to.
+
+    ⚠️ AND IT IS SILENT WHEN THERE IS NOTHING TO SAY. A version whose materials
+    all have their sheets announces nothing. An event stream that fires on
+    every revision regardless trains its readers to ignore it, which is the
+    same reason `raise_alerts_for_revision` refuses to raise on "no substantive
+    change".
+    """
+    blocks = safety_blocks(session, version_id=subject_id, organization_id=organization_id)
+    if not blocks:
+        return {"event_id": None, "blocks": []}
+
+    payload = payload or {}
+    event_id = emit_domain_event(
+        session,
+        organization_id=organization_id,
+        event_type=SAFETY_REVIEW_REQUIRED,
+        subject_id=subject_id,
+        project_id=project_id,
+        payload={
+            "version_code": payload.get("version_code"),
+            # The sentences, not a count. "2 problems" sends the reader looking;
+            # "RM-0042 requires a safety data sheet and none is on file" is the
+            # answer.
+            "reasons": list(blocks),
+            "triggered_by_event": triggered_by_event,
+        },
+        # No actor: a reaction has no person behind it. Somebody revised a
+        # formula; nobody decided this version needed a safety review.
+        actor_id=None,
+    )
+    return {"event_id": event_id, "blocks": list(blocks)}

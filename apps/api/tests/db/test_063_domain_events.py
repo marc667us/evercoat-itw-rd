@@ -255,6 +255,10 @@ def test_every_declared_event_type_has_an_emitter():
         "FormulaVersionCreated": "FORMULA_VERSION_CREATED",
         "TestResultFinalized": "TEST_RESULT_FINALIZED",
         "ResearchInvestigationUpdatedByTestResult": "INVESTIGATION_UPDATED_BY_TEST",
+        # 066. Emitted by `material_safety.on_formula_version_created`, which
+        # lives outside the events module, so the constant appears in
+        # application source and this scan finds it.
+        "SafetyReviewRequired": "SAFETY_REVIEW_REQUIRED",
     }
     assert set(constants) == set(EVENT_SUBJECTS), (
         "this test's own map has drifted from EVENT_SUBJECTS; update both"
@@ -512,3 +516,278 @@ def test_a_closed_investigation_is_not_told(owner_session, events_org):
     )
     assert result["investigations_notified"] == []
     owner_session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# §22 chain 1 (066) — an event with no reader is not an integration
+# ---------------------------------------------------------------------------
+
+
+def test_every_declared_event_type_has_a_consumer_or_is_named_as_terminal() -> None:
+    """🔴 THE MIRROR OF `test_every_declared_event_type_has_an_emitter`.
+
+    That test catches a name nobody can produce. This one catches a fact
+    nobody reacts to — which is what `FormulaVersionCreated` was for the whole
+    life of migration 063: announced by `revise_version`, consumed by nothing,
+    and reading like integration.
+
+    ⚠️ NOT EVERY EVENT NEEDS A CONSUMER, so this is not "everything must be
+    subscribed". Two of the four are TERMINAL by design — the end of a chain,
+    recorded for a screen and a later reader rather than to drive another
+    module. They are named individually so a fifth type forces a decision
+    rather than silently joining them.
+    """
+    from app.domains.events.service import EVENT_SUBJECTS, subscribers
+    from app.domains.events.wiring import wire_domain_events
+
+    wire_domain_events()
+
+    # 🔴 THREE SHAPES, NAMED SEPARATELY, BECAUSE THEY ARE NOT THE SAME THING.
+    #
+    # The first draft of this test had two and went red on
+    # `TestResultFinalized` -- which IS consumed, just not through the
+    # registry. Collapsing that into "terminal" would have hidden the most
+    # interesting fact in the file.
+    terminal = {
+        # End of chain 2: the investigation has been told. Nothing reacts to
+        # the telling.
+        "ResearchInvestigationUpdatedByTestResult",
+        # End of chain 1: a review is required. A screen reads it; no module
+        # reacts, and `safety_alerts` belongs to the SDS chain (§23) and is
+        # written by a permissioned act rather than by a reaction.
+        "SafetyReviewRequired",
+    }
+    # ⚠️ CONSUMED, BUT NOT DECOUPLED. `announce_test_result_finalized` emits
+    # this AND performs the reaction, in one function, inside the events
+    # module -- so `domains/events` itself knows about `research.investigations`.
+    # That is 063's shape and it works; it is simply not what §22 asks for,
+    # because the coupling moved into the events module rather than going
+    # away. Migrating it to the registry is chain 2's own slice.
+    reaction_lives_in_the_events_module = {"TestResultFinalized"}
+
+    for event_type in EVENT_SUBJECTS:
+        if event_type in terminal:
+            assert not subscribers(event_type), (
+                f"{event_type} is named terminal here but something now reacts "
+                "to it — decide which it is and say so."
+            )
+            continue
+        if event_type in reaction_lives_in_the_events_module:
+            continue
+        assert subscribers(event_type), (
+            f"{event_type} is announced and nothing consumes it. An event with "
+            "no reader reads as integration and is a log entry. Either wire a "
+            "reaction in domains/events/wiring.py or name it above."
+        )
+
+
+@pytest.fixture
+def version_missing_its_sds(owner_session, events_org):
+    """A draft version whose only material REQUIRES an SDS and has none.
+
+    That is the exact state `formulations._safety_checks` refuses at
+    submission, so it is the state the safety module must react to when the
+    version is created.
+    """
+    suffix = events_org["suffix"]
+    org = events_org["org_id"]
+    project = events_org["project_id"]
+    user = events_org["user_id"]
+
+    material = owner_session.execute(
+        text(
+            """
+            INSERT INTO materials.materials
+                (organization_id, material_code, name, category, role, status,
+                 density_g_cm3, requires_sds, created_by)
+            VALUES (:o, :c, :c, 'Fixture', 'resin', 'approved', 1.2000, true, :u)
+            RETURNING id
+            """
+        ),
+        {"o": org, "c": f"RM-SDS-{suffix}", "u": user},
+    ).scalar_one()
+
+    formula = owner_session.execute(
+        text(
+            """
+            INSERT INTO formulations.formulas
+                (organization_id, project_id, formula_code, name, owner_user_id, created_by)
+            VALUES (:o, :p, :c, 'Chain 1 fixture', :u, :u) RETURNING id
+            """
+        ),
+        {"o": org, "p": project, "c": f"FRM-E-{suffix}", "u": user},
+    ).scalar_one()
+
+    version = owner_session.execute(
+        text(
+            """
+            INSERT INTO formulations.formula_versions
+                (organization_id, project_id, formula_id, version_number, version_code,
+                 status, created_by)
+            VALUES (:o, :p, :f, 1, :vc, 'draft', :u) RETURNING id
+            """
+        ),
+        {"o": org, "p": project, "f": formula, "vc": f"FRM-E-{suffix}-V001", "u": user},
+    ).scalar_one()
+
+    owner_session.execute(
+        text(
+            """
+            INSERT INTO formulations.formula_components
+                (organization_id, project_id, formula_version_id, material_id, percentage)
+            VALUES (:o, :p, :v, :m, 100.0000)
+            """
+        ),
+        {"o": org, "p": project, "v": version, "m": material},
+    )
+
+    yield {"version_id": version, "material_id": material, "formula_id": formula}
+
+    owner_session.execute(
+        text("DELETE FROM formulations.formula_components WHERE formula_version_id = :v"),
+        {"v": version},
+    )
+    owner_session.execute(
+        text("DELETE FROM formulations.formula_versions WHERE id = :v"), {"v": version}
+    )
+    owner_session.execute(text("DELETE FROM formulations.formulas WHERE id = :f"), {"f": formula})
+    owner_session.execute(text("DELETE FROM materials.materials WHERE id = :m"), {"m": material})
+
+
+def test_a_new_version_missing_an_sds_announces_that_a_review_is_required(
+    owner_session, events_org, version_missing_its_sds
+) -> None:
+    """§22 chain 1, end to end, through the REAL dispatch.
+
+    🔴 ASSERTED ON THE SECOND EVENT, NOT THE FIRST. `FormulaVersionCreated`
+    was being written before this chain existed; asserting it proves nothing
+    about the reaction. What is new is that the safety module ANSWERED.
+
+    Falsified by removing the `subscribe` call in `wiring.py`: the first event
+    is still written and this goes red — verified before it was committed.
+    """
+    from app.domains.events.service import (
+        FORMULA_VERSION_CREATED,
+        SAFETY_REVIEW_REQUIRED,
+        dispatch,
+    )
+    from app.domains.events.wiring import wire_domain_events
+
+    wire_domain_events()
+
+    org = events_org["org_id"]
+    version_id = version_missing_its_sds["version_id"]
+
+    results = dispatch(
+        owner_session,
+        organization_id=org,
+        event_type=FORMULA_VERSION_CREATED,
+        subject_id=version_id,
+        project_id=events_org["project_id"],
+        payload={"version_code": "F001-v2"},
+        actor_id=events_org["user_id"],
+    )
+
+    assert results, "nothing reacted to FormulaVersionCreated"
+    outcome = results[0]
+
+    assert outcome["blocks"], (
+        "the safety module found nothing wrong with a version whose only "
+        "material requires an SDS and has none — which is the exact state "
+        "submission refuses"
+    )
+    assert outcome["event_id"] is not None
+
+    announced = owner_session.execute(
+        text(
+            """
+            SELECT payload FROM workflow.domain_events
+             WHERE organization_id = :org AND event_type = :etype AND subject_id = :sid
+            """
+        ),
+        {"org": org, "etype": SAFETY_REVIEW_REQUIRED, "sid": version_id},
+    ).scalar_one()
+
+    # 🔴 THE REASONS TRAVEL WITH THE EVENT. "2 problems" sends the reader
+    # looking; the sentence names the material.
+    assert announced["reasons"], "the announcement carried no reason"
+    assert any("safety data sheet" in reason for reason in announced["reasons"])
+
+
+def test_a_version_whose_materials_have_their_sheets_announces_nothing(
+    owner_session, events_org
+) -> None:
+    """The other direction, and the one that makes the test above mean something.
+
+    A reaction that announced on every revision would pass the test above
+    while being useless — an event stream that always fires trains its readers
+    to ignore it, which is why `raise_alerts_for_revision` also refuses to
+    raise on "no substantive change".
+
+    Here the version has no components at all, so there is no unmet SDS
+    requirement and nothing should be said.
+    """
+    from app.domains.events.service import (
+        FORMULA_VERSION_CREATED,
+        SAFETY_REVIEW_REQUIRED,
+        dispatch,
+    )
+    from app.domains.events.wiring import wire_domain_events
+
+    wire_domain_events()
+
+    suffix = events_org["suffix"]
+    org = events_org["org_id"]
+    project = events_org["project_id"]
+    user = events_org["user_id"]
+
+    formula = owner_session.execute(
+        text(
+            """
+            INSERT INTO formulations.formulas
+                (organization_id, project_id, formula_code, name, owner_user_id, created_by)
+            VALUES (:o, :p, :c, 'Chain 1 clean', :u, :u) RETURNING id
+            """
+        ),
+        {"o": org, "p": project, "c": f"FRM-C-{suffix}", "u": user},
+    ).scalar_one()
+    version = owner_session.execute(
+        text(
+            """
+            INSERT INTO formulations.formula_versions
+                (organization_id, project_id, formula_id, version_number, version_code,
+                 status, created_by)
+            VALUES (:o, :p, :f, 1, :vc, 'draft', :u) RETURNING id
+            """
+        ),
+        {"o": org, "p": project, "f": formula, "vc": f"FRM-C-{suffix}-V001", "u": user},
+    ).scalar_one()
+
+    try:
+        results = dispatch(
+            owner_session,
+            organization_id=org,
+            event_type=FORMULA_VERSION_CREATED,
+            subject_id=version,
+            project_id=project,
+            payload={"version_code": "F002-v1"},
+            actor_id=user,
+        )
+        assert results[0]["blocks"] == []
+        assert results[0]["event_id"] is None
+
+        announced = owner_session.execute(
+            text(
+                "SELECT count(*) FROM workflow.domain_events "
+                " WHERE organization_id = :org AND event_type = :etype AND subject_id = :sid"
+            ),
+            {"org": org, "etype": SAFETY_REVIEW_REQUIRED, "sid": version},
+        ).scalar_one()
+        assert announced == 0, "a review was announced for a version with nothing wrong"
+    finally:
+        owner_session.execute(
+            text("DELETE FROM formulations.formula_versions WHERE id = :v"), {"v": version}
+        )
+        owner_session.execute(
+            text("DELETE FROM formulations.formulas WHERE id = :f"), {"f": formula}
+        )

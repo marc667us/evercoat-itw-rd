@@ -61,7 +61,7 @@ from app.core.audit import AuditEvent, write_audit
 from app.core.db import guarded_write
 from app.core.tenancy import require_active_member
 from app.domains.events.service import FORMULA_VERSION_CREATED
-from app.domains.events.service import emit as emit_domain_event
+from app.domains.events.service import dispatch as dispatch_domain_event
 from app.domains.failures.service import DriverInput, record_driver
 from app.domains.materials.service import BLOCKING_STATUSES
 
@@ -85,6 +85,7 @@ __all__ = [
     "list_formulas",
     "record_observed_effect",
     "revise_version",
+    "safety_blocks",
     "set_classification",
     "set_components",
     "submit_version",
@@ -1438,16 +1439,19 @@ def revise_version(
         ),
     )
 
-    # 🔴 SPEC §22, FIRST CHAIN: `FormulaVersionCreated` -> the safety module
-    # evaluates -> `SafetyReviewRequired`.
+    # 🔴 SPEC §22, FIRST CHAIN, NOW CLOSED (066): `FormulaVersionCreated` ->
+    # the safety module evaluates -> `SafetyReviewRequired`.
     #
-    # ⚠️ ONLY THE FIRST HOP EXISTS. The announcement is real and this is the one
-    # function that creates a revision, so it is the right place for it. Nothing
-    # consumes it yet -- the safety evaluation is still a direct call elsewhere,
-    # and rewiring a working cross-module call is a migration of behaviour
-    # rather than an addition. Recorded here so a reader does not infer from the
-    # emit that the chain is closed. It is not.
-    emit_domain_event(
+    # ⚠️ THIS USED TO SAY "Nothing consumes it yet", AND THAT WAS THE DEFECT.
+    # The announcement shipped in 063 and no module reacted to it, which reads
+    # as integration and is a log with no reader.
+    #
+    # 🔴 `dispatch`, NOT `emit`, AND THE DIFFERENCE IS THE WHOLE POINT OF §22.
+    # This module does not import `material_safety` and does not know who
+    # reacts; the reaction registers itself in `domains/events/wiring.py`. An
+    # import here would be a hard-coded cross-module call wearing an event's
+    # clothes, which is the thing §22 asks us not to build.
+    dispatch_domain_event(
         session,
         organization_id=organization_id,
         event_type=FORMULA_VERSION_CREATED,
@@ -1636,6 +1640,31 @@ def _safety_checks(rows: list[dict[str, Any]]) -> tuple[str, ...]:
         for r in rows
         if r["requires_sds"] and r["sds_count"] == 0
     )
+
+
+def safety_blocks(
+    session: Session, *, version_id: uuid.UUID, organization_id: uuid.UUID
+) -> tuple[str, ...]:
+    """The version's FAILED safety checks, as sentences. Empty when clear.
+
+    🔴 ONE DEFINITION OF "THIS FORMULA HAS A SAFETY PROBLEM", REACHED FROM BOTH
+    PLACES THAT ASK.
+
+    The submission gate has always asked it through `_safety_checks`, and §22's
+    first chain needs the same question answered when a version is CREATED
+    rather than submitted. Two joins would be two answers, and the one this
+    repository would notice last is a formula the safety module calls clean
+    while submission refuses it. So the safety module calls this, and this
+    calls the same private rule the gate does.
+
+    ⚠️ IT IS NOT A SECOND OPINION ABOUT USABILITY EITHER. `_load_components`
+    counts SDS documents through `materials.usable_documents` — migration 037's
+    single definition of a usable document — so a sheet that is expired,
+    unscanned, unapproved or superseded is absent here exactly as it is at
+    submission.
+    """
+    rows = _load_components(session, version_id=version_id, organization_id=organization_id)
+    return _safety_checks(rows)
 
 
 # The presentation scale for every DERIVED property, matching

@@ -49,6 +49,7 @@ untraceable. Both, or neither.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import text
@@ -67,13 +68,114 @@ from sqlalchemy.orm import Session
 FORMULA_VERSION_CREATED = "FormulaVersionCreated"
 TEST_RESULT_FINALIZED = "TestResultFinalized"
 INVESTIGATION_UPDATED_BY_TEST = "ResearchInvestigationUpdatedByTestResult"
+# 066, §22's FIRST chain. Announced by the safety module when a newly created
+# formula version contains a material that requires a safety data sheet and has
+# none on file.
+SAFETY_REVIEW_REQUIRED = "SafetyReviewRequired"
 
 #: Event type -> the kind of record it is *about*.
 EVENT_SUBJECTS: dict[str, str] = {
     FORMULA_VERSION_CREATED: "formula_version",
     TEST_RESULT_FINALIZED: "test",
     INVESTIGATION_UPDATED_BY_TEST: "research_investigation",
+    # ABOUT the version that triggered it, so it reuses `formula_version`.
+    SAFETY_REVIEW_REQUIRED: "formula_version",
 }
+
+
+# ─── the registry ────────────────────────────────────────────────────────────
+#
+# 🔴 THIS IS WHAT MAKES §22 DECOUPLING RATHER THAN A LOG.
+#
+# 063 shipped the log, the emitter and one chain, and said plainly that it
+# rewired nothing: `revise_version` announced `FormulaVersionCreated` and
+# **nothing consumed it**. An event with no reader reads as integration and is
+# not one — the mirror of the table-with-no-writer defect this repository has
+# counted twenty-three of.
+#
+# The direction is the whole point. A handler registers itself; the emitting
+# module never learns who is listening and never imports them. `formulations`
+# does not import `material_safety` — if it did, this would be a hard-coded
+# cross-module call with extra ceremony, which is exactly what §22 asks us not
+# to build.
+#
+# ⚠️ SYNCHRONOUS, IN THE EMITTER'S TRANSACTION, for the reasons this module's
+# header already gives: the reaction cannot be lost, a failing consumer fails
+# the write loudly instead of leaving two modules disagreeing, and nothing
+# needs a cursor. The trade is real and unchanged — a slow consumer makes the
+# emitting write slow — and it stops being acceptable the moment a consumer
+# does I/O to anything but this database.
+_SUBSCRIBERS: dict[str, list[Callable[..., Any]]] = {}
+
+
+def subscribe(event_type: str, handler: Callable[..., Any]) -> None:
+    """Register a reaction to one event type.
+
+    Called from `app/domains/events/wiring.py` at import time, which is the one
+    place that knows both halves. Registering the same handler twice is a
+    no-op: `main.py` can be imported more than once in a test session and a
+    duplicated subscriber would run the reaction twice on one event.
+    """
+    if event_type not in EVENT_SUBJECTS:
+        raise DomainEventError(
+            f"{event_type!r} is not a declared domain event, so nothing can "
+            "ever announce it and this handler would never run."
+        )
+    handlers = _SUBSCRIBERS.setdefault(event_type, [])
+    if handler not in handlers:
+        handlers.append(handler)
+
+
+def subscribers(event_type: str) -> tuple[Callable[..., Any], ...]:
+    """Who reacts to this, in registration order. Readable by tests."""
+    return tuple(_SUBSCRIBERS.get(event_type, ()))
+
+
+def dispatch(
+    session: Session,
+    *,
+    organization_id: uuid.UUID,
+    event_type: str,
+    subject_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+    payload: dict[str, Any] | None = None,
+    actor_id: uuid.UUID | None = None,
+) -> list[Any]:
+    """Announce a fact AND run whatever reacts to it.
+
+    Returns each handler's result so a caller and a test can see what actually
+    happened, rather than trusting that something did.
+
+    ⚠️ AN EVENT WITH NO SUBSCRIBER IS NOT AN ERROR HERE. It is still recorded,
+    because the log is also read by a screen showing what happened to a record.
+    Whether a given type SHOULD have a consumer is a question for a test, not
+    for this function — `test_every_declared_event_type_has_a_consumer` is
+    where that is asserted, so a chain that quietly loses its reaction fails
+    there rather than going unnoticed here.
+    """
+    event_id = emit(
+        session,
+        organization_id=organization_id,
+        event_type=event_type,
+        subject_id=subject_id,
+        project_id=project_id,
+        payload=payload,
+        actor_id=actor_id,
+    )
+    results: list[Any] = []
+    for handler in subscribers(event_type):
+        results.append(
+            handler(
+                session,
+                organization_id=organization_id,
+                subject_id=subject_id,
+                project_id=project_id,
+                payload=payload or {},
+                actor_id=actor_id,
+                triggered_by_event=event_id,
+            )
+        )
+    return results
 
 
 class DomainEventError(RuntimeError):
