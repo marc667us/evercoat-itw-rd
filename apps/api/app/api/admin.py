@@ -903,10 +903,7 @@ def decide_access_request(
         if "admin.roles" not in principal.permissions:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "approving grants a role, which needs admin.roles as well "
-                    "as admin.users"
-                ),
+                detail=("approving grants a role, which needs admin.roles as well as admin.users"),
             )
         if not payload.keycloak_sub:
             raise HTTPException(

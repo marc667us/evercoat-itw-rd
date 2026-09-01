@@ -237,3 +237,111 @@ def _superuser_url() -> str | None:
     if not raw:
         return None
     return raw.replace("postgresql+psycopg://", "postgresql://")
+
+
+# ---------------------------------------------------------------------------
+# 065 — the cross-tenant WRITE 064 left open
+# ---------------------------------------------------------------------------
+
+
+def test_the_public_role_can_only_write_into_an_opted_in_organization(
+    owner_session, public_engine, two_tenants
+) -> None:
+    """🔴 064 CLOSED THE CROSS-TENANT READ AND LEFT THE WRITE OPEN.
+
+    Codex, second pass: 064's public policy was
+    `WITH CHECK (organization_id IS NOT NULL)`, and permissive policies are
+    ORed — so the anonymous role could plant an applicant row into any
+    organization it could name, bypassing the tenant predicate entirely. That
+    is the half-a-boundary shape this project has closed before: a `USING`
+    without a matching `WITH CHECK` filters reads and permits writes.
+
+    065 narrows it to organizations that have said they accept public access
+    requests. The database cannot ask `evercoat_public` "is this YOUR
+    organization" — it has no identity and any GUC it could set it could also
+    lie about — but it can ask whether the TARGET opted in, which is a property
+    of the organization and not of the caller.
+
+    🔴 ASSERTED IN BOTH DIRECTIONS, because a refusal test alone cannot tell
+    "the policy works" from "the insert was broken anyway".
+    """
+    marker = f"opt-in-{uuid.uuid4()}@t065probe.org"
+
+    # Neither tenant has opted in yet: both must be refused.
+    for tenant in ("a", "b"):
+        with (
+            public_engine.begin() as conn,
+            pytest.raises(DBAPIError, match="row-level security"),
+        ):
+            conn.execute(
+                text(
+                    "INSERT INTO public_intel.access_requests"
+                    " (organization_id, full_name, work_email, company)"
+                    " VALUES (:o, 'T', :e, 'C')"
+                ),
+                {"o": two_tenants[tenant], "e": marker},
+            )
+
+    # Opt ONE of them in, and only that one becomes writable.
+    owner_session.rollback()
+    owner_session.execute(
+        text("UPDATE core.organizations SET accepts_public_access_requests = true WHERE id = :o"),
+        {"o": two_tenants["a"]},
+    )
+    owner_session.commit()
+
+    try:
+        with public_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public_intel.access_requests"
+                    " (organization_id, full_name, work_email, company)"
+                    " VALUES (:o, 'T', :e, 'C')"
+                ),
+                {"o": two_tenants["a"], "e": marker},
+            )
+
+        # ...and the one that did NOT opt in is still refused, on the same
+        # connection, in the same run. This is the half that makes the test
+        # falsifiable: dropping the opt-in check makes it go red while the
+        # positive case above stays green.
+        with (
+            public_engine.begin() as conn,
+            pytest.raises(DBAPIError, match="row-level security"),
+        ):
+            conn.execute(
+                text(
+                    "INSERT INTO public_intel.access_requests"
+                    " (organization_id, full_name, work_email, company)"
+                    " VALUES (:o, 'T', :e, 'C')"
+                ),
+                {"o": two_tenants["b"], "e": marker},
+            )
+    finally:
+        owner_session.rollback()
+        owner_session.execute(
+            text("SELECT set_config('app.current_org', :o, false)"),
+            {"o": str(two_tenants["a"])},
+        )
+        owner_session.execute(
+            text("DELETE FROM public_intel.access_requests WHERE work_email = :e"),
+            {"e": marker},
+        )
+        owner_session.commit()
+
+
+def test_the_anonymous_role_cannot_read_the_organization_list(public_engine) -> None:
+    """The opt-in check must not have handed the public role a tenant directory.
+
+    065 could have been written as `EXISTS (SELECT 1 FROM core.organizations ...)`
+    inside the policy — but a policy predicate runs with the CALLER's
+    privileges, so that would have required granting `evercoat_public` SELECT
+    on `core.organizations`: giving the anonymous role a readable list of every
+    tenant in order to stop it writing to them. The SECURITY DEFINER function
+    exists so that grant is not needed, and this asserts it was not made.
+    """
+    with (
+        public_engine.connect() as conn,
+        pytest.raises(DBAPIError, match="permission denied"),
+    ):
+        conn.execute(text("SELECT count(*) FROM core.organizations"))

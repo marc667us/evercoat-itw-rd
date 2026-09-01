@@ -209,6 +209,26 @@ DEFINER_OWNED_BY_DESIGN = {
     # This test has now caught the addition FOUR times, which is the
     # argument for keeping it exact rather than loosening it.
     "core.project_lead",
+    # Migration 065. The FIFTH time this test has caught an addition, and it
+    # went red the moment `ALTER FUNCTION ... OWNER TO evercoat_owner` was
+    # written — which is the acknowledgement being recorded here rather than a
+    # way of quieting the check.
+    #
+    # Why it must be a definer: it is consulted by the RLS policy that lets
+    # `evercoat_public` write an access request, and a policy predicate is
+    # evaluated with the CALLER's privileges. Written as a plain
+    # `EXISTS (SELECT 1 FROM core.organizations ...)` it would have required
+    # granting the anonymous role SELECT on `core.organizations` — handing it a
+    # readable directory of every tenant in order to stop it writing to them.
+    # The function answers one boolean about one id and grants nothing else.
+    #
+    # ⚠️ IT IS DELIBERATELY NOT AN ORACLE OF ANY VALUE. It discloses only
+    # whether an organization the caller already named has opted in to
+    # receiving public access requests — which that caller can determine
+    # anyway by attempting the insert and observing the refusal. It takes a
+    # single uuid and returns a single boolean; there is no shape of it that
+    # answers a question about anybody's data.
+    "core.accepts_public_access_requests",
 }
 
 

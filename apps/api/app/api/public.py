@@ -376,10 +376,7 @@ def create_access_request(payload: AccessRequestIn, request: Request) -> dict[st
     if owner is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "this deployment has not been configured to receive access "
-                "requests"
-            ),
+            detail=("this deployment has not been configured to receive access requests"),
         )
 
     client_host = _client_ip(request)

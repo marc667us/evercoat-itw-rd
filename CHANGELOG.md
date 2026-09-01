@@ -119,7 +119,39 @@ a licence and naming their headline is not.
 - Categorisation is this application's editorial act, not the publisher's, and
   `relevance_score` stays NULL because nothing here scores relevance.
 
-apps/web **290 / 0 / 0**. New API route tests **12 / 0 / 0**.
+🔴 **AND CODEX FAILED THE FIXES TOO.** Eight of ten findings fixed, one
+partial, **one NOT fixed**, plus four new. The one that mattered was mine and
+it was the defect I claim to hunt: my "concurrency" test locked the row itself
+and never called the route, so it passed with `FOR UPDATE` deleted.
+
+**Migration 065** closes the last authorization finding. 064 shut the
+cross-tenant READ; Codex found it had left the cross-tenant WRITE open,
+because the public INSERT policy accepted any non-null organization and
+permissive policies are ORed. An organization now opts in
+(`accepts_public_access_requests`, default **false**), consulted through a
+SECURITY DEFINER function so the anonymous role does not need SELECT on
+`core.organizations` — which would have handed it a directory of every tenant
+in order to stop it writing to them. Falsified by reverting the policy in the
+DATABASE.
+
+🔴 **THE REDIRECT GUARD WAS THE SAME SHAPE AS THE INVARIANT IN THE SAME FILE.**
+It kept `follow_redirects=True` and re-checked `robots.txt` on `response.url`
+afterwards — by which time httpx had already made the request. **A check that
+runs after the thing it guards is a report.** Redirects are followed by hand
+now, one hop at a time, robots asked about each destination first.
+
+🔴 **AND `FOR UPDATE` ENDS THE DAY UNTESTED, WRITTEN DOWN RATHER THAN DRESSED
+UP (I114).** Three attempts, all three green with the lock deleted:
+`pg_stat_activity.query` is masked for another role's backends; the route
+blocks at the `UPDATE` even without the lock; and `TestClient` serialises
+concurrent requests through one portal, which a client per thread did not
+separate. A fourth guard that could not fail would be worse than the gap.
+
+064 had also forgotten `UNIQUE (id, organization_id)` until the tenancy test
+said so, and `test_object_ownership` caught the new definer for the fifth
+time. Both guards working exactly as designed.
+
+apps/api **1069 / 0 / 11**. apps/web **290 / 0 / 0**.
 
 ## 2026-08-31 (part 4) — I12: the last MVP-1 slice gets its browser surface
 

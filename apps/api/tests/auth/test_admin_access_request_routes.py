@@ -134,11 +134,32 @@ def queued_request(owner_session, admin_org) -> Iterator[dict[str, object]]:
             text("DELETE FROM core.users WHERE keycloak_sub LIKE :p"),
             {"p": f"l1-bound-{sfx}%"},
         )
+        # 🔴 NAME THE TENANT, THEN ASSERT THE DELETE ACTUALLY HAPPENED.
+        #
+        # This row is behind FORCE RLS and the owner is governed by the same
+        # predicate as everyone else, so a teardown that has lost the GUC
+        # deletes NOTHING and says nothing about it — and the next fixture up
+        # then fails on `access_requests_decided_by_fkey` while deleting the
+        # user that decided it. That is a confusing error two fixtures away
+        # from its cause, and it is what happened.
+        #
+        # Re-setting it here rather than relying on the value from setup is the
+        # same discipline `_status_of` applies: `app.current_org` is a property
+        # of a CONNECTION, and a pooled connection is not a durable place to
+        # keep one.
         owner_session.execute(
+            text("SELECT set_config('app.current_org', :org, false)"),
+            {"org": str(admin_org["org_id"])},
+        )
+        removed = owner_session.execute(
             text("DELETE FROM public_intel.access_requests WHERE id = :i"),
             {"i": request_id},
-        )
+        ).rowcount
         owner_session.commit()
+        assert removed == 1, (
+            f"teardown deleted {removed} access requests, not 1 — the row is "
+            "still there and the next fixture will fail on its foreign key"
+        )
 
 
 def _headers(make_token, sub: str, org_id: object) -> dict[str, str]:
@@ -565,73 +586,42 @@ def test_another_organizations_administrator_cannot_see_the_request(
         owner_session.commit()
 
 
-def test_the_row_lock_serialises_two_deciders(owner_engine, queued_request) -> None:
-    """THE CONCURRENCY PROPERTY, ON TWO REAL CONNECTIONS.
-
-    `test_deciding_twice_is_a_409` is sequential and cannot see this: by the
-    time its second request runs, the first has committed. The lock only
-    matters inside the window where the first decider is still open.
-
-    Two connections, in order: A locks the row and stays open; B asks for the
-    same lock with `NOWAIT` and must be REFUSED. Without `FOR UPDATE` in the
-    route, B would read `new`, bind, and produce a second membership for the
-    same applicant -- or lose on `organization_members_unique` and surface as a
-    500, a contention failure wearing the clothes of a server fault.
-
-    `NOWAIT` rather than a timing sleep. A test that waits and hopes goes flaky
-    on a slow machine; asking PostgreSQL whether the lock is held is a question
-    with an answer.
-    """
-    from sqlalchemy.exc import DBAPIError
-
-    request_id = queued_request["id"]
-    first = owner_engine.connect()
-    second = owner_engine.connect()
-    try:
-        # Both connections are the owner, and the owner is governed by 064's
-        # predicate like everyone else, so each must name its tenant before it
-        # can see the row it is trying to lock.
-        for connection in (first, second):
-            connection.execute(
-                text("SELECT set_config('app.current_org', :org, false)"),
-                {"org": str(queued_request["organization_id"])},
-            )
-        first.execute(text("BEGIN"))
-        first.execute(
-            text("SELECT id FROM public_intel.access_requests WHERE id = :i FOR UPDATE"),
-            {"i": request_id},
-        )
-
-        second.execute(text("BEGIN"))
-        with pytest.raises(DBAPIError) as refused:
-            second.execute(
-                text("SELECT id FROM public_intel.access_requests WHERE id = :i FOR UPDATE NOWAIT"),
-                {"i": request_id},
-            )
-        assert "could not obtain lock" in str(refused.value).lower(), (
-            f"the second decider was not blocked by the first: {refused.value}"
-        )
-
-        second.execute(text("ROLLBACK"))
-        first.execute(text("ROLLBACK"))
-
-        # And once the first is done the second gets the lock, so the refusal
-        # above was the lock rather than something permanently wrong with the
-        # row. A one-directional assertion here would not tell them apart.
-        second.execute(text("BEGIN"))
-        second.execute(
-            text("SELECT id FROM public_intel.access_requests WHERE id = :i FOR UPDATE NOWAIT"),
-            {"i": request_id},
-        )
-        second.execute(text("ROLLBACK"))
-    finally:
-        first.close()
-        second.close()
-
-
 # ---------------------------------------------------------------------------
-# The two permission boundaries the reviewers forced
+# 🔴 THE `FOR UPDATE` SERIALISATION HAS NO TEST, AND THAT IS RECORDED RATHER
+#    THAN PAPERED OVER. Issue I114.
 # ---------------------------------------------------------------------------
+#
+# `decide_access_request` re-reads the request's status inside a `FOR UPDATE`
+# lock so two administrators deciding the same request cannot both proceed.
+# Codex raised, correctly, that `test_deciding_twice_is_a_409` cannot prove it:
+# the two requests are sequential, so the 409 comes from the committed status
+# alone and the test stays green with the lock deleted.
+#
+# THREE attempts at a real one were written and ALL THREE were green with
+# `FOR UPDATE` removed — each verified by deleting it and re-running, which is
+# the only reason this is known:
+#
+#   1. Take a competing `FOR UPDATE NOWAIT` on a second connection. Proves
+#      PostgreSQL implements row locks; never calls the route.
+#   2. Hold the row, drive the real route, watch `pg_locks` for a waiter
+#      blocked by the holder. Green either way — WITHOUT the lock the route
+#      still blocks, just later, at the `UPDATE`. It observed "the request
+#      blocks somewhere", which is not the property.
+#   3. Hold the row, drive TWO real decisions, assert the outcomes are
+#      {200, 409} rather than {200, 200}. Still green: Starlette's
+#      `TestClient` drives requests through one anyio portal, and giving each
+#      thread its own client did not separate them either — the second
+#      decision still ran after the first had committed.
+#
+# What is actually needed is two requests genuinely in flight at once against
+# a real server — the `tests/e2e/api` project runs the app under uvicorn and is
+# the right home — or a test-only synchronisation point inside the route, which
+# is app code added for a test and needs its own decision.
+#
+# Until then the lock is UNTESTED. It is not "covered by" the sequential test,
+# and a fourth guard that cannot fail would be worse than this comment, because
+# it would read as coverage. `MEMORY.md`: *a test that has only ever PASSED has
+# not been shown to detect anything.*
 
 
 @pytest.fixture
@@ -690,6 +680,25 @@ def binder_only(owner_session, admin_org) -> Iterator[str]:
         yield sub
     finally:
         owner_session.rollback()
+        # 🔴 THIS USER MAY HAVE DECIDED AN ACCESS REQUEST, AND THE FK IS
+        # RESTRICT. Whether that request has already been cleaned up depends
+        # on fixture teardown ORDER, which is a fragile thing for a teardown
+        # to rely on -- it produced a ForeignKeyViolation reported two
+        # fixtures away from its cause. Releasing the reference first makes
+        # this teardown correct on its own, in any order.
+        # ⚠️ AND IT NAMES THE TENANT. Under FORCE RLS this UPDATE matches
+        # nothing without `app.current_org`, silently -- which is how the fix
+        # above failed the first time it was written. Third occurrence of the
+        # same trap in this file: the GUC is a property of a CONNECTION, and a
+        # pooled connection is not a durable place to keep one.
+        owner_session.execute(
+            text("SELECT set_config('app.current_org', :org, false)"),
+            {"org": str(admin_org["org_id"])},
+        )
+        owner_session.execute(
+            text("UPDATE public_intel.access_requests SET decided_by = NULL WHERE decided_by = :u"),
+            {"u": uid},
+        )
         owner_session.execute(
             text("DELETE FROM core.member_roles WHERE member_id = :m"), {"m": mid}
         )
@@ -705,16 +714,9 @@ def binder_only(owner_session, admin_org) -> Iterator[str]:
 
 
 def test_approving_needs_admin_roles_and_rejecting_does_not(
-    client, make_token, owner_session, admin_org, binder_only, queued_request
+    client, make_token, owner_session, admin_org, queued_request, binder_only
 ) -> None:
     """APPROVING grants a role. REJECTING grants nothing. They differ.
-
-    ⚠️ NOTE THE FIXTURE ORDER. `queued_request` is requested LAST so it is set
-    up last and therefore torn down FIRST -- the rejection below writes
-    `decided_by`, and deleting the deciding user before the request it decided
-    violates `access_requests_decided_by_fkey`. Teardown order is a real
-    dependency here, not a style question.
-
 
     🔴 CODEX: the first version gated the whole route on `admin.users` while the
     approval branch called `_grant_role` -- so a caller holding only the

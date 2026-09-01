@@ -112,15 +112,14 @@ def upgrade() -> None:
             "project twice."
         )
 
-    policies = {
-        name: roles
-        for name, roles in bind.execute(
+    policies = dict(
+        bind.execute(
             text(
                 "SELECT policyname, roles::text FROM pg_policies "
                 "WHERE schemaname = 'public_intel' AND tablename = 'access_requests'"
             )
         ).all()
-    }
+    )
     for expected in ("access_requests_org_scope", "access_requests_public_insert"):
         if expected not in policies:
             raise RuntimeError(
@@ -167,9 +166,7 @@ def upgrade() -> None:
         )
     ).one()
     if not may_insert:
-        raise RuntimeError(
-            "evercoat_public cannot INSERT: the landing page's Sign Up is dead."
-        )
+        raise RuntimeError("evercoat_public cannot INSERT: the landing page's Sign Up is dead.")
     if may_select:
         raise RuntimeError(
             "evercoat_public gained SELECT on the access-request queue. An "
@@ -180,15 +177,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
-        "DROP POLICY IF EXISTS access_requests_public_insert "
-        "ON public_intel.access_requests"
+        "DROP POLICY IF EXISTS access_requests_public_insert ON public_intel.access_requests"
     )
-    op.execute(
-        "DROP POLICY IF EXISTS access_requests_org_scope ON public_intel.access_requests"
-    )
+    op.execute("DROP POLICY IF EXISTS access_requests_org_scope ON public_intel.access_requests")
     op.execute("ALTER TABLE public_intel.access_requests NO FORCE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE public_intel.access_requests DISABLE ROW LEVEL SECURITY")
     op.execute("DROP INDEX IF EXISTS public_intel.access_requests_org_status_idx")
-    op.execute(
-        "ALTER TABLE public_intel.access_requests DROP COLUMN IF EXISTS organization_id"
-    )
+    op.execute("ALTER TABLE public_intel.access_requests DROP COLUMN IF EXISTS organization_id")

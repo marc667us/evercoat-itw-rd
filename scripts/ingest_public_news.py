@@ -180,9 +180,24 @@ KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
 
 MAX_PER_SOURCE = 25
 
+# The four demonstration sources migration 059 seeded. Named literally, because
+# this script is entitled to remove them and is entitled to remove nothing else
+# it did not write. Their `(illustrative)` suffix is part of the seeded name.
+_DEMO_SOURCE_NAMES: tuple[str, ...] = (
+    "Industry Journal (illustrative)",
+    "Market Report (illustrative)",
+    "Regulatory Register (illustrative)",
+    "Trade Web Digest (illustrative)",
+)
+
 # A feed is a remote document from a host this script does not control, so it is
 # untrusted input and sized and shaped before it is parsed.
 MAX_FEED_BYTES = 5 * 1024 * 1024
+
+# Redirects are followed by hand so `robots.txt` can be consulted for each
+# destination BEFORE it is requested; see `fetch_feed`.
+MAX_REDIRECTS = 5
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 
 
 def parse_feed(payload: bytes) -> ET.Element:
@@ -282,34 +297,66 @@ def fetch_feed(url: str) -> tuple[int, bytes]:
     true of the fetch as well.
 
     **`robots.txt` was checked for the configured URL and the fetch followed
-    redirects.** So a feed that moves to another host would be fetched from a
-    host whose `robots.txt` was never consulted, while the module docstring
-    said *"checked before every fetch"*. The final URL is now re-checked
-    whenever the host changes, and a refusal there drops the source.
+    redirects**, so a feed that moved to another host was fetched from a host
+    whose `robots.txt` was never consulted.
+
+    🔴 THE FIRST FIX FOR THAT DID NOT WORK EITHER, and Codex caught it on the
+    second pass. It kept `follow_redirects=True` and re-checked
+    `response.url` afterwards — by which time httpx had already made the
+    request. **A check that runs after the thing it guards is a report.** It is
+    the same shape as the invariant that ran after the commit, in the same
+    file, in the same commit.
+
+    Redirects are now followed BY HAND, one hop at a time, with robots asked
+    about each destination *before* it is requested, an https-only rule, and a
+    hop limit.
 
     Both are the same defect this repository keeps cataloguing: a comment
     asserting a control that is not there.
     """
-    with httpx.stream(
-        "GET", url, headers={"User-Agent": UA}, timeout=30, follow_redirects=True
-    ) as response:
-        final = str(response.url)
-        if urllib.parse.urlsplit(final).netloc != urllib.parse.urlsplit(url).netloc:
-            allowed, why = robots_allows(final)
-            if not allowed:
-                raise FeedRefusedError(f"redirected to {final} and robots refused it: {why}")
+    target = url
+    for hop in range(MAX_REDIRECTS + 1):
+        with httpx.stream(
+            "GET",
+            target,
+            headers={"User-Agent": UA},
+            timeout=30,
+            follow_redirects=False,
+        ) as response:
+            if response.status_code in _REDIRECT_CODES:
+                location = response.headers.get("location")
+                if not location:
+                    raise FeedRefusedError(f"{response.status_code} with no Location header")
+                nxt = urllib.parse.urljoin(target, location)
+                if not nxt.lower().startswith("https://"):
+                    raise FeedRefusedError(f"redirect to a non-https target: {nxt}")
+                if hop == MAX_REDIRECTS:
+                    raise FeedRefusedError(f"more than {MAX_REDIRECTS} redirects")
+                # 🔴 THE CHECK HAPPENS BEFORE THE NEXT REQUEST, WHICH IS THE
+                # WHOLE POINT. Asked for every hop, not only a cross-host one:
+                # a same-host redirect can still move to a path `robots.txt`
+                # disallows, and asking twice costs one cached fetch.
+                allowed, why = robots_allows(nxt)
+                if not allowed:
+                    raise FeedRefusedError(f"redirect to {nxt} refused by robots: {why}")
+                target = nxt
+                continue
 
-        if response.status_code != 200:
-            return (response.status_code, b"")
+            if response.status_code != 200:
+                return (response.status_code, b"")
 
-        chunks: list[bytes] = []
-        total = 0
-        for chunk in response.iter_bytes():
-            total += len(chunk)
-            if total > MAX_FEED_BYTES:
-                raise FeedRefusedError(f"feed exceeded {MAX_FEED_BYTES} bytes and was abandoned")
-            chunks.append(chunk)
-    return (200, b"".join(chunks))
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_bytes():
+                total += len(chunk)
+                if total > MAX_FEED_BYTES:
+                    raise FeedRefusedError(
+                        f"feed exceeded {MAX_FEED_BYTES} bytes and was abandoned"
+                    )
+                chunks.append(chunk)
+            return (200, b"".join(chunks))
+
+    raise FeedRefusedError("redirect loop")
 
 
 def _published(item: ET.Element) -> dt.datetime | None:
@@ -446,22 +493,29 @@ def main() -> None:
         conn.execute(
             text("DELETE FROM public_intel.news_items WHERE generated_by = 'ingest_public_news.py'")
         )
-        # 🔴 ONLY ORPHANS THIS SCRIPT IS ENTITLED TO REMOVE. Raised by Codex:
-        # the first version deleted EVERY orphaned source, so a manually
-        # curated source that happened to have no current items would vanish
-        # during an unrelated news refresh — a destructive side effect of a
-        # routine job, on rows this script did not create.
+        # 🔴 ONLY ORPHANS THIS SCRIPT ACTUALLY OWNS, BY NAME.
         #
-        # Two kinds are in scope and no others: the demonstration sources 059
-        # seeded, which carry no `source_type` and are what this ingestion
-        # replaces, and this script's own `syndicated_feed` rows.
+        # The first version deleted EVERY orphaned source. Codex called that a
+        # destructive side effect of a routine job on rows this script did not
+        # create. The second version narrowed it to `source_type` — and Codex
+        # was right again on the next pass: **a type is not provenance.** Any
+        # other tool writing a `syndicated_feed` source would still have been
+        # deleted by a news refresh.
+        #
+        # The set is now enumerated. Exactly two kinds are in scope: the names
+        # in `SOURCES`, which this script owns because it writes them, and the
+        # migration-059 demonstration rows, which are what this ingestion
+        # replaces and which are identified by their literal seeded names
+        # rather than by a shape. Anything else survives, whatever its type.
+        owned = [name for name, _t, _h, _f, _s in SOURCES] + list(_DEMO_SOURCE_NAMES)
         conn.execute(
             text(
                 "DELETE FROM public_intel.news_sources s"
-                " WHERE (s.source_type IS NULL OR s.source_type = 'syndicated_feed')"
+                " WHERE s.name = ANY(:owned)"
                 "   AND NOT EXISTS (SELECT 1 FROM public_intel.news_items i"
                 "                    WHERE i.source_id = s.id)"
-            )
+            ),
+            {"owned": owned},
         )
 
         source_ids: dict[str, object] = {}

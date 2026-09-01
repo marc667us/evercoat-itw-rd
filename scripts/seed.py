@@ -236,9 +236,19 @@ def main() -> None:
         # --- organization -------------------------------------------------
         cur.execute(
             """
-            INSERT INTO core.organizations (code, name)
-            VALUES (%s, 'ITW Evercoat (Demo)')
-            ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+            -- `accepts_public_access_requests` is TRUE here and FALSE by
+            -- default everywhere else (migration 065). This is the
+            -- organization whose public landing page takes access requests, so
+            -- it is the only one the anonymous role may write into. A new
+            -- organization is unreachable by it until somebody says otherwise,
+            -- which is the point of the default.
+            INSERT INTO core.organizations
+                (code, name, accepts_public_access_requests)
+            VALUES (%s, 'ITW Evercoat (Demo)', true)
+            ON CONFLICT (code) DO UPDATE
+                SET name = EXCLUDED.name,
+                    accepts_public_access_requests =
+                        EXCLUDED.accepts_public_access_requests
             RETURNING id
             """,
             (ORG_CODE,),

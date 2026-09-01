@@ -132,8 +132,16 @@ def test_the_access_request_queue_is_insert_only(public_engine, owner_engine) ->
     suffix = uuid.uuid4().hex[:8]
 
     with owner_engine.begin() as conn:
+        # ⚠️ OPTED IN (migration 065). The public role may only write into an
+        # organization that accepts public access requests, and the column
+        # defaults to false so a new organization is unreachable until somebody
+        # says otherwise -- which is the point of the default.
         org_id = conn.execute(
-            text("INSERT INTO core.organizations (code, name) VALUES (:c, :n) RETURNING id"),
+            text(
+                "INSERT INTO core.organizations"
+                " (code, name, accepts_public_access_requests)"
+                " VALUES (:c, :n, true) RETURNING id"
+            ),
             {"c": f"T059-{suffix}", "n": "059 public surface org"},
         ).scalar_one()
 
