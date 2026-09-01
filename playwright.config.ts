@@ -107,6 +107,20 @@ const KEYCLOAK_ISSUER = process.env.KEYCLOAK_ISSUER ?? "http://127.0.0.1:1/realm
 export default defineConfig({
   testDir: "tests/e2e",
 
+  // 🔴 THE §39 GOLDEN WALK MUST NEVER BE REACHABLE FROM THIS CONFIG.
+  //
+  // It lives in `tests/e2e/golden/` with its own `playwright.golden.config.ts`
+  // and it WRITES: its chain runs through the approval engine, whose rows are
+  // append-only even to the superuser. `scripts/live-suite.sh` drives THIS
+  // config against the DEPLOYED site, so a golden spec swept in here would
+  // write irreversible rows into production on every deploy.
+  //
+  // ⚠️ IT WAS ALREADY UNREACHABLE, BUT ONLY BY ACCIDENT — every project
+  // below happens to override `testDir` to `shell/` or `api/`. The first
+  // project added without an override would have inherited `tests/e2e` and
+  // picked the walk up silently. This says it, so it cannot drift.
+  testIgnore: ["**/golden/**"],
+
   // A shared database means these must not race each other.
   fullyParallel: false,
   workers: 1,

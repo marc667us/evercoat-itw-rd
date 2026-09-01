@@ -733,9 +733,24 @@ jobs:
           AGENT_DATABASE_URL: postgresql+psycopg://evercoat_agent:ci-agent@localhost:5432/evercoat_itw_rd
           KEYCLOAK_ISSUER: http://localhost:8080/realms/evercoat
           KEYCLOAK_AUDIENCE: evercoat-api
+          # 🔴 THE GOLDEN WALK CALLS THIS API FROM A BROWSER, SO CORS IS
+          # LOAD-BEARING, NOT COSMETIC. Every previous consumer of this API in
+          # CI was pytest or uvicorn's own TestClient, neither of which sends
+          # an Origin. A browser does, and a missing origin here fails as
+          # writes that never arrive -- the request is made, the response is
+          # discarded, and the screen simply does not update. That reads as a
+          # broken form rather than as a misconfigured server.
+          CORS_ALLOWED_ORIGINS: '["http://localhost:3000"]'
         run: |
           set -euo pipefail
-          nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 > "$GITHUB_WORKSPACE/api.log" 2>&1 &
+          # ⚠️ 0.0.0.0, NOT 127.0.0.1, AND THE REASON IS NAME RESOLUTION.
+          # Until now every caller of this API was pytest on 127.0.0.1. The
+          # golden walk calls it from Chromium, which resolves the `localhost`
+          # the bundle was built with and may reach for ::1 before 127.0.0.1.
+          # A loopback-only bind answers one and refuses the other,
+          # intermittently -- which reads as a flaky test rather than as a
+          # bind. Every other consumer keeps working unchanged.
+          nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$GITHUB_WORKSPACE/api.log" 2>&1 &
           deadline=$(( SECONDS + 90 ))
           until code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health/live)" \
                 && [ "$code" = "200" ]; do
@@ -776,8 +791,94 @@ jobs:
             exit 1
           fi
 
-      - name: Keycloak and API logs on failure
+      # ─────────────────────────────────────────────────────────────────
+      # §39's GOLDEN SCENARIO, IN A BROWSER — R4b's UI half.
+      # ─────────────────────────────────────────────────────────────────
+      #
+      # 🔴 WHY IT LIVES IN THIS JOB AND NOT IN `e2e`.
+      #
+      # The walk WRITES as a signed-in chemist, so it needs a real token. The
+      # `e2e` job sets `KEYCLOAK_ISSUER: http://127.0.0.1:1/realms/evercoat` ON
+      # PURPOSE, so every authenticated route there refuses before it reaches
+      # JWKS. This is the only job with a real Keycloak, the shipped realm, a
+      # seeded organization and realm subjects bound to its users.
+      #
+      # ⚠️ AND WHY IT IS NOT RUN AGAINST THE DEPLOYED SITE. §39 asks for the
+      # scenario on the deployed instance, and the schema refuses: the chain
+      # reaches `workflow.approval_route_steps`, which is append-only to the
+      # SUPERUSER. Every run would leave permanent rows in a long-lived
+      # database. CI rebuilds its database from migrations each run, so the
+      # same rows go with the runner. §39 therefore stays OPEN, and TODO.md
+      # says so — this buys regression cover on every commit, not closure.
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4, resolved 2026-08-18
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install web and E2E dependencies
+        run: |
+          set -euo pipefail
+          (cd apps/web && npm ci || npm install)
+          npm ci || npm install
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build and serve the web application
+        env:
+          # 🔴 THESE ARE BUILD-TIME. `NEXT_PUBLIC_*` is INLINED into the
+          # bundle by `next build`; setting them only on `next start` would
+          # ship a bundle pointing at nothing and the failure would look like
+          # a dead API rather than a mis-ordered env.
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+          NEXT_PUBLIC_KEYCLOAK_URL: http://localhost:8080
+          NEXT_PUBLIC_KEYCLOAK_REALM: evercoat
+          NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: evercoat-web
+        run: |
+          set -euo pipefail
+          (cd apps/web && npm run build)
+          # ⚠️ PORT 3000 ON `localhost` IS NOT A PREFERENCE — THE REALM PICKS IT.
+          # `evercoat-web` registers exactly `http://localhost:3000/auth/callback/`.
+          # On 127.0.0.1, or any other port, Keycloak answers "Invalid parameter:
+          # redirect_uri" as a 200 page with no login form. Using the port the
+          # SHIPPED realm names keeps this test honest: it runs against the realm
+          # that deploys, not one edited to make it pass.
+          # Same resolution reasoning as the API bind above.
+          (cd apps/web && nohup npm run start -- --hostname 0.0.0.0 --port 3000 \
+            > "$GITHUB_WORKSPACE/web.log" 2>&1 &)
+          deadline=$(( SECONDS + 120 ))
+          until code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/)" \
+                && [ "$code" = "200" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: the web application never served. Its log:" >&2
+              cat "$GITHUB_WORKSPACE/web.log" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Walk §39's golden scenario in a browser
+        env:
+          GOLDEN_WEB_URL: http://localhost:3000
+          TEST_KEYCLOAK_PASSWORD: ${{ env.KC_USER_PASSWORD }}
+          CI: "true"
+        # ⚠️ `--config` IS THE WHOLE ISOLATION. This spec is invisible to the
+        # default config (which carries `testIgnore: ["**/golden/**"]`) and so
+        # to `scripts/live-suite.sh`, which drives that config against the
+        # DEPLOYED site. Never add this directory to `playwright.config.ts`.
+        run: npx playwright test --config playwright.golden.config.ts
+
+      - name: The golden walk's trace on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4, resolved 2026-08-18
+        with:
+          name: playwright-report-golden
+          path: playwright-report-golden
+          retention-days: 7
+
+      - name: Keycloak, API and web logs on failure
         if: failure()
         run: |
           echo "=== keycloak ==="; docker logs evercoat-keycloak-ci 2>&1 | tail -80
           echo "=== api ==="; tail -80 "$GITHUB_WORKSPACE/api.log" || true
+          echo "=== web ==="; tail -80 "$GITHUB_WORKSPACE/web.log" || true
