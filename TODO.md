@@ -54,7 +54,20 @@ Research Center as the blocker.
 
 ## ▶ CURRENT PHASE — open issues
 
-**I110** 🔴 **MEASURED 2026-08-31 — WORSE THAN THE TITLE: `curl -D -` against the deployed site returns NONE of the five headers `SECURITY.md:234` claims** (HSTS, nosniff, X-Frame-Options, Referrer-Policy AND the CSP), not merely the CSP. Fix belongs in **Caddy** (Y6 = sole header authority): `infrastructure/compose/Caddyfile` AND `Caddyfile.tunnel`, or the tunnel serves different headers from the compose stack. ⚠️ A CSP without `unsafe-inline` needs Next.js nonces/hashes; a permissive one would make the document true and the control worthless. · **I111** · **I111**
+✅ **I110 CLOSED 2026-09-01.** All five headers (six, with
+`Permissions-Policy`) are now served by **both** proxies and were re-measured
+on the deployed site with `curl -D -`. 🔴 **The reason it survived so long is
+that the file carrying three of them was not the file serving traffic** —
+`Caddyfile.tunnel` had no `header` block at all, and every test in
+`test_reverse_proxy_contract.py` read the other file. Three new tests now
+assert the headers in BOTH files and assert the two blocks EQUAL; falsified by
+deleting the tunnel block (3 red) and by adding `'unsafe-inline'` (2 red).
+
+| # | Open |
+|---|---|
+| **I116** | 🔴 **THE CSP DELIBERATELY SAYS NOTHING ABOUT SCRIPTS, AND THAT IS THE HONEST STATE.** Measured: the pages emit **13 inline `<script>` blocks** and **13 of 13 routes are prerendered** (`○ Static` / `● SSG`, **zero** `ƒ Dynamic`). A nonce is per-request; prerendered HTML is written at build time and cannot carry one. So `script-src` had exactly two available values and both were refused: `'unsafe-inline'` would make `SECURITY.md` true while enforcing nothing — *"a permissive one makes the document true and the control worthless"* — and a nonce would block every inline script on every page, i.e. a blank app. What ships is `frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`, which is fully enforced and unrelated to inline scripts. **Closing the script half means opting the app into dynamic rendering so Next.js can stamp a nonce** — a real architectural change with a real cost. `test_the_csp_does_not_pretend_to_control_scripts` fails if anyone later buys the appearance of a script policy instead. |
+
+**~~I110~~** 🔴 ~~MEASURED 2026-08-31 — WORSE THAN THE TITLE: `curl -D -` against the deployed site returns NONE of the five headers `SECURITY.md:234` claims** (HSTS, nosniff, X-Frame-Options, Referrer-Policy AND the CSP), not merely the CSP. Fix belongs in **Caddy** (Y6 = sole header authority): `infrastructure/compose/Caddyfile` AND `Caddyfile.tunnel`, or the tunnel serves different headers from the compose stack. ⚠️ A CSP without `unsafe-inline` needs Next.js nonces/hashes; a permissive one would make the document true and the control worthless. · **I111** · **I111**
 (`next build` rewrites `tsconfig.json` — caught before commit this time,
 4th occurrence, fix still owed) · **I56 / I58** (FORCE-RLS cutover) ·
 **I78** (knowledge list truncates at 100, silently) · **I9** (CI seed gate) ·

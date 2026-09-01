@@ -77,10 +77,57 @@
 		reverse_proxy web:3000
 	}
 
+	# 🔴 I110. THREE OF THE FIVE HEADERS `SECURITY.md` CLAIMED WERE HERE, AND
+	# THE DEPLOYED SITE SENT NONE OF THEM — because the demonstration tunnel is
+	# fronted by `Caddyfile.tunnel`, which had no `header` block at all. A
+	# control written in the file nobody is running is not a control.
+	#
+	# ⚠️ THIS BLOCK IS DUPLICATED IN `Caddyfile.tunnel` ON PURPOSE. That file
+	# fronts services on the HOST rather than in compose, is mounted standalone
+	# into its container, and cannot `import` a file that is not mounted with
+	# it. Two literals in two files cannot be type-checked into agreement, so
+	# `tests/test_reverse_proxy_contract.py` asserts they are EQUAL.
 	header {
+		# max-age one year. Browsers ignore HSTS over plain HTTP, so this is
+		# inert on the local `:80` stack and live behind the tunnel's TLS —
+		# which is the correct behaviour in both places rather than a
+		# compromise for either.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy strict-origin-when-cross-origin
+		# Nothing in this application uses a camera, a microphone or geolocation.
+		# Saying so is cheaper than auditing later whether something started to.
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+		# 🔴 THERE IS DELIBERATELY NO `script-src` HERE, AND THAT IS THE HONEST
+		# ANSWER RATHER THAN THE COMFORTABLE ONE.
+		#
+		# `SECURITY.md` asked for "a Content-Security-Policy without
+		# `unsafe-inline` scripts". Measured on this build: the pages emit
+		# **13 inline `<script>` blocks** and **13 of 13 routes are
+		# PRERENDERED** (`○ Static` / `● SSG`, zero `ƒ Dynamic`). A nonce is
+		# per-request; prerendered HTML is written at build time and cannot
+		# carry one. So the two available `script-src` values are:
+		#
+		#   'self' 'unsafe-inline'  — ships, enforces nothing about scripts,
+		#                             and makes the document true while the
+		#                             control is worthless;
+		#   'self' + nonce          — blocks every inline script on every
+		#                             prerendered page, i.e. a blank app.
+		#
+		# Neither is shipped. What IS below are the four directives that are
+		# fully enforced, cost nothing, and are unrelated to inline scripts:
+		# clickjacking, base-tag injection, form hijacking and plugin
+		# embedding. They are real today.
+		#
+		# Closing the script half means opting the app into dynamic rendering
+		# so Next.js can stamp a nonce — a real architectural change with a
+		# real cost, recorded as **I116** rather than guessed at here.
+		# `SECURITY.md` §13 now states what is enforced instead of what was
+		# hoped for.
+		Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+
 		-Server
 	}
 

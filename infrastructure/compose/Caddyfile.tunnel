@@ -35,6 +35,38 @@
 :80 {
 	encode gzip
 
+	# 🔴 I110 — THIS FILE IS WHY THE DEPLOYED SITE SENT NO SECURITY HEADERS AT
+	# ALL.
+	#
+	# `SECURITY.md:234` claimed five, the repository's own `Caddyfile` carried
+	# three of them, and THIS file — the one actually in front of the
+	# demonstration tunnel — had no `header` block whatsoever. `curl -D -`
+	# against the deployed site returned none of the five, on 2026-08-31 and
+	# again on 2026-09-01. A control written in a file nobody is running is not
+	# a control, and the file being run is the one that decides.
+	#
+	# ⚠️ IDENTICAL TO THE BLOCK IN `Caddyfile`, ON PURPOSE, AND ASSERTED EQUAL.
+	# This file fronts services on the HOST and is mounted standalone into its
+	# container, so it cannot `import` a file that is not mounted beside it.
+	# Two literals in two files cannot be type-checked into agreement, so
+	# `tests/test_reverse_proxy_contract.py` compares them.
+	#
+	# 🔴 AND THERE IS DELIBERATELY NO `script-src`. Measured: 13 inline
+	# `<script>` blocks, and 13 of 13 routes PRERENDERED. A nonce is
+	# per-request and prerendered HTML cannot carry one, so `'unsafe-inline'`
+	# would make the document true while enforcing nothing, and a nonce would
+	# blank the app. The four directives below are fully enforced and unrelated
+	# to inline scripts. The script half is **I116**.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+		-Server
+	}
+
 	# FastAPI mounts every router UNDER /api itself, so stripping the prefix
 	# here would 404 every route. Same rule as the repo's own Caddyfile.
 	handle /api/* {

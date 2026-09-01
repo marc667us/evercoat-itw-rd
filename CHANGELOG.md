@@ -1,5 +1,38 @@
 # CHANGELOG — EvercoatITWRD APP
 
+## 2026-09-01 (part 2) — I110: the headers were in the file nobody was running
+
+`SECURITY.md:234` claimed five security headers. `curl -D -` against the
+deployed site returned **none of them**, on 2026-08-31 and again today.
+
+🔴 **THE REPOSITORY'S `Caddyfile` CARRIED THREE OF THEM. THE DEPLOYMENT IS
+FRONTED BY `Caddyfile.tunnel`, WHICH HAD NO `header` BLOCK AT ALL** — and
+every assertion in `test_reverse_proxy_contract.py` read the first file. A
+control written in the config nobody runs is not a control, and a test that
+reads the wrong file will never say so.
+
+Both proxies now send HSTS (one year, `includeSubDomains`), `nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`,
+a `Permissions-Policy` denying camera/microphone/geolocation/payment/USB, and
+a CSP. Re-measured on the deployed site: all six present, every page still
+200.
+
+🔴 **AND THE CSP SAYS NOTHING ABOUT SCRIPTS, ON PURPOSE (I116).**
+Measured rather than assumed: **13 inline `<script>` blocks**, and **13 of 13
+routes prerendered** (zero dynamic). A nonce is per-request and prerendered
+HTML cannot carry one, so the two available `script-src` values were
+`'unsafe-inline'` — which would have made this changelog's own claim true
+while enforcing nothing — or a nonce, which would have blanked the app.
+Neither shipped. `SECURITY.md` §13 was rewritten to state what is enforced
+instead of what was hoped for, and the script half is filed as I116 with the
+dynamic-rendering work it actually needs.
+
+Three new tests: the headers exist in BOTH files, the two blocks are EQUAL
+(they cannot `import` a shared one, and two literals in two files cannot be
+type-checked into agreement), and the CSP declares no `script-src`.
+**Falsified both ways** — deleting the tunnel's block turns three red,
+adding `'unsafe-inline'` turns two red.
+
 ## 2026-09-01 — the landing page stops being a demonstration: L1, L2, L3, L4
 
 All four open landing-page items closed, and none of them by loosening a check.

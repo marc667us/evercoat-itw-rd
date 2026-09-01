@@ -231,7 +231,35 @@ Logs must never contain formula compositions, component percentages, secrets, to
 ## 13. Transport and production configuration
 
 - **TLS everywhere**, terminated at Caddy with automatic certificates. HTTP redirects to HTTPS.
-- HSTS, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, and a Content-Security-Policy without `unsafe-inline` scripts.
+- HSTS, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy` denying camera/microphone/geolocation/payment/USB, and a Content-Security-Policy.
+
+  🔴 **THIS LINE USED TO DESCRIBE SOMETHING THAT DID NOT EXIST (I110).** It
+  claimed all five headers plus "a Content-Security-Policy without
+  `unsafe-inline` scripts". `curl -D -` against the deployed site returned
+  **none of the five**, on 2026-08-31 and again on 2026-09-01. The
+  repository's `Caddyfile` carried three of them; the file actually in front
+  of the deployment — `Caddyfile.tunnel` — had no `header` block at all. **A
+  control written in the file nobody is running is not a control**, and every
+  test in `test_reverse_proxy_contract.py` read the other file.
+
+  **What is enforced now**, in both proxies, asserted equal by that test:
+  HSTS (one year, `includeSubDomains`), nosniff, `X-Frame-Options: DENY`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`,
+  and a CSP of `frame-ancestors 'none'; base-uri 'self'; form-action 'self';
+  object-src 'none'`.
+
+  ⚠️ **AND THE CSP DELIBERATELY SAYS NOTHING ABOUT SCRIPTS — I116.** Measured:
+  the pages emit **13 inline `<script>` blocks** and **13 of 13 routes are
+  prerendered** (`○ Static` / `● SSG`, zero `ƒ Dynamic`). A nonce is
+  per-request and prerendered HTML is written at build time, so it cannot
+  carry one. That leaves exactly two options and both are refused:
+  `'unsafe-inline'`, which would make this document true while enforcing
+  nothing about scripts; or a nonce, which would block every inline script on
+  every page. Closing it means opting the application into dynamic rendering
+  so Next.js can stamp a nonce — an architectural change with a real cost,
+  filed as **I116** rather than hidden behind a directive that looks like a
+  control. `test_the_csp_does_not_pretend_to_control_scripts` fails if anyone
+  later buys the appearance of one.
 - Only web, api and Keycloak are exposed. **PostgreSQL, Valkey, Garage, the AI runtime and (later) Temporal stay on the internal network** and are never published to the host in production compose.
 - `DEBUG=false`, no stack traces to clients, generic error bodies with a correlation id.
 - Default credentials changed at provisioning; the Keycloak admin console is not publicly reachable.

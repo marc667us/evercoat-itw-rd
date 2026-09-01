@@ -33,6 +33,10 @@ from pathlib import Path
 API_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = API_ROOT.parents[1]
 CADDYFILE = REPO_ROOT / "infrastructure" / "compose" / "Caddyfile"
+# 🔴 THE FILE THAT ACTUALLY FRONTS THE DEPLOYED DEMONSTRATION. I110 was
+# invisible for as long as it was because every assertion in this file
+# read the OTHER one.
+TUNNEL_CADDYFILE = REPO_ROOT / "infrastructure" / "compose" / "Caddyfile.tunnel"
 MAIN_PY = API_ROOT / "app" / "main.py"
 
 
@@ -122,3 +126,128 @@ def test_metrics_are_refused_at_the_edge() -> None:
         "the /metrics block forwards to a backend; the API's Prometheus "
         "endpoint has no authentication of its own"
     )
+
+
+# ---------------------------------------------------------------------------
+# I110 — the five headers SECURITY.md claims, in the file that actually serves
+# ---------------------------------------------------------------------------
+
+
+def _header_block(text: str) -> str:
+    """The contents of the top-level `header { ... }` directive."""
+    start = text.index("\theader {")
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    raise AssertionError("unterminated header block")
+
+
+REQUIRED_HEADERS = (
+    "Strict-Transport-Security",
+    "X-Content-Type-Options",
+    "X-Frame-Options",
+    "Referrer-Policy",
+    "Content-Security-Policy",
+)
+
+
+def test_both_proxies_send_the_headers_security_md_claims() -> None:
+    """🔴 I110: THE DEPLOYED SITE SENT NONE OF THE FIVE.
+
+    `SECURITY.md:234` claimed HSTS, nosniff, X-Frame-Options, Referrer-Policy
+    and a CSP. The repository's own `Caddyfile` carried three; the file in
+    front of the demonstration tunnel — `Caddyfile.tunnel` — had no `header`
+    block at all, and that is the one serving traffic. `curl -D -` against the
+    deployed site returned none of the five, twice, a day apart.
+
+    ⚠️ THE POINT IS *BOTH* FILES. Asserting only `Caddyfile` is what let this
+    survive: every existing test in this module reads that file, and the
+    deployment reads the other one. A header present in the config nobody runs
+    is not a header.
+    """
+    for label, path in (("Caddyfile", CADDYFILE), ("Caddyfile.tunnel", TUNNEL_CADDYFILE)):
+        block = _header_block(path.read_text(encoding="utf-8"))
+        for header in REQUIRED_HEADERS:
+            assert header in block, (
+                f"{label} does not send {header}. SECURITY.md §13 claims it, and "
+                "a claim the proxy does not implement is the "
+                "comment-asserts-a-rule-that-does-not-exist defect."
+            )
+
+
+def test_the_two_proxies_send_the_same_headers() -> None:
+    """Two literals in two files cannot be type-checked into agreement.
+
+    `Caddyfile.tunnel` cannot `import` the shared block: it is mounted
+    standalone into its container and an import would need the imported file
+    mounted beside it. So the duplication is deliberate, and this is what stops
+    it drifting — which is exactly how one of them ended up with no headers at
+    all.
+    """
+    compose = _header_block(CADDYFILE.read_text(encoding="utf-8"))
+    tunnel = _header_block(TUNNEL_CADDYFILE.read_text(encoding="utf-8"))
+
+    def directives(block: str) -> list[str]:
+        out = []
+        for line in block.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line in ("header {", "}"):
+                continue
+            out.append(line)
+        return sorted(out)
+
+    assert directives(compose) == directives(tunnel), (
+        "the two proxies send different headers. They front the same "
+        "application and a browser cannot tell which one answered it."
+    )
+
+
+def test_the_csp_does_not_pretend_to_control_scripts() -> None:
+    """🔴 A PERMISSIVE POLICY WOULD MAKE THE DOCUMENT TRUE AND THE CONTROL WORTHLESS.
+
+    Measured on this build: 13 inline `<script>` blocks, and 13 of 13 routes
+    PRERENDERED (`○ Static` / `● SSG`, zero `ƒ Dynamic`). A nonce is
+    per-request and prerendered HTML is written at build time, so it cannot
+    carry one. That leaves `'unsafe-inline'` — which enforces nothing about
+    scripts while letting SECURITY.md claim a CSP — or a nonce, which blocks
+    every inline script on every page and blanks the app.
+
+    Neither ships. The CSP carries only directives that are genuinely enforced
+    and unrelated to inline scripts. This test fails if somebody later adds
+    `'unsafe-inline'` to buy the appearance of a script policy.
+
+    ⚠️ It also fails if somebody adds a real `script-src` WITHOUT doing the
+    dynamic-rendering work (I116) — which is the point: that change has to be
+    made deliberately, with the rendering change, not slipped into a config.
+    """
+    for label, path in (("Caddyfile", CADDYFILE), ("Caddyfile.tunnel", TUNNEL_CADDYFILE)):
+        block = _header_block(path.read_text(encoding="utf-8"))
+        # ⚠️ SKIP COMMENTS. The block explains at length why there is no
+        # script-src, and those lines contain the words -- a naive scan reads
+        # the explanation instead of the directive, which is its own small
+        # version of measuring the wrong thing.
+        csp = next(
+            line
+            for line in block.splitlines()
+            if "Content-Security-Policy" in line and not line.strip().startswith("#")
+        )
+        assert "unsafe-inline" not in csp, (
+            f"{label}'s CSP contains 'unsafe-inline'. That makes SECURITY.md's "
+            "claim technically true and the control worthless — the exact trade "
+            "I110 was raised to refuse."
+        )
+        assert "unsafe-eval" not in csp, f"{label}'s CSP contains 'unsafe-eval'"
+        assert "script-src" not in csp, (
+            f"{label}'s CSP declares script-src. Every route is prerendered, so "
+            "a nonce cannot be stamped and this would block every inline script "
+            "on every page. Doing it properly is I116 — the dynamic-rendering "
+            "change — not a config edit."
+        )
+        # And the four that ARE enforced must still be there.
+        for directive in ("frame-ancestors", "base-uri", "form-action", "object-src"):
+            assert directive in csp, f"{label}'s CSP lost {directive}"
