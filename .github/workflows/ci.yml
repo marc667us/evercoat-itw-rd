@@ -743,13 +743,17 @@ jobs:
           CORS_ALLOWED_ORIGINS: '["http://localhost:3000"]'
         run: |
           set -euo pipefail
-          # ⚠️ 0.0.0.0, NOT 127.0.0.1, AND THE REASON IS NAME RESOLUTION.
-          # Until now every caller of this API was pytest on 127.0.0.1. The
-          # golden walk calls it from Chromium, which resolves the `localhost`
-          # the bundle was built with and may reach for ::1 before 127.0.0.1.
-          # A loopback-only bind answers one and refuses the other,
-          # intermittently -- which reads as a flaky test rather than as a
-          # bind. Every other consumer keeps working unchanged.
+          # ⚠️ 0.0.0.0 SO THE BIND DOES NOT DEPEND ON WHICH NAME THE BROWSER
+          # RESOLVES `localhost` TO. Until now every caller of this API was
+          # pytest on a literal 127.0.0.1; the golden walk calls it from
+          # Chromium using the `localhost` the bundle was built with.
+          #
+          # ⚠️ CORRECTED — an earlier version of this comment claimed 0.0.0.0
+          # fixes a `::1`-before-127.0.0.1 race. IT CANNOT: 0.0.0.0 is the IPv4
+          # wildcard and does not listen on `::1` either; that would need
+          # `--host ::`. GitHub runners resolve `localhost` to 127.0.0.1 only,
+          # so the wildcard is sufficient here — but do not read this line as
+          # having solved an IPv6 problem, because it has not.
           nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$GITHUB_WORKSPACE/api.log" 2>&1 &
           deadline=$(( SECONDS + 90 ))
           until code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health/live)" \
@@ -803,13 +807,20 @@ jobs:
       # JWKS. This is the only job with a real Keycloak, the shipped realm, a
       # seeded organization and realm subjects bound to its users.
       #
-      # ⚠️ AND WHY IT IS NOT RUN AGAINST THE DEPLOYED SITE. §39 asks for the
-      # scenario on the deployed instance, and the schema refuses: the chain
-      # reaches `workflow.approval_route_steps`, which is append-only to the
-      # SUPERUSER. Every run would leave permanent rows in a long-lived
-      # database. CI rebuilds its database from migrations each run, so the
-      # same rows go with the runner. §39 therefore stays OPEN, and TODO.md
-      # says so — this buys regression cover on every commit, not closure.
+      # ⚠️ AND WHY IT IS NOT RUN AGAINST THE DEPLOYED SITE. The walk writes
+      # REAL R&D records — a workspace, a question, a source, an evidence card,
+      # a finding and a proposal — and §5 RETIRES R&D history rather than
+      # deleting it, every FK `RESTRICT`. On a long-lived deployed database
+      # they accumulate on every run with nothing permitted to clean them up.
+      # CI rebuilds from migrations each run, so they go with the runner.
+      #
+      # ⚠️ CORRECTED — THIS COMMENT USED TO SAY THE WALK REACHES
+      # `workflow.approval_route_steps`. IT DOES NOT. The walk stops at the
+      # proposal on purpose: submitting a finding writes that append-only
+      # table, which refuses DELETE even to the SUPERUSER, so that hop would be
+      # irreversible EVERYWHERE — CI included. It stays with the database half.
+      # §39 therefore remains OPEN, and TODO.md says so; this buys regression
+      # cover on every commit, not closure.
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4, resolved 2026-08-18
         with:
@@ -837,15 +848,38 @@ jobs:
         run: |
           set -euo pipefail
           (cd apps/web && npm run build)
+
+          # 🔴 `node .next/standalone/server.js`, NEVER `next start`.
+          #
+          # `next.config.mjs` sets `output: "standalone"`, and under that Next
+          # REFUSES to serve properly from `next start` — it prints
+          #   ⚠ "next start" does not work with "output: standalone"
+          # and carries on. Measured 2026-09-01, the cost was almost invisible:
+          # the Research Center's SSR HTML rendered, so the walk's heading
+          # assertion PASSED, but the client bundle never hydrated, so no data
+          # was ever fetched and the "Open a research workspace" form never
+          # existed. The walk then timed out on a form that was missing for a
+          # reason nothing on the page mentioned.
+          #
+          # ⚠️ THE TWO COPIES ARE NOT OPTIONAL. The standalone tree ships the
+          # server only; `.next/static` and `public/` must be placed beside it
+          # or every chunk 404s and hydration dies exactly as above.
+          # `scripts/demo-up.ps1` already documents this whole trap.
+          cp -r apps/web/.next/static apps/web/.next/standalone/.next/static
+          if [ -d apps/web/public ]; then
+            cp -r apps/web/public apps/web/.next/standalone/public
+          fi
+
           # ⚠️ PORT 3000 ON `localhost` IS NOT A PREFERENCE — THE REALM PICKS IT.
           # `evercoat-web` registers exactly `http://localhost:3000/auth/callback/`.
           # On 127.0.0.1, or any other port, Keycloak answers "Invalid parameter:
           # redirect_uri" as a 200 page with no login form. Using the port the
           # SHIPPED realm names keeps this test honest: it runs against the realm
           # that deploys, not one edited to make it pass.
-          # Same resolution reasoning as the API bind above.
-          (cd apps/web && nohup npm run start -- --hostname 0.0.0.0 --port 3000 \
-            > "$GITHUB_WORKSPACE/web.log" 2>&1 &)
+          # HOSTNAME is an IPv4 wildcard here, per the API bind's correction.
+          (cd apps/web/.next/standalone \
+            && HOSTNAME=0.0.0.0 PORT=3000 nohup node server.js \
+              > "$GITHUB_WORKSPACE/web.log" 2>&1 &)
           deadline=$(( SECONDS + 120 ))
           until code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/)" \
                 && [ "$code" = "200" ]; do
@@ -857,16 +891,76 @@ jobs:
             sleep 2
           done
 
+          # 🔴 A 200 IS NOT A WORKING PAGE, AND THAT IS THE WHOLE LESSON OF
+          # THE PREVIOUS RUN. The broken `next start` served 200s all day while
+          # every client chunk 404'd. So prove ONE chunk the document actually
+          # references is fetchable before handing the app to a browser.
+          chunk="$(grep -oE '/_next/static/chunks/[A-Za-z0-9._-]+\.js' \
+            <(curl -s http://localhost:3000/) | head -1)" || chunk=""
+          if [ -z "$chunk" ]; then
+            echo "FAIL: the served document references no /_next/static chunk" >&2
+            exit 1
+          fi
+          chunk_code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3000$chunk")"
+          if [ "$chunk_code" != "200" ]; then
+            echo "FAIL: $chunk answered $chunk_code -- static assets are not beside" >&2
+            echo "      the standalone server, so the app will never hydrate." >&2
+            exit 1
+          fi
+          echo "web: serving, and $chunk is 200 -- the bundle can hydrate"
+
       - name: Walk §39's golden scenario in a browser
         env:
           GOLDEN_WEB_URL: http://localhost:3000
           TEST_KEYCLOAK_PASSWORD: ${{ env.KC_USER_PASSWORD }}
           CI: "true"
-        # ⚠️ `--config` IS THE WHOLE ISOLATION. This spec is invisible to the
-        # default config (which carries `testIgnore: ["**/golden/**"]`) and so
-        # to `scripts/live-suite.sh`, which drives that config against the
-        # DEPLOYED site. Never add this directory to `playwright.config.ts`.
-        run: npx playwright test --config playwright.golden.config.ts
+          PLAYWRIGHT_JSON_OUTPUT_NAME: golden-results.json
+        # ⚠️ `--config` IS THE WHOLE ISOLATION. The spec lives at
+        # `tests/golden/`, OUTSIDE the `tests/e2e` that `playwright.config.ts`
+        # scans, so `scripts/live-suite.sh` — which drives that config against
+        # the DEPLOYED site — cannot reach it. Never move it under `tests/e2e/`
+        # and never add it to `playwright.config.ts`.
+        #
+        # 🔴 AND THE RUN IS NOT TRUSTED ON ITS EXIT CODE. `assert-suite-ran.py`
+        # exists twelve steps above because "a fully skipped run exits 0 and
+        # reads as proof". A `test.skip` on the one test here would hand back a
+        # green job with §39's scenario never executed. The JSON report is
+        # asserted instead: exactly one test, and it must have PASSED.
+        run: |
+          set -euo pipefail
+          rc=0
+          npx playwright test --config playwright.golden.config.ts \
+            --reporter=list,json || rc=$?
+          python - <<'PY'
+          import json
+          import sys
+
+          with open("golden-results.json", encoding="utf-8") as fh:
+              report = json.load(fh)
+
+          statuses = []
+          for suite in report.get("suites", []):
+              stack = [suite]
+              while stack:
+                  node = stack.pop()
+                  stack.extend(node.get("suites", []))
+                  for spec in node.get("specs", []):
+                      for test in spec.get("tests", []):
+                          statuses.append(test.get("status", "unknown"))
+
+          print("golden walk: %d test(s) -> %s" % (len(statuses), statuses))
+          if statuses != ["expected"]:
+              print(
+                  "FAIL: the golden walk did not run exactly one PASSING test. "
+                  "A skip here is not a pass -- §39's scenario was not executed.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+          if [ "$rc" != "0" ]; then
+            echo "FAIL: playwright exited $rc" >&2
+            exit 1
+          fi
 
       - name: The golden walk's trace on failure
         if: failure()

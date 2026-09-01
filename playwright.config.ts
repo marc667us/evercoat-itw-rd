@@ -107,18 +107,41 @@ const KEYCLOAK_ISSUER = process.env.KEYCLOAK_ISSUER ?? "http://127.0.0.1:1/realm
 export default defineConfig({
   testDir: "tests/e2e",
 
-  // 🔴 THE §39 GOLDEN WALK MUST NEVER BE REACHABLE FROM THIS CONFIG.
+  // 🔴 THE §39 GOLDEN WALK LIVES OUTSIDE `tests/e2e/` ON PURPOSE.
   //
-  // It lives in `tests/e2e/golden/` with its own `playwright.golden.config.ts`
-  // and it WRITES: its chain runs through the approval engine, whose rows are
-  // append-only even to the superuser. `scripts/live-suite.sh` drives THIS
-  // config against the DEPLOYED site, so a golden spec swept in here would
-  // write irreversible rows into production on every deploy.
+  // It is at `tests/golden/`, driven only by `playwright.golden.config.ts`,
+  // and it WRITES real R&D records. `scripts/live-suite.sh` drives THIS config
+  // against the DEPLOYED site, so a golden spec swept in here would write rows
+  // into production that §5 forbids anything from cleaning up.
   //
-  // ⚠️ IT WAS ALREADY UNREACHABLE, BUT ONLY BY ACCIDENT — every project
-  // below happens to override `testDir` to `shell/` or `api/`. The first
-  // project added without an override would have inherited `tests/e2e` and
-  // picked the walk up silently. This says it, so it cannot drift.
+  // ⚠️ AN EARLIER ATTEMPT AT THIS GUARD WAS INERT EXACTLY WHERE IT MATTERED,
+  // AND THE SUPERVISOR CAUGHT IT. It was a top-level `testIgnore:
+  // ["**/golden/**"]` — but Playwright resolves
+  // `takeFirst(projectConfig.testIgnore, config.testIgnore, [])`, so a
+  // project's own value REPLACES the top-level one rather than merging with
+  // it. The LIVE `shell` project below sets `testIgnore:
+  // ["**/api-wiring.spec.ts"]`, so the guard did not apply to the ONE project
+  // that runs against the deployed site. It was falsified against a project
+  // with no `testIgnore` of its own, which is why it looked like it worked.
+  //
+  // Keeping the walk out of `testDir` entirely needs no glob to be honoured by
+  // anything, so the directory is the control and the line below is only
+  // belt-and-braces.
+  //
+  // ⚠️ MEASURED, AND ONE HOLE REMAINS — SAID PLAINLY RATHER THAN CLAIMED SHUT.
+  // Three configs were listed against the real tree:
+  //
+  //   · this config today .................................. 0 golden tests
+  //   · `testDir: "tests/e2e"` + a project with its OWN
+  //     `testIgnore` (the arrangement that made the first
+  //     attempt inert) ..................................... 0 golden tests
+  //   · `testDir: "tests"` + a project with its own
+  //     `testIgnore` ....................................... 1 golden test 🔴
+  //
+  // So widening `testDir` to `tests/` WHILE a project sets its own
+  // `testIgnore` still reaches the walk — the top-level glob is replaced, not
+  // merged. **Do not widen `testDir` past `tests/e2e`.** If that ever becomes
+  // necessary, repeat `"**/golden/**"` inside every project's `testIgnore`.
   testIgnore: ["**/golden/**"],
 
   // A shared database means these must not race each other.

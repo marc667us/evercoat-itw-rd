@@ -63,7 +63,7 @@ import { defineConfig, devices } from "@playwright/test";
 const WEB_BASE_URL = process.env.GOLDEN_WEB_URL ?? "http://localhost:3000";
 
 export default defineConfig({
-  testDir: "tests/e2e/golden",
+  testDir: "tests/golden",
 
   // One scenario, walked in order. Each step depends on the record the
   // previous one created, so parallelism here would not be faster — it would
@@ -92,6 +92,16 @@ export default defineConfig({
 
   use: {
     baseURL: WEB_BASE_URL,
+
+    // \U0001f534 A CAP ON ACTIONS, BECAUSE EVERY WRITE CONTROL CAN BE DISABLED.
+    //
+    // Each submit on the research screen is `disabled={writes.isPending ||
+    // !may}`. If `chem.demo` ever loses `research.create` or
+    // `experiment.propose`, a click would wait for the TEST budget — ten
+    // minutes — and the job would report a timeout rather than a permissions
+    // regression. Thirty seconds turns that into a fast failure that names the
+    // control it could not press.
+    actionTimeout: 30_000,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",

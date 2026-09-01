@@ -143,7 +143,7 @@ test.describe("§39 — the research thread, in a browser", () => {
     // §39 "existing materials searched" — the question, asked and recorded.
     const questions = panelTitled(page, "Questions");
     await questions.getByLabel("Add a question").fill(`Is 22% the knee? ${tag}`);
-    await questions.getByRole("button", { name: "Add" }).click();
+    await questions.getByRole("button", { name: "Add", exact: true }).click();
     await expect(questions.getByText(`Is 22% the knee? ${tag}`)).toBeVisible();
 
     // §39 "evidence assembled" — a source FIRST.
@@ -204,6 +204,16 @@ test.describe("§39 — the research thread, in a browser", () => {
       .fill("Polyester body filler, ambient cure, steel substrate.");
     await finding.getByRole("button", { name: "Draft finding" }).click();
 
+    // ⚠️ WAIT FOR THE WRITE TO LAND BEFORE DOING ANYTHING ELSE. The form
+    // clears itself from the SUCCESS callback, so an empty Subject means the
+    // API answered. Without this the reload below can tear the document down
+    // mid-`fetch` and abort a request the server would have honoured — a red
+    // run blaming the API for the test's own impatience, and `retries: 0`
+    // means there is no second attempt to reveal it as noise.
+    await expect(finding.getByLabel("Subject")).toHaveValue("", {
+      timeout: 30_000,
+    });
+
     // ── §39 "Experiment Proposal generated" ──────────────────────────────
     //
     // The screen states the boundary this walk must not cross: *"A proposal
@@ -228,6 +238,9 @@ test.describe("§39 — the research thread, in a browser", () => {
       .getByLabel("Required tests")
       .fill("Cross-hatch adhesion, ISO 2409; three replicates per level.");
     await proposal.getByRole("button", { name: "Propose experiment" }).click();
+    await expect(proposal.getByLabel("Objective")).toHaveValue("", {
+      timeout: 30_000,
+    });
 
     // ── 🔴 THE READ-BACK ─────────────────────────────────────────────────
     //
@@ -236,10 +249,15 @@ test.describe("§39 — the research thread, in a browser", () => {
     // write the API silently refused cannot survive this.
     await page.reload();
     const row = workspaceRow(page);
-    await expect(row).toContainText("1 question(s)", { timeout: 30_000 });
-    await expect(row).toContainText("1 card(s)");
-    await expect(row).toContainText("1 finding(s)");
-    await expect(row).toContainText("1 proposal(s)");
+    // ⚠️ ANCHORED ON THE SEPARATOR, NOT A BARE SUBSTRING. `toContainText("1
+    // question(s)")` is also satisfied by `11 question(s)` and `21
+    // question(s)`. The run-unique title means that cannot misfire today, but
+    // this is the assertion the whole file rests on — it should not depend on
+    // a workspace never reaching eleven of anything.
+    await expect(row).toContainText(/·\s*1 question\(s\)/, { timeout: 30_000 });
+    await expect(row).toContainText(/·\s*1 card\(s\)/);
+    await expect(row).toContainText(/·\s*1 finding\(s\)/);
+    await expect(row).toContainText(/·\s*1 proposal\(s\)/);
 
     // And the two registers — the screens a person other than the author
     // reads — must show the finding and the proposal by name.
@@ -335,7 +353,16 @@ function panelTitled(page: Page, heading: string): Locator {
   return page
     .locator("section")
     .filter({ has: page.getByRole("heading", { name: heading, exact: true }) })
-    .first();
+    // \U0001f534 `.last()`, NOT `.first()` — AND THE DIFFERENCE WAS A BLOCKER.
+    //
+    // The panels are nested INSIDE the `<section>` that holds
+    // `<h2>Research workspaces</h2>`, so that outer section also `has:` the
+    // panel's heading and, being an ancestor, comes FIRST in document order.
+    // `.first()` therefore returned the whole page region rather than one
+    // panel: `getByRole("button", { name: "Add" })` then resolved to three
+    // buttons — Questions, Hypotheses and Gaps — and died on strict mode at
+    // the very first interaction. The innermost match is the last one.
+    .last();
 }
 
 function formTitled(page: Page, heading: string): Locator {
