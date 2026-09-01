@@ -83,7 +83,19 @@ export default defineConfig({
   // paper over.
   retries: 0,
 
-  reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report-golden" }]],
+  // ⚠️ THE JSON REPORTER IS DECLARED HERE, NOT PASSED ON THE COMMAND LINE.
+  //
+  // CI used to run `--reporter=list,json` so it could assert the run actually
+  // happened. That flag REPLACES this array rather than adding to it, so the
+  // HTML report was never written — and the `if: failure()` step that uploads
+  // `playwright-report-golden/` collected nothing, every time. The one run
+  // that needed a trace produced none, because the assertion that the run was
+  // real had silently disabled the evidence.
+  reporter: [
+    ["list"],
+    ["html", { open: "never", outputFolder: "playwright-report-golden" }],
+    ["json", { outputFile: "golden-results.json" }],
+  ],
 
   // The walk crosses many screens and waits on real approval state. The budget
   // is per TEST, and this is one long test rather than many short ones.

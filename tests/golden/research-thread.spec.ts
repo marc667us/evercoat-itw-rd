@@ -51,15 +51,20 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
  * precisely the shape this project shipped on 2026-08-24, when 713 tests were
  * green beside a sign-in that 404'd.
  *
- * So the walk writes everything in one session and then RELOADS. After the
- * reload nothing client-side survives, and the workspace row must itself say
+ * So the walk writes everything in one session, then RELOADS, then SIGNS IN
+ * AGAIN — because per ADR-025 the reload signs the user out, the token living
+ * in memory on purpose. What comes back is a fresh document, a fresh token and
+ * a fresh query for every panel, and the workspace row must itself say
  * `1 question(s) · 1 card(s) · 1 finding(s) · 1 proposal(s)`. Those counts are
  * computed by the SERVER from the rows it stored. A count is a better witness
  * than the text echoing back: the text could be rendered from the cache that
  * accepted it, but the count can only come from a row that exists.
  */
 
-const RESEARCH = "/material-safety/research";
+// ⚠️ DELIBERATELY NOT A `page.goto` TARGET — kept only to name the screen
+// this file walks. Navigating to it directly signs the user out (ADR-025).
+const RESEARCH_PATH_FOR_REFERENCE = "/material-safety/research";
+void RESEARCH_PATH_FOR_REFERENCE;
 
 /**
  * 🔴 THE WALK SIGNS IN AS A CHEMIST, AND THE ROLE IS NOT INTERCHANGEABLE.
@@ -98,12 +103,25 @@ test.describe("§39 — the research thread, in a browser", () => {
       "TEST_KEYCLOAK_PASSWORD is unset — the golden walk cannot sign in",
     ).not.toBe("");
 
+    await page.goto("/");
     await signIn(page);
 
-    await page.goto(RESEARCH);
-    await expect(
-      page.getByRole("heading", { name: "Research Center" }),
-    ).toBeVisible();
+    // 🔴 NAVIGATE BY CLICKING, NEVER BY `page.goto`. ADR-025.
+    //
+    // `auth-provider.tsx` states it in capitals: *"THE TOKEN LIVES IN MEMORY,
+    // AND A RELOAD SIGNS YOU OUT ... after a reload the user is ANONYMOUS and
+    // must press Sign in. Nothing happens automatically."* A decision, not an
+    // omission — a token in browser storage turns one XSS into a stolen
+    // session, and the `prompt=none` iframe renew is declined because Safari
+    // blocks it and Chrome is removing it.
+    //
+    // ⚠️ MEASURED 2026-09-01: this walk used `page.goto()` straight after
+    // signing in. That is a FULL LOAD, so the module holding the session was
+    // re-evaluated, the user was anonymous, and the screen rendered its "No
+    // data source" notice with no form on it. CI reported a
+    // `getByLabel("Title")` timeout twice — naming the control, never the
+    // cause. A person reaches this screen through the sidebar; so does this.
+    await openResearchCenter(page);
 
     // ── §39 "Research Solution" — open the workspace ──────────────────────
     //
@@ -115,6 +133,22 @@ test.describe("§39 — the research thread, in a browser", () => {
     // at exactly the hop §39 cares about. It is chosen from the EXISTING
     // seeded projects, so the walk creates no parallel Project of its own,
     // which is the integration mistake §39 ends on.
+    // 🔴 READ THE SCREEN'S OWN REFUSAL BEFORE BLAMING A MISSING CONTROL.
+    //
+    // `LiveOnlyPage` replaces the whole workspace with a "No data source"
+    // note whenever the session is not authenticated or the build has no API,
+    // and in that state the form below simply does not exist. Twice now a run
+    // has died on `getByLabel("Title")` timing out, which says nothing about
+    // WHY. The note names the reason, so read it out.
+    const noSource = page.getByTestId("no-data-source");
+    if (await noSource.isVisible().catch(() => false)) {
+      throw new Error(
+        "the Research Center is showing its no-data-source notice, so no " +
+          "form exists. The screen says: " +
+          (await noSource.innerText()).replace(/\s+/g, " ").trim(),
+      );
+    }
+
     const openForm = formTitled(page, "Open a research workspace");
     await openForm.getByLabel("Title").fill(TITLE);
     await openForm
@@ -247,7 +281,22 @@ test.describe("§39 — the research thread, in a browser", () => {
     // Everything above ran against one loaded page. Reload, and let the SERVER
     // say what it stored. The workspace row carries counts it computed, so a
     // write the API silently refused cannot survive this.
+    // 🔴 A NEW PAGE, A NEW SESSION, AND THE SERVER'S OWN COUNTS.
+    //
+    // Everything above ran against one loaded page, so none of it yet proves a
+    // row exists anywhere but in a cache. The reload discards the document AND
+    // — per ADR-025 — the session with it, which is why the walk signs in
+    // again rather than simply carrying on.
+    //
+    // ⚠️ THAT MAKES THIS STRONGER THAN A PLAIN RELOAD, NOT A WORKAROUND: what
+    // comes back is a fresh document, a fresh token and a fresh query for every
+    // panel. The counts are computed by the SERVER from stored rows, so a write
+    // it silently refused cannot survive the trip — and neither can one that
+    // lived only in the client's cache.
     await page.reload();
+    await signIn(page);
+    await openResearchCenter(page);
+
     const row = workspaceRow(page);
     // ⚠️ ANCHORED ON THE SEPARATOR, NOT A BARE SUBSTRING. `toContainText("1
     // question(s)")` is also satisfied by `11 question(s)` and `21
@@ -276,21 +325,30 @@ test.describe("§39 — the research thread, in a browser", () => {
  * carries a token the API verified against a real Keycloak.
  */
 async function signIn(page: Page): Promise<void> {
-  await page.goto("/");
   await page.getByRole("button", { name: "Sign in" }).click();
 
-  // The realm accepted the redirect_uri only if the FORM renders. A rejected
-  // redirect_uri is a 200 page carrying an error, so the field is the witness.
+  // ⚠️ THE SECOND SIGN-IN USUALLY SEES NO FORM AT ALL, AND THAT IS CORRECT.
+  //
+  // `auth-provider.tsx`: *"the redirect usually returns without a password
+  // prompt, because Keycloak's own SSO cookie is still valid — so it costs a
+  // round trip, not a login."* So wait for EITHER the realm's form or the
+  // application's signed-in furniture, and type only when asked. Demanding the
+  // form would fail the read-back for behaving exactly as designed.
+  const username = page.locator(USERNAME_FIELD);
+  const switcher = page.getByLabel("Active organization");
   await expect(
-    page.locator(USERNAME_FIELD),
-    "no username field — the realm most likely rejected redirect_uri; the " +
-      "web origin must be http://localhost:3000, which is what evercoat-web " +
+    username.or(switcher).first(),
+    "neither the realm's login form nor a signed-in application — if the form " +
+      "is missing, the realm most likely rejected redirect_uri, and the web " +
+      "origin must be http://localhost:3000, which is what evercoat-web " +
       "registers",
   ).toBeVisible({ timeout: 60_000 });
 
-  await page.locator(USERNAME_FIELD).fill(USERNAME);
-  await page.locator(PASSWORD_FIELD).fill(PASSWORD);
-  await page.locator(PASSWORD_FIELD).press("Enter");
+  if (await username.isVisible().catch(() => false)) {
+    await username.fill(USERNAME);
+    await page.locator(PASSWORD_FIELD).fill(PASSWORD);
+    await page.locator(PASSWORD_FIELD).press("Enter");
+  }
 
   // 🔴 LEAVE THE REALM FIRST, AND ASSERT NOTHING UNTIL WE HAVE.
   //
@@ -318,6 +376,29 @@ async function signIn(page: Page): Promise<void> {
     "no organization switcher — back in the application but no session, so " +
       "the token exchange did not complete",
   ).toBeVisible({ timeout: 60_000 });
+}
+
+/**
+ * Reach the Research Center the way a person does — through the sidebar, with
+ * the session intact. See the ADR-025 note in the test for why this is never
+ * `page.goto`.
+ */
+async function openResearchCenter(page: Page): Promise<void> {
+  const link = page.getByRole("link", { name: "Research Center", exact: true });
+
+  // The domain section may need opening first. Both are real user paths, and
+  // this hides nothing: the assertion below still has to hold either way.
+  if (!(await link.isVisible().catch(() => false))) {
+    await page
+      .getByRole("link", { name: /Material Safety Data/i })
+      .first()
+      .click();
+  }
+
+  await link.click();
+  await expect(
+    page.getByRole("heading", { name: "Research Center" }),
+  ).toBeVisible({ timeout: 30_000 });
 }
 
 /** The `<li>` for this walk's workspace, found by its unique title. */

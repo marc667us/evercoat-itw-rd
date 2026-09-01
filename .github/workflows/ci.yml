@@ -929,8 +929,7 @@ jobs:
         run: |
           set -euo pipefail
           rc=0
-          npx playwright test --config playwright.golden.config.ts \
-            --reporter=list,json || rc=$?
+          npx playwright test --config playwright.golden.config.ts || rc=$?
           python - <<'PY'
           import json
           import sys
@@ -962,13 +961,21 @@ jobs:
             exit 1
           fi
 
+      # ⚠️ BOTH DIRECTORIES. `playwright-report-golden/` is the HTML report;
+      # `test-results/` holds the trace, the screenshot and the page snapshot
+      # (`error-context.md`) — which is the one that actually says what the
+      # browser was looking at. Uploading only the first left a failure with no
+      # way to see the page.
       - name: The golden walk's trace on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4, resolved 2026-08-18
         with:
           name: playwright-report-golden
-          path: playwright-report-golden
+          path: |
+            playwright-report-golden
+            test-results
           retention-days: 7
+          if-no-files-found: warn
 
       - name: Keycloak, API and web logs on failure
         if: failure()
